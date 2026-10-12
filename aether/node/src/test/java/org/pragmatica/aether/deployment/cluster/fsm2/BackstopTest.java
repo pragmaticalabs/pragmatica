@@ -255,21 +255,22 @@ class BackstopTest {
 
     // NT-127 (a)
     // Red when: a live worker that appears only in a governor announcement (or only in localAlive) is ever recorded: any C17s,
-    // NodeDepartureKey write, removal of its keys, or change of its counts, for 2 x B_rm and 3 x B_w.
+    // NodeDepartureKey write, removal of its keys, or change of its counts, for 2 x B_rm and 3 x B_w. The worker is alone in its
+    // community: with company, a core-view judgment would make the whole community absent and the breaker would hide the defect.
     @Test
     void liveWorker_visibleInOneSignalOnly_isNeverRecorded() {
         for (var inRoster : new boolean[] {true, false}) {
             var w = MbWorld.world(CORE_1);
             var w5 = node("w5");
             var alive = inRoster
-                        ? Set.<NodeId> of(M1, M2, M3, M4)
-                        : Set.<NodeId> of(M1, M2, M3, M4, w5);
+                        ? Set.<NodeId> of()
+                        : Set.<NodeId> of(w5);
             var listed = inRoster
-                         ? List.of(w5, M1, M2, M3, M4)
-                         : WITHOUT_W1;
+                         ? List.of(w5)
+                         : List.<NodeId> of();
 
             w.admit(CORE_1, 1L, 0x1111L);
-            w.workers(C, 10, alive, w5, M1, M2, M3, M4).target(ORDERS, 1, "WORKERS_ONLY");
+            w.workers(C, 10, alive, w5).target(ORDERS, 1, "WORKERS_ONLY");
             w.instance(w5, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w5)).activate();
             var before = Rows.activeCount(w.h.model(), ORDERS);
 
@@ -289,9 +290,12 @@ class BackstopTest {
             var w6 = node("w6");
 
             w.admit(CORE_1, 1L, 0x1111L);
-            w.workers(C, 10, Set.of(), w6);
             if (variant.equals("dissolved")) {
+                w.admit(w6, 1L, tokenOf(w6));
                 w.directive(w6, ActivationDirectiveValue.worker());
+                w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1))).withLocalAlive(Option.some(Set.of())));
+            } else {
+                w.workers(C, 10, Set.of(), w6);
             }
 
             w.instance(w6, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w6)).target(ORDERS, 1, "WORKERS_ONLY");
