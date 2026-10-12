@@ -429,8 +429,7 @@ public sealed interface Outbox {
             case ArtifactJudgmentKey k -> m.judgments.get(k.artifact()).map(v -> (AetherValue) v);
             case AetherKey.NodeDepartureKey k -> m.records.get(k.nodeId()).map(v -> (AetherValue) v);
             case AetherKey.AppBlueprintKey k -> m.blueprints.get(k.blueprintId()).map(v -> (AetherValue) v);
-            case AetherKey.NodeRoutesKey k -> m.routes.get(SlicePair.slicePair(k.nodeId(), k.artifact()))
-                                                      .map(v -> (AetherValue) v);
+            case AetherKey.NodeRoutesKey k -> m.routes.get(SlicePair.slicePair(k.nodeId(), k.artifact())).map(v -> (AetherValue) v);
             case AetherKey.SliceTargetKey k -> m.targets.get(k.artifactBase()).map(v -> (AetherValue) v);
             case AetherKey.DeploymentApplyKey k -> m.applies.get(k.blueprintId()).map(v -> (AetherValue) v);
             case AetherKey.DeploymentOutcomeKey k -> m.outcomes.get(k.blueprintId()).map(v -> (AetherValue) v);
@@ -586,7 +585,10 @@ public sealed interface Outbox {
 
         return m.timers.contains(timer)
                ? m
-               : Lifecycle.schedule(m, ctx, timer, ctx.settings().timing().retryBase());
+               : Lifecycle.schedule(m,
+                                    ctx,
+                                    timer,
+                                    ctx.settings().timing().retryBase());
     }
 
     record unused() implements Outbox {}

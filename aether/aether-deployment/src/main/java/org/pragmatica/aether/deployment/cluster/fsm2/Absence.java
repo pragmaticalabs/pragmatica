@@ -182,10 +182,12 @@ public sealed interface Absence {
 
     /// C11e: re-evaluate one node and update `absentSince`.
     static ClusterModel refresh(ClusterModel m, Ctx ctx, NodeId node) {
-        if (m.departed.contains(node) || m.departing.containsKey(node)) {
-            m.absentSince = m.absentSince.remove(node);
-
+        if (m.departing.containsKey(node)) {
             return m;
+        }
+
+        if (m.departed.contains(node)) {
+            return reappeared(m, ctx, node);
         }
 
         switch (verdict(m, ctx, node)) {
@@ -198,6 +200,7 @@ public sealed interface Absence {
         return m;
     }
 
+    /// A departed node holds no absence clock; a worker recorded STALE that shows up again is re-admitted (C11f).
     private static ClusterModel reappeared(ClusterModel m, Ctx ctx, NodeId node) {
         clear(m, node);
 

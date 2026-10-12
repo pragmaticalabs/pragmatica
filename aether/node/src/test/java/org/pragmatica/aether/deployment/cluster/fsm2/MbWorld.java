@@ -72,6 +72,17 @@ final class MbWorld {
         return w;
     }
 
+    /// A world whose communities are viable with `floor` live members (the default floor is 3).
+    static MbWorld worldWithFloor(int floor, NodeId... cores) {
+        var w = new MbWorld(Settings.settings(FsmHarness.SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds()).withCommunitySizing(100, floor));
+
+        for (var core : cores) {
+            w.cores.add(core);
+        }
+        w.syncCores();
+        return w;
+    }
+
     private void syncCores() {
         h.seams = h.seams.withCountedCores(cores).withReady(cores);
     }
@@ -197,5 +208,68 @@ final class MbWorld {
 
     static SlicePair pair(NodeId node, Artifact artifact) {
         return SlicePair.slicePair(node, artifact);
+    }
+
+    // -- worker communities and time (membership half) -------------------------------------------------------------
+
+    static final String C = "default-w-0";
+    static final NodeId GOV = node("governor-1");
+
+    /// The worker token of a fixture worker, stable per name.
+    static long tokenOf(NodeId node) {
+        return 0x1000L + Math.abs(node.id().hashCode() % 0xFFFF);
+    }
+
+    /// A community of workers: each has its directive, a registry token and an admission; the seams wire the core view
+    /// (cores only, N6-1), the local alive view (`alive`) and mark every worker ready.
+    MbWorld workers(String community, int targetSize, Set<NodeId> alive, NodeId... members) {
+        for (var member : members) {
+            admit(member, 1L, tokenOf(member));
+        }
+        return workersUnadmitted(community, targetSize, alive, members);
+    }
+
+    /// The same, without telling the registry or membership anything about the workers (the leader that knows no token).
+    MbWorld workersUnadmitted(String community, int targetSize, Set<NodeId> alive, NodeId... members) {
+        community(community, targetSize, CommunityState.ACTIVE);
+        for (var member : members) {
+            directive(member, Fixtures.worker(community));
+        }
+
+        var ready = new HashSet<NodeId>(cores);
+
+        ready.addAll(List.of(members));
+        return seams(s -> s.withCoreView(Option.some(Set.copyOf(cores))).withReady(ready).withLocalAlive(Option.some(Set.copyOf(alive))));
+    }
+
+    /// The governor re-announces `listed` at the real rate for `durationMs`, the local alive view following `alive`; every
+    /// round announces first and then lets the real rate elapse, so the last event of the run is a full interval old at most.
+    MbWorld evolve(String community, NodeId governor, Set<NodeId> alive, List<NodeId> listed, long durationMs) {
+        var elapsed = 0L;
+
+        while (elapsed < durationMs) {
+            announce(community, governor, listed.toArray(new NodeId[0]));
+            refreshSeams(s -> s.withLocalAlive(Option.some(alive)));
+            var step = Math.min(reannounceMs(), durationMs - elapsed);
+
+            h.advance(step);
+            elapsed += step;
+        }
+        return this;
+    }
+
+    /// Advance (with the announcements flowing) until the leader-local monotonic clock reads `targetNs`, then reconcile once.
+    MbWorld evolveUntil(long targetNs, String community, NodeId governor, Set<NodeId> alive, List<NodeId> listed) {
+        evolve(community, governor, alive, listed, Math.max(0L, (targetNs - h.monoNs) / 1_000_000L));
+        h.deliver(new ClusterInput.Reconcile());
+        return this;
+    }
+
+    List<ClusterEffect.Submit> inferred() {
+        return h.submits(ClusterModel.SubmitKind.INFERRED_DEPARTURE);
+    }
+
+    Option<Long> since(NodeId node) {
+        return h.model().absentSince(node);
     }
 }

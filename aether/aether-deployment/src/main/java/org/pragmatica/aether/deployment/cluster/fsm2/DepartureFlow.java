@@ -186,7 +186,10 @@ public sealed interface DepartureFlow {
                           .or(false);
     }
 
-    /// A current DEPARTED committed: the exclusions of the node end (R-4.2.5), and C17b removes its rows.
+    /// A current DEPARTED committed: the exclusions of the node end (R-4.2.5). C17b is built by the reconcile this input queues
+    /// (step 10), which runs after the notifications of the same transaction (its desired and route removals) were applied to the
+    /// mirror, so that C17b is built on what is really there [guess: C11c says "C17b" directly; the reconcile is the same
+    /// transition one mailbox item later].
     private static void departed(ClusterModel m, Ctx ctx, NodeId node) {
         Absence.clear(m, node);
         Idx.members(m.unresponsiveByNode, node)
@@ -194,7 +197,6 @@ public sealed interface DepartureFlow {
            .forEach(artifact -> Outbox.artifact(m,
                                                 artifact,
                                                 intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node))));
-        cleanup(m, ctx, node, 0);
     }
 
     /// An ADMITTED record committed. If it replaced a DEPARTED(STALE), the wrong recording is reversed (C11f, R-2.16).
@@ -276,7 +278,9 @@ public sealed interface DepartureFlow {
     private static ClusterModel resubmitUnmoved(ClusterModel m, TxDraft draft) {
         var unmoved = draft.mutations()
                            .stream()
-                           .filter(mutation -> mutation.expected().equals(Outbox.mirrored(m, mutation.key())))
+                           .filter(mutation -> mutation.expected()
+                                                       .equals(Outbox.mirrored(m,
+                                                                               mutation.key())))
                            .toList();
 
         return unmoved.isEmpty()
