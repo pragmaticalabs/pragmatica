@@ -70,6 +70,22 @@ public sealed interface Outbox {
                              GoalMode mode,
                              Option<Generation> given,
                              String why) {
+        return leaving(m, pair.node())
+               ? m
+               : record(m, pair, goal, mode, given, why);
+    }
+
+    /// A node that is departing or departed gets no new goals: its rows are removed with its departure (R-4.3.0, R-4.3.5).
+    private static boolean leaving(ClusterModel m, NodeId node) {
+        return m.departing.containsKey(node) || m.departed.contains(node);
+    }
+
+    private static ClusterModel record(ClusterModel m,
+                                       SlicePair pair,
+                                       SliceGoal goal,
+                                       GoalMode mode,
+                                       Option<Generation> given,
+                                       String why) {
         var generation = switch (mode) {
             case FRESH -> freshGeneration(m);
             case ADOPT -> given.or(() -> freshGeneration(m));
@@ -93,6 +109,12 @@ public sealed interface Outbox {
 
     /// A goal write that rides the artifact's transaction (failure UNLOADED, retraction). Counts as placed-not from now.
     static ClusterModel artifactGoal(ClusterModel m, SlicePair pair, SliceGoal goal) {
+        return leaving(m, pair.node())
+               ? m
+               : recordArtifactGoal(m, pair, goal);
+    }
+
+    private static ClusterModel recordArtifactGoal(ClusterModel m, SlicePair pair, SliceGoal goal) {
         var generation = freshGeneration(m);
         var write = new GoalWrite(pair, goal, generation, m.observed.get(pair));
 

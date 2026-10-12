@@ -127,8 +127,8 @@ class ReviewDefectsTest {
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).hasSize(1);
         assertThat(w.h.submits().stream()
                       .flatMap(submit -> submit.transaction().mutations().stream())
-                      .filter(mutation -> mutation.key() instanceof SliceDesiredKey desired && desired.nodeId().equals(CORE_2)))
-            .as("no desired write names the departing node")
+                      .filter(mutation -> mutation.key() instanceof SliceDesiredKey desired && desired.nodeId().equals(CORE_2) && mutation.replacement().isPresent()))
+            .as("no goal is written for the departing node (its desired key is removed by the cleanup, not rewritten)")
             .isEmpty();
     }
 }
