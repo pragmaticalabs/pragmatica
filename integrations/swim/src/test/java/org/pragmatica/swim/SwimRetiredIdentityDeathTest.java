@@ -142,8 +142,8 @@ class SwimRetiredIdentityDeathTest {
     }
 
     /// The sweep must not drop a deferred death. The residency (3 x 150 ms) expires while the cold-boot gate is still shut; the
-    /// member used to be swept then, and its deferral was cleared with its death memory, so the verdict was lost when the
-    /// gate closed. It now stays until the replay emits it.
+    /// member is swept then (a slow seed stays re-addable, see `SwimProtocolTombstoneTest`), and its deferral used to be
+    /// cleared with its death memory, so the verdict was lost when the gate closed. It is now kept and replayed.
     @Test
     void deferredDeath_survivesTheResidencySweep_andIsEmittedWhenTheGateCloses() throws InterruptedException {
         var booting = new AtomicBoolean(true);
@@ -157,7 +157,7 @@ class SwimRetiredIdentityDeathTest {
             Thread.sleep(PAST_RESIDENCY.toMillis());
 
             assertThat(departures(observations, PHANTOM)).as("gate still shut: nothing departs").isEmpty();
-            assertThat(protocol.members()).as("the deferred member is held past the residency").containsKey(PHANTOM);
+            assertThat(protocol.members()).as("positive control: the residency sweep removed the member").doesNotContainKey(PHANTOM);
 
             booting.set(false);
 
