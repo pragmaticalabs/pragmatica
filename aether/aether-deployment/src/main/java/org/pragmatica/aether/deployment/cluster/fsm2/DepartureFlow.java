@@ -186,7 +186,10 @@ public sealed interface DepartureFlow {
                           .or(false);
     }
 
-    /// A current DEPARTED committed: the exclusions of the node end (R-4.2.5), and C17b removes its rows.
+    /// A current DEPARTED committed: the exclusions of the node end (R-4.2.5). C17b is built by the reconcile this input queues
+    /// (step 10), which runs after the notifications of the same transaction (its desired and route removals) were applied to the
+    /// mirror, so that C17b is built on what is really there [guess: C11c says "C17b" directly; the reconcile is the same
+    /// transition one mailbox item later].
     private static void departed(ClusterModel m, Ctx ctx, NodeId node) {
         Absence.clear(m, node);
         Idx.members(m.unresponsiveByNode, node)
@@ -265,16 +268,35 @@ public sealed interface DepartureFlow {
                                                                                                                                                                                              .equals(Option.some(node)));
     }
 
-    /// A refused C17b: stop for good if the record moved, else re-derive (R-5.7.2), at most five times.
+    /// A refused C17b (R-5.7.2): stop for good if the record moved. Otherwise the mutations whose keys moved are split out (a
+    /// node that wrote a row keeps it), and the rest are resubmitted at once, at most five times.
     static ClusterModel cleanupRefused(ClusterModel m, Ctx ctx, TxDraft draft) {
         return draft.node()
                     .fold(() -> m,
                           node -> draft.attempt() < Outbox.GOAL_RESUBMISSIONS && recordUnchanged(m, node, draft)
-                                  ? cleanup(m,
-                                            ctx,
-                                            node,
-                                            draft.attempt() + 1)
+                                  ? resubmitUnmoved(m, draft)
                                   : m);
+    }
+
+    private static ClusterModel resubmitUnmoved(ClusterModel m, TxDraft draft) {
+        var unmoved = draft.mutations()
+                           .stream()
+                           .filter(mutation -> mutation.expected()
+                                                       .equals(Outbox.mirrored(m,
+                                                                               mutation.key())))
+                           .toList();
+
+        return unmoved.isEmpty()
+               ? m
+               : Outbox.direct(m,
+                               new TxDraft(SubmitKind.CLEANUP,
+                                           unmoved.getFirst().key(),
+                                           unmoved,
+                                           draft.guards(),
+                                           draft.pairs(),
+                                           draft.node(),
+                                           draft.attempt() + 1,
+                                           List.of()));
     }
 
     private static boolean recordUnchanged(ClusterModel m, NodeId node, TxDraft draft) {
