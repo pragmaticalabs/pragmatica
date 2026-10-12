@@ -263,16 +263,33 @@ public sealed interface DepartureFlow {
                                                                                                                                                                                              .equals(Option.some(node)));
     }
 
-    /// A refused C17b: stop for good if the record moved, else re-derive (R-5.7.2), at most five times.
+    /// A refused C17b (R-5.7.2): stop for good if the record moved. Otherwise the mutations whose keys moved are split out (a
+    /// node that wrote a row keeps it), and the rest are resubmitted at once, at most five times.
     static ClusterModel cleanupRefused(ClusterModel m, Ctx ctx, TxDraft draft) {
         return draft.node()
                     .fold(() -> m,
                           node -> draft.attempt() < Outbox.GOAL_RESUBMISSIONS && recordUnchanged(m, node, draft)
-                                  ? cleanup(m,
-                                            ctx,
-                                            node,
-                                            draft.attempt() + 1)
+                                  ? resubmitUnmoved(m, draft)
                                   : m);
+    }
+
+    private static ClusterModel resubmitUnmoved(ClusterModel m, TxDraft draft) {
+        var unmoved = draft.mutations()
+                           .stream()
+                           .filter(mutation -> mutation.expected().equals(Outbox.mirrored(m, mutation.key())))
+                           .toList();
+
+        return unmoved.isEmpty()
+               ? m
+               : Outbox.direct(m,
+                               new TxDraft(SubmitKind.CLEANUP,
+                                           unmoved.getFirst().key(),
+                                           unmoved,
+                                           draft.guards(),
+                                           draft.pairs(),
+                                           draft.node(),
+                                           draft.attempt() + 1,
+                                           List.of()));
     }
 
     private static boolean recordUnchanged(ClusterModel m, NodeId node, TxDraft draft) {
