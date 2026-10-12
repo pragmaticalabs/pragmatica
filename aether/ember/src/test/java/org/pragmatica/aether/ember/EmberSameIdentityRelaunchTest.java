@@ -146,12 +146,19 @@ class EmberSameIdentityRelaunchTest {
         // The node is registered before its start runs; the refused process may exit within seconds.
         var relaunched = cluster.getNode("btk-3").unwrap();
 
-        assertThat(launch.await(START_BOUND).fold(Cause::message, _ -> "launched"))
+        // The start promise of a refused process never resolves (the node stops during its start), so awaiting it is a
+        // pure START_BOUND timeout of 120 s, after which the window below used to open. The signal is the exit.
+        awaitCondition("the refused process exits", () -> cluster.getNode("btk-3").isEmpty());
+        assertThat(launch.await(TimeSpan.timeSpan(1).seconds()).fold(Cause::message, _ -> "launched"))
             .as("the refused process never completes a start")
             .isNotEqualTo("launched");
 
         var relaunchedId = relaunched.self();
 
+        // The window reads the survivor's record of the NodeId, which is the killed original's record until the survivor
+        // has registered its death. Only a return to MEMBER after that is a re-admission, so wait for the demotion first.
+        awaitCondition("the survivor's membership stops counting the killed original as MEMBER",
+                       () -> !"Member".equals(survivor.membershipFsm().memberStates().get(relaunchedId)));
         awaitRefusedNeverParticipates(survivor, relaunched, relaunchedId);
         assertThat(relaunched.isReady()).as("the refused process must never become consensus-active").isFalse();
         assertThat(cluster.getNode("btk-3").isEmpty())
@@ -170,8 +177,8 @@ class EmberSameIdentityRelaunchTest {
                                                                                 .doesNotContain("btk-3");
     }
 
-    /// For the whole readmission window, the survivor never counts the refused identity as a member again and the
-    /// refused process never becomes consensus-active. Sampled, so a process admitted at any moment of the window
+    /// From the moment the killed original was demoted, and for the whole readmission window, the survivor never
+    /// counts the refused identity as a member again and the refused process never becomes consensus-active. Sampled, so a process admitted at any moment of the window
     /// fails the test, not only one still admitted at its end.
     private static void awaitRefusedNeverParticipates(AetherNode survivor, AetherNode relaunched, org.pragmatica.consensus.NodeId relaunchedId) {
         var deadline = System.currentTimeMillis() + READMIT_WINDOW_MS;
