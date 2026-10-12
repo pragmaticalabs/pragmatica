@@ -55,8 +55,8 @@ class GapSchemaTest {
         assertThat(h.effects(ClusterEffect.DispatchMigration.class)).as("the reset Put is the PENDING arm").extracting(ClusterEffect.DispatchMigration::datasource).containsExactly("ds");
     }
 
-    /// Red when: a MIGRATING record with a live lock is reset (a running migration is disturbed), or one whose lock expired one
-    /// millisecond ago is left (the boundary).
+    /// Red when: a MIGRATING record with a live lock is reset (a running migration is disturbed), one whose lock expired one
+    /// millisecond ago is left, or one whose lock expires exactly now is reset (the boundary).
     @Test
     void migrating_isResetOnlyWhenItsLockExpired() {
         var live = threeCores();
@@ -72,6 +72,13 @@ class GapSchemaTest {
         expired.seedQuietly(new SchemaMigrationLockKey("ds"), new SchemaMigrationLockValue("ds", CORE_1, FsmHarness.START_WALL - 10L, FsmHarness.START_WALL - 1L, 1L));
         expired.activate();
         assertThat(expired.submits(ClusterModel.SubmitKind.SCHEMA)).as("the lock expired a millisecond ago").hasSize(1);
+
+        var boundary = threeCores();
+
+        boundary.seedQuietly(new SchemaVersionKey("ds"), schema("ds", SchemaStatus.MIGRATING));
+        boundary.seedQuietly(new SchemaMigrationLockKey("ds"), new SchemaMigrationLockValue("ds", CORE_1, FsmHarness.START_WALL - 10L, FsmHarness.START_WALL, 1L));
+        boundary.activate();
+        assertThat(boundary.submits(ClusterModel.SubmitKind.SCHEMA)).as("a lock that expires exactly now has not expired yet").isEmpty();
     }
 
     /// Red when: the same hold is warned about twice (the dedup of #760), or its release is not announced once.

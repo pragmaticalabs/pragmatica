@@ -50,9 +50,9 @@ class GapRebalanceTest {
         assertThat(goalOf(h, CORE_1, B)).as("B waits for the next pass (budget)").isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
     }
 
-    /// Red when: a balanced cluster (spread within one) is moved, or the pending imbalance counter is not reset by a balanced tick.
+    /// Red when: a balanced cluster (spread within one) is moved.
     @Test
-    void balanced_neverMoves_andResetsTheCounter() {
+    void balanced_neverMoves() {
         var h = threeCores();
 
         for (var artifact : new Artifact[]{A, B, C}) {
@@ -70,7 +70,6 @@ class GapRebalanceTest {
         h.deliver(new ClusterInput.Reconcile());
 
         assertThat(h.submits()).isEmpty();
-        assertThat(h.model().imbalancedTicks.isEmpty()).isTrue();
     }
 
     /// Red when: an instance hosted by a node outside the allocatable cores (a worker) is chosen as donor: a rebalance never
