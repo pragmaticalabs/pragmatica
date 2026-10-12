@@ -11,7 +11,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
@@ -29,6 +28,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -97,7 +97,7 @@ class DeploymentFsmKvMarkersTest {
         return new SliceDesiredValue(goal, new Generation(5L, counter), 1_760_000_111_000L);
     }
 
-    private static SliceObservedValue observed(SliceState state, long version) {
+    private static SliceObservedValue observed(SliceObservedState state, long version) {
         return new SliceObservedValue(state,
                                       version,
                                       new Generation(5L, 1L),
@@ -121,13 +121,13 @@ class DeploymentFsmKvMarkersTest {
             assertThat(desired(SliceGoal.LOADED, 1L)).isInstanceOf(LeaderAuthorized.class);
             assertThat(judgment).isInstanceOf(LeaderAuthorized.class);
             assertThat(departure).isInstanceOf(LeaderAuthorized.class);
-            assertThat(observed(SliceState.LOADING, 1L)).isNotInstanceOf(LeaderAuthorized.class);
+            assertThat(observed(SliceObservedState.LOADING, 1L)).isNotInstanceOf(LeaderAuthorized.class);
             assertThat(applyRecord()).isNotInstanceOf(LeaderAuthorized.class);
         }
 
         @Test
         void observedValue_isVersionFencedAndWitnessedRemoval_andFencesByItsVersion() {
-            var value = observed(SliceState.ACTIVE, 9L);
+            var value = observed(SliceObservedState.ACTIVE, 9L);
 
             assertThat(value).isInstanceOf(VersionFenced.class);
             assertThat(value).isInstanceOf(WitnessedRemoval.class);
@@ -216,35 +216,35 @@ class DeploymentFsmKvMarkersTest {
 
         @Test
         void nodePut_isAcceptedWithoutALeader_andFollowsTheVersionChain() {
-            apply(new KVCommand.Put<>(key, observed(SliceState.LOADING, 1L)));
-            assertThat(stored(key)).isEqualTo(observed(SliceState.LOADING, 1L));
+            apply(new KVCommand.Put<>(key, observed(SliceObservedState.LOADING, 1L)));
+            assertThat(stored(key)).isEqualTo(observed(SliceObservedState.LOADING, 1L));
 
-            apply(new KVCommand.Put<>(key, observed(SliceState.LOADED, 2L)));
-            assertThat(stored(key)).as("the immediate successor").isEqualTo(observed(SliceState.LOADED, 2L));
+            apply(new KVCommand.Put<>(key, observed(SliceObservedState.LOADED, 2L)));
+            assertThat(stored(key)).as("the immediate successor").isEqualTo(observed(SliceObservedState.LOADED, 2L));
         }
 
         @Test
         void putThatIsNotTheSuccessor_isRefused() {
-            apply(new KVCommand.Put<>(key, observed(SliceState.LOADING, 1L)));
-            apply(new KVCommand.Put<>(key, observed(SliceState.LOADED, 2L)));
+            apply(new KVCommand.Put<>(key, observed(SliceObservedState.LOADING, 1L)));
+            apply(new KVCommand.Put<>(key, observed(SliceObservedState.LOADED, 2L)));
 
-            apply(new KVCommand.Put<>(key, observed(SliceState.ACTIVATING, 2L)));
-            assertThat(stored(key)).as("a late identical resubmission").isEqualTo(observed(SliceState.LOADED, 2L));
+            apply(new KVCommand.Put<>(key, observed(SliceObservedState.ACTIVATING, 2L)));
+            assertThat(stored(key)).as("a late identical resubmission").isEqualTo(observed(SliceObservedState.LOADED, 2L));
 
-            apply(new KVCommand.Put<>(key, observed(SliceState.ACTIVE, 4L)));
-            assertThat(stored(key)).as("a version jump").isEqualTo(observed(SliceState.LOADED, 2L));
+            apply(new KVCommand.Put<>(key, observed(SliceObservedState.ACTIVE, 4L)));
+            assertThat(stored(key)).as("a version jump").isEqualTo(observed(SliceObservedState.LOADED, 2L));
 
-            apply(new KVCommand.Put<>(key, observed(SliceState.LOADING, 1L)));
-            assertThat(stored(key)).as("a regression").isEqualTo(observed(SliceState.LOADED, 2L));
+            apply(new KVCommand.Put<>(key, observed(SliceObservedState.LOADING, 1L)));
+            assertThat(stored(key)).as("a regression").isEqualTo(observed(SliceObservedState.LOADED, 2L));
 
-            apply(new KVCommand.Put<>(key, observed(SliceState.ACTIVATING, 3L)));
-            assertThat(stored(key)).as("control: the successor still lands").isEqualTo(observed(SliceState.ACTIVATING, 3L));
+            apply(new KVCommand.Put<>(key, observed(SliceObservedState.ACTIVATING, 3L)));
+            assertThat(stored(key)).as("control: the successor still lands").isEqualTo(observed(SliceObservedState.ACTIVATING, 3L));
         }
 
         @Test
         void remove_requiresAWitnessEqualToTheCommittedValue() {
-            var first = observed(SliceState.LOADING, 1L);
-            var second = observed(SliceState.LOADED, 2L);
+            var first = observed(SliceObservedState.LOADING, 1L);
+            var second = observed(SliceObservedState.LOADED, 2L);
 
             apply(new KVCommand.Put<>(key, first));
             apply(new KVCommand.Put<>(key, second));
@@ -261,7 +261,7 @@ class DeploymentFsmKvMarkersTest {
 
         @Test
         void afterRemoval_theChainRestartsAtVersionOne() {
-            var first = observed(SliceState.LOADING, 1L);
+            var first = observed(SliceObservedState.LOADING, 1L);
 
             apply(new KVCommand.Put<>(key, first));
             apply(new KVCommand.Remove<>(key, Option.some(first)));
@@ -273,11 +273,11 @@ class DeploymentFsmKvMarkersTest {
 
         @Test
         void leaderTransaction_removesAtTheExactValueOnly() {
-            var committed = observed(SliceState.LOADED, 1L);
+            var committed = observed(SliceObservedState.LOADED, 1L);
 
             apply(new KVCommand.Put<>(key, committed));
 
-            assertThat(transaction(LEADER, key, observed(SliceState.LOADED, 2L), null)).as("a value that is not committed").isFalse();
+            assertThat(transaction(LEADER, key, observed(SliceObservedState.LOADED, 2L), null)).as("a value that is not committed").isFalse();
             assertThat(stored(key)).isEqualTo(committed);
             assertThat(transaction(DEPOSED_LEADER, key, committed, null)).isFalse();
             assertThat(transaction(LEADER, key, committed, null)).as("control: exact value, committed leader").isTrue();

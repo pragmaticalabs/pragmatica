@@ -3732,6 +3732,22 @@ public sealed interface AetherValue {
         UNKNOWN
     }
 
+    /// What one node observed of one (node, artifact) pair (spec 1.6.2). Separate from the live `SliceState`, which keeps
+    /// the old verbs and ROUTING until the old state machines are retired: UNLOADED is the tombstone a node leaves
+    /// when it unloads (R-1.6.3). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum SliceObservedState {
+        LOADING,
+        LOADED,
+        ACTIVATING,
+        ACTIVE,
+        DEACTIVATING,
+        FAILED,
+        UNLOADING,
+        UNLOADED,
+        UNKNOWN
+    }
+
     /// The leader's goal for one (node, artifact) pair, under [AetherKey.SliceDesiredKey] (spec R-1.6.1).
     /// [LeaderAuthorized]: the applier drops a bare Put and a witnessless Remove, so the leader writes it only
     /// inside a `LeaderTransaction`.
@@ -3741,7 +3757,7 @@ public sealed interface AetherValue {
     /// `version` is the [VersionFenced] chain: the first write is 1, each later write is the committed version + 1.
     /// `forGeneration` is the generation of the goal the chain executed and `incarnation` the writing process.
     /// [WitnessedRemoval]: a Remove is applied only with a witness equal to the committed value.
-    record SliceObservedValue(SliceState state,
+    record SliceObservedValue(SliceObservedState state,
                               long version,
                               Generation forGeneration,
                               ProcessIncarnation incarnation,

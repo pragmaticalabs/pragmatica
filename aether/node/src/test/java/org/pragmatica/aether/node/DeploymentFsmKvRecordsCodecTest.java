@@ -9,13 +9,13 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -35,11 +35,13 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SystemTags;
 
@@ -86,6 +88,7 @@ class DeploymentFsmKvRecordsCodecTest {
         pins.put(VALUE + "UnresponsiveEntry", 2156);
         pins.put(VALUE + "DepartureState", 2157);
         pins.put(VALUE + "DepartureCause", 2158);
+        pins.put(VALUE + "SliceObservedState", 2159);
 
         return Map.copyOf(pins);
     }
@@ -152,7 +155,7 @@ class DeploymentFsmKvRecordsCodecTest {
 
         @Test
         void sliceObserved_roundTripsEveryComponentDistinctly() {
-            var value = new SliceObservedValue(SliceState.FAILED,
+            var value = new SliceObservedValue(SliceObservedState.FAILED,
                                                12L,
                                                GENERATION,
                                                PROCESS,
@@ -167,9 +170,17 @@ class DeploymentFsmKvRecordsCodecTest {
         }
 
         @Test
+        void sliceObserved_roundTripsEveryObservedState() {
+            for (var state : SliceObservedState.values()) {
+                roundTrip(SliceObservedKey.sliceObservedKey(NODE, ARTIFACT),
+                          new SliceObservedValue(state, 3L, GENERATION, PROCESS, Option.none(), false, 1, List.of(), 5L));
+            }
+        }
+
+        @Test
         void sliceObserved_roundTripsAbsentFailureReasonAndNoMethods() {
             roundTrip(SliceObservedKey.sliceObservedKey(OTHER_NODE, ARTIFACT),
-                      new SliceObservedValue(SliceState.ACTIVE,
+                      new SliceObservedValue(SliceObservedState.ACTIVE,
                                              1L,
                                              OTHER_GENERATION,
                                              new ProcessIncarnation(0L, 0L),
@@ -291,6 +302,92 @@ class DeploymentFsmKvRecordsCodecTest {
             assertThat(DeploymentApplyKey.deploymentApplyKey("deployment-apply/").isFailure()).isTrue();
             assertThat(ArtifactJudgmentKey.artifactJudgmentKey("artifact-judgment/").isFailure()).isTrue();
             assertThat(NodeDepartureKey.nodeDepartureKey("node-departure/").isFailure()).isTrue();
+        }
+
+        @Test
+        void everyKey_usesItsLiteralPrefix() {
+            assertThat(SliceDesiredKey.sliceDesiredKey(NODE, ARTIFACT).asString()).startsWith("slice-desired/");
+            assertThat(SliceObservedKey.sliceObservedKey(NODE, ARTIFACT).asString()).startsWith("slice-observed/");
+            assertThat(DeploymentApplyKey.deploymentApplyKey(BLUEPRINT).asString()).startsWith("deployment-apply/");
+            assertThat(ArtifactJudgmentKey.artifactJudgmentKey(ARTIFACT).asString()).startsWith("artifact-judgment/");
+            assertThat(NodeDepartureKey.nodeDepartureKey(NODE).asString()).startsWith("node-departure/");
+        }
+
+        /// Each parser refuses a string that is not its own: junk, a sibling prefix, a live key's string (the
+        /// legacy `node-artifact/` namespace the new keys must never alias) and every other new key's string.
+        @Test
+        void everyParser_refusesAForeignString() {
+            var strings = List.of(SliceDesiredKey.sliceDesiredKey(NODE, ARTIFACT).asString(),
+                                  SliceObservedKey.sliceObservedKey(NODE, ARTIFACT).asString(),
+                                  DeploymentApplyKey.deploymentApplyKey(BLUEPRINT).asString(),
+                                  ArtifactJudgmentKey.artifactJudgmentKey(ARTIFACT).asString(),
+                                  NodeDepartureKey.nodeDepartureKey(NODE).asString());
+            var foreign = new ArrayList<>(strings);
+
+            foreign.addAll(List.of("foo",
+                                   "",
+                                   "slice-desired",
+                                   "node-artifact/core-7/org.example:orders-slice:1.2.3",
+                                   "node-routes/core-7/org.example:orders-slice:1.2.3",
+                                   "node-artifact/core-7"));
+
+            var parsers = List.<Function<String, Result<?>>>of(SliceDesiredKey::sliceDesiredKey,
+                                                              SliceObservedKey::sliceObservedKey,
+                                                              DeploymentApplyKey::deploymentApplyKey,
+                                                              ArtifactJudgmentKey::artifactJudgmentKey,
+                                                              NodeDepartureKey::nodeDepartureKey);
+
+            for (var i = 0; i < parsers.size(); i++) {
+                for (var text : foreign) {
+                    if (!text.equals(strings.get(i))) {
+                        assertThat(parsers.get(i).apply(text).isFailure()).as("parser %d accepted '%s'", i, text).isTrue();
+                    }
+                }
+                assertThat(parsers.get(i).apply(strings.get(i)).isSuccess()).as("parser %d own string", i).isTrue();
+            }
+        }
+    }
+
+    @Nested
+    class DefensiveCopies {
+        @Test
+        void sliceObserved_doesNotSeeLaterChangesToTheMethodsList() {
+            var source = new ArrayList<>(List.of("handle"));
+            var value = new SliceObservedValue(SliceObservedState.ACTIVE, 1L, GENERATION, PROCESS, Option.none(), false, 1, source, 1L);
+
+            source.add("injected");
+
+            assertThat(value.methods()).containsExactly("handle");
+        }
+
+        @Test
+        void artifactJudgment_doesNotSeeLaterChangesToTheUnresponsiveMap() {
+            var source = new HashMap<NodeId, UnresponsiveEntry>();
+
+            source.put(NODE, new UnresponsiveEntry(GENERATION, SliceGoal.ACTIVE, 1L));
+
+            var value = new ArtifactJudgmentValue(false, 0, source);
+
+            source.put(OTHER_NODE, new UnresponsiveEntry(OTHER_GENERATION, SliceGoal.LOADED, 2L));
+
+            assertThat(value.unresponsive()).containsOnlyKeys(NODE);
+        }
+    }
+
+    @Nested
+    class ObservedStates {
+        @Test
+        void sliceObservedState_keepsTheSpecOrder_unknownLast() {
+            assertThat(SliceObservedState.values()).extracting(Enum::name)
+                                                   .containsExactly("LOADING",
+                                                                    "LOADED",
+                                                                    "ACTIVATING",
+                                                                    "ACTIVE",
+                                                                    "DEACTIVATING",
+                                                                    "FAILED",
+                                                                    "UNLOADING",
+                                                                    "UNLOADED",
+                                                                    "UNKNOWN");
         }
     }
 }

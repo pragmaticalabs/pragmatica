@@ -656,7 +656,9 @@ public interface SystemTags {
         pin(table, 2156, "org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry");
         pin(table, 2157, "org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState");
         pin(table, 2158, "org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause");
-        // ---- 2159..16383 RESERVED ----
+        // the observed slice state of the deployment rewrite, with the tombstone the live SliceState lacks (spec 1.6.2) -- scanned free on 2026-10-12
+        pin(table, 2159, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState");
+        // ---- 2160..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);
