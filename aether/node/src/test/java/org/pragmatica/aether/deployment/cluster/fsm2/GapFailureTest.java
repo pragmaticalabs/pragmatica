@@ -156,6 +156,6 @@ class GapFailureTest {
         h.drain();
 
         assertThat(h.mutations(org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey.class)).as("one UNLOADED goal").hasSize(1);
-        assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(value -> value.goal())).isEqualTo(Option.some(SliceGoal.LOADED));
+        assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(value -> value.goal())).as("held: not committed").isEqualTo(Option.some(SliceGoal.ACTIVE));
     }
 }

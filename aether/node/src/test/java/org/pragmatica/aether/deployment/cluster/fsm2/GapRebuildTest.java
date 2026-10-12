@@ -72,7 +72,7 @@ class GapRebuildTest {
         h.seedQuietly(new CommunityKey("east-w-0"), community("east", 3, CommunityState.ACTIVE));
         h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(IDS.worker, false, IDS.worker, IDS.gone));
         h.seedQuietly(new NodeDepartureKey(IDS.gone), new NodeDepartureValue(DepartureState.DEPARTED, 3L, process(22L), Option.some(DepartureCause.WORKER_LEAVE), 5L));
-        h.seedQuietly(new ArtifactJudgmentKey(ORDERS), new ArtifactJudgmentValue(false, Map.of(CORE_1, 2), Map.of()));
+        h.seedQuietly(new ArtifactJudgmentKey(ORDERS_V2), new ArtifactJudgmentValue(true, Map.of(CORE_1, 2), Map.of()));
         h.seedQuietly(new DeploymentApplyKey(id), new DeploymentApplyValue(ATTEMPT, Option.none(), FsmHarness.START_WALL));
         h.seedQuietly(new DeploymentOutcomeKey(id), DeploymentOutcomeValue.inProgress(FsmHarness.START_WALL, 1L, ATTEMPT));
         h.seedQuietly(new SchemaVersionKey("ds"), new SchemaVersionValue("ds", 1, "m1", SchemaStatus.COMPLETED, "g:a:1", id, 0, FsmHarness.START_WALL));
@@ -99,14 +99,14 @@ class GapRebuildTest {
         assertThat(m.routings.containsKey(ORDERS.base())).isTrue();
         assertThat(m.desired(SlicePair.slicePair(CORE_1, ORDERS))).isNotEqualTo(Option.none());
         assertThat(m.observed(SlicePair.slicePair(CORE_1, ORDERS))).isNotEqualTo(Option.none());
-        assertThat(m.hasStray(SlicePair.slicePair(CORE_2, BILLING))).as("a current row with no desired key").isTrue();
+        assertThat(h.warns("stray-instance")).as("the first reconcile found the stray (a current row with no desired key) and condemned it").hasSize(1);
         assertThat(m.hasStray(SlicePair.slicePair(CORE_1, ORDERS))).isFalse();
         assertThat(m.directives.size()).isEqualTo(2);
         assertThat(m.isDeparted(IDS.gone)).isTrue();
         assertThat(Idx.members(m.assignedByCommunity, "east-w-0").toList()).as("a departed id is not counted in the assignment").containsExactly(IDS.worker);
         assertThat(m.communities.containsKey("east-w-0")).isTrue();
         assertThat(m.rosterCount.get(IDS.worker)).isEqualTo(Option.some(1));
-        assertThat(m.judgment(ORDERS).map(ArtifactJudgmentValue::retries)).isEqualTo(Option.some(Map.of(CORE_1, 2)));
+        assertThat(m.judgment(ORDERS_V2).map(ArtifactJudgmentValue::retries)).isEqualTo(Option.some(Map.of(CORE_1, 2)));
         assertThat(m.apply(id).isPresent()).isTrue();
         assertThat(m.outcomes.containsKey(id)).isTrue();
         assertThat(m.schemas.containsKey("ds")).isTrue();
@@ -132,7 +132,7 @@ class GapRebuildTest {
         h.deliver(new ClusterInput.KvRemove(new SchemaVersionKey("ds")));
         h.deliver(new ClusterInput.KvRemove(new DeploymentApplyKey(id)));
         h.deliver(new ClusterInput.KvRemove(new DeploymentOutcomeKey(id)));
-        h.deliver(new ClusterInput.KvRemove(new ArtifactJudgmentKey(ORDERS)));
+        h.deliver(new ClusterInput.KvRemove(new ArtifactJudgmentKey(ORDERS_V2)));
         h.deliver(new ClusterInput.KvRemove(new SchemaMigrationLockKey("ds")));
         h.deliver(new ClusterInput.KvRemove(new NodeRoutesKey(CORE_1, ORDERS)));
         h.deliver(new ClusterInput.KvRemove(new NodePlacementKey(IDS.worker)));

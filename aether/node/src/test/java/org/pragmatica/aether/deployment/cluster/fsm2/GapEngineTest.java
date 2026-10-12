@@ -89,7 +89,7 @@ class GapEngineTest {
 
         h.activate();
         h.deliver(new ClusterInput.WitnessStale());
-        seedTarget(h, ORDERS, 1, 1);
+        h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 1, 1, "CORE_ONLY"));
         h.drain();
 
         assertThat(h.submits()).as("suspended: the target was indexed, nothing was submitted").isEmpty();
