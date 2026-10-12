@@ -195,7 +195,7 @@ public sealed interface Directory {
                                                                  .equals(source))
                                    .flatMap(placement -> placement.observedZone());
 
-        return reserved(m, node, source, zone, policies).orElse(() -> configured(m, node, source, zone, policies))
+        return reserved(m, node, source, zone, policies).orElse(() -> configured(m, source, zone, policies))
                        .fold(() -> m,
                              policy -> commit(m,
                                               ctx,
@@ -227,33 +227,21 @@ public sealed interface Directory {
                                    .findFirst());
     }
 
-    /// The incumbent policy, else the eligible policy with the lowest fill ratio, ties by id. Fill counts the community's
-    /// assigned workers, excluding departed ids (R-3.3.9, N4-4, NT-39).
+    /// The eligible policy with the lowest fill ratio, ties by id. Fill counts the community's assigned workers, excluding
+    /// departed ids (R-3.3.9, N4-4, NT-39). A worker that already has a community directive never reaches here.
     private static Option<CommunityPlacement> configured(ClusterModel m,
-                                                         NodeId node,
                                                          String source,
                                                          Option<String> zone,
                                                          java.util.Map<String, CommunityPlacement> policies) {
-        var current = m.directives.get(node).map(ActivationDirectiveValue::communityId);
-        var eligible = policies.values()
-                               .stream()
-                               .filter(policy -> policy.targetSize() > 0)
-                               .filter(policy -> policy.locations()
-                                                       .stream()
-                                                       .anyMatch(location -> location.source()
-                                                                                     .equals(source) && location.zone()
-                                                                                                                .fold(() -> true,
-                                                                                                                      expected -> zone.filter(expected::equals)
-                                                                                                                                      .isPresent())))
-                               .sorted(Comparator.comparing(CommunityPlacement::id))
-                               .toList();
-        var incumbent = eligible.stream().filter(policy -> current.filter(policy.id()::equals)
-                                                                  .isPresent()).findFirst();
-
-        return Option.from(incumbent.or(() -> eligible.stream()
-                                                      .min(Comparator.<CommunityPlacement> comparingDouble(policy -> (double) Idx.members(m.assignedByCommunity,
-                                                                                                                                          policy.id())
-                                                                                                                                 .size() / policy.targetSize()).thenComparing(CommunityPlacement::id))));
+        return Option.from(policies.values()
+                                   .stream()
+                                   .filter(policy -> policy.targetSize() > 0)
+                                   .filter(policy -> policy.locations()
+                                                           .stream()
+                                                           .anyMatch(location -> location.source().equals(source)
+                                                                                 && location.zone().fold(() -> true, expected -> zone.filter(expected::equals).isPresent())))
+                                   .min(Comparator.<CommunityPlacement> comparingDouble(policy -> (double) Idx.members(m.assignedByCommunity, policy.id()).size() / policy.targetSize())
+                                                  .thenComparing(CommunityPlacement::id)));
     }
 
     private static ClusterModel commit(ClusterModel m,
