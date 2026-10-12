@@ -157,8 +157,7 @@ class EmberSameIdentityRelaunchTest {
 
         // The window reads the survivor's record of the NodeId, which is the killed original's record until the survivor
         // has registered its death. Only a return to MEMBER after that is a re-admission, so wait for the demotion first.
-        awaitCondition("the survivor's membership stops counting the killed original as MEMBER",
-                       () -> !"Member".equals(survivor.membershipFsm().memberStates().get(relaunchedId)));
+        awaitDemoted(survivor, relaunchedId);
         awaitRefusedNeverParticipates(survivor, relaunched, relaunchedId);
         assertThat(relaunched.isReady()).as("the refused process must never become consensus-active").isFalse();
         assertThat(cluster.getNode("btk-3").isEmpty())
@@ -175,6 +174,22 @@ class EmberSameIdentityRelaunchTest {
             .isFalse();
         assertThat(cluster.allNodes().stream().map(node -> node.self().id())).as("no live process answers to the refused NodeId")
                                                                                 .doesNotContain("btk-3");
+    }
+
+    /// Waits for the survivor to stop counting `id` as MEMBER. A bound reached with the record still MEMBER fails naming that
+    /// state, so a stuck record is reported as itself and not as a generic timeout.
+    private static void awaitDemoted(AetherNode survivor, org.pragmatica.consensus.NodeId id) {
+        var deadline = System.currentTimeMillis() + HEAL_BOUND_MS;
+        var state = survivor.membershipFsm().memberStates().get(id);
+
+        while ("Member".equals(state)) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("the survivor still counts the killed original " + id.id() + " as MEMBER " + HEAL_BOUND_MS
+                                         + " ms after the refused process exited (stuck state: " + state + "): its death was never registered");
+            }
+            sleep(250);
+            state = survivor.membershipFsm().memberStates().get(id);
+        }
     }
 
     /// From the moment the killed original was demoted, and for the whole readmission window, the survivor never
