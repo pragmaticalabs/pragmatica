@@ -454,8 +454,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
-                        .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
-                        .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
+                             .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
+                             .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
         }
 
         /// The LOADING and LOADED consensus writes of the load chains. Their exhausted retries are an infrastructure
@@ -464,7 +464,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// healthy artifact as fatal (#2163). Deliberately not done inside the shared `updateSliceStateWithRetry`.
         private Promise<SliceNodeKey> transitionForLoad(SliceNodeKey sliceKey, SliceState newState) {
             return transitionTo(sliceKey, newState).mapError(cause -> new SliceLoadingFailure.Intermittent.Timeout("consensus write of " + newState,
-                                                                                                                  cause));
+                                                                                                                   cause));
         }
 
         private Promise<SliceNodeKey> loadSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -909,9 +909,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                      ctx.self().id(),
                      sliceKey.artifact());
             transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
-                        .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
-                        .onSuccess(key -> processStateTransition(key, SliceState.ACTIVATE))
-                        .onFailure(cause -> handleLoadingFailure(sliceKey, cause));
+                             .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
+                             .onSuccess(key -> processStateTransition(key, SliceState.ACTIVATE))
+                             .onFailure(cause -> handleLoadingFailure(sliceKey, cause));
         }
 
         /// #1068 — the node-side half of "a rolled-back version never starts again". Every path that
