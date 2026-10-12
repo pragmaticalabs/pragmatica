@@ -32,7 +32,6 @@ import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.TestCluste
 import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.TestCommand;
 import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.TestTopologyManager;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
-import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -81,7 +80,7 @@ class RabiaEngineSlowApplyDiagnosticsTest {
         var release = new CountDownLatch(1);
 
         engine.safeExecuteForTesting(() -> blockedInTheCallUnderTest(entered, release));
-        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        awaitParkedInTheCall(entered);
 
         try {
             var report = engine.slowTaskCheckForTesting(System.nanoTime() + timeSpan(2).seconds().nanos());
@@ -115,7 +114,7 @@ class RabiaEngineSlowApplyDiagnosticsTest {
 
         engine.slowTaskSinkForTesting(reports::add);
         engine.safeExecuteForTesting(() -> blockedInTheCallUnderTest(entered, release));
-        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        awaitParkedInTheCall(entered);
 
         try {
             var deadline = System.nanoTime() + timeSpan(8).seconds().nanos();
@@ -127,7 +126,9 @@ class RabiaEngineSlowApplyDiagnosticsTest {
             assertThat(reports)
                 .as("the scheduled watchdog must find the task once it has run past one second")
                 .hasSize(1);
-            assertThat(reports.getFirst()).contains("blockedInTheCallUnderTest").containsPattern("queueDepth=\\d+ ms=\\d+ thread=");
+            // the FIRST report may land while the worker is still starting up (one task, one report), so only its shape is
+            // pinned here; that the stack names the blocking call is pinned deterministically by the first test above
+            assertThat(reports.getFirst()).containsPattern("queueDepth=\\d+ ms=\\d+ thread=.* stack:");
         } finally {
             release.countDown();
         }
@@ -154,7 +155,7 @@ class RabiaEngineSlowApplyDiagnosticsTest {
         var beforeSubmit = System.nanoTime();
 
         engine.safeExecuteForTesting(() -> blockedInTheCallUnderTest(entered, release));
-        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        awaitParkedInTheCall(entered);
         var afterEntered = System.nanoTime();
 
         try {
@@ -191,7 +192,7 @@ class RabiaEngineSlowApplyDiagnosticsTest {
         var release = new CountDownLatch(1);
 
         engine.safeExecuteForTesting(() -> blockedInTheCallUnderTest(entered, release));
-        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        awaitParkedInTheCall(entered);
 
         try {
             assertThat(engine.slowTaskCheckForTesting(System.nanoTime()).isPresent())
@@ -357,9 +358,44 @@ class RabiaEngineSlowApplyDiagnosticsTest {
         Thread.sleep(50);
     }
 
-    private static void blockedInTheCallUnderTest(CountDownLatch entered, CountDownLatch release) {
+    /// The apply worker, recorded by the blocking task so the test can tell WHERE it is rather than that it has started.
+    private final AtomicReference<Thread> blockedWorker = new AtomicReference<>();
+
+    private void blockedInTheCallUnderTest(CountDownLatch entered, CountDownLatch release) {
+        blockedWorker.set(Thread.currentThread());
         entered.countDown();
-        Result.lift(() -> release.await()).unwrap();
+
+        try {
+            // a direct call, not a lambda: the first lambda on a cold JVM bootstraps a call site (class generation,
+            // seconds on a loaded runner) and a sampler that fires then sees the bootstrap, not this method (#2165)
+            release.await();
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// Returns only once the worker is PARKED inside [#blockedInTheCallUnderTest]: `entered` says the task started, not
+    /// that it reached the blocking call. Sampling before that (CI run 38189775550) captured the JDK's lambda
+    /// bootstrap frames and the assertion that the report names the blocking call failed.
+    private void awaitParkedInTheCall(CountDownLatch entered) throws InterruptedException {
+        assertThat(entered.await(5, TimeUnit.SECONDS)).as("the blocking task started").isTrue();
+        var deadline = System.nanoTime() + timeSpan(10).seconds().nanos();
+
+        while (System.nanoTime() < deadline) {
+            var worker = blockedWorker.get();
+
+            if (worker.getState() == Thread.State.WAITING && inTheBlockingCall(worker)) {
+                return;
+            }
+
+            Thread.sleep(5);
+        }
+
+        throw new AssertionError("the worker never parked inside the blocking call: " + java.util.Arrays.toString(blockedWorker.get().getStackTrace()));
+    }
+
+    private static boolean inTheBlockingCall(Thread worker) {
+        return java.util.Arrays.stream(worker.getStackTrace()).anyMatch(frame -> frame.getMethodName().equals("blockedInTheCallUnderTest"));
     }
 
     private void awaitIdle() throws InterruptedException {
