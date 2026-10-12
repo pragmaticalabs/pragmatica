@@ -318,8 +318,17 @@ class SlPlacementTest {
             h.activate();
 
             assertThat(hosts(h, ORDERS)).as("the original plus exactly one replacement").containsExactly(CORE_1, CORE_2);
-            assertThat(h.effects(ClusterEffect.Route.class).stream().map(ClusterEffect.Route::event))
-                    .anyMatch(event -> event instanceof RoutedEvent.ReconciliationAdjustment adjustment && adjustment.artifact().equals(ORDERS));
+            assertThat(h.effects(ClusterEffect.Route.class).stream()
+                        .map(ClusterEffect.Route::event)
+                        .filter(RoutedEvent.ReconciliationAdjustment.class::isInstance)
+                        .map(RoutedEvent.ReconciliationAdjustment.class::cast)
+                        .filter(adjustment -> adjustment.artifact().equals(ORDERS)))
+                    .as("one adjustment, the drain's: the reconcile did not place the blueprint on its own")
+                    .singleElement()
+                    .satisfies(adjustment -> {
+                        assertThat(adjustment.current()).isEqualTo(1);
+                        assertThat(adjustment.desired()).isEqualTo(2);
+                    });
         }
 
         /// NT-41. Red when: after the replacement is ACTIVE the original gets no goal UNLOADED, or no 2 s next step is scheduled.
@@ -359,8 +368,11 @@ class SlPlacementTest {
             h.activate();
             h.deliver(new ClusterInput.NodeDraining(CORE_1));
             h.deliver(new ClusterInput.NodeDraining(CORE_1));
+            h.advance(2_000L);
 
-            assertThat(hosts(h, ORDERS)).containsExactly(CORE_1, CORE_2);
+            assertThat(hosts(h, ORDERS)).as("one replacement, however often the report repeats or the loop steps").containsExactly(CORE_1, CORE_2);
+            assertThat(h.effects(ClusterEffect.Schedule.class).stream().filter(schedule -> schedule.timer().kind() == TimerId.Kind.DRAIN_STEP).count())
+                    .as("one loop: the start, plus the one step that fired").isEqualTo(2);
         }
     }
 

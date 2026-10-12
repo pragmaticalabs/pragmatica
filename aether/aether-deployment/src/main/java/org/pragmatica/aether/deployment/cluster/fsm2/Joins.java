@@ -45,7 +45,6 @@ public sealed interface Joins {
         Absence.clear(m, node);
         Indexer.refreshDeparted(m, node);
         Indexer.refreshNodeRows(m, node);
-        restartClocks(m, ctx, node);
         noteStale(m, ctx, node, before);
 
         return evaluate(m, ctx, node, new PendingJoin(worker, admission));

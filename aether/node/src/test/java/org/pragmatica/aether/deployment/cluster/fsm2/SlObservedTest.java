@@ -12,6 +12,9 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
@@ -287,6 +290,9 @@ class SlObservedTest {
             seedGoal(h, CORE_2, ORDERS, SliceGoal.ACTIVE, G1);
             seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G1, 0L);
             seedRow(h, CORE_1, BILLING, SliceObservedState.UNLOADED, G1, 0L);
+            h.seedQuietly(new NodeDepartureKey(CORE_3), new NodeDepartureValue(DepartureState.ADMITTED, 1L, process(0L), Option.none(), FsmHarness.START_WALL));
+            seedGoal(h, CORE_3, BILLING, SliceGoal.ACTIVE, G1);
+            seedRow(h, CORE_3, BILLING, SliceObservedState.ACTIVE, G1, 0L);
             h.activate();
             h.advanceBySeconds(300);
             assertThat(removedObserved(h)).as("nothing is removed while nobody departed").isEmpty();
@@ -297,6 +303,7 @@ class SlObservedTest {
             assertThat(removedObserved(h)).containsExactly(new SliceObservedKey(CORE_2, ORDERS));
             assertThat(exact.isPresent()).as("removed at the exact value").isFalse();
             assertThat(h.store.get(new SliceObservedKey(CORE_1, BILLING)).isPresent()).as("the live node's tombstone is the node's to remove").isTrue();
+            assertThat(h.store.get(new SliceObservedKey(CORE_3, BILLING)).isPresent()).as("a re-admitted node (ADMITTED record) keeps its rows").isTrue();
         }
 
         private List<Object> removedObserved(FsmHarness h) {

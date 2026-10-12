@@ -189,23 +189,27 @@ class SlBlueprintTest {
             assertThat(h.submits(ClusterModel.SubmitKind.COMMUNITY)).isEmpty();
         }
 
-        /// NT-42. Red when: a refused community transaction is not re-evaluated (the community stays FORMING).
+        /// NT-42. Red when: a refused community transaction is not re-evaluated at once (no new COMMUNITY transaction follows the
+        /// refusal, and the community does not become ACTIVE).
         @Test
         void refusedTransaction_isReevaluated() {
             var h = formingCommunityOfThree();
 
             h.policy = FsmHarness.SettlePolicy.HOLD;
             h.activate();
-            var held = List.copyOf(h.held.values());
+            var first = h.submits(ClusterModel.SubmitKind.COMMUNITY).getFirst();
 
-            assertThat(held).anyMatch(submit -> submit.kind() == ClusterModel.SubmitKind.COMMUNITY);
-            h.policy = FsmHarness.SettlePolicy.APPLY;
             h.seed(new GovernorAnnouncementKey("c"), roster(W1, false, W1, W2, W3).withMembers(List.of(W1, W2, W3), "10.0.0.2:9000", org.pragmatica.aether.slice.generation.Epoch.ZERO));
             h.drain();
-            for (var submit : held) {
-                h.settleHeld(submit, h.applyTransaction(submit));
-            }
-            h.advance(31_000L);
+            var second = h.submits(ClusterModel.SubmitKind.COMMUNITY).getLast();
+            var before = h.submits(ClusterModel.SubmitKind.COMMUNITY).size();
+
+            h.held.remove(first.correlationId());
+            h.settleHeld(first, h.applyTransaction(first));
+            assertThat(h.submits(ClusterModel.SubmitKind.COMMUNITY)).as("the refusal is re-evaluated").hasSize(before + 1);
+
+            h.held.remove(second.correlationId());
+            h.settleHeld(second, h.applyTransaction(second));
 
             assertThat(h.store.get(new CommunityKey("c")).map(v -> ((CommunityValue) v).state())).isEqualTo(Option.some(CommunityState.ACTIVE));
         }
