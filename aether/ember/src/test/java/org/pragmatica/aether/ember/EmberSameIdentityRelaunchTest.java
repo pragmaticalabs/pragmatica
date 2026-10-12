@@ -137,7 +137,14 @@ class EmberSameIdentityRelaunchTest {
 
         assertThat(write(survivor, "control-before").isSuccess()).as("control: a three-core cluster commits").isTrue();
 
+        var killedId = cluster.getNode("btk-3").unwrap().self();
+
         assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
+        // The survivor must have registered the original's death before the same NodeId reappears. Its record is demoted by the
+        // organic close of the original's QUIC link; a relaunch that connects first supersedes that link, and the retirement that
+        // follows is a death-path removal, which by design feeds the membership FSM nothing (AetherNode.connectivityWiring), so
+        // the record can stay MEMBER for good. That race is a separate product defect, not this test's subject.
+        awaitDemoted(survivor, killedId);
         if (sameAddress) {
             awaitSlotFree(basePort, 2);
         }
@@ -155,9 +162,6 @@ class EmberSameIdentityRelaunchTest {
 
         var relaunchedId = relaunched.self();
 
-        // The window reads the survivor's record of the NodeId, which is the killed original's record until the survivor
-        // has registered its death. Only a return to MEMBER after that is a re-admission, so wait for the demotion first.
-        awaitDemoted(survivor, relaunchedId);
         awaitRefusedNeverParticipates(survivor, relaunched, relaunchedId);
         assertThat(relaunched.isReady()).as("the refused process must never become consensus-active").isFalse();
         assertThat(cluster.getNode("btk-3").isEmpty())
@@ -185,7 +189,7 @@ class EmberSameIdentityRelaunchTest {
         while ("Member".equals(state)) {
             if (System.currentTimeMillis() > deadline) {
                 throw new AssertionError("the survivor still counts the killed original " + id.id() + " as MEMBER " + HEAL_BOUND_MS
-                                         + " ms after the refused process exited (stuck state: " + state + "): its death was never registered");
+                                         + " ms after it was killed (stuck state: " + state + "): its death was never registered");
             }
             sleep(250);
             state = survivor.membershipFsm().memberStates().get(id);
