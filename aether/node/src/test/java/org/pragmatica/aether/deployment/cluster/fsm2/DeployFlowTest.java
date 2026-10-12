@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 
 import org.junit.jupiter.api.Test;
 
@@ -38,7 +39,7 @@ class DeployFlowTest {
     }
 
     /// What `BlueprintService` writes in the publish batch (spec Q8).
-    private void publish(FsmHarness h, org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue value) {
+    private void publish(FsmHarness h, AppBlueprintValue value) {
         var id = value.blueprint().id();
 
         h.seed(new DeploymentOutcomeKey(id), DeploymentOutcomeValue.inProgress(h.wallMs, 1L, ATTEMPT));

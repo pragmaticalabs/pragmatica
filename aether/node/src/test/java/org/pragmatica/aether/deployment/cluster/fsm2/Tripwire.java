@@ -10,6 +10,8 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import java.util.ArrayList;
+import java.util.function.Predicate;
 
 
 /// A source scan for the architecture tripwires (NT-116): which main sources construct or mention a name.
@@ -42,7 +44,7 @@ final class Tripwire {
         return scan(root, type, line -> line.contains(type));
     }
 
-    private static List<String> scan(Path root, String type, java.util.function.Predicate<String> match) throws IOException {
+    private static List<String> scan(Path root, String type, Predicate<String> match) throws IOException {
         try (Stream<Path> files = Files.walk(root)) {
             var sources = files.filter(path -> path.toString()
                                                    .endsWith(".java"))
@@ -56,7 +58,7 @@ final class Tripwire {
                                                     .toString()
                                                     .equals("MembershipDecision.java"))
                                .toList();
-            var hits = new java.util.ArrayList<String>();
+            var hits = new ArrayList<String>();
 
             for (var source : sources) {
                 for (var line : Files.readAllLines(source)) {

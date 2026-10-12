@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -50,7 +52,7 @@ final class NodeSim {
                                             Option.none(),
                                             false,
                                             1,
-                                            java.util.List.of("handle"),
+                                            List.of("handle"),
                                             harness.wallMs));
 
         return this;
@@ -72,7 +74,7 @@ final class NodeSim {
                                             Option.some("boom"),
                                             fatal,
                                             1,
-                                            java.util.List.of(),
+                                            List.of(),
                                             harness.wallMs));
 
         return this;

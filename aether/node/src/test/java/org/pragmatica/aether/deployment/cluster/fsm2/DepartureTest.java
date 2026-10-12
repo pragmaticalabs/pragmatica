@@ -5,6 +5,8 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
+import java.nio.file.Files;
+import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -21,6 +23,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -77,8 +81,8 @@ class DepartureTest {
 
         assertThat(mutations.getFirst().key()).isEqualTo(new NodeDepartureKey(CORE_2));
         assertThat(mutations.getFirst().expected().isEmpty()).as("expects the observed record: absent").isTrue();
-        assertThat(mutations.getFirst().replacement().map(v -> ((NodeDepartureValue) v).state())).isEqualTo(org.pragmatica.lang.Option.some(DepartureState.DEPARTED));
-        assertThat(mutations.getFirst().replacement().map(v -> ((NodeDepartureValue) v).cause())).isEqualTo(org.pragmatica.lang.Option.some(org.pragmatica.lang.Option.some(DepartureCause.SELF_SHUTDOWN)));
+        assertThat(mutations.getFirst().replacement().map(v -> ((NodeDepartureValue) v).state())).isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(mutations.getFirst().replacement().map(v -> ((NodeDepartureValue) v).cause())).isEqualTo(Option.some(Option.some(DepartureCause.SELF_SHUTDOWN)));
         assertThat(mutations).extracting(m -> m.key())
                   .contains(new SliceDesiredKey(CORE_2, ORDERS),
                             new NodeRoutesKey(CORE_2, ORDERS));
@@ -98,7 +102,7 @@ class DepartureTest {
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         var put = w.h.submits(SubmitKind.DEPARTURE).getFirst().transaction().mutations().getFirst();
 
-        assertThat(put.expected().map(v -> ((NodeDepartureValue) v).state())).isEqualTo(org.pragmatica.lang.Option.some(DepartureState.ADMITTED));
+        assertThat(put.expected().map(v -> ((NodeDepartureValue) v).state())).isEqualTo(Option.some(DepartureState.ADMITTED));
     }
 
     // NT-79
@@ -110,10 +114,7 @@ class DepartureTest {
         var worker = node("worker-1");
 
         w.admit(worker, 3L, 0x4444L);
-        w.community("c1", 5, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
-         .directive(worker,
-                    Fixtures.worker("c1"))
-         .activate();
+        w.community("c1", 5, CommunityState.ACTIVE).directive(worker, Fixtures.worker("c1")).activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
         var submits = w.h.submits();
@@ -122,9 +123,9 @@ class DepartureTest {
         assertThat(submits.getFirst().transaction().mutations()).hasSize(1);
         assertThat(submits.getFirst().kind()).isEqualTo(SubmitKind.DEPARTURE);
         assertThat(w.present(new ActivationDirectiveKey(worker))).isTrue();
-        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).isEqualTo(org.pragmatica.lang.Option.some(DepartureState.DEPARTED));
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.DEPARTED));
         assertThat(w.recordOf(worker).map(NodeDepartureValue::epoch)).as("names the admission epoch that departed")
-                  .isEqualTo(org.pragmatica.lang.Option.some(3L));
+                  .isEqualTo(Option.some(3L));
     }
 
     // NT-92 (a, b)
@@ -150,7 +151,7 @@ class DepartureTest {
 
         assertThat(verdict).as("the applier refuses a removal at a value that moved")
                   .isInstanceOf(Settlement.Refused.class);
-        assertThat(w.stored(new SliceObservedKey(CORE_2, ORDERS)).map(v -> ((SliceObservedValue) v).state())).isEqualTo(org.pragmatica.lang.Option.some(SliceObservedState.DEACTIVATING));
+        assertThat(w.stored(new SliceObservedKey(CORE_2, ORDERS)).map(v -> ((SliceObservedValue) v).state())).isEqualTo(Option.some(SliceObservedState.DEACTIVATING));
         w.h.settleHeld(cleanup.getFirst(), verdict);
         var stale = cleanup.getFirst()
                            .transaction()
@@ -185,8 +186,8 @@ class DepartureTest {
         assertThat(w.h.submits(SubmitKind.CLEANUP)).isEmpty();
         assertThat(w.counts(CORE_2)).as("an ignored DEPARTED leaves the node counted").isTrue();
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("replaced by ADMITTED(current)")
-                  .isEqualTo(org.pragmatica.lang.Option.some(DepartureState.ADMITTED));
-        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::epoch)).isEqualTo(org.pragmatica.lang.Option.some(2L));
+                  .isEqualTo(Option.some(DepartureState.ADMITTED));
+        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::epoch)).isEqualTo(Option.some(2L));
         assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).isTrue();
     }
 
@@ -201,12 +202,8 @@ class DepartureTest {
         w.h.applyHeld(w.h.submits(SubmitKind.DEPARTURE).getFirst().correlationId());
         w.h.drain();
         var cleanup = w.h.submits(SubmitKind.CLEANUP).getFirst();
-        var departed = w.recordOf(CORE_2).orElse(() -> org.pragmatica.lang.Option.none()).or((NodeDepartureValue) null);
-        var admitted = new NodeDepartureValue(DepartureState.ADMITTED,
-                                              2L,
-                                              process(TOKEN_2),
-                                              org.pragmatica.lang.Option.none(),
-                                              w.h.wallMs);
+        var departed = w.recordOf(CORE_2).orElse(() -> Option.none()).or((NodeDepartureValue) null);
+        var admitted = new NodeDepartureValue(DepartureState.ADMITTED, 2L, process(TOKEN_2), Option.none(), w.h.wallMs);
 
         w.admit(CORE_2, 2L, TOKEN_2);
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 2L)));
@@ -241,7 +238,7 @@ class DepartureTest {
 
         new NodeSim(w.h, CORE_2, process(TOKEN_2)).writes(ORDERS, SliceObservedState.DEACTIVATING, gen(1));
         w.h.applyHeld(cleanup.correlationId());
-        assertThat(w.stored(new SliceObservedKey(CORE_2, ORDERS)).map(v -> ((SliceObservedValue) v).state())).isEqualTo(org.pragmatica.lang.Option.some(SliceObservedState.DEACTIVATING));
+        assertThat(w.stored(new SliceObservedKey(CORE_2, ORDERS)).map(v -> ((SliceObservedValue) v).state())).isEqualTo(Option.some(SliceObservedState.DEACTIVATING));
     }
 
     // NT-111
@@ -272,10 +269,10 @@ class DepartureTest {
         w.target(ORDERS, 1, "CORE_ONLY");
         w.h.seedQuietly(new SliceDesiredKey(CORE_2, ORDERS), desired(SliceGoal.LOADED, gen(1)));
         w.directive(CORE_2, ActivationDirectiveValue.core());
-        w.seams(s -> s.withCoreView(org.pragmatica.lang.Option.some(java.util.Set.of(CORE_1))));
+        w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1))));
         w.activate();
         w.h.advance(ms(bounds().coreRemoval()) + 31_000L);
-        assertThat(w.recordOf(CORE_2).flatMap(NodeDepartureValue::cause)).isEqualTo(org.pragmatica.lang.Option.some(DepartureCause.STALE));
+        assertThat(w.recordOf(CORE_2).flatMap(NodeDepartureValue::cause)).isEqualTo(Option.some(DepartureCause.STALE));
         assertThat(w.present(new SliceDesiredKey(CORE_2, ORDERS))).isFalse();
     }
 
@@ -363,10 +360,10 @@ class DepartureTest {
     // Red when: the scan cannot see a construction (it would report an all-clear on any tree).
     @Test
     void nodeDecommissionedTripwire_seesAConstruction_inAPlantedFile() throws Exception {
-        var dir = java.nio.file.Files.createTempDirectory("tripwire");
+        var dir = Files.createTempDirectory("tripwire");
 
-        java.nio.file.Files.writeString(dir.resolve("Planted.java"),
-                                        "class Planted { Object x = new MembershipDecision.NodeDecommissioned(null, null, 0, 0); }");
+        Files.writeString(dir.resolve("Planted.java"),
+                          "class Planted { Object x = new MembershipDecision.NodeDecommissioned(null, null, 0, 0); }");
         assertThat(Tripwire.constructions(dir, "NodeDecommissioned")).hasSize(1);
     }
 
@@ -385,7 +382,7 @@ class DepartureTest {
          .activate();
         assertThat(w.counts(CORE_2)).as("departed: not counted").isFalse();
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, TOKEN_2)));
-        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(org.pragmatica.lang.Option.some(DepartureState.ADMITTED));
+        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.counts(CORE_2)).isTrue();
     }
 

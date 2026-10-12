@@ -6,6 +6,8 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.Map;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterEffect.Warn;
@@ -21,6 +23,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -116,11 +119,11 @@ class SlPlacementTest {
             seedJudgment(h,
                          ORDERS,
                          new ArtifactJudgmentValue(false,
-                                                   java.util.Map.of(),
-                                                   java.util.Map.of(CORE_1,
-                                                                    new UnresponsiveEntry(G1,
-                                                                                          SliceGoal.ACTIVE,
-                                                                                          FsmHarness.START_WALL))));
+                                                   Map.of(),
+                                                   Map.of(CORE_1,
+                                                          new UnresponsiveEntry(G1,
+                                                                                SliceGoal.ACTIVE,
+                                                                                FsmHarness.START_WALL))));
             stalePrefersFirst(h);
             assertThat(hosts(h, ORDERS)).containsExactly(CORE_2);
         }
@@ -196,7 +199,7 @@ class SlPlacementTest {
             seedTarget(h, ORDERS, 2, 1);
             seedJudgment(h,
                          ORDERS,
-                         new ArtifactJudgmentValue(true, java.util.Map.of(), java.util.Map.of()));
+                         new ArtifactJudgmentValue(true, Map.of(), Map.of()));
             h.activate();
             assertThat(countGoals(h, ORDERS)).isZero();
             assertThat(h.submits()).isEmpty();
@@ -238,11 +241,9 @@ class SlPlacementTest {
             var held = List.copyOf(h.held.values());
 
             assertThat(held).as("one transaction per node").hasSize(2);
-            h.seed(new SliceDesiredKey(CORE_1, ORDERS),
-                   Fixtures.desired(SliceGoal.UNLOADED,
-                                    new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(1L, 99L)));
+            h.seed(new SliceDesiredKey(CORE_1, ORDERS), Fixtures.desired(SliceGoal.UNLOADED, new Generation(1L, 99L)));
             h.policy = FsmHarness.SettlePolicy.APPLY;
-            var verdicts = new java.util.ArrayList<ClusterInput.Settlement>();
+            var verdicts = new ArrayList<ClusterInput.Settlement>();
 
             for (var submit : held) {
                 var verdict = h.applyTransaction(submit);
@@ -258,7 +259,7 @@ class SlPlacementTest {
             assertThat(goalOf(h, CORE_2, ORDERS)).as("core-2's goals committed")
                       .isEqualTo(Option.some(SliceGoal.LOADED));
             assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(SliceDesiredValue::generation).or(G1)).as("core-1 was re-derived above the foreign generation")
-                      .isGreaterThan(new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(1L, 99L));
+                      .isGreaterThan(new Generation(1L, 99L));
         }
     }
 
@@ -400,20 +401,14 @@ class SlPlacementTest {
         void tombstone_doesNotBlockPlacement() {
             var h = threeCores();
 
-            seedRow(h,
-                    CORE_1,
-                    ORDERS,
-                    SliceObservedState.UNLOADED,
-                    new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(1L, 5L),
-                    0L);
+            seedRow(h, CORE_1, ORDERS, SliceObservedState.UNLOADED, new Generation(1L, 5L), 0L);
             seedTarget(h, ORDERS, 1, 1);
             h.activate();
             assertThat(hosts(h, ORDERS)).as("core-1 has the smallest id and is vacant").containsExactly(CORE_1);
             assertThat(h.model()
                         .desired(SlicePair.slicePair(CORE_1, ORDERS))
                         .map(SliceDesiredValue::generation)
-                        .or(new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(0L, 0L))).isGreaterThan(new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(1L,
-                                                                                                                                                                                  5L));
+                        .or(new Generation(0L, 0L))).isGreaterThan(new Generation(1L, 5L));
             assertThat(h.store.get(new SliceObservedKey(CORE_1, ORDERS)).isPresent()).as("the tombstone was not removed by the leader")
                       .isTrue();
         }

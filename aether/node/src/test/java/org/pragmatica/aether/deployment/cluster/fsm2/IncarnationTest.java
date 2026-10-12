@@ -22,6 +22,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 
 import org.junit.jupiter.api.Test;
 
@@ -50,13 +53,9 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(W1, 1L, P1);
-        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
-         .directive(W1,
-                    Fixtures.worker(C))
-         .target(ORDERS, 1, "WORKERS_ONLY");
+        w.community(C, 10, CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1);
-        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C),
-                        roster(GOV, false, W1));
+        w.h.seedQuietly(new GovernorAnnouncementKey(C), roster(GOV, false, W1));
         w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1)))
                       .withReady(Set.of(CORE_1, W1, W2))
                       .withLocalAlive(Option.some(Set.of(W1))));
@@ -84,7 +83,7 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(W1, 1L, P1);
-        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
+        w.community(C, 10, CommunityState.ACTIVE)
          .directive(W1,
                     Fixtures.worker(C))
          .record(W1, DepartureState.DEPARTED, 1L, P1, DepartureCause.WORKER_LEAVE)
@@ -104,9 +103,7 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, P1);
-        w.directive(CORE_2,
-                    org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue.core())
-         .target(ORDERS, 1, "CORE_ONLY");
+        w.directive(CORE_2, ActivationDirectiveValue.core()).target(ORDERS, 1, "CORE_ONLY");
         w.h.seedQuietly(new SliceObservedKey(CORE_2, ORDERS), row(SliceObservedState.ACTIVE, 1L, gen(7), process(P1)));
         w.activate();
         w.tokens.admit(CORE_2, P2);
@@ -129,10 +126,7 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(W1, 1L, 0L);
-        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
-         .directive(W1,
-                    Fixtures.worker(C))
-         .target(ORDERS, 1, "WORKERS_ONLY");
+        w.community(C, 10, CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1).activate();
         w.h.advance(100_000L);
         assertThat(w.tokens.tokenOf(W1)).as("the real registry knows nothing").isZero();
@@ -150,10 +144,7 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(W1, 1L, P1);
-        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
-         .directive(W1,
-                    Fixtures.worker(C))
-         .target(ORDERS, 1, "WORKERS_ONLY");
+        w.community(C, 10, CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1);
         w.activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
@@ -204,8 +195,7 @@ class IncarnationTest {
 
         w.h.seedQuietly(new DeploymentOutcomeKey(blueprintId("org.example:app:1.0.0")),
                         DeploymentOutcomeValue.succeeded(FsmHarness.START_WALL, 1L, "a1"));
-        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C),
-                        roster(GOV, false, W1, W2, W3));
+        w.h.seedQuietly(new GovernorAnnouncementKey(C), roster(GOV, false, W1, W2, W3));
         if (seamPresent) {
             for (var node : List.of(W1, W2, W3, CORE_1, CORE_2)) {
                 w.admit(node, 1L, 0L);

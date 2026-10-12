@@ -4,11 +4,18 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Set;
+
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaMigrationLockKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -20,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Rebuild-time schema recovery (C1, B-042): a PENDING record whose Put landed before the FSM was Active is dispatched again,
 /// and a MIGRATING record whose lock is absent or expired is reset to PENDING, which re-fires the live arm.
 class GapSchemaTest {
-    private static final org.pragmatica.aether.slice.blueprint.BlueprintId OWNER = blueprintId("org.example:app:1.0.0");
+    private static final BlueprintId OWNER = blueprintId("org.example:app:1.0.0");
 
     private static SchemaVersionValue schema(String datasource, SchemaStatus status) {
         return new SchemaVersionValue(datasource, 1, "m1", status, "g:a:1", OWNER, 2, FsmHarness.START_WALL);
@@ -51,8 +58,8 @@ class GapSchemaTest {
         assertThat(resets).hasSize(1);
         var mutation = resets.getFirst().transaction().mutations().getFirst();
 
-        assertThat(mutation.expected().map(value -> ((SchemaVersionValue) value).status())).isEqualTo(org.pragmatica.lang.Option.some(SchemaStatus.MIGRATING));
-        assertThat(mutation.replacement().map(value -> ((SchemaVersionValue) value).status())).isEqualTo(org.pragmatica.lang.Option.some(SchemaStatus.PENDING));
+        assertThat(mutation.expected().map(value -> ((SchemaVersionValue) value).status())).isEqualTo(Option.some(SchemaStatus.MIGRATING));
+        assertThat(mutation.replacement().map(value -> ((SchemaVersionValue) value).status())).isEqualTo(Option.some(SchemaStatus.PENDING));
         assertThat(h.effects(ClusterEffect.DispatchMigration.class)).as("the reset Put is the PENDING arm")
                   .extracting(ClusterEffect.DispatchMigration::datasource)
                   .containsExactly("ds");
@@ -105,10 +112,9 @@ class GapSchemaTest {
         var owner = blueprintId("org.example:app:1.0.0");
 
         h.seedQuietly(new SchemaVersionKey("ds"), schema("ds", SchemaStatus.PENDING));
-        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey(ORDERS.base()),
-                      ownedTarget(ORDERS, 1, 1, owner));
-        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey(owner),
-                      blueprint("org.example:app:1.0.0", false, ATTEMPT, slice(ORDERS, 1, 1, java.util.Set.of())));
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), ownedTarget(ORDERS, 1, 1, owner));
+        h.seedQuietly(new AppBlueprintKey(owner),
+                      blueprint("org.example:app:1.0.0", false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())));
         h.activate();
         node(h, CORE_1, 11L).follows(ORDERS);
         h.drain();
@@ -120,6 +126,6 @@ class GapSchemaTest {
         h.seed(new SchemaVersionKey("ds"), schema("ds", SchemaStatus.COMPLETED));
         h.drain();
         assertThat(h.warns("schema-hold-cleared")).hasSize(1);
-        assertThat(goalOf(h, CORE_1, ORDERS)).isEqualTo(org.pragmatica.lang.Option.some(org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal.ACTIVE));
+        assertThat(goalOf(h, CORE_1, ORDERS)).isEqualTo(Option.some(SliceGoal.ACTIVE));
     }
 }

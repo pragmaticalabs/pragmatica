@@ -8,6 +8,7 @@ import java.util.Set;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -93,7 +94,7 @@ class GapEngineTest {
         assertThat(h.model().targets.containsKey(ORDERS.base())).isTrue();
         h.commitLeader(FsmHarness.SELF, 2L);
         h.drain();
-        assertThat(h.model().leader()).isEqualTo(org.pragmatica.lang.Option.some(new LeaderValue(FsmHarness.SELF, 2L)));
+        assertThat(h.model().leader()).isEqualTo(Option.some(new LeaderValue(FsmHarness.SELF, 2L)));
         assertThat(h.submits()).as("resumed: the reconcile placed the instance").isNotEmpty();
     }
 

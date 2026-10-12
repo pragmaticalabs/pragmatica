@@ -34,6 +34,10 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.aether.environment.SourceName;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.Test;
 
@@ -92,8 +96,8 @@ class CommunityBackstopTest {
     private static CommunityPlacementReconciler placement(MbWorld w, Set<NodeId> admitted) {
         var actuator = new CommunityPlacementReconciler.Actuator() {
             @Override
-            public org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source) {
-                return org.pragmatica.lang.Result.success("binding");
+            public Result<String> sourceBinding(SourceName source) {
+                return Result.success("binding");
             }
 
             @Override
@@ -132,8 +136,7 @@ class CommunityBackstopTest {
                                                                          actuator,
                                                                          _ -> {},
                                                                          (_, _) -> {},
-                                                                         org.pragmatica.lang.io.TimeSpan.timeSpan(60_000)
-                                                                                                        .millis());
+                                                                         TimeSpan.timeSpan(60_000).millis());
     }
 
     private static void seedConfig(MbWorld w, int target, long version) {
@@ -217,8 +220,7 @@ class CommunityBackstopTest {
         w.admit(CORE_1, 1L, 0x1111L);
         w.workers(C, 10, Set.of(M1, M2, M3, M4), w9, M1, M2, M3, M4).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(w9, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w9));
-        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C),
-                        roster(GOV, false, M1, M2, M3, M4));
+        w.h.seedQuietly(new GovernorAnnouncementKey(C), roster(GOV, false, M1, M2, M3, M4));
         w.activate();
         for (var i = 0L; i < BW / 30_000L; i++) {
             w.h.advance(30_000L);
@@ -401,8 +403,7 @@ class CommunityBackstopTest {
         w.workers(C, 10, Set.of(M1, M2), wx, M1, M2).target(ORDERS, 1, "WORKERS_ONLY");
         w.h.seedQuietly(new SliceObservedKey(wx, ORDERS),
                         row(SliceObservedState.ACTIVE, 1L, gen(1), process(tokenOf(wx))));
-        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C),
-                        roster(GOV, false, M1, M2));
+        w.h.seedQuietly(new GovernorAnnouncementKey(C), roster(GOV, false, M1, M2));
         w.activate();
         w.announce(C, GOV, M1, M2);
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(M1, M2))));

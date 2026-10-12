@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
+import org.pragmatica.consensus.NodeId;
 
 import org.junit.jupiter.api.Test;
 
@@ -85,7 +86,7 @@ class GapDrainTest {
         assertThat(h.model().drainLoops.contains(CORE_1)).isFalse();
     }
 
-    private static NodeSim node(FsmHarness h, org.pragmatica.consensus.NodeId node, long token) {
+    private static NodeSim node(FsmHarness h, NodeId node, long token) {
         return new NodeSim(h, node, process(token));
     }
 }

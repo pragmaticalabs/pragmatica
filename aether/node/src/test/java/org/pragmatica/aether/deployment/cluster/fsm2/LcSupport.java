@@ -13,6 +13,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+import org.pragmatica.consensus.NodeId;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 
@@ -67,9 +70,7 @@ final class LcSupport {
     }
 
     /// A leader harness for \`atomicity\`, \`cores\` cores ready, jitter fixed at \`jitter\`.
-    static FsmHarness leader(org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity atomicity,
-                             double jitter,
-                             org.pragmatica.consensus.NodeId... cores) {
+    static FsmHarness leader(DeploymentAtomicity atomicity, double jitter, NodeId... cores) {
         var settings = Settings.settings(FsmHarness.SELF,
                                          atomicity,
                                          Set.of(),
@@ -83,11 +84,11 @@ final class LcSupport {
         return h;
     }
 
-    static NodeSim node(FsmHarness h, org.pragmatica.consensus.NodeId node, long token) {
+    static NodeSim node(FsmHarness h, NodeId node, long token) {
         return new NodeSim(h, node, Fixtures.process(token));
     }
 
-    static SlicePair pair(org.pragmatica.consensus.NodeId node, org.pragmatica.aether.artifact.Artifact artifact) {
+    static SlicePair pair(NodeId node, Artifact artifact) {
         return SlicePair.slicePair(node, artifact);
     }
 }

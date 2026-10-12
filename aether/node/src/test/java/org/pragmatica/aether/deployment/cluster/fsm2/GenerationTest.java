@@ -16,6 +16,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
@@ -29,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// NT-114: generations only grow (R-1.6.1): across GC and leader changes, adoption keeps the row's own, and the wire carries a
 /// `viewSequence` beyond 32 bits.
 class GenerationTest {
-    private static Generation generationOf(FsmHarness h, org.pragmatica.consensus.NodeId node) {
+    private static Generation generationOf(FsmHarness h, NodeId node) {
         return h.model()
                 .desired(pair(node, ORDERS))
                 .map(SliceDesiredValue::generation)
@@ -57,7 +60,7 @@ class GenerationTest {
         h.drain();
         n1.follows(ORDERS);
         h.drain();
-        h.seedRemove(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_1, ORDERS));
+        h.seedRemove(new SliceObservedKey(CORE_1, ORDERS));
         h.drain();
         h.advance(60_000L);
         assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).as("garbage collected").isFalse();
@@ -79,8 +82,7 @@ class GenerationTest {
         var h = leader();
 
         h.seedQuietly(new SliceDesiredKey(CORE_3, BILLING), desired(SliceGoal.ACTIVE, gen(50)));
-        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_3, BILLING),
-                      row(SliceObservedState.ACTIVE, 1L, gen(50), process(13)));
+        h.seedQuietly(new SliceObservedKey(CORE_3, BILLING), row(SliceObservedState.ACTIVE, 1L, gen(50), process(13)));
         h.activate();
         h.seed(new SliceTargetKey(ORDERS.base()),
                SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
@@ -96,11 +98,10 @@ class GenerationTest {
 
         h.seedQuietly(new SliceTargetKey(ORDERS.base()),
                       SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
-        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_2, ORDERS),
-                      row(SliceObservedState.ACTIVE, 1L, gen(33), process(12)));
+        h.seedQuietly(new SliceObservedKey(CORE_2, ORDERS), row(SliceObservedState.ACTIVE, 1L, gen(33), process(12)));
         h.activate();
-        assertThat(h.model().desired(pair(CORE_2, ORDERS)).map(d -> d.generation())).isEqualTo(org.pragmatica.lang.Option.some(gen(33)));
-        assertThat(h.model().desired(pair(CORE_2, ORDERS)).map(d -> d.goal())).isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
+        assertThat(h.model().desired(pair(CORE_2, ORDERS)).map(d -> d.generation())).isEqualTo(Option.some(gen(33)));
+        assertThat(h.model().desired(pair(CORE_2, ORDERS)).map(d -> d.goal())).isEqualTo(Option.some(SliceGoal.ACTIVE));
     }
 
     // NT-114

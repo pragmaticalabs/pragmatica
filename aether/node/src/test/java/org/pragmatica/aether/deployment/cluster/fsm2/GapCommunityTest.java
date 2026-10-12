@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 
 import org.junit.jupiter.api.Test;
 
@@ -139,9 +140,7 @@ class GapCommunityTest {
         var minted = w.h.mutations(CommunityKey.class);
 
         assertThat(minted).as("minted once").hasSize(1);
-        var community = (CommunityValue) minted.getFirst()
-                                               .replacement()
-                                               .or((org.pragmatica.aether.slice.kvstore.AetherValue) null);
+        var community = (CommunityValue) minted.getFirst().replacement().or((AetherValue) null);
 
         assertThat(community.state()).isEqualTo(CommunityState.FORMING);
         assertThat(community.targetSize()).isEqualTo(100);

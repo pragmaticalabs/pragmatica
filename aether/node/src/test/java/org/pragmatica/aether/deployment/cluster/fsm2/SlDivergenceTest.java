@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Map;
+
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -108,7 +110,7 @@ class SlDivergenceTest {
             assertThat(judgmentWrites(h)).as("at 3T: nothing (strictly more than 3T)").isZero();
             at(h, 1);
             assertThat(isRetraction(h)).as("at 3T + 1 ms: goal UNLOADED and the judgment in one transaction").isTrue();
-            assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(java.util.Map.of())).containsKey(CORE_1);
+            assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(Map.of())).containsKey(CORE_1);
             assertThat(h.warns("slice-unresponsive")).hasSize(1);
         }
     }
@@ -150,7 +152,7 @@ class SlDivergenceTest {
             at(h, 3 * T_UNLOAD);
             assertThat(judgmentWrites(h)).isZero();
             at(h, 1);
-            assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(java.util.Map.of())).containsKey(CORE_1);
+            assertThat(h.model().judgment(ORDERS).map(ArtifactJudgmentValue::unresponsive).or(Map.of())).containsKey(CORE_1);
             assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(SliceDesiredValue::generation)).as("no generation bump")
                       .isEqualTo(Option.some(G1));
             assertThat(h.submits()

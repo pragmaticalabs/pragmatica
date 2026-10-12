@@ -40,6 +40,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.consensus.NodeId;
 
 import org.junit.jupiter.api.Test;
 
@@ -52,12 +54,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// right, and the two leader-local clocks start empty (R-2.14c, R-2.15). Then each family's committed removal drops it again.
 class GapRebuildTest {
     private static final NodeIdHolder IDS = new NodeIdHolder();
-
-    private static final org.pragmatica.aether.slice.blueprint.BlueprintId OTHER = blueprintId("org.example:other:1.0.0");
+    private static final BlueprintId OTHER = blueprintId("org.example:other:1.0.0");
 
     private static final class NodeIdHolder {
-        final org.pragmatica.consensus.NodeId worker = node("worker-1");
-        final org.pragmatica.consensus.NodeId gone = node("worker-2");
+        final NodeId worker = node("worker-1");
+        final NodeId gone = node("worker-2");
     }
 
     private FsmHarness everything() {

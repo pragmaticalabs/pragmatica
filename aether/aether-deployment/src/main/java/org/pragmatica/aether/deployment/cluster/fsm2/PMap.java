@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
 
@@ -86,11 +87,7 @@ public final class PMap<K, V> {
             SCANS.incrementAndGet();
         }
 
-        var out = new ArrayList<Map.Entry<K, V>>(size);
-
-        collect(root, out);
-
-        return out;
+        return flatten(root).toList();
     }
 
     public List<K> keys() {
@@ -320,17 +317,15 @@ public final class PMap<K, V> {
         return new Node.Branch(zero, one);
     }
 
+    /// The nodes hold erased keys and values; the owning map is the one place that knows their types.
     @SuppressWarnings("unchecked")
-    private void collect(Node node, List<Map.Entry<K, V>> out) {
-        switch (node) {
-            case Node.Empty _ -> {}
-            case Node.Leaf leaf -> out.add(Map.entry((K) leaf.key(), (V) leaf.value()));
-            case Node.Collision collision -> collision.leaves().forEach(leaf -> out.add(Map.entry((K) leaf.key(),
-                                                                                                  (V) leaf.value())));
-            case Node.Branch branch -> {
-                collect(branch.zero(), out);
-                collect(branch.one(), out);
-            }
-        }
+    private Stream<Map.Entry<K, V>> flatten(Node node) {
+        return switch (node) {
+            case Node.Empty _ -> Stream.empty();
+            case Node.Leaf leaf -> Stream.of(Map.entry((K) leaf.key(), (V) leaf.value()));
+            case Node.Collision collision -> collision.leaves().stream().map(leaf -> Map.entry((K) leaf.key(),
+                                                                                               (V) leaf.value()));
+            case Node.Branch branch -> Stream.concat(flatten(branch.zero()), flatten(branch.one()));
+        };
     }
 }

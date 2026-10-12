@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.generation.Epoch;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -212,9 +213,7 @@ class SlBlueprintTest {
             var first = h.submits(ClusterModel.SubmitKind.COMMUNITY).getFirst();
 
             h.seed(new GovernorAnnouncementKey("c"),
-                   roster(W1, false, W1, W2, W3).withMembers(List.of(W1, W2, W3),
-                                                             "10.0.0.2:9000",
-                                                             org.pragmatica.aether.slice.generation.Epoch.ZERO));
+                   roster(W1, false, W1, W2, W3).withMembers(List.of(W1, W2, W3), "10.0.0.2:9000", Epoch.ZERO));
             h.drain();
             var second = h.submits(ClusterModel.SubmitKind.COMMUNITY).getLast();
             var before = h.submits(ClusterModel.SubmitKind.COMMUNITY).size();

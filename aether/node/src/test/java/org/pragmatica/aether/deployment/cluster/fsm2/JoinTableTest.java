@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 
 import org.junit.jupiter.api.Test;
 
@@ -367,7 +368,7 @@ class JoinTableTest {
         assertThat(late).as("the applier refuses the whole late transaction").isInstanceOf(Settlement.Refused.class);
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.present(new SliceDesiredKey(CORE_2, ORDERS))).isTrue();
-        assertThat(w.present(new org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey(CORE_2, ORDERS))).isTrue();
+        assertThat(w.present(new NodeRoutesKey(CORE_2, ORDERS))).isTrue();
         assertThat(w.h.submits(SubmitKind.CLEANUP)).as("C17b never runs").isEmpty();
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).as("not resubmitted").hasSize(1);
         assertThat(w.counts(CORE_2)).isTrue();

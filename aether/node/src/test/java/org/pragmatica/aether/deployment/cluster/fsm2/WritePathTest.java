@@ -16,6 +16,12 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -26,8 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// NT-17, NT-85, NT-90, NT-115, NT-122: the write path against the REAL applier (R-5.7).
 class WritePathTest {
-    private static SlicePair pair(org.pragmatica.consensus.NodeId node,
-                                  org.pragmatica.aether.artifact.Artifact artifact) {
+    private static SlicePair pair(NodeId node, Artifact artifact) {
         return SlicePair.slicePair(node, artifact);
     }
 
@@ -111,7 +116,7 @@ class WritePathTest {
         var verdict = h.applyTransaction(submit);
 
         assertThat(verdict).isInstanceOf(Settlement.Refused.class);
-        assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS))).isEqualTo(org.pragmatica.lang.Option.some(other));
+        assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS))).isEqualTo(Option.some(other));
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.settleHeld(submit, verdict);
         assertThat(h.submits(SubmitKind.GOALS)
@@ -121,7 +126,7 @@ class WritePathTest {
                                    .mutations()
                                    .stream())
                     .map(m -> m.expected())).as("the moved pair is split out: whatever follows is re-derived from the mirror, never the stale expected value")
-                  .doesNotContain(org.pragmatica.lang.Option.<org.pragmatica.aether.slice.kvstore.AetherValue> none());
+                  .doesNotContain(Option.<AetherValue> none());
     }
 
     // NT-90 / NT-122
@@ -200,7 +205,7 @@ class WritePathTest {
         h.drain();
         var activate = h.submits(SubmitKind.GOALS).getLast();
 
-        assertThat(activate.transaction().mutations().getFirst().replacement().map(v -> ((SliceDesiredValue) v).goal())).isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
+        assertThat(activate.transaction().mutations().getFirst().replacement().map(v -> ((SliceDesiredValue) v).goal())).isEqualTo(Option.some(SliceGoal.ACTIVE));
         node.writes(ORDERS, SliceObservedState.ACTIVATING);
         assertThat(h.applyTransaction(activate)).isInstanceOf(Settlement.Refused.class);
     }
@@ -226,8 +231,7 @@ class WritePathTest {
 
         h.seedQuietly(new SliceTargetKey(ORDERS.base()),
                       SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
-        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_3, ORDERS),
-                      row(SliceObservedState.LOADED, 1L, gen(9), process(13)));
+        h.seedQuietly(new SliceObservedKey(CORE_3, ORDERS), row(SliceObservedState.LOADED, 1L, gen(9), process(13)));
         h.policy = FsmHarness.SettlePolicy.HOLD;
         h.activate();
         var adopt = h.submits(SubmitKind.GOALS).getLast();
@@ -237,7 +241,7 @@ class WritePathTest {
                         .getFirst()
                         .replacement()
                         .map(v -> ((SliceDesiredValue) v).generation())).as("adopted at the row's own generation")
-                  .isEqualTo(org.pragmatica.lang.Option.some(gen(9)));
+                  .isEqualTo(Option.some(gen(9)));
         new NodeSim(h, CORE_3, process(13)).writes(ORDERS, SliceObservedState.ACTIVATING, gen(9));
         assertThat(h.applyTransaction(adopt)).isInstanceOf(Settlement.Refused.class);
     }
@@ -253,10 +257,7 @@ class WritePathTest {
         h.deliver(new ClusterInput.Reconcile());
         var retraction = h.submits(SubmitKind.FAILURE).getLast();
 
-        assertThat(retraction.transaction()
-                             .mutations()
-                             .stream()
-                             .anyMatch(m -> m.key() instanceof org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey)).isTrue();
+        assertThat(retraction.transaction().mutations().stream().anyMatch(m -> m.key() instanceof ArtifactJudgmentKey)).isTrue();
         new NodeSim(h, CORE_1, process(11)).writes(ORDERS, SliceObservedState.LOADING);
         assertThat(h.applyTransaction(retraction)).isInstanceOf(Settlement.Refused.class);
     }

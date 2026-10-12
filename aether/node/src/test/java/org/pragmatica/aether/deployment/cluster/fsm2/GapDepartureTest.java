@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
+import java.util.List;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -20,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
 
+import org.assertj.core.groups.Tuple;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
@@ -93,7 +95,7 @@ class GapDepartureTest {
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         for (var round = 0; round < 8; round++) {
-            var open = java.util.List.copyOf(w.h.held.values());
+            var open = List.copyOf(w.h.held.values());
 
             w.h.held.clear();
             open.forEach(submit -> w.h.settleHeld(submit, w.h.refused(submit)));
@@ -126,8 +128,8 @@ class GapDepartureTest {
                   .isEqualTo(first.transaction()
                                   .mutations()
                                   .stream()
-                                  .map(mutation -> org.assertj.core.groups.Tuple.tuple(mutation.key(),
-                                                                                       mutation.expected()))
+                                  .map(mutation -> Tuple.tuple(mutation.key(),
+                                                               mutation.expected()))
                                   .toList());
         assertThat(w.h.model().isDeparted(CORE_2)).isTrue();
         assertThat(w.h.model().isDeparting(CORE_2)).isFalse();

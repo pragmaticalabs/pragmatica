@@ -22,6 +22,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
+import org.pragmatica.consensus.NodeId;
 
 import org.junit.jupiter.api.Test;
 
@@ -101,9 +104,7 @@ class DurableJudgmentTest {
         h.seedQuietly(new DeploymentOutcomeKey(value.blueprint().id()),
                       DeploymentOutcomeValue.inProgress(h.wallMs, 1L, ATTEMPT));
         h.seedQuietly(new DeploymentApplyKey(value.blueprint().id()),
-                      new org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue(ATTEMPT,
-                                                                                               Option.none(),
-                                                                                               h.wallMs));
+                      new DeploymentApplyValue(ATTEMPT, Option.none(), h.wallMs));
         h.seedQuietly(new AppBlueprintKey(value.blueprint().id()),
                       value);
         h.seedQuietly(new ArtifactJudgmentKey(ORDERS),
@@ -112,8 +113,7 @@ class DurableJudgmentTest {
         h.advance(300_000L);
         assertThat(h.submits(SubmitKind.TARGETS)).as("the missing target IS re-driven").isNotEmpty();
         assertThat(h.store.get(new SliceTargetKey(ORDERS.base())).isPresent()).isTrue();
-        assertThat(h.mutations(org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey.class)).as("but nothing is allocated")
-                  .isEmpty();
+        assertThat(h.mutations(SliceDesiredKey.class)).as("but nothing is allocated").isEmpty();
         assertThat(judgment(h).map(ArtifactJudgmentValue::permanentFailure)).as("and the re-drive keeps the mark")
                   .isEqualTo(Option.some(true));
     }
@@ -127,10 +127,7 @@ class DurableJudgmentTest {
         var id = value.blueprint().id();
 
         h.seedQuietly(new DeploymentOutcomeKey(id), DeploymentOutcomeValue.inProgress(h.wallMs, 1L, ATTEMPT));
-        h.seedQuietly(new DeploymentApplyKey(id),
-                      new org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue(ATTEMPT,
-                                                                                               Option.none(),
-                                                                                               h.wallMs));
+        h.seedQuietly(new DeploymentApplyKey(id), new DeploymentApplyValue(ATTEMPT, Option.none(), h.wallMs));
         h.seedQuietly(new AppBlueprintKey(id), value);
         h.activate();
         var batch = h.submits(SubmitKind.TARGETS);
@@ -272,7 +269,7 @@ class DurableJudgmentTest {
     // Red when: 6 FAILED in one drain produce more than one judgment mutation, a deferred goal, or more than one round.
     @Test
     void sixFailuresInOneDrain_makeOneJudgmentMutation_oneTransaction_noDeferredGoal() {
-        var cores = new org.pragmatica.consensus.NodeId[6];
+        var cores = new NodeId[6];
 
         for (var i = 0; i < 6; i++) {
             cores[i] = node("core-" + (i + 1));
@@ -304,11 +301,7 @@ class DurableJudgmentTest {
                           .stream()
                           .filter(m -> m.key() instanceof ArtifactJudgmentKey)).as("one judgment mutation")
                   .hasSize(1);
-        assertThat(failure.getFirst()
-                          .transaction()
-                          .mutations()
-                          .stream()
-                          .filter(m -> m.key() instanceof org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey)).as("all six goals ride it")
+        assertThat(failure.getFirst().transaction().mutations().stream().filter(m -> m.key() instanceof SliceDesiredKey)).as("all six goals ride it")
                   .hasSize(6);
         assertThat(h.submits(SubmitKind.GOALS)).as("no deferred goal").isEmpty();
         assertThat(judgment(h).map(j -> j.retries()

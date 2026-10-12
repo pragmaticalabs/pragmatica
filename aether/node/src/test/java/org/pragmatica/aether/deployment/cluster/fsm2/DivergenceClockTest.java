@@ -18,6 +18,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
+import org.pragmatica.consensus.NodeId;
 
 import org.junit.jupiter.api.Test;
 
@@ -30,7 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// clocks, all against the real applier and the injected clocks.
 class DivergenceClockTest {
     private static final long T_LOAD_MS = 120_000L;
-    private static final org.pragmatica.consensus.NodeId N1 = CORE_1;
+    private static final NodeId N1 = CORE_1;
 
     private static long reissues(FsmHarness h) {
         return h.metricTotal("aether_deployment_fsm_divergence_total",
@@ -82,8 +84,7 @@ class DivergenceClockTest {
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.advance(60_000L);
         assertThat(h.submits(SubmitKind.SUCCEEDED)).as("lost: the tick submits it again").hasSizeGreaterThan(1);
-        assertThat(h.store.get(new org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey(blueprintId("org.example:app:1.0.0")))
-                          .isPresent()).isFalse();
+        assertThat(h.store.get(new DeploymentApplyKey(blueprintId("org.example:app:1.0.0"))).isPresent()).isFalse();
     }
 
     // NT-24
