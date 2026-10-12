@@ -44,6 +44,10 @@ public sealed interface Strays {
             return m;
         }
 
+        if (adoptable(m, pair, row)) {
+            ctx.metric("aether_deployment_fsm_stray_total", Map.of("fsm", "cluster", "action", "adopt"));
+        }
+
         return adoptable(m, pair, row)
                ? Outbox.goal(m,
                              pair,

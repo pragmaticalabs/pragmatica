@@ -33,6 +33,7 @@ public sealed interface Reconcile {
         Blueprints.sweepAwaited(m, ctx);
         Blueprints.redrive(m, ctx);
         Strays.sweep(m, ctx);
+        Failures.sweep(m, ctx);
         Placement.run(m, ctx);
         Drains.resume(m, ctx);
         Communities.run(m, ctx);

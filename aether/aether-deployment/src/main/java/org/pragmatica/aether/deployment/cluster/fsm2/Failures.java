@@ -23,6 +23,10 @@ public sealed interface Failures {
     long MIN_JITTER_MS = 1L;
 
     static ClusterModel onFailed(ClusterModel m, Ctx ctx, SlicePair pair, SliceObservedValue row) {
+        if (m.effectiveGoal(pair).map(goal -> goal == SliceGoal.UNLOADED).or(false)) {
+            return m;
+        }
+
         var reason = row.failureReason().or(UNKNOWN_REASON);
 
         Outbox.artifactGoal(m, pair, SliceGoal.UNLOADED);
@@ -31,6 +35,18 @@ public sealed interface Failures {
         return row.fatal()
                ? settle(m, ctx, pair, reason)
                : transientFailure(m, ctx, pair, reason);
+    }
+
+    /// Level-triggered safety net (step 2c): a FAILED row at the current generation whose failure handling was lost (a
+    /// refused or failed transaction) is handled again. The failure counts only once it is durable.
+    static ClusterModel sweep(ClusterModel m, Ctx ctx) {
+        m.failedPairs.toList()
+                     .stream()
+                     .sorted(Rows.PAIR_ORDER)
+                     .forEach(pair -> m.observed.get(pair)
+                                                .onPresent(row -> onFailed(m, ctx, pair, row)));
+
+        return m;
     }
 
     /// R-3.3.6: the terminal both failure branches converge on.

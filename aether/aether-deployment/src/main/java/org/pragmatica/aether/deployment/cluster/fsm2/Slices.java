@@ -25,6 +25,10 @@ public sealed interface Slices {
     // -- C10: ObservedPut ------------------------------------------------------------------------------------------
     static ClusterModel onObservedPut(ClusterModel m, Ctx ctx, SlicePair pair, SliceObservedValue row) {
         Indexer.indexObserved(m, ctx, pair, row);
+        if (m.departed.contains(pair.node()) || m.departing.containsKey(pair.node())) {
+            return m;
+        }
+
         if (Rows.isStale(m, pair, row)) {
             ctx.metric("aether_deployment_fsm_stale_rows_total", Map.of("fsm", "cluster", "side", "leader"));
 

@@ -90,6 +90,7 @@ public final class ClusterModel {
     PMap<Artifact, PSet<NodeId>> observedByArtifact = PMap.empty();
     PSet<SlicePair> stray = PSet.empty();
     PSet<SlicePair> divergent = PSet.empty();
+    PSet<SlicePair> failedPairs = PSet.empty();
     PSet<SlicePair> unloadedDesired = PSet.empty();
     PMap<SlicePair, GoalIntent> goalIntents = PMap.empty();
     PMap<Artifact, ArtifactIntent> artifactIntents = PMap.empty();
@@ -169,6 +170,7 @@ public final class ClusterModel {
         c.observedByArtifact = observedByArtifact;
         c.stray = stray;
         c.divergent = divergent;
+        c.failedPairs = failedPairs;
         c.unloadedDesired = unloadedDesired;
         c.goalIntents = goalIntents;
         c.artifactIntents = artifactIntents;

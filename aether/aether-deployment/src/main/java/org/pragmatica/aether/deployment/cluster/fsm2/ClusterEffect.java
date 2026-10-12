@@ -55,6 +55,13 @@ public sealed interface ClusterEffect {
         }
     }
 
+    /// A gauge: `name{tags}` is `value` now (`unknown_process_nodes`, `absent_nodes`).
+    record Gauge(String name, Map<String, String> tags, long value) implements ClusterEffect {
+        public Gauge {
+            tags = Map.copyOf(tags);
+        }
+    }
+
     /// Ask the schema orchestrator to (re-)dispatch the migration of `datasource` (`migrateIfNeeded`, C12).
     record DispatchMigration(String datasource) implements ClusterEffect {}
 }

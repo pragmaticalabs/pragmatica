@@ -319,11 +319,22 @@ public sealed interface Indexer {
         m.unloadedDesired = goal.map(value -> value.goal() == SliceGoal.UNLOADED).or(false)
                             ? m.unloadedDesired.add(pair)
                             : m.unloadedDesired.remove(pair);
+        m.failedPairs = goal.flatMap(value -> current.filter(row -> awaitsFailureHandling(value, row))).isPresent()
+                        ? m.failedPairs.add(pair)
+                        : m.failedPairs.remove(pair);
         m.divergent = goal.map(value -> !Rows.isSettled(value, current)).or(false)
                       ? m.divergent.add(pair)
                       : m.divergent.remove(pair);
 
         return m;
+    }
+
+    /// A FAILED row at the goal's current generation under a goal other than UNLOADED: the failure handling (C10c) owns it.
+    private static boolean awaitsFailureHandling(SliceDesiredValue goal, SliceObservedValue row) {
+        return row.state() == SliceObservedState.FAILED
+               && goal.goal() != SliceGoal.UNLOADED
+               && row.forGeneration()
+                     .equals(goal.generation());
     }
 
     /// Re-classify every row of `node` (R-3.3.1): O(rows of node).
