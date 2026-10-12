@@ -12,6 +12,7 @@ import java.net.ServerSocket;
 import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
@@ -65,6 +66,7 @@ class EmberSameIdentityRelaunchTest {
     /// Longer than the ~65 s the verifier measured between the SWIM refusal and the QUIC re-admission.
     private static final long READMIT_WINDOW_MS = 90_000L;
     private static final long HEAL_BOUND_MS = 180_000L;
+    private static final long DEMOTION_BOUND_MS = 30_000L;
 
     private EmberCluster cluster;
 
@@ -85,6 +87,28 @@ class EmberSameIdentityRelaunchTest {
     @Timeout(480)
     void relaunchedSameIdentityProcess_atSameAddress_neverRestoresQuorum() {
         relaunchedProcessNeverRestoresQuorum(true);
+    }
+
+    /// #2173: the survivor must register the death of a core that was killed while the cluster was still forming and whose
+    /// NodeId a new process then took over. Killed before the survivors' QUIC link to it was up, the original's link close is
+    /// never seen; the takeover is then retired by a boot-token conflict, a death-path removal that feeds the membership FSM
+    /// nothing, and the SWIM FAULTY was turned into UNKNOWN by the cold-boot rule and dropped when the member was swept. The
+    /// survivor's record for the NodeId then stayed MEMBER for good. The race is not deterministic (the kill has to beat the link
+    /// establishment), hence the repetitions: without the fix at least one of five fails with high probability.
+    @RepeatedTest(5)
+    @Timeout(300)
+    void coreKilledWhileFormingAndSupersededByTheSameNodeId_isDemotedOnTheSurvivor() {
+        var basePort = EmberTestPorts.freeBase(PORTS);
+        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
+        cluster.start();
+        awaitCondition("the forming cluster's nodes exist", () -> cluster.getNode("btk-1").isPresent() && cluster.getNode("btk-3").isPresent());
+        var survivor = cluster.getNode("btk-1").unwrap();
+        var killedId = cluster.getNode("btk-3").unwrap().self();
+
+        assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
+        cluster.relaunchNode("btk-3", false);
+
+        awaitDemoted(survivor, killedId, DEMOTION_BOUND_MS);
     }
 
     /// The positive arm on the same transport: a partitioned-but-LIVE process keeps its boot token, so
@@ -144,7 +168,7 @@ class EmberSameIdentityRelaunchTest {
         // organic close of the original's QUIC link; a relaunch that connects first supersedes that link, and the retirement that
         // follows is a death-path removal, which by design feeds the membership FSM nothing (AetherNode.connectivityWiring), so
         // the record can stay MEMBER for good. That race is a separate product defect, not this test's subject.
-        awaitDemoted(survivor, killedId);
+        awaitDemoted(survivor, killedId, HEAL_BOUND_MS);
         if (sameAddress) {
             awaitSlotFree(basePort, 2);
         }
@@ -182,13 +206,13 @@ class EmberSameIdentityRelaunchTest {
 
     /// Waits for the survivor to stop counting `id` as MEMBER. A bound reached with the record still MEMBER fails naming that
     /// state, so a stuck record is reported as itself and not as a generic timeout.
-    private static void awaitDemoted(AetherNode survivor, org.pragmatica.consensus.NodeId id) {
-        var deadline = System.currentTimeMillis() + HEAL_BOUND_MS;
+    private static void awaitDemoted(AetherNode survivor, org.pragmatica.consensus.NodeId id, long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
         var state = survivor.membershipFsm().memberStates().get(id);
 
         while ("Member".equals(state)) {
             if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("the survivor still counts the killed original " + id.id() + " as MEMBER " + HEAL_BOUND_MS
+                throw new AssertionError("the survivor still counts the killed original " + id.id() + " as MEMBER " + boundMs
                                          + " ms after it was killed (stuck state: " + state + "): its death was never registered");
             }
             sleep(250);
