@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+
 /// A node, as far as the cluster FSM can see it: it writes its own observed key, one version after the other (the
 /// `VersionFenced` chain, R-1.6.2), for the generation of the goal it is executing. It writes through the real applier.
 final class NodeSim {
@@ -36,57 +37,70 @@ final class NodeSim {
     NodeSim writes(Artifact artifact, SliceObservedState state, Generation generation) {
         var key = new SliceObservedKey(node, artifact);
         var version = harness.store.get(key)
-                             .filter(SliceObservedValue.class::isInstance)
-                             .map(SliceObservedValue.class::cast)
-                             .map(row -> row.version() + 1)
-                             .or(1L);
+                                   .filter(SliceObservedValue.class::isInstance)
+                                   .map(SliceObservedValue.class::cast)
+                                   .map(row -> row.version() + 1)
+                                   .or(1L);
 
-        harness.seed(key, new SliceObservedValue(state,
-                                                 version,
-                                                 generation,
-                                                 process,
-                                                 Option.none(),
-                                                 false,
-                                                 1,
-                                                 java.util.List.of("handle"),
-                                                 harness.wallMs));
+        harness.seed(key,
+                     new SliceObservedValue(state,
+                                            version,
+                                            generation,
+                                            process,
+                                            Option.none(),
+                                            false,
+                                            1,
+                                            java.util.List.of("handle"),
+                                            harness.wallMs));
+
         return this;
     }
 
     NodeSim fails(Artifact artifact, boolean fatal) {
         var key = new SliceObservedKey(node, artifact);
         var version = harness.store.get(key)
-                             .filter(SliceObservedValue.class::isInstance)
-                             .map(SliceObservedValue.class::cast)
-                             .map(row -> row.version() + 1)
-                             .or(1L);
+                                   .filter(SliceObservedValue.class::isInstance)
+                                   .map(SliceObservedValue.class::cast)
+                                   .map(row -> row.version() + 1)
+                                   .or(1L);
 
-        harness.seed(key, new SliceObservedValue(SliceObservedState.FAILED, version, goalGeneration(artifact), process, Option.some("boom"), fatal, 1, java.util.List.of(), harness.wallMs));
+        harness.seed(key,
+                     new SliceObservedValue(SliceObservedState.FAILED,
+                                            version,
+                                            goalGeneration(artifact),
+                                            process,
+                                            Option.some("boom"),
+                                            fatal,
+                                            1,
+                                            java.util.List.of(),
+                                            harness.wallMs));
+
         return this;
     }
 
     Generation goalGeneration(Artifact artifact) {
         return harness.store.get(new SliceDesiredKey(node, artifact))
-                      .filter(SliceDesiredValue.class::isInstance)
-                      .map(SliceDesiredValue.class::cast)
-                      .map(SliceDesiredValue::generation)
-                      .or(new Generation(0L, 0L));
+                            .filter(SliceDesiredValue.class::isInstance)
+                            .map(SliceDesiredValue.class::cast)
+                            .map(SliceDesiredValue::generation)
+                            .or(new Generation(0L, 0L));
     }
 
     /// Follow the goal through the whole chain, as a healthy node does: LOADING, LOADED, then (if asked) ACTIVATING, ACTIVE.
     NodeSim follows(Artifact artifact) {
         return harness.store.get(new SliceDesiredKey(node, artifact))
-                      .filter(SliceDesiredValue.class::isInstance)
-                      .map(SliceDesiredValue.class::cast)
-                      .map(goal -> chain(artifact, goal))
-                      .or(this);
+                            .filter(SliceDesiredValue.class::isInstance)
+                            .map(SliceDesiredValue.class::cast)
+                            .map(goal -> chain(artifact, goal))
+                            .or(this);
     }
 
     private NodeSim chain(Artifact artifact, SliceDesiredValue goal) {
         var observed = harness.store.get(new SliceObservedKey(node, artifact))
-                              .filter(SliceObservedValue.class::isInstance)
-                              .map(SliceObservedValue.class::cast);
-        var reached = observed.filter(row -> row.forGeneration().equals(goal.generation()))
+                                    .filter(SliceObservedValue.class::isInstance)
+                                    .map(SliceObservedValue.class::cast);
+        var reached = observed.filter(row -> row.forGeneration()
+                                                .equals(goal.generation()))
                               .map(SliceObservedValue::state);
 
         return switch (goal.goal()) {
@@ -98,7 +112,8 @@ final class NodeSim {
                            : activate(artifact, reached);
             case UNLOADED -> reached.map(state -> state == SliceObservedState.UNLOADED).or(false)
                              ? this
-                             : writes(artifact, SliceObservedState.UNLOADING).settle(artifact, SliceObservedState.UNLOADED);
+                             : writes(artifact, SliceObservedState.UNLOADING).settle(artifact,
+                                                                                     SliceObservedState.UNLOADED);
             case UNKNOWN -> this;
         };
     }

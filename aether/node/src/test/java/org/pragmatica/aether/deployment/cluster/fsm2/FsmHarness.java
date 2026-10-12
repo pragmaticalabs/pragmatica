@@ -15,7 +15,6 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.function.Predicate;
 
-import io.netty.buffer.ByteBuf;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -32,6 +31,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+
+import io.netty.buffer.ByteBuf;
+
 
 /// The interpreter of the cluster FSM for tests: an injected wall and monotonic clock, an injected scheduler (a due-time
 /// queue), a mailbox, and the **real `KVStore` applier** that receives every `Submit` and notifies the FSM back.
@@ -62,7 +64,9 @@ final class FsmHarness {
     final KVStore<AetherKey, AetherValue> store;
     final MessageRouter.MutableRouter router = MessageRouter.mutable();
     final ArrayDeque<ClusterInput> mailbox = new ArrayDeque<>();
+
     final PriorityQueue<Due> timers = new PriorityQueue<>(Comparator.comparingLong(Due::atNs).thenComparingLong(Due::order));
+
     final List<ClusterEffect> log = new ArrayList<>();
     final List<List<ClusterEffect>> steps = new ArrayList<>();
     final Map<String, ClusterEffect.Submit> held = new LinkedHashMap<>();
@@ -79,14 +83,16 @@ final class FsmHarness {
     FsmHarness(Settings settings) {
         this.settings = settings;
         this.fsm = ClusterFsm.clusterFsm(settings, () -> wallMs, () -> monoNs);
-        this.store = new KVStore<>(router, new Serializer() {
+        this.store = new KVStore<>(router,
+                                   new Serializer() {
             @Override
             public <T> void write(ByteBuf buffer, T value) {}
-        }, new Deserializer() {
+        },
+                                   new Deserializer() {
             @Override
             public <T> T read(ByteBuf buffer) {
-                return null;
-            }
+                                       return null;
+                                   }
         });
         router.addRoute(KVStoreNotification.ValuePut.class, this::onPut);
         router.addRoute(KVStoreNotification.ValueRemove.class, this::onRemove);
@@ -97,7 +103,6 @@ final class FsmHarness {
     }
 
     // -- the applier ---------------------------------------------------------------------------------------------
-
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void onPut(KVStoreNotification.ValuePut put) {
         if (!notifying) {
@@ -123,7 +128,8 @@ final class FsmHarness {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     Object applyCommand(KVCommand command) {
-        return ((KVStore) store).process(((KVStore) store).createBatch(List.of(command))).getFirst();
+        return ((KVStore) store).process(((KVStore) store).createBatch(List.of(command)))
+                                .getFirst();
     }
 
     /// Commit the leader value (the applier fences a `LeaderKey` write by `viewSequence`).
@@ -132,9 +138,9 @@ final class FsmHarness {
     }
 
     Option<LeaderValue> committedLeader() {
-        return ((KVStore<StructuredKey, Object>) (KVStore) store).get(LeaderKey.INSTANCE)
-                                                                  .filter(LeaderValue.class::isInstance)
-                                                                  .map(LeaderValue.class::cast);
+        return ((KVStore<StructuredKey, Object>)(KVStore) store).get(LeaderKey.INSTANCE)
+                                                                .filter(LeaderValue.class::isInstance)
+                                                                .map(LeaderValue.class::cast);
     }
 
     /// Write a value as a test fixture, as the right writer would: a bare Put for an unmarked value, a one-mutation
@@ -146,7 +152,11 @@ final class FsmHarness {
             var expected = store.get(key);
             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key, expected, Option.some(value));
 
-            applyCommand(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, "seed", leader, List.of(), List.of(mutation)));
+            applyCommand(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                 "seed",
+                                                                                 leader,
+                                                                                 List.of(),
+                                                                                 List.of(mutation)));
         } else {
             applyCommand(new KVCommand.Put<AetherKey, AetherValue>(key, value));
         }
@@ -160,7 +170,11 @@ final class FsmHarness {
             var leader = committedLeader().or(new LeaderValue(SELF, 1L));
             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key, current, Option.none());
 
-            applyCommand(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, "seed-remove", leader, List.of(), List.of(mutation)));
+            applyCommand(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                 "seed-remove",
+                                                                                 leader,
+                                                                                 List.of(),
+                                                                                 List.of(mutation)));
         } else {
             applyCommand(new KVCommand.Remove<AetherKey>(key, current.map(v -> (Object) v)));
         }
@@ -174,22 +188,24 @@ final class FsmHarness {
     }
 
     // -- the mailbox ---------------------------------------------------------------------------------------------
-
     ClusterInput.Snapshot snapshot() {
         var entries = new ArrayList<ClusterInput.KvPut>();
 
-        ((KVStore<StructuredKey, Object>) (KVStore) store).snapshot()
-                                                          .forEach((key, value) -> {
-                                                              if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
-                                                                  entries.add(new ClusterInput.KvPut(aetherKey, aetherValue));
-                                                              }
-                                                          });
+        ((KVStore<StructuredKey, Object>)(KVStore) store).snapshot()
+                                                         .forEach((key, value) -> {
+                                                                      if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
+                                                                      entries.add(new ClusterInput.KvPut(aetherKey,
+                                                                                                         aetherValue));
+                                                                  }
+                                                                  });
+
         return ClusterInput.Snapshot.snapshot(entries, seams, admissions, committedLeader());
     }
 
     /// Deliver one input and run the mailbox until it is empty.
     FsmHarness deliver(ClusterInput input) {
         mailbox.addLast(input);
+
         return drain();
     }
 
@@ -203,6 +219,7 @@ final class FsmHarness {
 
             step(mailbox.pollFirst());
         }
+
         return this;
     }
 
@@ -211,6 +228,7 @@ final class FsmHarness {
         for (var input : inputs) {
             mailbox.addLast(input);
         }
+
         return drain();
     }
 
@@ -228,8 +246,12 @@ final class FsmHarness {
         switch (effect) {
             case ClusterEffect.Enqueue enqueue -> mailbox.addLast(enqueue.input());
             case ClusterEffect.RequestRebuild _ -> mailbox.addFirst(new ClusterInput.Rebuild(snapshot()));
-            case ClusterEffect.Schedule schedule -> timers.add(new Due(monoNs + schedule.delayMs() * 1_000_000L, order++, schedule.timer(), schedule.incarnation()));
-            case ClusterEffect.Cancel cancel -> timers.removeIf(due -> due.timer().equals(cancel.timer()));
+            case ClusterEffect.Schedule schedule -> timers.add(new Due(monoNs + schedule.delayMs() * 1_000_000L,
+                                                                       order++,
+                                                                       schedule.timer(),
+                                                                       schedule.incarnation()));
+            case ClusterEffect.Cancel cancel -> timers.removeIf(due -> due.timer()
+                                                                          .equals(cancel.timer()));
             case ClusterEffect.Submit submit -> submitted(submit);
             default -> {}
         }
@@ -242,7 +264,9 @@ final class FsmHarness {
             case HOLD -> held.put(submit.correlationId(), submit);
             case FAIL_AND_HOLD -> {
                 held.put(submit.correlationId(), submit);
-                mailbox.addLast(new ClusterInput.WriteSettled(submit.correlationId(), submit.incarnation(), new Settlement.Failed("injected")));
+                mailbox.addLast(new ClusterInput.WriteSettled(submit.correlationId(),
+                                                              submit.incarnation(),
+                                                              new Settlement.Failed("injected")));
             }
         }
     }
@@ -259,8 +283,11 @@ final class FsmHarness {
     Settlement refused(ClusterEffect.Submit submit) {
         var values = new HashMap<AetherKey, Option<AetherValue>>();
 
-        submit.transaction().mutations().forEach(mutation -> values.put(mutation.key(), store.get(mutation.key())));
-        submit.transaction().guards().forEach(guard -> values.put(guard.key(), store.get(guard.key())));
+        submit.transaction().mutations().forEach(mutation -> values.put(mutation.key(),
+                                                                        store.get(mutation.key())));
+        submit.transaction().guards().forEach(guard -> values.put(guard.key(),
+                                                                  store.get(guard.key())));
+
         return new Settlement.Refused(committedLeader(), values);
     }
 
@@ -278,11 +305,11 @@ final class FsmHarness {
     /// Report a held transaction as settled with `settlement`.
     FsmHarness settleHeld(ClusterEffect.Submit submit, Settlement settlement) {
         settle(submit, settlement);
+
         return drain();
     }
 
     // -- time ----------------------------------------------------------------------------------------------------
-
     /// Advance both clocks and fire the timers that fall due, in order, each followed by a full drain.
     FsmHarness advance(long ms) {
         var target = monoNs + ms * 1_000_000L;
@@ -297,6 +324,7 @@ final class FsmHarness {
 
         wallMs += (target - monoNs) / 1_000_000L;
         monoNs = target;
+
         return this;
     }
 
@@ -305,11 +333,11 @@ final class FsmHarness {
         for (var i = 0L; i < seconds; i++) {
             advance(1_000L);
         }
+
         return this;
     }
 
     // -- lifecycle -----------------------------------------------------------------------------------------------
-
     FsmHarness activate() {
         return deliver(new ClusterInput.Activate());
     }
@@ -323,9 +351,11 @@ final class FsmHarness {
     }
 
     // -- observation ---------------------------------------------------------------------------------------------
-
     <T extends ClusterEffect> List<T> effects(Class<T> type) {
-        return log.stream().filter(type::isInstance).map(type::cast).toList();
+        return log.stream()
+                  .filter(type::isInstance)
+                  .map(type::cast)
+                  .toList();
     }
 
     List<ClusterEffect.Submit> submits() {
@@ -333,31 +363,40 @@ final class FsmHarness {
     }
 
     List<ClusterEffect.Submit> submits(ClusterModel.SubmitKind kind) {
-        return submits().stream().filter(submit -> submit.kind() == kind).toList();
+        return submits().stream()
+                      .filter(submit -> submit.kind() == kind)
+                      .toList();
     }
 
     List<ClusterEffect.Warn> warns(String code) {
-        return effects(ClusterEffect.Warn.class).stream().filter(warn -> warn.code().equals(code)).toList();
+        return effects(ClusterEffect.Warn.class).stream()
+                      .filter(warn -> warn.code()
+                                          .equals(code))
+                      .toList();
     }
 
     long metricTotal(String name, Predicate<Map<String, String>> tags) {
         return effects(ClusterEffect.Metric.class).stream()
-                                                  .filter(metric -> metric.name().equals(name) && tags.test(metric.tags()))
-                                                  .mapToLong(ClusterEffect.Metric::delta)
-                                                  .sum();
+                      .filter(metric -> metric.name()
+                                              .equals(name) && tags.test(metric.tags()))
+                      .mapToLong(ClusterEffect.Metric::delta)
+                      .sum();
     }
 
     List<KVCommand.Mutation<AetherKey, AetherValue>> mutations(Class<? extends AetherKey> keyType) {
         return submits().stream()
-                        .flatMap(submit -> submit.transaction().mutations().stream())
-                        .filter(mutation -> keyType.isInstance(mutation.key()))
-                        .toList();
+                      .flatMap(submit -> submit.transaction()
+                                               .mutations()
+                                               .stream())
+                      .filter(mutation -> keyType.isInstance(mutation.key()))
+                      .toList();
     }
 
     /// Forget everything logged so far (to assert on what happens next).
     FsmHarness clearLog() {
         log.clear();
         steps.clear();
+
         return this;
     }
 }

@@ -32,6 +32,7 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimConfig;
 
+
 /// Fixtures for the cluster FSM tests: identities, artifacts, rows, blueprints, and the absence bounds derived from the
 /// **real** defaults (spec 8.3: a change to any default moves the test's boundary with it).
 final class Fixtures {
@@ -89,16 +90,45 @@ final class Fixtures {
         return new SliceDesiredValue(goal, generation, FsmHarness.START_WALL);
     }
 
-    static SliceObservedValue row(SliceObservedState state, long version, Generation generation, ProcessIncarnation process) {
-        return new SliceObservedValue(state, version, generation, process, Option.none(), false, 1, List.of("handle"), FsmHarness.START_WALL);
+    static SliceObservedValue row(SliceObservedState state,
+                                  long version,
+                                  Generation generation,
+                                  ProcessIncarnation process) {
+        return new SliceObservedValue(state,
+                                      version,
+                                      generation,
+                                      process,
+                                      Option.none(),
+                                      false,
+                                      1,
+                                      List.of("handle"),
+                                      FsmHarness.START_WALL);
     }
 
-    static SliceObservedValue failedRow(long version, Generation generation, ProcessIncarnation process, boolean fatal) {
-        return new SliceObservedValue(SliceObservedState.FAILED, version, generation, process, Option.some("boom"), fatal, 1, List.of(), FsmHarness.START_WALL);
+    static SliceObservedValue failedRow(long version,
+                                        Generation generation,
+                                        ProcessIncarnation process,
+                                        boolean fatal) {
+        return new SliceObservedValue(SliceObservedState.FAILED,
+                                      version,
+                                      generation,
+                                      process,
+                                      Option.some("boom"),
+                                      fatal,
+                                      1,
+                                      List.of(),
+                                      FsmHarness.START_WALL);
     }
 
     static ResolvedSlice slice(Artifact artifact, int instances, int minAvailable, Set<Artifact> dependencies) {
-        return new ResolvedSlice(artifact, instances, minAvailable, false, dependencies, Option.none(), Option.none(), Option.none());
+        return new ResolvedSlice(artifact,
+                                 instances,
+                                 minAvailable,
+                                 false,
+                                 dependencies,
+                                 Option.none(),
+                                 Option.none(),
+                                 Option.none());
     }
 
     static AppBlueprintValue blueprint(String id, boolean registerOnly, String attempt, ResolvedSlice... slices) {
@@ -112,7 +142,12 @@ final class Fixtures {
     }
 
     static CommunityValue community(String source, int targetSize, CommunityState state) {
-        return new CommunityValue(source, ActivationDirectiveValue.WORKER, targetSize, state, FsmHarness.START_WALL, Option.none());
+        return new CommunityValue(source,
+                                  ActivationDirectiveValue.WORKER,
+                                  targetSize,
+                                  state,
+                                  FsmHarness.START_WALL,
+                                  Option.none());
     }
 
     /// A governor announcement (a roster) of community members, at a fixed epoch so that re-announcing is a refresh.

@@ -6,15 +6,17 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The drain loop's whole life (C18, step 4): start, replace, abandon when the drain is withdrawn, complete when the node holds
 /// nothing.
@@ -26,6 +28,7 @@ class GapDrainTest {
         seedGoal(h, CORE_1, ORDERS, SliceGoal.ACTIVE, G1);
         seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G1, 11L);
         h.seams = h.seams.withDraining(Set.of(CORE_1));
+
         return h;
     }
 
@@ -37,19 +40,19 @@ class GapDrainTest {
 
         h.activate();
         assertThat(h.model().drainLoops.contains(CORE_1)).as("the loop started with the reconcile").isTrue();
-        assertThat(goalOf(h, CORE_2, ORDERS).isPresent() || goalOf(h, CORE_3, ORDERS).isPresent()).as("a replacement was placed").isTrue();
-
+        assertThat(goalOf(h, CORE_2, ORDERS).isPresent() || goalOf(h, CORE_3, ORDERS).isPresent()).as("a replacement was placed")
+                  .isTrue();
         h.clearLog();
         h.deliver(new ClusterInput.SeamsRefreshed(h.seams.withDraining(Set.of())));
-
         assertThat(h.model().drainLoops.contains(CORE_1)).isFalse();
-        assertThat(h.effects(ClusterEffect.Cancel.class)).extracting(ClusterEffect.Cancel::timer).contains(TimerId.timerId(TimerId.Kind.DRAIN_STEP, CORE_1.id()));
-
+        assertThat(h.effects(ClusterEffect.Cancel.class)).extracting(ClusterEffect.Cancel::timer)
+                  .contains(TimerId.timerId(TimerId.Kind.DRAIN_STEP,
+                                            CORE_1.id()));
         h.clearLog();
         h.advanceBySeconds(10);
-
         assertThat(h.effects(ClusterEffect.Schedule.class)).as("no step of the abandoned loop is scheduled again")
-                                                           .noneMatch(schedule -> schedule.timer().kind() == TimerId.Kind.DRAIN_STEP);
+                  .noneMatch(schedule -> schedule.timer()
+                                                 .kind() == TimerId.Kind.DRAIN_STEP);
     }
 
     /// Red when: the loop does not unload the original once a replacement is ACTIVE, or does not end ("Drain complete") when the node
@@ -59,25 +62,26 @@ class GapDrainTest {
         var h = draining();
 
         h.activate();
-        var replacement = goalOf(h, CORE_2, ORDERS).isPresent() ? CORE_2 : CORE_3;
+        var replacement = goalOf(h, CORE_2, ORDERS).isPresent()
+                          ? CORE_2
+                          : CORE_3;
 
         node(h, replacement, 12L).follows(ORDERS);
         h.drain();
         node(h, replacement, 12L).follows(ORDERS);
         h.drain();
         h.advance(2_000L);
-
-        assertThat(goalOf(h, CORE_1, ORDERS)).as("the replacement is ACTIVE: the original is unloaded").isEqualTo(Option.some(SliceGoal.UNLOADED));
+        assertThat(goalOf(h, CORE_1, ORDERS)).as("the replacement is ACTIVE: the original is unloaded")
+                  .isEqualTo(Option.some(SliceGoal.UNLOADED));
         assertThat(h.model().drainLoops.contains(CORE_1)).as("still holding the unloading instance").isTrue();
-
         node(h, CORE_1, 11L).follows(ORDERS);
         h.drain();
         h.seedRemove(new SliceObservedKey(CORE_1, ORDERS));
         h.drain();
         h.advance(2_000L);
         h.advance(2_000L);
-
-        assertThat(h.effects(ClusterEffect.Log.class)).anyMatch(log -> log.message().startsWith("Drain complete for node core-1"));
+        assertThat(h.effects(ClusterEffect.Log.class)).anyMatch(log -> log.message()
+                                                                          .startsWith("Drain complete for node core-1"));
         assertThat(h.model().drainLoops.contains(CORE_1)).isFalse();
     }
 

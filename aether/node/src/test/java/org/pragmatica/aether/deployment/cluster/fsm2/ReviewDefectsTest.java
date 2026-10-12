@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.PendingJoin;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -18,8 +17,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Defects an independent review of the cluster FSM found, each reproduced on the pure step before it was fixed.
 class ReviewDefectsTest {
@@ -31,9 +33,16 @@ class ReviewDefectsTest {
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, TOKEN_2);
         w.admit(CORE_3, 1L, 0x3333L);
+
         return w.target(ORDERS, 1, "CORE_ONLY")
-                .directive(CORE_2, ActivationDirectiveValue.core())
-                .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), TOKEN_2)
+                .directive(CORE_2,
+                           ActivationDirectiveValue.core())
+                .instance(CORE_2,
+                          ORDERS,
+                          SliceGoal.ACTIVE,
+                          SliceObservedState.ACTIVE,
+                          gen(1),
+                          TOKEN_2)
                 .routes(CORE_2, ORDERS);
     }
 
@@ -47,12 +56,11 @@ class ReviewDefectsTest {
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).as("suspended: nothing is submitted").isEmpty();
         assertThat(w.h.model().isDeparting(CORE_2)).isTrue();
-
         w.h.commitLeader(FsmHarness.SELF, 2L);
         w.h.drain();
         w.h.advance(65_000L);
-
-        assertThat(w.h.submits(SubmitKind.DEPARTURE)).as("resubmitted once the leader value names this node again").isNotEmpty();
+        assertThat(w.h.submits(SubmitKind.DEPARTURE)).as("resubmitted once the leader value names this node again")
+                  .isNotEmpty();
         assertThat(w.h.model().isDeparting(CORE_2)).as("and the committed DEPARTED resolves it").isFalse();
     }
 
@@ -68,10 +76,10 @@ class ReviewDefectsTest {
 
         h.clearLog();
         h.deliver(new ClusterInput.Rebuild(h.snapshot()));
-
         assertThat(before).as("the first model submitted something").isGreaterThan(0L);
-        assertThat(h.effects(ClusterEffect.Cancel.class)).extracting(cancel -> cancel.timer().kind())
-                                                         .contains(TimerId.Kind.TICK, TimerId.Kind.POST_ACTIVATION);
+        assertThat(h.effects(ClusterEffect.Cancel.class)).extracting(cancel -> cancel.timer()
+                                                                                     .kind())
+                  .contains(TimerId.Kind.TICK, TimerId.Kind.POST_ACTIVATION);
         assertThat(h.model().txSeq).as("correlation ids are not reused").isGreaterThanOrEqualTo(before);
     }
 
@@ -84,7 +92,6 @@ class ReviewDefectsTest {
 
         model.pendingJoins = model.pendingJoins.put(CORE_2, new PendingJoin(false, w.admissionOf(CORE_2, 1L)));
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
-
         assertThat(w.h.model().pendingJoins.containsKey(CORE_2)).isFalse();
     }
 
@@ -98,7 +105,6 @@ class ReviewDefectsTest {
         SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
         h.activate();
         h.policy = FsmHarness.SettlePolicy.HOLD;
-
         new NodeSim(h, CORE_1, process(11L)).fails(ORDERS, true);
         h.drain();
         var lost = List.copyOf(h.held.values());
@@ -106,10 +112,11 @@ class ReviewDefectsTest {
         lost.forEach(submit -> h.settleHeld(submit, new ClusterInput.Settlement.Failed("lost")));
         h.advance(Timing.DEFAULT.retryBase());
         h.advance(30_000L);
-
-        assertThat(h.effects(ClusterEffect.Route.class).stream().filter(route -> route.event() instanceof RoutedEvent.DeploymentFailed).count())
-            .as("announced once, although the failure was handled twice")
-            .isEqualTo(1L);
+        assertThat(h.effects(ClusterEffect.Route.class)
+                    .stream()
+                    .filter(route -> route.event() instanceof RoutedEvent.DeploymentFailed)
+                    .count()).as("announced once, although the failure was handled twice")
+                  .isEqualTo(1L);
     }
 
     /// Red when: a goal that rides an artifact's failure transaction is still written for a node that departs in the same drain,
@@ -117,18 +124,31 @@ class ReviewDefectsTest {
     @Test
     void departure_dropsTheNodesGoalsFromTheArtifactTransaction() {
         var w = world().activate();
-        var failed = new SliceObservedValue(SliceObservedState.FAILED, 9L, gen(1), process(TOKEN_2), Option.some("boom"), false, 1, List.of(), w.h.wallMs);
+        var failed = new SliceObservedValue(SliceObservedState.FAILED,
+                                            9L,
+                                            gen(1),
+                                            process(TOKEN_2),
+                                            Option.some("boom"),
+                                            false,
+                                            1,
+                                            List.of(),
+                                            w.h.wallMs);
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.clearLog();
         w.h.deliverTogether(new ClusterInput.KvPut(new SliceObservedKey(CORE_2, ORDERS), failed),
                             new ClusterInput.NodeRemoved(CORE_2));
-
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).hasSize(1);
-        assertThat(w.h.submits().stream()
-                      .flatMap(submit -> submit.transaction().mutations().stream())
-                      .filter(mutation -> mutation.key() instanceof SliceDesiredKey desired && desired.nodeId().equals(CORE_2) && mutation.replacement().isPresent()))
-            .as("no goal is written for the departing node (its desired key is removed by the cleanup, not rewritten)")
-            .isEmpty();
+        assertThat(w.h.submits()
+                      .stream()
+                      .flatMap(submit -> submit.transaction()
+                                               .mutations()
+                                               .stream())
+                      .filter(mutation -> mutation.key() instanceof SliceDesiredKey desired
+                                          && desired.nodeId()
+                                                    .equals(CORE_2)
+                                          && mutation.replacement()
+                                                     .isPresent())).as("no goal is written for the departing node (its desired key is removed by the cleanup, not rewritten)")
+                  .isEmpty();
     }
 }

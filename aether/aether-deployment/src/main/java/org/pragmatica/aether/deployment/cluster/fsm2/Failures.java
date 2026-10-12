@@ -81,7 +81,11 @@ public sealed interface Failures {
     /// R-3.3.7: the counter for (artifact, node) goes up in the same transaction. Counts 1 to 5 reconcile after
     /// `min(2^(n-1), 30)` s with jitter; the sixth is exhaustion (B-050), which condemns only while an apply is
     /// outstanding (#922).
-    private static ClusterModel transientFailure(ClusterModel m, Ctx ctx, SlicePair pair, String reason, boolean first) {
+    private static ClusterModel transientFailure(ClusterModel m,
+                                                 Ctx ctx,
+                                                 SlicePair pair,
+                                                 String reason,
+                                                 boolean first) {
         var artifact = pair.artifact();
         var count = retries(m, pair) + 1;
 

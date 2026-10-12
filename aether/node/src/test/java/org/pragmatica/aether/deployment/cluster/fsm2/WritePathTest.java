@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.Map;
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
@@ -18,18 +17,25 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.LcSupport.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// NT-17, NT-85, NT-90, NT-115, NT-122: the write path against the REAL applier (R-5.7).
 class WritePathTest {
-    private static SlicePair pair(org.pragmatica.consensus.NodeId node, org.pragmatica.aether.artifact.Artifact artifact) {
+    private static SlicePair pair(org.pragmatica.consensus.NodeId node,
+                                  org.pragmatica.aether.artifact.Artifact artifact) {
         return SlicePair.slicePair(node, artifact);
     }
 
     private static long started(FsmHarness h) {
-        return h.effects(ClusterEffect.Route.class).stream().filter(r -> r.event() instanceof RoutedEvent.DeploymentStarted).count();
+        return h.effects(ClusterEffect.Route.class)
+                .stream()
+                .filter(r -> r.event() instanceof RoutedEvent.DeploymentStarted)
+                .count();
     }
 
     /// Hold the goal transactions of a two-instance placement: target committed, nothing applied yet.
@@ -37,8 +43,10 @@ class WritePathTest {
         var h = active();
 
         h.policy = FsmHarness.SettlePolicy.HOLD;
-        h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), instances, 1));
+        h.seed(new SliceTargetKey(ORDERS.base()),
+               SliceTargetValue.sliceTargetValue(ORDERS.version(), instances, 1));
         h.drain();
+
         return h;
     }
 
@@ -54,10 +62,12 @@ class WritePathTest {
         h.drain();
         h.policy = FsmHarness.SettlePolicy.APPLY;
         goals.forEach(submit -> h.settleHeld(submit, h.applyTransaction(submit)));
-
         assertThat(started(h)).as("exactly the accepted LOAD routes DeploymentStarted").isEqualTo(1);
-        assertThat(h.metricTotal("aether_deployment_fsm_submissions_total", t -> String.valueOf(t.get("outcome")).startsWith("refused"))).isPositive();
-        assertThat(Rows.placed(h.model(), ORDERS)).as("re-derived: the pair is placed again, and not counted twice").isEqualTo(2);
+        assertThat(h.metricTotal("aether_deployment_fsm_submissions_total",
+                                 t -> String.valueOf(t.get("outcome")).startsWith("refused"))).isPositive();
+        assertThat(Rows.placed(h.model(),
+                               ORDERS)).as("re-derived: the pair is placed again, and not counted twice")
+                  .isEqualTo(2);
         assertThat(h.model().pendingGoals.isEmpty()).isTrue();
     }
 
@@ -69,7 +79,6 @@ class WritePathTest {
 
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.submits(SubmitKind.GOALS).forEach(submit -> h.settleHeld(submit, h.applyTransaction(submit)));
-
         assertThat(started(h)).isEqualTo(2);
     }
 
@@ -85,7 +94,6 @@ class WritePathTest {
 
         assertThat(verdict).isInstanceOf(Settlement.Refused.class);
         assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).isFalse();
-
         var control = heldPlacement(1);
 
         assertThat(control.applyTransaction(control.submits(SubmitKind.GOALS).getFirst())).isInstanceOf(Settlement.Accepted.class);
@@ -104,12 +112,16 @@ class WritePathTest {
 
         assertThat(verdict).isInstanceOf(Settlement.Refused.class);
         assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS))).isEqualTo(org.pragmatica.lang.Option.some(other));
-
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.settleHeld(submit, verdict);
-        assertThat(h.submits(SubmitKind.GOALS).stream().skip(1).flatMap(g -> g.transaction().mutations().stream()).map(m -> m.expected()))
-            .as("the moved pair is split out: whatever follows is re-derived from the mirror, never the stale expected value")
-            .doesNotContain(org.pragmatica.lang.Option.<org.pragmatica.aether.slice.kvstore.AetherValue> none());
+        assertThat(h.submits(SubmitKind.GOALS)
+                    .stream()
+                    .skip(1)
+                    .flatMap(g -> g.transaction()
+                                   .mutations()
+                                   .stream())
+                    .map(m -> m.expected())).as("the moved pair is split out: whatever follows is re-derived from the mirror, never the stale expected value")
+                  .doesNotContain(org.pragmatica.lang.Option.<org.pragmatica.aether.slice.kvstore.AetherValue> none());
     }
 
     // NT-90 / NT-122
@@ -122,23 +134,28 @@ class WritePathTest {
         h.activate();
         h.policy = FsmHarness.SettlePolicy.HOLD;
         h.seedQuietly(new SliceDesiredKey(CORE_1, BILLING), desired(SliceGoal.ACTIVE, gen(5)));
-        h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
-        h.seed(new SliceTargetKey(BILLING.base()), SliceTargetValue.sliceTargetValue(BILLING.version(), 1, 1));
+        h.seed(new SliceTargetKey(ORDERS.base()),
+               SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+        h.seed(new SliceTargetKey(BILLING.base()),
+               SliceTargetValue.sliceTargetValue(BILLING.version(), 1, 1));
         h.drain();
         var first = h.submits(SubmitKind.GOALS).getFirst();
 
         assertThat(first.transaction().mutations()).as("the node transaction carries both pairs").hasSize(2);
         h.clearLog();
         h.settleHeld(first, h.applyTransaction(first));
-
         var again = h.submits(SubmitKind.GOALS);
 
         assertThat(again).as("one resubmission").hasSize(1);
-        assertThat(again.getFirst().transaction().mutations()).as("the moved pair is split out: only the partner remains").hasSize(1);
-        assertThat(again.getFirst().transaction().mutations().getFirst().key()).isEqualTo(new SliceDesiredKey(CORE_1, ORDERS));
-        assertThat(h.metricTotal("aether_deployment_fsm_submissions_total", t -> "refused_mirror_lag".equals(t.get("outcome")))).isPositive();
+        assertThat(again.getFirst().transaction().mutations()).as("the moved pair is split out: only the partner remains")
+                  .hasSize(1);
+        assertThat(again.getFirst().transaction().mutations().getFirst().key()).isEqualTo(new SliceDesiredKey(CORE_1,
+                                                                                                              ORDERS));
+        assertThat(h.metricTotal("aether_deployment_fsm_submissions_total",
+                                 t -> "refused_mirror_lag".equals(t.get("outcome")))).isPositive();
         h.policy = FsmHarness.SettlePolicy.APPLY;
-        h.settleHeld(again.getFirst(), h.applyTransaction(again.getFirst()));
+        h.settleHeld(again.getFirst(),
+                     h.applyTransaction(again.getFirst()));
         assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).isTrue();
     }
 
@@ -154,10 +171,12 @@ class WritePathTest {
         for (var i = 0; i < 10; i++) {
             var before = h.submits(SubmitKind.GOALS).size();
 
-            h.settleHeld(current, new Settlement.Refused(h.committedLeader(), Map.of()));
+            h.settleHeld(current,
+                         new Settlement.Refused(h.committedLeader(), Map.of()));
             if (h.submits(SubmitKind.GOALS).size() == before) {
                 break;
             }
+
             resubmissions++;
             current = h.submits(SubmitKind.GOALS).getLast();
         }
@@ -196,7 +215,6 @@ class WritePathTest {
         h.policy = FsmHarness.SettlePolicy.HOLD;
         node.writes(ORDERS, SliceObservedState.LOADING).writes(ORDERS, SliceObservedState.LOADED);
         h.drain();
-
         assertThat(h.applyTransaction(h.submits(SubmitKind.GOALS).getLast())).isInstanceOf(Settlement.Accepted.class);
     }
 
@@ -206,13 +224,20 @@ class WritePathTest {
     void adoptBuiltOnV_isRefusedOnceTheNodeCommittedVPlusOne() {
         var h = leader();
 
-        h.seedQuietly(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
-        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_3, ORDERS), row(SliceObservedState.LOADED, 1L, gen(9), process(13)));
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()),
+                      SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_3, ORDERS),
+                      row(SliceObservedState.LOADED, 1L, gen(9), process(13)));
         h.policy = FsmHarness.SettlePolicy.HOLD;
         h.activate();
         var adopt = h.submits(SubmitKind.GOALS).getLast();
 
-        assertThat(adopt.transaction().mutations().getFirst().replacement().map(v -> ((SliceDesiredValue) v).generation())).as("adopted at the row's own generation").isEqualTo(org.pragmatica.lang.Option.some(gen(9)));
+        assertThat(adopt.transaction()
+                        .mutations()
+                        .getFirst()
+                        .replacement()
+                        .map(v -> ((SliceDesiredValue) v).generation())).as("adopted at the row's own generation")
+                  .isEqualTo(org.pragmatica.lang.Option.some(gen(9)));
         new NodeSim(h, CORE_3, process(13)).writes(ORDERS, SliceObservedState.ACTIVATING, gen(9));
         assertThat(h.applyTransaction(adopt)).isInstanceOf(Settlement.Refused.class);
     }
@@ -228,7 +253,10 @@ class WritePathTest {
         h.deliver(new ClusterInput.Reconcile());
         var retraction = h.submits(SubmitKind.FAILURE).getLast();
 
-        assertThat(retraction.transaction().mutations().stream().anyMatch(m -> m.key() instanceof org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey)).isTrue();
+        assertThat(retraction.transaction()
+                             .mutations()
+                             .stream()
+                             .anyMatch(m -> m.key() instanceof org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey)).isTrue();
         new NodeSim(h, CORE_1, process(11)).writes(ORDERS, SliceObservedState.LOADING);
         assertThat(h.applyTransaction(retraction)).isInstanceOf(Settlement.Refused.class);
     }
@@ -242,7 +270,6 @@ class WritePathTest {
         h.policy = FsmHarness.SettlePolicy.HOLD;
         h.advance(360_001L);
         h.deliver(new ClusterInput.Reconcile());
-
         assertThat(h.applyTransaction(h.submits(SubmitKind.FAILURE).getLast())).isInstanceOf(Settlement.Accepted.class);
     }
 }

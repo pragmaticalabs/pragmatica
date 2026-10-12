@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 /// The cluster (leader-side) deployment state machine of the rewrite specified in
 /// `oss/internal/spec-rewrite/deployment-fsm-spec.md` (draft 6), as a pure transition function.
 ///

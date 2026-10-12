@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+
 /// NT-89 (a), over the new package only (R-1.6.5): the single-writer discipline of the cluster FSM, read from its source.
 ///
 /// - Every leader write is a `LeaderTransaction`: no source constructs a bare `KVCommand.Put`.
@@ -24,16 +25,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// - A `SliceObservedKey` is never written: the files that mention `observedKey()` (departure cleanup, directive removal) only
 ///   remove it, and the guards in `Outbox` only read it.
 class ArchitectureTest {
-    private static final Path SOURCES = Path.of("..", "aether-deployment", "src", "main", "java", "org", "pragmatica", "aether", "deployment", "cluster", "fsm2");
+    private static final Path SOURCES = Path.of("..",
+                                                "aether-deployment",
+                                                "src",
+                                                "main",
+                                                "java",
+                                                "org",
+                                                "pragmatica",
+                                                "aether",
+                                                "deployment",
+                                                "cluster",
+                                                "fsm2");
 
     private static Map<String, String> sources() throws IOException {
         var out = new TreeMap<String, String>();
 
         try (Stream<Path> files = Files.list(SOURCES)) {
-            for (var file : files.filter(f -> f.toString().endsWith(".java")).toList()) {
-                out.put(file.getFileName().toString(), Files.readString(file));
+            for (var file : files.filter(f -> f.toString()
+                                               .endsWith(".java")).toList()) {
+                out.put(file.getFileName().toString(),
+                        Files.readString(file));
             }
         }
+
         return out;
     }
 
@@ -50,6 +64,7 @@ class ArchitectureTest {
                 found.addAll(writesOutsideOutbox(name, text));
             }
         });
+
         return found;
     }
 
@@ -59,7 +74,7 @@ class ArchitectureTest {
         var found = new ArrayList<String>();
         var flat = text.replaceAll("\\s+", " ");
 
-        for (var marker : new String[] {"desiredKey()", "observedKey()", "new SliceObservedKey", "new SliceDesiredKey"}) {
+        for (var marker : new String[]{"desiredKey()", "observedKey()", "new SliceObservedKey", "new SliceDesiredKey"}) {
             var from = 0;
 
             while ((from = flat.indexOf(marker, from)) >= 0) {
@@ -70,6 +85,7 @@ class ArchitectureTest {
                 from += marker.length();
             }
         }
+
         return found;
     }
 
@@ -89,10 +105,11 @@ class ArchitectureTest {
 
             if (c == ')') {
                 depth++;
-            } else if (c == '(' && depth-- == 0) {
+            } else if (c == '(' && depth--== 0) {
                 return i;
             }
         }
+
         return 0;
     }
 
@@ -108,6 +125,7 @@ class ArchitectureTest {
                 return i;
             }
         }
+
         return flat.length() - 1;
     }
 
@@ -117,7 +135,8 @@ class ArchitectureTest {
     void theClusterFsm_writesDesiredOnlyInTheOutbox_andNeverWritesObserved() throws IOException {
         var real = sources();
 
-        assertThat(real).as("the scan sees the package").containsKeys("Outbox.java", "DepartureFlow.java", "Directory.java", "Gc.java");
+        assertThat(real).as("the scan sees the package")
+                  .containsKeys("Outbox.java", "DepartureFlow.java", "Directory.java", "Gc.java");
         assertThat(violations(real)).isEmpty();
     }
 
@@ -128,9 +147,9 @@ class ArchitectureTest {
         var planted = new TreeMap<>(sources());
 
         planted.put("Planted.java", "class Planted { Object x = new KVCommand.Put<>(pair.observedKey(), row); }");
-        planted.put("Planted2.java", "class Planted2 { Object x = new KVCommand.Mutation<>(pair.desiredKey(), Option.some(a), Option.some(b)); }");
-
+        planted.put("Planted2.java",
+                    "class Planted2 { Object x = new KVCommand.Mutation<>(pair.desiredKey(), Option.some(a), Option.some(b)); }");
         assertThat(violations(planted)).anyMatch(v -> v.startsWith("Planted.java: constructs a bare Put"))
-                                       .anyMatch(v -> v.startsWith("Planted2.java: desiredKey()"));
+                  .anyMatch(v -> v.startsWith("Planted2.java: desiredKey()"));
     }
 }

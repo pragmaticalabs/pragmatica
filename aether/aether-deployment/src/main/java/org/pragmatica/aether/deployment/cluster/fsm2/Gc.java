@@ -31,13 +31,16 @@ public sealed interface Gc {
         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(pair.desiredKey(),
                                                                       Option.some((AetherValue) value),
                                                                       Option.none());
-        return Option.from(m.outbox.stream().filter(draft -> draft.kind() == SubmitKind.GC).findFirst())
-                     .fold(() -> Outbox.direct(m,
-                                               TxDraft.draft(SubmitKind.GC,
-                                                             pair.desiredKey(),
-                                                             List.of(mutation))
-                                                      .withPairs(Set.of(pair))),
-                           draft -> merge(m, draft, pair, mutation));
+
+        return Option.from(m.outbox.stream().filter(draft -> draft.kind() == SubmitKind.GC).findFirst()).fold(() -> Outbox.direct(m,
+                                                                                                                                  TxDraft.draft(SubmitKind.GC,
+                                                                                                                                                pair.desiredKey(),
+                                                                                                                                                List.of(mutation))
+                                                                                                                                         .withPairs(Set.of(pair))),
+                                                                                                              draft -> merge(m,
+                                                                                                                             draft,
+                                                                                                                             pair,
+                                                                                                                             mutation));
     }
 
     private static ClusterModel merge(ClusterModel m,

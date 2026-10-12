@@ -8,8 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
@@ -25,9 +23,13 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Observed removes (C11), stray rows (R-3.3.11), and the leader's removal discipline. NT-30, 93, 105, 120.
 class SlObservedTest {
@@ -43,13 +45,14 @@ class SlObservedTest {
             seedGoal(h, CORE_1, ORDERS, SliceGoal.UNLOADED, G1);
             seedRow(h, CORE_1, ORDERS, SliceObservedState.UNLOADED, G1, 0L);
             h.activate();
-            assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).as("kept while the tombstone stands").isTrue();
-
+            assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).as("kept while the tombstone stands")
+                      .isTrue();
             h.seedRemove(new SliceObservedKey(CORE_1, ORDERS));
             h.drain();
-
-            assertThat(h.model().observed(SlicePair.slicePair(CORE_1, ORDERS)).isPresent()).as("the index entry is gone").isFalse();
-            assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).as("the desired key is garbage collected").isFalse();
+            assertThat(h.model().observed(SlicePair.slicePair(CORE_1, ORDERS)).isPresent()).as("the index entry is gone")
+                      .isFalse();
+            assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).as("the desired key is garbage collected")
+                      .isFalse();
         }
 
         /// NT-30. Red when: with a live goal the 1 s reconcile arm is missing (the pair is not re-derived).
@@ -62,12 +65,12 @@ class SlObservedTest {
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G1, 0L);
             h.activate();
             h.clearLog();
-
             h.seedRemove(new SliceObservedKey(CORE_1, ORDERS));
             h.drain();
-
-            assertThat(h.effects(ClusterEffect.Schedule.class)).anyMatch(schedule -> schedule.timer().kind() == TimerId.Kind.RECONCILE && schedule.delayMs() == 1_000L);
-            assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).as("a live goal keeps its desired key").isTrue();
+            assertThat(h.effects(ClusterEffect.Schedule.class)).anyMatch(schedule -> schedule.timer()
+                                                                                             .kind() == TimerId.Kind.RECONCILE && schedule.delayMs() == 1_000L);
+            assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).as("a live goal keeps its desired key")
+                      .isTrue();
         }
 
         /// NT-30. Red when: a permanently failed artifact schedules the 1 s reconcile.
@@ -76,15 +79,15 @@ class SlObservedTest {
             var h = threeCores();
 
             seedTarget(h, ORDERS, 1, 1);
-            seedJudgment(h, ORDERS, new ArtifactJudgmentValue(true, Map.of(), Map.of()));
+            seedJudgment(h,
+                         ORDERS,
+                         new ArtifactJudgmentValue(true, Map.of(), Map.of()));
             seedGoal(h, CORE_1, ORDERS, SliceGoal.ACTIVE, G1);
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G1, 0L);
             h.activate();
             h.clearLog();
-
             h.seedRemove(new SliceObservedKey(CORE_1, ORDERS));
             h.drain();
-
             assertThat(h.effects(ClusterEffect.Schedule.class)).noneMatch(schedule -> schedule.delayMs() == 1_000L);
         }
     }
@@ -100,12 +103,12 @@ class SlObservedTest {
             seedTarget(h, ORDERS, 1, 1);
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             h.activate();
-
-            assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS))).isEqualTo(Option.some(new SliceDesiredValue(SliceGoal.ACTIVE, G7, h.wallMs)));
+            assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS))).isEqualTo(Option.some(new SliceDesiredValue(SliceGoal.ACTIVE,
+                                                                                                                           G7,
+                                                                                                                           h.wallMs)));
             var submits = h.submits().size();
 
             h.advanceBySeconds(660);
-
             assertThat(h.submits()).as("no re-issue, retraction or judgment in eleven minutes").hasSize(submits);
             assertThat(h.model().judgment(ORDERS).isPresent()).isFalse();
             assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(SliceDesiredValue::generation)).isEqualTo(Option.some(G7));
@@ -119,10 +122,10 @@ class SlObservedTest {
             seedTarget(h, ORDERS, 1, 1);
             seedRow(h, CORE_2, ORDERS, SliceObservedState.LOADED, G7, 0L);
             h.activate();
-
             assertThat(goalOf(h, CORE_2, ORDERS)).isEqualTo(Option.some(SliceGoal.LOADED));
             assertThat(h.model().desired(SlicePair.slicePair(CORE_2, ORDERS)).map(SliceDesiredValue::generation)).isEqualTo(Option.some(G7));
-            assertThat(countGoals(h, ORDERS)).as("the adoption is the placement: nothing is placed beside it").isEqualTo(1);
+            assertThat(countGoals(h, ORDERS)).as("the adoption is the placement: nothing is placed beside it")
+                      .isEqualTo(1);
         }
 
         /// NT-105 (c). Red when: a surplus stray is not condemned with `stray-instance`.
@@ -134,9 +137,9 @@ class SlObservedTest {
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             h.activate();
-
             assertThat(goalOf(h, CORE_1, ORDERS)).as("the first is adopted").isEqualTo(Option.some(SliceGoal.ACTIVE));
-            assertThat(goalOf(h, CORE_2, ORDERS)).as("the surplus is condemned").isEqualTo(Option.some(SliceGoal.UNLOADED));
+            assertThat(goalOf(h, CORE_2, ORDERS)).as("the surplus is condemned")
+                      .isEqualTo(Option.some(SliceGoal.UNLOADED));
             assertThat(h.warns("stray-instance")).hasSize(1);
         }
 
@@ -148,7 +151,6 @@ class SlObservedTest {
             seedTarget(h, ORDERS_V2, 1, 1);
             seedRow(h, CORE_1, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             h.activate();
-
             assertThat(goalOf(h, CORE_1, ORDERS)).isEqualTo(Option.some(SliceGoal.UNLOADED));
             assertThat(h.warns("stray-instance")).hasSize(1);
         }
@@ -161,11 +163,16 @@ class SlObservedTest {
             seedTarget(h, ORDERS_V2, 1, 1);
             seedRow(h, CORE_1, ORDERS, SliceObservedState.UNLOADED, G7, 0L);
             h.activate();
-
             assertThat(h.model().hasStray(SlicePair.slicePair(CORE_1, ORDERS))).isFalse();
             assertThat(h.warns("stray-instance")).isEmpty();
-            assertThat(h.submits().stream().flatMap(s -> s.transaction().mutations().stream()).filter(m -> m.key() instanceof SliceDesiredKey && m.key().asString().contains("orders:1.0.0")))
-                    .isEmpty();
+            assertThat(h.submits()
+                        .stream()
+                        .flatMap(s -> s.transaction()
+                                       .mutations()
+                                       .stream())
+                        .filter(m -> m.key() instanceof SliceDesiredKey && m.key()
+                                                                            .asString()
+                                                                            .contains("orders:1.0.0"))).isEmpty();
         }
 
         /// NT-105 (d). Red when: the stray rows of a worker that is not counted are adopted or condemned, or when it rejoins
@@ -183,14 +190,19 @@ class SlObservedTest {
             seedTarget(h, ORDERS, 2, 1);
             seedRow(h, w1, ORDERS, SliceObservedState.ACTIVE, G7, 5L);
             h.activate();
-            var before = h.submits(ClusterModel.SubmitKind.GOALS).stream().filter(s -> s.transaction().mutations().stream().anyMatch(m -> m.key().equals(new SliceDesiredKey(w1, ORDERS)))).count();
+            var before = h.submits(ClusterModel.SubmitKind.GOALS)
+                          .stream()
+                          .filter(s -> s.transaction()
+                                        .mutations()
+                                        .stream()
+                                        .anyMatch(m -> m.key()
+                                                        .equals(new SliceDesiredKey(w1, ORDERS))))
+                          .count();
 
             assertThat(goalOf(h, w1, ORDERS)).as("not counted: neither adopted nor condemned").isEqualTo(Option.empty());
             assertThat(before).isZero();
-
             h.seed(new GovernorAnnouncementKey("c"), roster(w2, false, w1, w2));
             h.drain();
-
             assertThat(goalOf(h, w1, ORDERS)).isEqualTo(Option.some(SliceGoal.ACTIVE));
             assertThat(h.model().desired(SlicePair.slicePair(w1, ORDERS)).map(SliceDesiredValue::generation)).isEqualTo(Option.some(G7));
             assertThat(h.warns("stray-instance")).isEmpty();
@@ -206,9 +218,8 @@ class SlObservedTest {
             h.deliver(new ClusterInput.Deactivate());
             seedRow(h, CORE_3, ORDERS, SliceObservedState.ACTIVE, G7, 0L);
             h.activate();
-
             assertThat(h.model().desired(SlicePair.slicePair(CORE_3, ORDERS)).map(SliceDesiredValue::generation)).as("adopted, or the instance already placed")
-                    .isNotEqualTo(Option.empty());
+                      .isNotEqualTo(Option.empty());
         }
     }
 
@@ -227,7 +238,6 @@ class SlObservedTest {
             h.deliver(new ClusterInput.Reconcile());
             h.deliver(new ClusterInput.Reconcile());
             h.deliver(new ClusterInput.Reconcile());
-
             assertThat(submits).isEqualTo(2);
             assertThat(h.submits()).as("the goals in flight count as placed").hasSize(2);
             assertThat(h.model().pendingGoals.size()).isEqualTo(2);
@@ -246,11 +256,9 @@ class SlObservedTest {
 
             h.settleHeld(first.get(0), new ClusterInput.Settlement.Failed("lost"));
             h.settleHeld(first.get(1), new ClusterInput.Settlement.Failed("lost"));
-
             assertThat(h.submits()).as("a failed write is not retried in a hot loop: the next reconcile waits one retry base")
-                                   .hasSize(2);
+                      .hasSize(2);
             h.advance(Timing.DEFAULT.retryBase());
-
             assertThat(h.submits()).as("both are submitted again").hasSize(4);
             assertThat(h.model().pendingGoals.size()).as("and counted once").isEqualTo(2);
         }
@@ -270,14 +278,13 @@ class SlObservedTest {
                 var open = List.copyOf(h.held.values());
 
                 h.held.clear();
-                open.forEach(submit -> h.settleHeld(submit, new ClusterInput.Settlement.Refused(leader, Map.of())));
+                open.forEach(submit -> h.settleHeld(submit,
+                                                    new ClusterInput.Settlement.Refused(leader, Map.of())));
             }
 
             assertThat(h.submits()).as("one original and five resubmissions").hasSize(6);
             assertThat(h.model().pendingGoals.isEmpty()).as("beyond the bound the entry is dropped").isTrue();
-
             h.advanceBySeconds(31);
-
             assertThat(h.submits()).as("the tick re-derives").hasSize(7);
         }
     }
@@ -294,26 +301,36 @@ class SlObservedTest {
             seedGoal(h, CORE_2, ORDERS, SliceGoal.ACTIVE, G1);
             seedRow(h, CORE_2, ORDERS, SliceObservedState.ACTIVE, G1, 0L);
             seedRow(h, CORE_1, BILLING, SliceObservedState.UNLOADED, G1, 0L);
-            h.seedQuietly(new NodeDepartureKey(CORE_3), new NodeDepartureValue(DepartureState.ADMITTED, 1L, process(0L), Option.none(), FsmHarness.START_WALL));
+            h.seedQuietly(new NodeDepartureKey(CORE_3),
+                          new NodeDepartureValue(DepartureState.ADMITTED,
+                                                 1L,
+                                                 process(0L),
+                                                 Option.none(),
+                                                 FsmHarness.START_WALL));
             seedGoal(h, CORE_3, BILLING, SliceGoal.ACTIVE, G1);
             seedRow(h, CORE_3, BILLING, SliceObservedState.ACTIVE, G1, 0L);
             h.activate();
             h.advanceBySeconds(300);
             assertThat(removedObserved(h)).as("nothing is removed while nobody departed").isEmpty();
-
             h.deliver(new ClusterInput.NodeRemoved(CORE_2));
-
             var exact = h.store.get(new SliceObservedKey(CORE_2, ORDERS));
+
             assertThat(removedObserved(h)).containsExactly(new SliceObservedKey(CORE_2, ORDERS));
             assertThat(exact.isPresent()).as("removed at the exact value").isFalse();
-            assertThat(h.store.get(new SliceObservedKey(CORE_1, BILLING)).isPresent()).as("the live node's tombstone is the node's to remove").isTrue();
-            assertThat(h.store.get(new SliceObservedKey(CORE_3, BILLING)).isPresent()).as("a re-admitted node (ADMITTED record) keeps its rows").isTrue();
+            assertThat(h.store.get(new SliceObservedKey(CORE_1, BILLING)).isPresent()).as("the live node's tombstone is the node's to remove")
+                      .isTrue();
+            assertThat(h.store.get(new SliceObservedKey(CORE_3, BILLING)).isPresent()).as("a re-admitted node (ADMITTED record) keeps its rows")
+                      .isTrue();
         }
 
         private List<Object> removedObserved(FsmHarness h) {
-            return h.submits().stream()
-                    .flatMap(submit -> submit.transaction().mutations().stream())
-                    .filter(mutation -> mutation.key() instanceof SliceObservedKey && mutation.replacement().isEmpty())
+            return h.submits()
+                    .stream()
+                    .flatMap(submit -> submit.transaction()
+                                             .mutations()
+                                             .stream())
+                    .filter(mutation -> mutation.key() instanceof SliceObservedKey && mutation.replacement()
+                                                                                              .isEmpty())
                     .map(KVCommand.Mutation::key)
                     .map(Object.class::cast)
                     .toList();

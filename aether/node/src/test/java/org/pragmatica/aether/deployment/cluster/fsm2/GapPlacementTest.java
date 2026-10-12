@@ -6,16 +6,18 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Placement policies (B-076, B-033, R-3.3.4): the audience of a target is the policy applied to the allocation pool of cores and
 /// of the placeable workers of ACTIVE communities.
@@ -26,14 +28,18 @@ class GapPlacementTest {
 
     private static MbWorld clusterWithWorkers(String placement, int instances) {
         var w = MbWorld.worldWithFloor(2, CORE_1, CORE_2, CORE_3)
-                        .target(ORDERS, instances, placement)
-                        .directive(W1, worker("east-w-0"))
-                        .directive(W2, worker("east-w-0"))
-                        .community("east-w-0", 3, CommunityState.ACTIVE)
-                        .seams(seams -> seams.withReady(ALL).withLocalAlive(Option.some(Set.of(W1, W2))))
-                        .activate();
+                       .target(ORDERS, instances, placement)
+                       .directive(W1,
+                                  worker("east-w-0"))
+                       .directive(W2,
+                                  worker("east-w-0"))
+                       .community("east-w-0", 3, CommunityState.ACTIVE)
+                       .seams(seams -> seams.withReady(ALL)
+                                            .withLocalAlive(Option.some(Set.of(W1, W2))))
+                       .activate();
 
         w.announce("east-w-0", W1, W1, W2);
+
         return w;
     }
 
@@ -43,7 +49,6 @@ class GapPlacementTest {
         var w = clusterWithWorkers("WORKERS_ONLY", 2);
 
         w.h.deliver(new ClusterInput.Reconcile());
-
         assertThat(hosts(w.h, ORDERS)).containsExactly(W1, W2);
     }
 
@@ -53,7 +58,6 @@ class GapPlacementTest {
         var w = clusterWithWorkers("ALL", 5);
 
         w.h.deliver(new ClusterInput.Reconcile());
-
         assertThat(hosts(w.h, ORDERS)).containsExactlyInAnyOrder(CORE_1, CORE_2, CORE_3, W1, W2);
     }
 
@@ -79,22 +83,25 @@ class GapPlacementTest {
     @Test
     void displacedInstance_isRetired_onlyAfterTheReplacementIsActive() {
         var w = MbWorld.worldWithFloor(2, CORE_1, CORE_2, CORE_3)
-                        .target(ORDERS, 1, "CORE_ONLY")
-                        .directive(W1, worker("east-w-0"))
-                        .community("east-w-0", 3, CommunityState.ACTIVE)
-                        .instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, G1, 21L)
-                        .seams(seams -> seams.withReady(ALL).withLocalAlive(Option.some(Set.of(W1))))
-                        .activate();
+                       .target(ORDERS, 1, "CORE_ONLY")
+                       .directive(W1,
+                                  worker("east-w-0"))
+                       .community("east-w-0", 3, CommunityState.ACTIVE)
+                       .instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, G1, 21L)
+                       .seams(seams -> seams.withReady(ALL)
+                                            .withLocalAlive(Option.some(Set.of(W1))))
+                       .activate();
 
-        assertThat(goalOf(w.h, CORE_1, ORDERS)).as("the replacement is loaded first").isEqualTo(Option.some(SliceGoal.LOADED));
-        assertThat(goalOf(w.h, W1, ORDERS)).as("the worker's instance is kept while the replacement loads").isEqualTo(Option.some(SliceGoal.ACTIVE));
-
+        assertThat(goalOf(w.h, CORE_1, ORDERS)).as("the replacement is loaded first")
+                  .isEqualTo(Option.some(SliceGoal.LOADED));
+        assertThat(goalOf(w.h, W1, ORDERS)).as("the worker's instance is kept while the replacement loads")
+                  .isEqualTo(Option.some(SliceGoal.ACTIVE));
         new NodeSim(w.h, CORE_1, process(11L)).follows(ORDERS);
         w.h.drain();
         new NodeSim(w.h, CORE_1, process(11L)).follows(ORDERS);
         w.h.drain();
         w.h.advance(30_000L);
-
-        assertThat(goalOf(w.h, W1, ORDERS)).as("the replacement is ACTIVE: the displaced instance goes").isEqualTo(Option.some(SliceGoal.UNLOADED));
+        assertThat(goalOf(w.h, W1, ORDERS)).as("the replacement is ACTIVE: the displaced instance goes")
+                  .isEqualTo(Option.some(SliceGoal.UNLOADED));
     }
 }

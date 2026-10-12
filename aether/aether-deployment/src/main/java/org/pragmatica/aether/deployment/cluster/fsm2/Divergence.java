@@ -73,12 +73,8 @@ public sealed interface Divergence {
         var state = row.map(SliceObservedValue::state);
 
         return switch (goal) {
-            case LOADED -> state.filter(value -> value == SliceObservedState.ACTIVE || value == SliceObservedState.DEACTIVATING)
-                                .map(_ -> DEACTIVATE_T)
-                                .or(LOAD_T);
-            case ACTIVE -> state.filter(value -> value == SliceObservedState.LOADED || value == SliceObservedState.ACTIVATING)
-                                .map(_ -> ACTIVATE_T)
-                                .or(LOAD_T);
+            case LOADED -> state.filter(value -> value == SliceObservedState.ACTIVE || value == SliceObservedState.DEACTIVATING).map(_ -> DEACTIVATE_T).or(LOAD_T);
+            case ACTIVE -> state.filter(value -> value == SliceObservedState.LOADED || value == SliceObservedState.ACTIVATING).map(_ -> ACTIVATE_T).or(LOAD_T);
             case UNLOADED, UNKNOWN -> UNLOAD_T;
         };
     }

@@ -6,13 +6,15 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The outer states of the FSM (spec 3.2) and the incarnation discipline (R-3.1.3), arms the NT rows do not reach.
 class GapEngineTest {
@@ -28,21 +30,19 @@ class GapEngineTest {
 
         h.step(new ClusterInput.Activate());
         h.mailbox.clear();
-
         assertThat(h.state).isInstanceOf(ClusterState.Rebuilding.class);
         h.step(new ClusterInput.Activate());
         h.step(staleTimer(1L));
         h.step(new ClusterInput.WriteSettled("c1-1", 1L, new ClusterInput.Settlement.Accepted()));
-        assertThat(((ClusterState.Rebuilding) h.state).held()).as("a second Activate, a timer and a completion are not held").isEmpty();
-
+        assertThat(((ClusterState.Rebuilding) h.state).held()).as("a second Activate, a timer and a completion are not held")
+                  .isEmpty();
         h.step(new ClusterInput.KvPut(new SliceTargetKey(ORDERS.base()), target(ORDERS, 1, 1, "CORE_ONLY")));
         assertThat(((ClusterState.Rebuilding) h.state).held()).as("any other input is held, in order").hasSize(1);
-
         h.step(new ClusterInput.Deactivate());
         assertThat(h.state).isEqualTo(new ClusterState.Dormant(1L));
-
         h.step(new ClusterInput.Activate());
-        assertThat(((ClusterState.Rebuilding) h.state).incarnation()).as("a fresh Active entry gets a fresh incarnation").isEqualTo(2L);
+        assertThat(((ClusterState.Rebuilding) h.state).incarnation()).as("a fresh Active entry gets a fresh incarnation")
+                  .isEqualTo(2L);
     }
 
     /// Red when: a timer or a completion of an earlier incarnation is handled after the FSM was deactivated and activated again
@@ -59,10 +59,10 @@ class GapEngineTest {
 
         h.deliver(staleTimer(1L));
         h.deliver(new ClusterInput.WriteSettled("c1-1", 1L, new ClusterInput.Settlement.Accepted()));
-
         assertThat(h.model().incarnation()).isEqualTo(2L);
         assertThat(h.effects(ClusterEffect.Schedule.class)).as("the stale tick re-armed nothing").isEmpty();
-        assertThat(h.metricTotal("aether_deployment_fsm_inputs_total", tags -> "dropped_stale".equals(tags.get("result")))).isEqualTo(2L);
+        assertThat(h.metricTotal("aether_deployment_fsm_inputs_total",
+                                 tags -> "dropped_stale".equals(tags.get("result")))).isEqualTo(2L);
         assertThat(h.model().tickCount).isEqualTo(model.tickCount);
     }
 
@@ -74,9 +74,7 @@ class GapEngineTest {
         h.activate();
         h.seedQuietly(new SliceTargetKey(ORDERS.base()), target(ORDERS, 2, 1, "CORE_ONLY"));
         assertThat(h.model().targets.containsKey(ORDERS.base())).isFalse();
-
         h.deliver(new ClusterInput.Rebuild(h.snapshot()));
-
         assertThat(h.model().targets.containsKey(ORDERS.base())).isTrue();
         assertThat(h.model().incarnation()).as("the incarnation is kept").isEqualTo(1L);
     }
@@ -91,13 +89,10 @@ class GapEngineTest {
         h.deliver(new ClusterInput.WitnessStale());
         h.seed(new SliceTargetKey(ORDERS.base()), target(ORDERS, 1, 1, "CORE_ONLY"));
         h.drain();
-
         assertThat(h.submits()).as("suspended: the target was indexed, nothing was submitted").isEmpty();
         assertThat(h.model().targets.containsKey(ORDERS.base())).isTrue();
-
         h.commitLeader(FsmHarness.SELF, 2L);
         h.drain();
-
         assertThat(h.model().leader()).isEqualTo(org.pragmatica.lang.Option.some(new LeaderValue(FsmHarness.SELF, 2L)));
         assertThat(h.submits()).as("resumed: the reconcile placed the instance").isNotEmpty();
     }
@@ -117,12 +112,13 @@ class GapEngineTest {
         h.drain();
         h.held.clear();
         h.settleHeld(original, h.refused(original));
-
         var resubmitted = h.submits().getLast();
 
         assertThat(h.submits()).hasSize(2);
-        assertThat(resubmitted.transaction().leader()).as("the new witness").isEqualTo(new LeaderValue(FsmHarness.SELF, 2L));
-        assertThat(resubmitted.transaction().mutations()).as("the identical write").isEqualTo(original.transaction().mutations());
+        assertThat(resubmitted.transaction().leader()).as("the new witness")
+                  .isEqualTo(new LeaderValue(FsmHarness.SELF, 2L));
+        assertThat(resubmitted.transaction().mutations()).as("the identical write")
+                  .isEqualTo(original.transaction().mutations());
     }
 
     /// Red when: a refusal whose re-read shows another node as the committed leader resubmits anything instead of suspending
@@ -140,7 +136,6 @@ class GapEngineTest {
         h.drain();
         h.held.clear();
         h.settleHeld(original, h.refused(original));
-
         assertThat(h.submits()).as("nothing was resubmitted").hasSize(1);
         assertThat(h.model().pendingGoals.isEmpty()).isTrue();
     }
@@ -154,9 +149,8 @@ class GapEngineTest {
         seedTarget(h, ORDERS, 2, 1);
         h.activate();
         assertThat(hosts(h, ORDERS)).containsExactly(CORE_1);
-
-        h.deliver(new ClusterInput.SeamsRefreshed(h.seams.withCountedCores(Set.of(CORE_1, CORE_2)).withReady(Set.of(CORE_1, CORE_2))));
-
+        h.deliver(new ClusterInput.SeamsRefreshed(h.seams.withCountedCores(Set.of(CORE_1, CORE_2))
+                                                         .withReady(Set.of(CORE_1, CORE_2))));
         assertThat(hosts(h, ORDERS)).containsExactly(CORE_1, CORE_2);
     }
 }

@@ -29,6 +29,7 @@ import org.pragmatica.lang.Option;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 
+
 /// Helpers of the slice/placement/blueprint tests: a harness with the leader committed and the cores counted, targets and
 /// goals seeded as a previous leader left them, and the BlueprintService publish batch.
 final class SlFixtures {
@@ -43,6 +44,7 @@ final class SlFixtures {
 
         h.commitLeader(FsmHarness.SELF, 1L);
         h.seams = Seams.UNWIRED.withCountedCores(set).withReady(set);
+
         return h;
     }
 
@@ -51,11 +53,27 @@ final class SlFixtures {
     }
 
     static SliceTargetValue target(Artifact artifact, int instances, int min, String placement) {
-        return new SliceTargetValue(artifact.version(), instances, min, Option.none(), placement, FsmHarness.START_WALL, Option.none(), Option.none(), Option.none());
+        return new SliceTargetValue(artifact.version(),
+                                    instances,
+                                    min,
+                                    Option.none(),
+                                    placement,
+                                    FsmHarness.START_WALL,
+                                    Option.none(),
+                                    Option.none(),
+                                    Option.none());
     }
 
     static SliceTargetValue ownedTarget(Artifact artifact, int instances, int min, BlueprintId owner) {
-        return new SliceTargetValue(artifact.version(), instances, min, Option.some(owner), "CORE_ONLY", FsmHarness.START_WALL, Option.none(), Option.none(), Option.none());
+        return new SliceTargetValue(artifact.version(),
+                                    instances,
+                                    min,
+                                    Option.some(owner),
+                                    "CORE_ONLY",
+                                    FsmHarness.START_WALL,
+                                    Option.none(),
+                                    Option.none(),
+                                    Option.none());
     }
 
     static void seedTarget(FsmHarness h, Artifact artifact, int instances, int min) {
@@ -66,7 +84,12 @@ final class SlFixtures {
         h.seedQuietly(new SliceDesiredKey(node, artifact), Fixtures.desired(goal, generation));
     }
 
-    static void seedRow(FsmHarness h, NodeId node, Artifact artifact, SliceObservedState state, Generation generation, long token) {
+    static void seedRow(FsmHarness h,
+                        NodeId node,
+                        Artifact artifact,
+                        SliceObservedState state,
+                        Generation generation,
+                        long token) {
         h.seedQuietly(new SliceObservedKey(node, artifact), Fixtures.row(state, 1L, generation, process(token)));
     }
 
@@ -78,7 +101,8 @@ final class SlFixtures {
     static void publish(FsmHarness h, AppBlueprintValue value, Option<AppBlueprintValue> previous) {
         var id = value.blueprint().id();
 
-        h.seed(new DeploymentOutcomeKey(id), DeploymentOutcomeValue.inProgress(h.wallMs, 1L, value.attemptId()));
+        h.seed(new DeploymentOutcomeKey(id),
+               DeploymentOutcomeValue.inProgress(h.wallMs, 1L, value.attemptId()));
         h.seed(new DeploymentApplyKey(id), new DeploymentApplyValue(value.attemptId(), previous, h.wallMs));
         h.seed(new AppBlueprintKey(id), value);
         h.drain();
@@ -89,22 +113,39 @@ final class SlFixtures {
     }
 
     static SliceObservedState stateOf(FsmHarness h, NodeId node, Artifact artifact) {
-        return h.model().observed(SlicePair.slicePair(node, artifact)).map(row -> row.state()).or(SliceObservedState.UNKNOWN);
+        return h.model()
+                .observed(SlicePair.slicePair(node, artifact))
+                .map(row -> row.state())
+                .or(SliceObservedState.UNKNOWN);
     }
 
     static Option<SliceGoal> goalOf(FsmHarness h, NodeId node, Artifact artifact) {
-        return h.model().desired(SlicePair.slicePair(node, artifact)).map(value -> value.goal());
+        return h.model()
+                .desired(SlicePair.slicePair(node, artifact))
+                .map(value -> value.goal());
     }
 
     static long countGoals(FsmHarness h, Artifact artifact) {
-        return h.model().desired.entries().stream().filter(entry -> entry.getKey().artifact().equals(artifact)).count();
+        return h.model().desired
+                .entries()
+                .stream()
+                .filter(entry -> entry.getKey()
+                                      .artifact()
+                                      .equals(artifact))
+                .count();
     }
 
     static List<NodeId> hosts(FsmHarness h, Artifact artifact) {
-        return h.model().desired.entries().stream()
-                .filter(entry -> entry.getKey().artifact().equals(artifact))
-                .filter(entry -> entry.getValue().goal() != SliceGoal.UNLOADED)
-                .map(entry -> entry.getKey().node())
+        return h.model().desired
+                .entries()
+                .stream()
+                .filter(entry -> entry.getKey()
+                                      .artifact()
+                                      .equals(artifact))
+                .filter(entry -> entry.getValue()
+                                      .goal() != SliceGoal.UNLOADED)
+                .map(entry -> entry.getKey()
+                                   .node())
                 .sorted()
                 .toList();
     }

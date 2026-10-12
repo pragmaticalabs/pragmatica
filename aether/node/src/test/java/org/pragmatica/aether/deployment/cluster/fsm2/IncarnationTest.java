@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.List;
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
@@ -24,11 +23,14 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.C;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.GOV;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.tokenOf;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Process identity (spec C6, C8, corrected Q12, NT-123 a/b/d, NT-125): a row is stale only on positive evidence, a restart is
 /// a new identity, and a leader that starts knowing no token changes nothing.
@@ -48,13 +50,18 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(W1, 1L, P1);
-        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
+        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker(C))
+         .target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1);
-        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C), roster(GOV, false, W1));
-        w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1))).withReady(Set.of(CORE_1, W1, W2)).withLocalAlive(Option.some(Set.of(W1))));
+        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C),
+                        roster(GOV, false, W1));
+        w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1)))
+                      .withReady(Set.of(CORE_1, W1, W2))
+                      .withLocalAlive(Option.some(Set.of(W1))));
         w.activate();
         w.h.deliver(new ClusterInput.WorkerLeave(W1));
-
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).hasSize(1);
         assertThat(w.h.submits(SubmitKind.CLEANUP)).hasSize(1);
         assertThat(w.present(new SliceObservedKey(W1, ORDERS))).as("C17b removed w1's rows").isFalse();
@@ -64,7 +71,8 @@ class IncarnationTest {
         assertThat(w.stored(new ActivationDirectiveKey(W2)).isPresent()).as("w2 is minted (J5)").isTrue();
         w.announce(C, GOV, W2);
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(W2))));
-        assertThat(w.stored(new SliceDesiredKey(W2, ORDERS)).map(v -> ((SliceDesiredValue) v).goal())).as("placeable: placed(a) restored by a fresh goal").isEqualTo(Option.some(SliceGoal.LOADED));
+        assertThat(w.stored(new SliceDesiredKey(W2, ORDERS)).map(v -> ((SliceDesiredValue) v).goal())).as("placeable: placed(a) restored by a fresh goal")
+                  .isEqualTo(Option.some(SliceGoal.LOADED));
         assertThat(Rows.placed(w.h.model(), ORDERS)).isEqualTo(1);
     }
 
@@ -76,12 +84,14 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(W1, 1L, P1);
-        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE).directive(W1, Fixtures.worker(C))
-         .record(W1, DepartureState.DEPARTED, 1L, P1, DepartureCause.WORKER_LEAVE).activate();
+        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker(C))
+         .record(W1, DepartureState.DEPARTED, 1L, P1, DepartureCause.WORKER_LEAVE)
+         .activate();
         w.h.clearLog();
         w.tokens.admit(W1, P2);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(2L, process(P2))));
-
         assertThat(w.h.submits()).isEmpty();
         assertThat(w.counts(W1)).isFalse();
     }
@@ -94,16 +104,18 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, P1);
-        w.directive(CORE_2, org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue.core()).target(ORDERS, 1, "CORE_ONLY");
+        w.directive(CORE_2,
+                    org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue.core())
+         .target(ORDERS, 1, "CORE_ONLY");
         w.h.seedQuietly(new SliceObservedKey(CORE_2, ORDERS), row(SliceObservedState.ACTIVE, 1L, gen(7), process(P1)));
         w.activate();
         w.tokens.admit(CORE_2, P2);
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, new Admission(2L, process(P2))));
-
         var pair = MbWorld.pair(CORE_2, ORDERS);
 
         assertThat(Rows.current(w.h.model(), pair).isEmpty()).as("a stale row reads as absent").isTrue();
-        assertThat(w.present(new SliceDesiredKey(CORE_2, ORDERS))).as("the pair is vacant: placement writes a fresh goal over it").isTrue();
+        assertThat(w.present(new SliceDesiredKey(CORE_2, ORDERS))).as("the pair is vacant: placement writes a fresh goal over it")
+                  .isTrue();
         assertThat(w.h.model().hasStray(pair)).isFalse();
         assertThat(Rows.liveCount(w.h.model(), ORDERS)).isZero();
     }
@@ -117,14 +129,17 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(W1, 1L, 0L);
-        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
+        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker(C))
+         .target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1).activate();
         w.h.advance(100_000L);
-
         assertThat(w.tokens.tokenOf(W1)).as("the real registry knows nothing").isZero();
         assertThat(Rows.activeCount(w.h.model(), ORDERS)).isEqualTo(1);
         assertThat(Rows.occupies(w.h.model(), MbWorld.pair(W1, ORDERS))).isTrue();
-        assertThat(w.h.submits().stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as("nothing is written for the rows").isEmpty();
+        assertThat(w.h.submits().stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as("nothing is written for the rows")
+                  .isEmpty();
     }
 
     // NT-123 (d)
@@ -135,7 +150,10 @@ class IncarnationTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(W1, 1L, P1);
-        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
+        w.community(C, 10, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker(C))
+         .target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1);
         w.activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
@@ -157,15 +175,16 @@ class IncarnationTest {
             w.h.drain();
         }
 
-        assertThat(w.present(new SliceObservedKey(W1, ORDERS))).as("the late C17b was refused: the rows are kept").isTrue();
+        assertThat(w.present(new SliceObservedKey(W1, ORDERS))).as("the late C17b was refused: the rows are kept")
+                  .isTrue();
         var adopted = w.stored(new SliceDesiredKey(W1, ORDERS)).map(v -> (SliceDesiredValue) v);
 
-        assertThat(adopted.map(SliceDesiredValue::generation)).as("adopted at the row's own generation").isEqualTo(Option.some(gen(7)));
+        assertThat(adopted.map(SliceDesiredValue::generation)).as("adopted at the row's own generation")
+                  .isEqualTo(Option.some(gen(7)));
         assertThat(adopted.map(SliceDesiredValue::goal)).isEqualTo(Option.some(SliceGoal.ACTIVE));
     }
 
     // -- NT-125 -----------------------------------------------------------------------------------------------------
-
     private static final List<NodeId> WORKERS = List.of(W1, W2, W3);
 
     /// Three workers and two cores with ACTIVE rows stamped with their real tokens, desired keys committed, verdict SUCCEEDED.
@@ -175,11 +194,18 @@ class IncarnationTest {
 
         w.workersUnadmitted(C, 10, alive, W1, W2, W3).target(ORDERS, 5, "ALL");
         for (var node : List.of(W1, W2, W3, CORE_1, CORE_2)) {
-            w.instance(node, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(3), 0x5000L + node.id().hashCode() % 0x100);
+            w.instance(node,
+                       ORDERS,
+                       SliceGoal.ACTIVE,
+                       SliceObservedState.ACTIVE,
+                       gen(3),
+                       0x5000L + node.id().hashCode() % 0x100);
         }
 
-        w.h.seedQuietly(new DeploymentOutcomeKey(blueprintId("org.example:app:1.0.0")), DeploymentOutcomeValue.succeeded(FsmHarness.START_WALL, 1L, "a1"));
-        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C), roster(GOV, false, W1, W2, W3));
+        w.h.seedQuietly(new DeploymentOutcomeKey(blueprintId("org.example:app:1.0.0")),
+                        DeploymentOutcomeValue.succeeded(FsmHarness.START_WALL, 1L, "a1"));
+        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C),
+                        roster(GOV, false, W1, W2, W3));
         if (seamPresent) {
             for (var node : List.of(W1, W2, W3, CORE_1, CORE_2)) {
                 w.admit(node, 1L, 0L);
@@ -195,10 +221,14 @@ class IncarnationTest {
         assertThat(Rows.activeCount(model, ORDERS)).as(arm + ": activeCount").isEqualTo(5);
         assertThat(Rows.liveCount(model, ORDERS)).as(arm + ": liveCount").isEqualTo(5);
         assertThat(Rows.placed(model, ORDERS)).as(arm + ": placed").isEqualTo(5);
-        assertThat(w.h.submits().stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as(arm + ": no goal, no removal, nothing submitted").isEmpty();
-        assertThat(w.h.metricTotal("aether_deployment_fsm_stale_rows_total", t -> true)).as(arm + ": stale_rows_total").isZero();
-        assertThat(w.stored(new DeploymentOutcomeKey(blueprintId("org.example:app:1.0.0"))).map(v -> ((DeploymentOutcomeValue) v).status()))
-            .as(arm + ": verdict").isEqualTo(Option.some(DeploymentOutcomeStatus.SUCCEEDED));
+        assertThat(w.h.submits().stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as(arm
+                                                                                           + ": no goal, no removal, nothing submitted")
+                  .isEmpty();
+        assertThat(w.h.metricTotal("aether_deployment_fsm_stale_rows_total", t -> true)).as(arm + ": stale_rows_total")
+                  .isZero();
+        assertThat(w.stored(new DeploymentOutcomeKey(blueprintId("org.example:app:1.0.0")))
+                    .map(v -> ((DeploymentOutcomeValue) v).status())).as(arm + ": verdict")
+                  .isEqualTo(Option.some(DeploymentOutcomeStatus.SUCCEEDED));
     }
 
     // NT-125 (leader start, tokens unknown; same tokens learned; different token learned)
@@ -208,7 +238,7 @@ class IncarnationTest {
     // is submitted.
     @Test
     void leaderStart_withUnknownTokens_changesNothing_andLearningATokenRemovesNothing() {
-        for (var seamPresent : new boolean[] {true, false}) {
+        for (var seamPresent : new boolean[]{true, false}) {
             var arm = seamPresent
                       ? "seam present but unrefreshed"
                       : "seam absent";
@@ -218,20 +248,40 @@ class IncarnationTest {
             w.h.advance(3 * w.h.settings.timing().tick() + 1_000L);
             assertNothingChanged(w, arm);
             for (var node : List.of(W1, W2, W3)) {
-                assertThat(Rows.isStale(w.h.model(), MbWorld.pair(node, ORDERS), w.h.model().observed.get(MbWorld.pair(node, ORDERS)).or(row(SliceObservedState.ACTIVE, 1L, gen(1), process(1L))))).as(arm).isFalse();
+                assertThat(Rows.isStale(w.h.model(),
+                                        MbWorld.pair(node, ORDERS),
+                                        w.h.model().observed
+                                           .get(MbWorld.pair(node, ORDERS))
+                                           .or(row(SliceObservedState.ACTIVE,
+                                                   1L,
+                                                   gen(1),
+                                                   process(1L))))).as(arm)
+                          .isFalse();
             }
 
             for (var node : List.of(W1, W2, W3, CORE_1, CORE_2)) {
-                var rowToken = w.h.model().observed.get(MbWorld.pair(node, ORDERS)).map(row -> row.incarnation().bootToken()).or(0L);
+                var rowToken = w.h.model().observed
+                                  .get(MbWorld.pair(node, ORDERS))
+                                  .map(row -> row.incarnation()
+                                                 .bootToken())
+                                  .or(0L);
 
                 w.h.deliver(new ClusterInput.ProcessKnown(node, rowToken));
             }
 
             assertNothingChanged(w, arm + ", same tokens learned");
             w.h.deliver(new ClusterInput.ProcessKnown(W1, 0x7777_7777L));
-            assertThat(Rows.activeCount(w.h.model(), ORDERS)).as(arm + ": the different-token row no longer counts").isEqualTo(4);
+            assertThat(Rows.activeCount(w.h.model(),
+                                        ORDERS)).as(arm + ": the different-token row no longer counts")
+                      .isEqualTo(4);
             assertThat(w.present(new SliceObservedKey(W1, ORDERS))).as(arm + ": and is not removed").isTrue();
-            assertThat(w.h.submits().stream().flatMap(s -> s.transaction().mutations().stream()).filter(m -> m.replacement().isEmpty())).isEmpty();
+            assertThat(w.h.submits()
+                          .stream()
+                          .flatMap(s -> s.transaction()
+                                         .mutations()
+                                         .stream())
+                          .filter(m -> m.replacement()
+                                        .isEmpty())).isEmpty();
             assertThat(w.h.metricTotal("aether_deployment_fsm_stale_rows_total", t -> true)).isGreaterThan(0L);
         }
     }
@@ -243,6 +293,10 @@ class IncarnationTest {
         var w = clusterBeforeTheNewLeader(true);
 
         w.activate();
-        assertThat(WORKERS.stream().map(node -> Rows.current(w.h.model(), MbWorld.pair(node, ORDERS)).isPresent()).toList()).containsOnly(true);
+        assertThat(WORKERS.stream()
+                          .map(node -> Rows.current(w.h.model(),
+                                                    MbWorld.pair(node, ORDERS))
+                                           .isPresent())
+                          .toList()).containsOnly(true);
     }
 }

@@ -8,8 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
@@ -29,10 +27,14 @@ import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind.TARGETS;
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Target intake and loss (NT-11), rollback (NT-25, NT-26) and community states (NT-42), on the real applier.
 class SlBlueprintTest {
@@ -52,7 +54,6 @@ class SlBlueprintTest {
             var first = h.submits(TARGETS).size();
 
             h.advanceBySeconds(160);
-
             assertThat(first).isEqualTo(1);
             assertThat(h.submits(TARGETS)).as("re-submitted once").hasSize(2);
             assertThat(h.warns("slice-start-awaiting-target")).hasSize(1);
@@ -67,11 +68,9 @@ class SlBlueprintTest {
             h.policy = FsmHarness.SettlePolicy.LOSE;
             h.seed(new AppBlueprintKey(blueprintId(APP)), blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())));
             h.drain();
-
             h.seedRemove(new SliceTargetKey(ORDERS.base()));
             h.drain();
             h.advanceBySeconds(160);
-
             assertThat(h.submits(TARGETS)).as("no new target put after the foreign remove").hasSize(1);
         }
     }
@@ -90,9 +89,14 @@ class SlBlueprintTest {
             node(h, hosts(h, ORDERS).getFirst(), 1L).follows(ORDERS);
             h.drain();
             h.seedRemove(new DeploymentOutcomeKey(blueprintId(APP)));
-            publish(h, v2, withPrevious ? Option.some(v1) : Option.none());
+            publish(h,
+                    v2,
+                    withPrevious
+                    ? Option.some(v1)
+                    : Option.none());
             h.deliver(new ClusterInput.Deactivate());
             h.activate();
+
             return h;
         }
 
@@ -105,16 +109,23 @@ class SlBlueprintTest {
 
             node(h, billingHost, 3L).fails(BILLING, true);
             h.drain();
-
             var id = blueprintId(APP);
             var restored = h.store.get(new AppBlueprintKey(id));
+
             assertThat(restored.isPresent()).as("restored, not deleted").isTrue();
-            assertThat(restored.map(v -> ((AppBlueprintValue) v).blueprint().loadOrder().size())).as("the one-slice previous").isEqualTo(Option.some(1));
-            assertThat(restored.map(v -> ((AppBlueprintValue) v).attemptId())).as("carries the rolled-back attempt's id").isEqualTo(Option.some("attempt-2"));
+            assertThat(restored.map(v -> ((AppBlueprintValue) v).blueprint()
+                                                                .loadOrder()
+                                                                .size())).as("the one-slice previous")
+                      .isEqualTo(Option.some(1));
+            assertThat(restored.map(v -> ((AppBlueprintValue) v).attemptId())).as("carries the rolled-back attempt's id")
+                      .isEqualTo(Option.some("attempt-2"));
             assertThat(h.store.get(new DeploymentOutcomeKey(id)).map(v -> ((DeploymentOutcomeValue) v).status())).isEqualTo(Option.some(DeploymentOutcomeStatus.ROLLED_BACK));
-            assertThat(h.store.get(new DeploymentApplyKey(id)).isPresent()).as("the apply record is garbage collected").isFalse();
-            assertThat(h.model().judgment(BILLING).map(ArtifactJudgmentValue::permanentFailure)).as("the permanent mark rides the failure").isEqualTo(Option.some(true));
-            assertThat(h.store.get(new SliceTargetKey(BILLING.base())).isPresent()).as("the added slice's target goes").isFalse();
+            assertThat(h.store.get(new DeploymentApplyKey(id)).isPresent()).as("the apply record is garbage collected")
+                      .isFalse();
+            assertThat(h.model().judgment(BILLING).map(ArtifactJudgmentValue::permanentFailure)).as("the permanent mark rides the failure")
+                      .isEqualTo(Option.some(true));
+            assertThat(h.store.get(new SliceTargetKey(BILLING.base())).isPresent()).as("the added slice's target goes")
+                      .isFalse();
         }
 
         /// NT-25 control. Red when: with no `previous` the blueprint is not removed.
@@ -124,7 +135,6 @@ class SlBlueprintTest {
 
             node(h, hosts(h, BILLING).getFirst(), 3L).fails(BILLING, true);
             h.drain();
-
             assertThat(h.store.get(new AppBlueprintKey(blueprintId(APP))).isPresent()).isFalse();
         }
 
@@ -134,15 +144,17 @@ class SlBlueprintTest {
             var h = threeCores();
 
             h.activate();
-            publish(h, blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of()), slice(BILLING, 1, 1, Set.of())), Option.none());
-            h.seed(new VersionRoutingKey(BILLING.base()), new VersionRoutingValue(BILLING.version(), BILLING.version(), 50, 50, h.wallMs));
+            publish(h,
+                    blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of()), slice(BILLING, 1, 1, Set.of())),
+                    Option.none());
+            h.seed(new VersionRoutingKey(BILLING.base()),
+                   new VersionRoutingValue(BILLING.version(), BILLING.version(), 50, 50, h.wallMs));
             h.drain();
-
             node(h, hosts(h, BILLING).getFirst(), 3L).fails(BILLING, true);
             h.drain();
-
             assertThat(h.submits(ClusterModel.SubmitKind.ROLLBACK)).isEmpty();
-            assertThat(h.model().judgment(BILLING).map(ArtifactJudgmentValue::permanentFailure)).as("the failure is still recorded").isEqualTo(Option.some(true));
+            assertThat(h.model().judgment(BILLING).map(ArtifactJudgmentValue::permanentFailure)).as("the failure is still recorded")
+                      .isEqualTo(Option.some(true));
             assertThat(h.store.get(new AppBlueprintKey(blueprintId(APP))).isPresent()).isTrue();
         }
     }
@@ -161,7 +173,9 @@ class SlBlueprintTest {
             for (var w : List.of(W1, W2, W3)) {
                 h.seedQuietly(new ActivationDirectiveKey(w), worker("c"));
             }
+
             h.seedQuietly(new GovernorAnnouncementKey("c"), roster(W1, false, W1, W2, W3));
+
             return h;
         }
 
@@ -173,7 +187,6 @@ class SlBlueprintTest {
             h.activate();
             h.advanceBySeconds(1);
             h.advance(31_000L);
-
             assertThat(h.store.get(new CommunityKey("c")).map(v -> ((CommunityValue) v).state())).isEqualTo(Option.some(CommunityState.ACTIVE));
         }
 
@@ -185,7 +198,6 @@ class SlBlueprintTest {
             h.seedQuietly(new CommunityKey("c"), community("default", 3, CommunityState.UNKNOWN));
             h.activate();
             h.advance(61_000L);
-
             assertThat(h.submits(ClusterModel.SubmitKind.COMMUNITY)).isEmpty();
         }
 
@@ -199,18 +211,20 @@ class SlBlueprintTest {
             h.activate();
             var first = h.submits(ClusterModel.SubmitKind.COMMUNITY).getFirst();
 
-            h.seed(new GovernorAnnouncementKey("c"), roster(W1, false, W1, W2, W3).withMembers(List.of(W1, W2, W3), "10.0.0.2:9000", org.pragmatica.aether.slice.generation.Epoch.ZERO));
+            h.seed(new GovernorAnnouncementKey("c"),
+                   roster(W1, false, W1, W2, W3).withMembers(List.of(W1, W2, W3),
+                                                             "10.0.0.2:9000",
+                                                             org.pragmatica.aether.slice.generation.Epoch.ZERO));
             h.drain();
             var second = h.submits(ClusterModel.SubmitKind.COMMUNITY).getLast();
             var before = h.submits(ClusterModel.SubmitKind.COMMUNITY).size();
 
             h.held.remove(first.correlationId());
             h.settleHeld(first, h.applyTransaction(first));
-            assertThat(h.submits(ClusterModel.SubmitKind.COMMUNITY)).as("the refusal is re-evaluated").hasSize(before + 1);
-
+            assertThat(h.submits(ClusterModel.SubmitKind.COMMUNITY)).as("the refusal is re-evaluated")
+                      .hasSize(before + 1);
             h.held.remove(second.correlationId());
             h.settleHeld(second, h.applyTransaction(second));
-
             assertThat(h.store.get(new CommunityKey("c")).map(v -> ((CommunityValue) v).state())).isEqualTo(Option.some(CommunityState.ACTIVE));
         }
     }

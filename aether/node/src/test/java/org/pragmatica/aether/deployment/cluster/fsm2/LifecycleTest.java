@@ -6,16 +6,18 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.LcSupport.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// NT-01, NT-02, NT-03, NT-07, NT-91, NT-107: the outer states, the incarnation, the timers and the witness.
 class LifecycleTest {
@@ -32,9 +34,9 @@ class LifecycleTest {
         h.step(new ClusterInput.KvRemove(new SliceTargetKey(BILLING.base())));
         assertThat(((ClusterState.Rebuilding) h.state).held()).as("held, not handled on an empty model").hasSize(2);
         h.drain();
-
         assertThat(h.isActive()).isTrue();
-        assertThat(h.model().targets.get(ORDERS.base()).isPresent()).as("the input that arrived during Rebuild is in the model").isTrue();
+        assertThat(h.model().targets.get(ORDERS.base()).isPresent()).as("the input that arrived during Rebuild is in the model")
+                  .isTrue();
     }
 
     // NT-02
@@ -45,12 +47,11 @@ class LifecycleTest {
 
         assertThat(h.timers).as("control: the incarnation armed its timers").isNotEmpty();
         h.deliver(new ClusterInput.Deactivate());
-
         assertThat(h.state).isInstanceOf(ClusterState.Dormant.class);
         assertThat(h.timers).as("the tick timer does not survive").isEmpty();
-        assertThat(h.effects(ClusterEffect.Cancel.class).stream().map(cancel -> cancel.timer().kind()))
-            .contains(TimerId.Kind.TICK, TimerId.Kind.POST_ACTIVATION);
-
+        assertThat(h.effects(ClusterEffect.Cancel.class).stream().map(cancel -> cancel.timer()
+                                                                                      .kind())).contains(TimerId.Kind.TICK,
+                                                                                                         TimerId.Kind.POST_ACTIVATION);
         var before = h.submits().size();
 
         h.advance(120_000L);
@@ -85,7 +86,6 @@ class LifecycleTest {
 
         h.clearLog();
         h.deliver(new ClusterInput.Activate());
-
         assertThat(h.effects(ClusterEffect.RequestRebuild.class)).isEmpty();
         assertThat(h.model()).as("the model is the same value: no rebuild").isSameAs(model);
         assertThat(h.state).isInstanceOf(ClusterState.Active.class);
@@ -100,12 +100,12 @@ class LifecycleTest {
         h.activate();
         var schedules = h.effects(ClusterEffect.Schedule.class);
 
-        assertThat(schedules.stream().filter(s -> s.timer().kind() == TimerId.Kind.POST_ACTIVATION).toList())
-            .singleElement()
-            .satisfies(s -> assertThat(s.delayMs()).isEqualTo(2_000L));
-        assertThat(schedules.stream().filter(s -> s.timer().kind() == TimerId.Kind.TICK).toList())
-            .singleElement()
-            .satisfies(s -> assertThat(s.delayMs()).isEqualTo(30_000L));
+        assertThat(schedules.stream().filter(s -> s.timer()
+                                                   .kind() == TimerId.Kind.POST_ACTIVATION).toList()).singleElement()
+                  .satisfies(s -> assertThat(s.delayMs()).isEqualTo(2_000L));
+        assertThat(schedules.stream().filter(s -> s.timer()
+                                                   .kind() == TimerId.Kind.TICK).toList()).singleElement()
+                  .satisfies(s -> assertThat(s.delayMs()).isEqualTo(30_000L));
         assertThat(schedules).hasSize(2);
     }
 
@@ -125,9 +125,9 @@ class LifecycleTest {
         var count = h.submits().size();
 
         h.settleHeld(held, h.refused(held));
-
         assertThat(h.submits()).as("nothing resubmitted").hasSize(count);
-        assertThat(h.metricTotal("aether_deployment_fsm_submissions_total", t -> "refused_deposed".equals(t.get("outcome")))).isPositive();
+        assertThat(h.metricTotal("aether_deployment_fsm_submissions_total",
+                                 t -> "refused_deposed".equals(t.get("outcome")))).isPositive();
         h.advance(60_000L);
         assertThat(h.submits()).hasSize(count);
     }
@@ -143,15 +143,14 @@ class LifecycleTest {
         h.activate();
         publish(h, blueprint("org.example:app:1.0.0", false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())));
         assertThat(h.submits()).as("no transaction while the mirror names another node").isEmpty();
-
         h.commitLeader(CORE_3, 2L);
         h.drain();
         h.advance(60_000L);
         assertThat(h.submits()).as("a CI-16 naming another node does not resume").isEmpty();
-
         h.commitLeader(FsmHarness.SELF, 3L);
         h.drain();
-        assertThat(h.submits(SubmitKind.TARGETS)).as("a CI-16 naming self resumes: the open apply is re-driven").isNotEmpty();
+        assertThat(h.submits(SubmitKind.TARGETS)).as("a CI-16 naming self resumes: the open apply is re-driven")
+                  .isNotEmpty();
         assertThat(h.submits().getFirst().transaction().leader().viewSequence()).isEqualTo(3L);
     }
 }

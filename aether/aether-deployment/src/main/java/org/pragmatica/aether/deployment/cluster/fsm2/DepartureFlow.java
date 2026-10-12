@@ -81,9 +81,13 @@ public sealed interface DepartureFlow {
                                          SlicePair.slicePair(node, artifact)));
         m.artifactIntents.values()
                          .stream()
-                         .flatMap(intent -> intent.goals().stream())
-                         .filter(goal -> goal.pair().node().equals(node))
-                         .forEach(goal -> Indexer.clearPending(m, goal.pair()));
+                         .flatMap(intent -> intent.goals()
+                                                  .stream())
+                         .filter(goal -> goal.pair()
+                                             .node()
+                                             .equals(node))
+                         .forEach(goal -> Indexer.clearPending(m,
+                                                               goal.pair()));
         m.artifactIntents.entries()
                          .forEach(entry -> Outbox.artifact(m,
                                                            entry.getKey(),
@@ -357,9 +361,14 @@ public sealed interface DepartureFlow {
 
         m.departing.entries()
                    .stream()
-                   .filter(entry -> ctx.monoNs() - entry.getValue().sinceMono() >= bound && !departureInFlight(m, entry.getKey()))
+                   .filter(entry -> ctx.monoNs() - entry.getValue()
+                                                        .sinceMono() >= bound && !departureInFlight(m,
+                                                                                                    entry.getKey()))
                    .sorted(Map.Entry.comparingByKey())
-                   .forEach(entry -> rereadPending(m, ctx, entry.getKey(), entry.getValue()));
+                   .forEach(entry -> rereadPending(m,
+                                                   ctx,
+                                                   entry.getKey(),
+                                                   entry.getValue()));
 
         return m;
     }
@@ -370,12 +379,13 @@ public sealed interface DepartureFlow {
                           .flatMap(submitted -> submitted.drafts()
                                                          .stream())
                           .anyMatch(draft -> concernsDeparture(draft, node)) || m.outbox.stream()
-                                                                                       .anyMatch(draft -> concernsDeparture(draft, node));
+                                                                                        .anyMatch(draft -> concernsDeparture(draft,
+                                                                                                                             node));
     }
 
     private static boolean concernsDeparture(TxDraft draft, NodeId node) {
         return (draft.kind() == SubmitKind.DEPARTURE || draft.kind() == SubmitKind.INFERRED_DEPARTURE) && draft.node()
-                                                                                                             .equals(Option.some(node));
+                                                                                                               .equals(Option.some(node));
     }
 
     static boolean admissionInFlight(ClusterModel m, NodeId node) {

@@ -6,8 +6,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
@@ -16,9 +14,13 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The activation gate (R-3.3.5): the dependency half and the schema half. NT-18, 19, 20, 21, 22.
 class SlGateTest {
@@ -28,7 +30,10 @@ class SlGateTest {
         var h = threeCores();
 
         h.activate();
-        publish(h, blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of(BILLING)), slice(BILLING, 1, 1, Set.of())), Option.none());
+        publish(h,
+                blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of(BILLING)), slice(BILLING, 1, 1, Set.of())),
+                Option.none());
+
         return h;
     }
 
@@ -45,10 +50,11 @@ class SlGateTest {
             h.drain();
             node(h, billingHost, 2L).follows(BILLING);
             h.drain();
-
             assertThat(stateOf(h, ordersHost, ORDERS)).isEqualTo(SliceObservedState.LOADED);
-            assertThat(goalOf(h, ordersHost, ORDERS)).as("BILLING is LOADED, not ACTIVE: ORDERS waits").isEqualTo(Option.some(SliceGoal.LOADED));
-            assertThat(goalOf(h, billingHost, BILLING)).as("the dependency itself has none to wait for").isEqualTo(Option.some(SliceGoal.ACTIVE));
+            assertThat(goalOf(h, ordersHost, ORDERS)).as("BILLING is LOADED, not ACTIVE: ORDERS waits")
+                      .isEqualTo(Option.some(SliceGoal.LOADED));
+            assertThat(goalOf(h, billingHost, BILLING)).as("the dependency itself has none to wait for")
+                      .isEqualTo(Option.some(SliceGoal.ACTIVE));
         }
 
         /// NT-19. Red when: the dependency's ACTIVE does not activate the dependent in the same drain.
@@ -63,7 +69,6 @@ class SlGateTest {
             h.drain();
             node(h, billingHost, 2L).follows(BILLING);
             h.drain();
-
             assertThat(stateOf(h, billingHost, BILLING)).isEqualTo(SliceObservedState.ACTIVE);
             assertThat(goalOf(h, ordersHost, ORDERS)).isEqualTo(Option.some(SliceGoal.ACTIVE));
         }
@@ -72,7 +77,14 @@ class SlGateTest {
     @Nested
     class Schema {
         private SchemaVersionValue record(SchemaStatus status) {
-            return new SchemaVersionValue("orders-db", 1, "V1", status, "org.example:migrations:1.0.0", blueprintId(APP), 0, FsmHarness.START_WALL);
+            return new SchemaVersionValue("orders-db",
+                                          1,
+                                          "V1",
+                                          status,
+                                          "org.example:migrations:1.0.0",
+                                          blueprintId(APP),
+                                          0,
+                                          FsmHarness.START_WALL);
         }
 
         private FsmHarness heldByPendingSchema() {
@@ -84,6 +96,7 @@ class SlGateTest {
             h.drain();
             node(h, hosts(h, ORDERS).getFirst(), 1L).follows(ORDERS);
             h.drain();
+
             return h;
         }
 
@@ -97,7 +110,6 @@ class SlGateTest {
             assertThat(h.warns("schema-hold")).hasSize(1);
             h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.COMPLETED));
             h.drain();
-
             assertThat(goalOf(h, host, ORDERS)).isEqualTo(Option.some(SliceGoal.ACTIVE));
             assertThat(h.warns("schema-hold-cleared")).hasSize(1);
         }
@@ -109,11 +121,17 @@ class SlGateTest {
 
             h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.FAILED));
             h.drain();
-
-            assertThat(h.effects(ClusterEffect.Route.class).stream().map(ClusterEffect.Route::event))
-                    .anyMatch(event -> event instanceof RoutedEvent.ActivationBlocked blocked && blocked.datasource().equals("orders-db") && blocked.slices().contains(ORDERS.asString()));
-            assertThat(h.effects(ClusterEffect.Audit.class)).anyMatch(audit -> audit.action().equals("schema-activation-blocked"));
-            assertThat(goalOf(h, hosts(h, ORDERS).getFirst(), ORDERS)).as("still held").isEqualTo(Option.some(SliceGoal.LOADED));
+            assertThat(h.effects(ClusterEffect.Route.class).stream().map(ClusterEffect.Route::event)).anyMatch(event -> event instanceof RoutedEvent.ActivationBlocked blocked
+                                                                                                                        && blocked.datasource()
+                                                                                                                                  .equals("orders-db")
+                                                                                                                        && blocked.slices()
+                                                                                                                                  .contains(ORDERS.asString()));
+            assertThat(h.effects(ClusterEffect.Audit.class)).anyMatch(audit -> audit.action()
+                                                                                    .equals("schema-activation-blocked"));
+            assertThat(goalOf(h,
+                              hosts(h, ORDERS).getFirst(),
+                              ORDERS)).as("still held")
+                      .isEqualTo(Option.some(SliceGoal.LOADED));
         }
 
         /// NT-22. Red when: an UNKNOWN status submits anything, or does not WARN.
@@ -124,7 +142,6 @@ class SlGateTest {
 
             h.seed(new SchemaVersionKey("orders-db"), record(SchemaStatus.UNKNOWN));
             h.drain();
-
             assertThat(h.submits()).hasSize(before);
             assertThat(h.warns("schema-status-unknown")).hasSize(1);
         }
@@ -134,7 +151,8 @@ class SlGateTest {
         void pending_dispatchesTheMigration() {
             var h = heldByPendingSchema();
 
-            assertThat(h.effects(ClusterEffect.DispatchMigration.class)).anyMatch(dispatch -> dispatch.datasource().equals("orders-db"));
+            assertThat(h.effects(ClusterEffect.DispatchMigration.class)).anyMatch(dispatch -> dispatch.datasource()
+                                                                                                      .equals("orders-db"));
         }
 
         /// Not a schema hold: an owner without a blocking record is never held (control of NT-20). Red when: the gate holds a slice with no record.
@@ -146,7 +164,6 @@ class SlGateTest {
             publish(h, blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of())), Option.none());
             node(h, hosts(h, ORDERS).getFirst(), 1L).follows(ORDERS);
             h.drain();
-
             assertThat(goalOf(h, hosts(h, ORDERS).getFirst(), ORDERS)).isEqualTo(Option.some(SliceGoal.ACTIVE));
         }
     }
@@ -163,7 +180,6 @@ class SlGateTest {
             h.activate();
             node(h, CORE_1, 1L).follows(ORDERS);
             h.drain();
-
             assertThat(goalOf(h, CORE_1, ORDERS)).isEqualTo(Option.some(SliceGoal.UNLOADED));
             assertThat(h.store.get(new SliceObservedKey(CORE_1, ORDERS)).isPresent()).isTrue();
         }

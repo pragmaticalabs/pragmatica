@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -17,9 +16,12 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.consensus.NodeId;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.LcSupport.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// NT-78: every input is counted, and no ordinary input iterates a store-wide index (R-7.3.1).
 class ScanAndMetricsTest {
@@ -42,10 +44,12 @@ class ScanAndMetricsTest {
             var goal = desired(SliceGoal.ACTIVE, gen(1));
 
             h.seedQuietly(new SliceDesiredKey(nodeOf(i), artifactOf(i)), goal);
-            h.seedQuietly(new SliceObservedKey(nodeOf(i), artifactOf(i)), row(SliceObservedState.ACTIVE, 1L, gen(1), process(7)));
+            h.seedQuietly(new SliceObservedKey(nodeOf(i), artifactOf(i)),
+                          row(SliceObservedState.ACTIVE, 1L, gen(1), process(7)));
         }
 
         h.activate();
+
         return h;
     }
 
@@ -57,17 +61,23 @@ class ScanAndMetricsTest {
 
         h.activate();
         h.deliver(new ClusterInput.SeamsRefreshed(h.seams));
-        h.deliver(new ClusterInput.KvPut(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1)));
+        h.deliver(new ClusterInput.KvPut(new SliceTargetKey(ORDERS.base()),
+                                         SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1)));
         h.advance(31_000L);
         h.deliver(new ClusterInput.WitnessStale());
-
         assertThat(h.steps).isNotEmpty();
         for (var effects : h.steps) {
-            assertThat(effects.stream().filter(e -> e instanceof ClusterEffect.Metric metric && metric.name().equals("aether_deployment_fsm_inputs_total")).count())
-                .as("one inputs_total per step").isEqualTo(1);
+            assertThat(effects.stream()
+                              .filter(e -> e instanceof ClusterEffect.Metric metric && metric.name()
+                                                                                             .equals("aether_deployment_fsm_inputs_total"))
+                              .count()).as("one inputs_total per step")
+                      .isEqualTo(1);
         }
-        for (var type : new String[] {"Activate", "Rebuild", "SeamsRefreshed", "KvPut", "Timer", "Reconcile", "Flush", "WitnessStale"}) {
-            assertThat(h.metricTotal("aether_deployment_fsm_inputs_total", t -> type.equals(t.get("input")) && "applied".equals(t.get("result")))).as(type).isPositive();
+
+        for (var type : new String[]{"Activate", "Rebuild", "SeamsRefreshed", "KvPut", "Timer", "Reconcile", "Flush", "WitnessStale"}) {
+            assertThat(h.metricTotal("aether_deployment_fsm_inputs_total",
+                                     t -> type.equals(t.get("input")) && "applied".equals(t.get("result")))).as(type)
+                      .isPositive();
         }
     }
 
@@ -80,18 +90,30 @@ class ScanAndMetricsTest {
 
         assertThat(PMap.scans()).as("control: Rebuild and the first reconcile do scan").isGreaterThan(scansBefore);
         assertThat(h.model().observed.size()).isEqualTo(PAIRS);
-
         var pair = pair(nodeOf(5), artifactOf(5));
         var next = row(SliceObservedState.ACTIVE, 2L, gen(1), process(7));
-        var inputs = new ClusterInput[] {
-            new ClusterInput.KvPut(new SliceObservedKey(pair.node(), pair.artifact()), next),
-            new ClusterInput.KvPut(new SliceDesiredKey(pair.node(), pair.artifact()), desired(SliceGoal.ACTIVE, gen(1))),
-            new ClusterInput.KvPut(new SliceTargetKey(pair.artifact().base()), SliceTargetValue.sliceTargetValue(pair.artifact().version(), 1, 1)),
-            new ClusterInput.KvPut(new ArtifactJudgmentKey(pair.artifact()), new ArtifactJudgmentValue(false, java.util.Map.of(pair.node(), 1), java.util.Map.of())),
-            new ClusterInput.KvPut(new org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey(blueprintId("org.example:app:1.0.0")),
-                                   blueprint("org.example:app:1.0.0", true, ATTEMPT, slice(pair.artifact(), 1, 1, Set.of()))),
-            new ClusterInput.KvRemove(new SliceObservedKey(pair.node(), pair.artifact()))
-        };
+        var inputs = new ClusterInput[]{new ClusterInput.KvPut(new SliceObservedKey(pair.node(), pair.artifact()),
+                                                               next), new ClusterInput.KvPut(new SliceDesiredKey(pair.node(),
+                                                                                                                 pair.artifact()),
+                                                                                             desired(SliceGoal.ACTIVE,
+                                                                                                     gen(1))), new ClusterInput.KvPut(new SliceTargetKey(pair.artifact()
+                                                                                                                                                             .base()),
+                                                                                                                                      SliceTargetValue.sliceTargetValue(pair.artifact()
+                                                                                                                                                                            .version(),
+                                                                                                                                                                        1,
+                                                                                                                                                                        1)), new ClusterInput.KvPut(new ArtifactJudgmentKey(pair.artifact()),
+                                                                                                                                                                                                    new ArtifactJudgmentValue(false,
+                                                                                                                                                                                                                              java.util.Map.of(pair.node(),
+                                                                                                                                                                                                                                               1),
+                                                                                                                                                                                                                              java.util.Map.of())), new ClusterInput.KvPut(new org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey(blueprintId("org.example:app:1.0.0")),
+                                                                                                                                                                                                                                                                           blueprint("org.example:app:1.0.0",
+                                                                                                                                                                                                                                                                                     true,
+                                                                                                                                                                                                                                                                                     ATTEMPT,
+                                                                                                                                                                                                                                                                                     slice(pair.artifact(),
+                                                                                                                                                                                                                                                                                           1,
+                                                                                                                                                                                                                                                                                           1,
+                                                                                                                                                                                                                                                                                           Set.of()))), new ClusterInput.KvRemove(new SliceObservedKey(pair.node(),
+                                                                                                                                                                                                                                                                                                                                                       pair.artifact()))};
 
         for (var input : inputs) {
             var before = PMap.scans();
@@ -113,18 +135,20 @@ class ScanAndMetricsTest {
         var h = active();
         var orphan = pair(CORE_1, ORDERS_V2);
 
-        h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 0, 0));
+        h.seed(new SliceTargetKey(ORDERS.base()),
+               SliceTargetValue.sliceTargetValue(ORDERS.version(), 0, 0));
         h.drain();
         h.seed(new SliceDesiredKey(CORE_1, ORDERS_V2), desired(SliceGoal.ACTIVE, gen(1)));
         h.seed(new SliceObservedKey(CORE_1, ORDERS_V2), row(SliceObservedState.ACTIVE, 1L, gen(1), process(11)));
         h.drain();
-
         for (var tick = 1; tick <= 9; tick++) {
             h.advance(30_000L);
-            assertThat(h.model().desired(orphan).map(d -> d.goal())).as("tick " + tick).isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
+            assertThat(h.model().desired(orphan).map(d -> d.goal())).as("tick " + tick)
+                      .isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
         }
 
         h.advance(30_000L);
-        assertThat(h.model().desired(orphan).map(d -> d.goal())).as("tick 10: the audit").isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.UNLOADED));
+        assertThat(h.model().desired(orphan).map(d -> d.goal())).as("tick 10: the audit")
+                  .isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.UNLOADED));
     }
 }

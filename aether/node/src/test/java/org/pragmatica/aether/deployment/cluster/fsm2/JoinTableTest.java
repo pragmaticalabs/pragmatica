@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -27,8 +26,11 @@ import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The join table (spec C15, C16, J0 to J9) and the fenced late-departure sequences (R-4.3.0), on the real applier and with
 /// a real `BootTokens` registry behind every admission.
@@ -43,18 +45,26 @@ class JoinTableTest {
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, A);
         w.admit(CORE_3, 1L, 0x3333L);
+
         return w;
     }
 
     private static boolean touches(ClusterEffect.Submit submit, Class<?> keyType) {
-        return submit.transaction().mutations().stream().anyMatch(m -> keyType.isInstance(m.key()));
+        return submit.transaction()
+                     .mutations()
+                     .stream()
+                     .anyMatch(m -> keyType.isInstance(m.key()));
     }
 
     private static Option<NodeDepartureValue> written(ClusterEffect.Submit submit) {
-        return submit.transaction().mutations().stream()
+        return submit.transaction()
+                     .mutations()
+                     .stream()
                      .filter(m -> m.key() instanceof NodeDepartureKey)
                      .findFirst()
-                     .flatMap(m -> m.replacement().stream().findFirst())
+                     .flatMap(m -> m.replacement()
+                                    .stream()
+                                    .findFirst())
                      .map(NodeDepartureValue.class::cast)
                      .map(Option::some)
                      .orElse(Option.none());
@@ -69,7 +79,6 @@ class JoinTableTest {
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, A)));
-
         var admission = w.h.submits(SubmitKind.ADMISSION);
 
         assertThat(admission).hasSize(1);
@@ -88,7 +97,6 @@ class JoinTableTest {
 
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 1L, B)));
-
         assertThat(w.h.submits()).isEmpty();
         assertThat(w.counts(W1)).isFalse();
     }
@@ -102,7 +110,6 @@ class JoinTableTest {
         w.seams(s -> s.withSuperseded(Set.of(CORE_3))).activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.NodeJoined(CORE_3, w.admit(CORE_3, 1L, 0x3333L)));
-
         assertThat(w.h.submits().stream().anyMatch(s -> touches(s, ActivationDirectiveKey.class))).isFalse();
         assertThat(w.h.model().admission(CORE_3).isPresent()).as("admission is recorded").isTrue();
         assertThat(w.counts(CORE_3)).as("membership decided: the core counts").isTrue();
@@ -115,14 +122,22 @@ class JoinTableTest {
         var w = world();
 
         w.admit(W1, 1L, B);
-        w.community("c1", 5, CommunityState.ACTIVE).directive(W1, Fixtures.worker("c1"))
-         .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.STALE).activate();
+        w.community("c1", 5, CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker("c1"))
+         .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.STALE)
+         .activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 1L, B)));
-
         assertThat(w.recordOf(W1).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
-        assertThat(w.h.submits().getFirst().transaction().mutations().getFirst().expected().map(v -> ((NodeDepartureValue) v).cause()))
-            .as("expecting the STALE value").isEqualTo(Option.some(Option.some(DepartureCause.STALE)));
+        assertThat(w.h.submits()
+                      .getFirst()
+                      .transaction()
+                      .mutations()
+                      .getFirst()
+                      .expected()
+                      .map(v -> ((NodeDepartureValue) v).cause())).as("expecting the STALE value")
+                  .isEqualTo(Option.some(Option.some(DepartureCause.STALE)));
         assertThat(w.counts(W1)).isTrue();
     }
 
@@ -134,15 +149,18 @@ class JoinTableTest {
         var w = world();
 
         w.admit(W1, 1L, B);
-        w.community("c1", 5, CommunityState.ACTIVE).directive(W1, Fixtures.worker("c1"))
-         .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE).activate();
+        w.community("c1", 5, CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker("c1"))
+         .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
+         .activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 2L, B)));
-
         var submit = w.h.submits(SubmitKind.ADMISSION).getFirst();
 
         assertThat(submit.transaction().mutations().getFirst().expected().map(v -> ((NodeDepartureValue) v).state())).isEqualTo(Option.some(DepartureState.DEPARTED));
-        assertThat(submit.transaction().guards()).as("witnessed on the directive").anyMatch(g -> g.key() instanceof ActivationDirectiveKey);
+        assertThat(submit.transaction().guards()).as("witnessed on the directive")
+                  .anyMatch(g -> g.key() instanceof ActivationDirectiveKey);
         assertThat(w.h.submits().stream().anyMatch(s -> touches(s, CommunityKey.class))).as("no mint").isFalse();
         assertThat(w.counts(W1)).isTrue();
     }
@@ -154,13 +172,15 @@ class JoinTableTest {
     void j3_unknownToken_isTheSameProcess_andIsReadmitted() {
         var w = world();
 
-        w.community("c1", 5, CommunityState.ACTIVE).directive(W1, Fixtures.worker("c1"))
-         .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE).activate();
+        w.community("c1", 5, CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker("c1"))
+         .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
+         .activate();
         var unknown = w.admit(W1, 2L, 0L);
 
         assertThat(unknown.tokenKnown()).as("the real registry has recorded no token").isFalse();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, unknown));
-
         assertThat(w.recordOf(W1).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
     }
 
@@ -171,12 +191,14 @@ class JoinTableTest {
         var w = world();
 
         w.admit(W1, 1L, A);
-        w.community("c1", 5, CommunityState.ACTIVE).directive(W1, Fixtures.worker("c1"))
-         .record(W1, DepartureState.DEPARTED, 1L, A, DepartureCause.WORKER_LEAVE).activate();
+        w.community("c1", 5, CommunityState.ACTIVE)
+         .directive(W1,
+                    Fixtures.worker("c1"))
+         .record(W1, DepartureState.DEPARTED, 1L, A, DepartureCause.WORKER_LEAVE)
+         .activate();
         w.h.clearLog();
         w.tokens.admit(W1, B);
         w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(2L, process(B))));
-
         assertThat(w.h.submits()).isEmpty();
         assertThat(w.h.warns("identity-process-mismatch")).hasSize(1);
         assertThat(w.counts(W1)).isFalse();
@@ -189,17 +211,28 @@ class JoinTableTest {
     void j8_differentProcessCore_isRecorded_andItsEarlierRowsAreStale() {
         var w = world();
 
-        w.directive(CORE_2, ActivationDirectiveValue.core()).target(ORDERS, 1, "CORE_ONLY")
+        w.directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .target(ORDERS, 1, "CORE_ONLY")
          .record(CORE_2, DepartureState.DEPARTED, 1L, A, DepartureCause.NODE_REMOVED)
-         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), A).activate();
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   A)
+         .activate();
         w.h.clearLog();
         w.tokens.admit(CORE_2, B);
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, new Admission(2L, process(B))));
-
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
-        assertThat(w.recordOf(CORE_2).map(r -> r.process().bootToken())).isEqualTo(Option.some(B));
+        assertThat(w.recordOf(CORE_2).map(r -> r.process()
+                                                .bootToken())).isEqualTo(Option.some(B));
         assertThat(w.counts(CORE_2)).isTrue();
-        assertThat(Rows.liveCount(w.h.model(), ORDERS) + Rows.activeCount(w.h.model(), ORDERS)).as("the process-A row is not counted").isZero();
+        assertThat(Rows.liveCount(w.h.model(),
+                                  ORDERS) + Rows.activeCount(w.h.model(),
+                                                             ORDERS)).as("the process-A row is not counted")
+                  .isZero();
         assertThat(w.h.model().hasStray(MbWorld.pair(CORE_2, ORDERS))).as("a stale row is never a stray").isFalse();
         assertThat(w.h.warns("identity-process-mismatch")).hasSize(1);
     }
@@ -238,10 +271,12 @@ class JoinTableTest {
     void j9_unmatchedCombination_warns_writesNothing_andIsRetriedOnTheTick() {
         var w = world();
 
-        w.directive(CORE_2, ActivationDirectiveValue.core()).record(CORE_2, DepartureState.DEPARTED, 2L, A, DepartureCause.NODE_REMOVED).activate();
+        w.directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .record(CORE_2, DepartureState.DEPARTED, 2L, A, DepartureCause.NODE_REMOVED)
+         .activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, A)));
-
         assertThat(w.h.submits()).isEmpty();
         assertThat(w.h.warns("join-unmatched")).hasSize(1);
         w.h.advance(w.h.settings.timing().tick() + 1);
@@ -256,7 +291,13 @@ class JoinTableTest {
         var w = world();
 
         w.record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
-         .instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), B).target(ORDERS, 1, "CORE_ONLY");
+         .instance(W1,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   B)
+         .target(ORDERS, 1, "CORE_ONLY");
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.activate();
         w.h.clearLog();
@@ -277,10 +318,13 @@ class JoinTableTest {
         var w = world();
 
         w.admit(W1, 1L, B);
-        w.community("gone", 5, CommunityState.DISSOLVING).directive(W1, Fixtures.worker("gone"))
-         .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE).target(ORDERS, 1, "WORKERS_ONLY").activate();
+        w.community("gone", 5, CommunityState.DISSOLVING)
+         .directive(W1,
+                    Fixtures.worker("gone"))
+         .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
+         .target(ORDERS, 1, "WORKERS_ONLY")
+         .activate();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 2L, B)));
-
         assertThat(w.counts(W1)).isFalse();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).isFalse();
     }
@@ -294,8 +338,17 @@ class JoinTableTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, A);
-        w.target(ORDERS, 1, "CORE_ONLY").directive(CORE_2, ActivationDirectiveValue.core())
-         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), A).routes(CORE_2, ORDERS).activate();
+        w.target(ORDERS, 1, "CORE_ONLY")
+         .directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   A)
+         .routes(CORE_2, ORDERS)
+         .activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         var departure = w.h.submits(SubmitKind.DEPARTURE).getFirst();
@@ -329,8 +382,16 @@ class JoinTableTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, A);
-        w.target(ORDERS, 1, "CORE_ONLY").directive(CORE_2, ActivationDirectiveValue.core())
-         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), A).activate();
+        w.target(ORDERS, 1, "CORE_ONLY")
+         .directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   A)
+         .activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         var departure = w.h.submits(SubmitKind.DEPARTURE).getFirst();
@@ -352,7 +413,8 @@ class JoinTableTest {
         assertThat(mutation.replacement().map(v -> ((NodeDepartureValue) v).epoch())).isEqualTo(Option.some(2L));
         w.h.applyHeld(rewrite.correlationId());
         w.h.drain();
-        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b for an ignored record, nor after the replacement").isEmpty();
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("no C17b for an ignored record, nor after the replacement")
+                  .isEmpty();
         assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).isTrue();
     }
 
@@ -364,8 +426,16 @@ class JoinTableTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, A);
-        w.target(ORDERS, 1, "CORE_ONLY").directive(CORE_2, ActivationDirectiveValue.core())
-         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), A).activate();
+        w.target(ORDERS, 1, "CORE_ONLY")
+         .directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   A)
+         .activate();
         w.h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         var departure = w.h.submits(SubmitKind.DEPARTURE).getFirst();
@@ -386,7 +456,6 @@ class JoinTableTest {
         w.activate();
         w.h.deliver(new ClusterInput.NodeJoined(CORE_1, w.admit(CORE_1, 1L, 0x1111L)));
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 1L, A)));
-
         assertThat(w.present(new ActivationDirectiveKey(CORE_1))).isFalse();
         assertThat(w.present(new ActivationDirectiveKey(CORE_2))).isTrue();
     }
@@ -400,8 +469,12 @@ class JoinTableTest {
         w.activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 1L, A)));
-
-        var retry = w.h.effects(ClusterEffect.Schedule.class).stream().filter(s -> s.timer().subject().equals("join-retry")).toList();
+        var retry = w.h.effects(ClusterEffect.Schedule.class)
+                       .stream()
+                       .filter(s -> s.timer()
+                                     .subject()
+                                     .equals("join-retry"))
+                       .toList();
 
         assertThat(retry).hasSize(1);
         assertThat(retry.getFirst().delayMs()).isEqualTo(2_000L);
@@ -414,7 +487,10 @@ class JoinTableTest {
     private static final CommunityPlacement.Location POOL = new CommunityPlacement.Location("pool", Option.none(), 0, 1);
 
     private Map<String, CommunityPlacement> policies() {
-        return Map.of("a", new CommunityPlacement("a", 4, List.of(POOL)), "b", new CommunityPlacement("b", 4, List.of(POOL)));
+        return Map.of("a",
+                      new CommunityPlacement("a", 4, List.of(POOL)),
+                      "b",
+                      new CommunityPlacement("b", 4, List.of(POOL)));
     }
 
     private String choiceOf(boolean departedDirectiveKept) {
@@ -424,15 +500,25 @@ class JoinTableTest {
         var other = node("wb-live");
         var fresh = node("w-new");
 
-        w.community("a", 4, CommunityState.ACTIVE).community("b", 4, CommunityState.ACTIVE)
-         .directive(live, Fixtures.worker("a")).directive(other, Fixtures.worker("b"));
+        w.community("a", 4, CommunityState.ACTIVE)
+         .community("b", 4, CommunityState.ACTIVE)
+         .directive(live,
+                    Fixtures.worker("a"))
+         .directive(other,
+                    Fixtures.worker("b"));
         if (departedDirectiveKept) {
-            w.directive(gone, Fixtures.worker("a")).record(gone, DepartureState.DEPARTED, 1L, 0x77L, DepartureCause.WORKER_LEAVE);
+            w.directive(gone,
+                        Fixtures.worker("a"))
+             .record(gone, DepartureState.DEPARTED, 1L, 0x77L, DepartureCause.WORKER_LEAVE);
         }
 
-        w.seams(s -> s.withCommunityPolicies(policies()).withMemberSource(Map.of(fresh, "pool"))).activate();
+        w.seams(s -> s.withCommunityPolicies(policies())
+                      .withMemberSource(Map.of(fresh, "pool"))).activate();
         w.h.deliver(new ClusterInput.WorkerJoin(fresh, w.admit(fresh, 1L, 0x55L)));
-        return w.stored(new ActivationDirectiveKey(fresh)).map(v -> ((ActivationDirectiveValue) v).communityId()).or("none");
+
+        return w.stored(new ActivationDirectiveKey(fresh))
+                .map(v -> ((ActivationDirectiveValue) v).communityId())
+                .or("none");
     }
 
     // NT-39
@@ -454,11 +540,17 @@ class JoinTableTest {
         var w = world();
         var fresh = node("w-new");
 
-        w.community("a", 4, CommunityState.ACTIVE).community("b", 4, CommunityState.ACTIVE)
-         .directive(node("a1"), Fixtures.worker("a")).directive(node("a2"), Fixtures.worker("a")).directive(node("b1"), Fixtures.worker("b"));
-        w.seams(s -> s.withCommunityPolicies(policies()).withMemberSource(Map.of(fresh, "pool"))).activate();
+        w.community("a", 4, CommunityState.ACTIVE)
+         .community("b", 4, CommunityState.ACTIVE)
+         .directive(node("a1"),
+                    Fixtures.worker("a"))
+         .directive(node("a2"),
+                    Fixtures.worker("a"))
+         .directive(node("b1"),
+                    Fixtures.worker("b"));
+        w.seams(s -> s.withCommunityPolicies(policies())
+                      .withMemberSource(Map.of(fresh, "pool"))).activate();
         w.h.deliver(new ClusterInput.WorkerJoin(fresh, w.admit(fresh, 1L, 0x55L)));
-
         assertThat(w.stored(new ActivationDirectiveKey(fresh)).map(v -> ((ActivationDirectiveValue) v).communityId())).isEqualTo(Option.some("b"));
     }
 
@@ -477,7 +569,8 @@ class JoinTableTest {
         w.h.clearLog();
         w.h.seedRemove(new ActivationDirectiveKey(CORE_2));
         w.h.drain();
-        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL).stream().anyMatch(s -> touches(s, NodeDepartureKey.class))).as("R-4.3.3: one transaction removes the record").isTrue();
+        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL).stream().anyMatch(s -> touches(s, NodeDepartureKey.class))).as("R-4.3.3: one transaction removes the record")
+                  .isTrue();
         assertThat(w.recordOf(CORE_2).isEmpty()).as("R-4.3.3: the record goes with the directive").isTrue();
     }
 }

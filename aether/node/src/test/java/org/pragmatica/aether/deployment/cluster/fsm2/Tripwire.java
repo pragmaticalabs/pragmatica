@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+
 /// A source scan for the architecture tripwires (NT-116): which main sources construct or mention a name.
 final class Tripwire {
     private Tripwire() {}
@@ -21,14 +22,20 @@ final class Tripwire {
         while (dir != null && !Files.isDirectory(dir.resolve("aether/aether-deployment/src/main"))) {
             dir = dir.getParent();
         }
+
         return dir;
     }
 
     /// Lines of `.java` files under `root` (main sources only, definitions excluded) that construct `type`.
     static List<String> constructions(Path root, String type) throws IOException {
-        var construct = Pattern.compile("new\\s+(?:[\\w.]+\\.)?" + type + "\\s*\\(|\\b" + Character.toLowerCase(type.charAt(0)) + type.substring(1) + "\\s*\\(");
+        var construct = Pattern.compile("new\\s+(?:[\\w.]+\\.)?" + type
+                                       + "\\s*\\(|\\b" + Character.toLowerCase(type.charAt(0)) + type.substring(1)
+                                       + "\\s*\\(");
 
-        return scan(root, type, line -> construct.matcher(line).find());
+        return scan(root,
+                    type,
+                    line -> construct.matcher(line)
+                                     .find());
     }
 
     static List<String> mentions(Path root, String type) throws IOException {
@@ -37,11 +44,17 @@ final class Tripwire {
 
     private static List<String> scan(Path root, String type, java.util.function.Predicate<String> match) throws IOException {
         try (Stream<Path> files = Files.walk(root)) {
-            var sources = files.filter(path -> path.toString().endsWith(".java"))
-                               .filter(path -> !path.toString().contains("/src/test/"))
-                               .filter(path -> !path.toString().contains("/target/"))
-                               .filter(path -> !path.toString().contains(".m2-local"))
-                               .filter(path -> !path.getFileName().toString().equals("MembershipDecision.java"))
+            var sources = files.filter(path -> path.toString()
+                                                   .endsWith(".java"))
+                               .filter(path -> !path.toString()
+                                                    .contains("/src/test/"))
+                               .filter(path -> !path.toString()
+                                                    .contains("/target/"))
+                               .filter(path -> !path.toString()
+                                                    .contains(".m2-local"))
+                               .filter(path -> !path.getFileName()
+                                                    .toString()
+                                                    .equals("MembershipDecision.java"))
                                .toList();
             var hits = new java.util.ArrayList<String>();
 
@@ -52,6 +65,7 @@ final class Tripwire {
                     }
                 }
             }
+
             return hits;
         }
     }

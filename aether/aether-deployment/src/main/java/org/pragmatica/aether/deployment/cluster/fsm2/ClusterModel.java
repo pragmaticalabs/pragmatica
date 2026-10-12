@@ -347,7 +347,9 @@ public final class ClusterModel {
 
         public ArtifactIntent withoutGoalsOf(NodeId node) {
             return new ArtifactIntent(ops,
-                                      goals.stream().filter(goal -> !goal.pair().node().equals(node)).toList(),
+                                      goals.stream().filter(goal -> !goal.pair()
+                                                                         .node()
+                                                                         .equals(node)).toList(),
                                       extras);
         }
 

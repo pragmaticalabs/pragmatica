@@ -4,14 +4,16 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Core load levelling (B-061): one move per pass, after the hysteresis, from the most-loaded core hosting the artifact to the
 /// least-loaded core not hosting it.
@@ -29,6 +31,7 @@ class GapRebalanceTest {
             seedGoal(h, CORE_1, artifact, SliceGoal.ACTIVE, G1);
             seedRow(h, CORE_1, artifact, SliceObservedState.ACTIVE, G1, 11L);
         }
+
         return h;
     }
 
@@ -41,13 +44,13 @@ class GapRebalanceTest {
         h.activate();
         assertThat(h.submits()).as("first imbalanced tick: hysteresis, no move").isEmpty();
         assertThat(h.model().imbalancedTicks.size()).isEqualTo(3);
-
         h.deliver(new ClusterInput.Reconcile());
-
         assertThat(h.submits()).as("the second tick moves exactly one artifact: a load and an unload").hasSize(2);
         assertThat(goalOf(h, CORE_1, A)).isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.UNLOADED));
-        assertThat(goalOf(h, CORE_2, A)).as("the least-loaded core, ties by id").isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.LOADED));
-        assertThat(goalOf(h, CORE_1, B)).as("B waits for the next pass (budget)").isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
+        assertThat(goalOf(h, CORE_2, A)).as("the least-loaded core, ties by id")
+                  .isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.LOADED));
+        assertThat(goalOf(h, CORE_1, B)).as("B waits for the next pass (budget)")
+                  .isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
     }
 
     /// Red when: a balanced cluster (spread within one) is moved.
@@ -58,17 +61,16 @@ class GapRebalanceTest {
         for (var artifact : new Artifact[]{A, B, C}) {
             seedTarget(h, artifact, 1, 1);
         }
+
         seedGoal(h, CORE_1, A, SliceGoal.ACTIVE, G1);
         seedRow(h, CORE_1, A, SliceObservedState.ACTIVE, G1, 11L);
         seedGoal(h, CORE_2, B, SliceGoal.ACTIVE, G1);
         seedRow(h, CORE_2, B, SliceObservedState.ACTIVE, G1, 12L);
         seedGoal(h, CORE_3, C, SliceGoal.ACTIVE, G1);
         seedRow(h, CORE_3, C, SliceObservedState.ACTIVE, G1, 13L);
-
         h.activate();
         h.deliver(new ClusterInput.Reconcile());
         h.deliver(new ClusterInput.Reconcile());
-
         assertThat(h.submits()).isEmpty();
     }
 
@@ -88,11 +90,10 @@ class GapRebalanceTest {
         seedTarget(h, C, 1, 1);
         seedGoal(h, CORE_1, C, SliceGoal.ACTIVE, G1);
         seedRow(h, CORE_1, C, SliceObservedState.ACTIVE, G1, 11L);
-
         h.activate();
         h.deliver(new ClusterInput.Reconcile());
         h.deliver(new ClusterInput.Reconcile());
-
-        assertThat(goalOf(h, worker, A)).as("the worker's instance stays").isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
+        assertThat(goalOf(h, worker, A)).as("the worker's instance stays")
+                  .isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
     }
 }

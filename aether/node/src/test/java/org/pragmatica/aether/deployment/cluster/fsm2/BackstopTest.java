@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.List;
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -27,11 +26,14 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.C;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.GOV;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.tokenOf;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The departure backstop (spec C9 to C11, R-2.15, step 7): a lost departure input is recorded by reconcile, per node class,
 /// fenced, record-only. Bounds come from the real defaults; announcements are real Puts at the real reannounce rate.
@@ -46,7 +48,12 @@ class BackstopTest {
     private static final long BRM = ms(bounds().coreRemoval());
 
     private static boolean removes(ClusterEffect.Submit submit, NodeId node) {
-        return submit.transaction().mutations().stream().anyMatch(m -> m.replacement().isEmpty() && concerns(m.key(), node));
+        return submit.transaction()
+                     .mutations()
+                     .stream()
+                     .anyMatch(m -> m.replacement()
+                                     .isEmpty() && concerns(m.key(),
+                                                            node));
     }
 
     private static boolean concerns(AetherKey key, NodeId node) {
@@ -61,7 +68,11 @@ class BackstopTest {
     }
 
     private static boolean wrote(ClusterEffect.Submit submit, NodeId node) {
-        return submit.transaction().mutations().stream().anyMatch(m -> m.key() instanceof NodeDepartureKey k && k.nodeId().equals(node));
+        return submit.transaction()
+                     .mutations()
+                     .stream()
+                     .anyMatch(m -> m.key() instanceof NodeDepartureKey k && k.nodeId()
+                                                                              .equals(node));
     }
 
     /// Community C of w1 and four live members; ORDERS (2 instances, WORKERS_ONLY) runs on w1 and m1.
@@ -78,6 +89,7 @@ class BackstopTest {
         w.activate();
         w.announce(C, GOV, W1, M1, M2, M3, M4);
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(W1, M1, M2, M3, M4))));
+
         return w;
     }
 
@@ -96,6 +108,7 @@ class BackstopTest {
         w.h.commitLeader(FsmHarness.SELF, 2L);
         w.h.deliver(new ClusterInput.Activate());
         w.h.clearLog();
+
         return w;
     }
 
@@ -132,7 +145,6 @@ class BackstopTest {
         var since = w.since(W1).or(0L);
 
         w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, alive, listed);
-
         var inferred = w.inferred();
 
         assertThat(inferred).hasSize(1);
@@ -146,16 +158,24 @@ class BackstopTest {
         var cleanup = w.h.submits(SubmitKind.CLEANUP);
 
         assertThat(cleanup).hasSize(1);
-        assertThat(cleanup.getFirst().transaction().guards()).anyMatch(g -> g.key().equals(new NodeDepartureKey(W1)));
+        assertThat(cleanup.getFirst().transaction().guards()).anyMatch(g -> g.key()
+                                                                             .equals(new NodeDepartureKey(W1)));
         assertThat(w.present(new SliceObservedKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new NodeRoutesKey(W1, ORDERS))).isFalse();
         assertThat(w.present(new ActivationDirectiveKey(W1))).as("the directive waits (Q1)").isTrue();
         assertThat(w.present(new NodePlacementKey(W1))).isTrue();
-        assertThat(w.h.submits().stream().flatMap(s -> s.transaction().mutations().stream())
-                    .anyMatch(m -> m.key() instanceof ActivationDirectiveKey k && k.nodeId().equals(W1) || m.key() instanceof NodePlacementKey p && p.nodeId().equals(W1))).isFalse();
+        assertThat(w.h.submits()
+                      .stream()
+                      .flatMap(s -> s.transaction()
+                                     .mutations()
+                                     .stream())
+                      .anyMatch(m -> m.key() instanceof ActivationDirectiveKey k && k.nodeId()
+                                                                                     .equals(W1) || m.key() instanceof NodePlacementKey p && p.nodeId()
+                                                                                                                                              .equals(W1))).isFalse();
         assertThat(Rows.placed(w.h.model(), ORDERS)).as("placed(a) restored by a fresh goal").isEqualTo(2);
-        assertThat(w.h.model().assignedByCommunity.get(C).map(set -> set.contains(W1))).as("not counted by the community accounting").isEqualTo(Option.some(false));
+        assertThat(w.h.model().assignedByCommunity.get(C).map(set -> set.contains(W1))).as("not counted by the community accounting")
+                  .isEqualTo(Option.some(false));
         w.h.seedRemove(new ActivationDirectiveKey(W1));
         w.h.drain();
         assertThat(w.recordOf(W1).isEmpty()).as("R-4.3.3: confirmed termination collects the record").isTrue();
@@ -171,7 +191,11 @@ class BackstopTest {
         var since = w.since(W1).or(0L);
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1);
+        w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L,
+                      C,
+                      GOV,
+                      ALIVE_WITHOUT_W1,
+                      WITHOUT_W1);
         var inferred = w.inferred().getFirst();
 
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 2L, tokenOf(W1))));
@@ -200,7 +224,11 @@ class BackstopTest {
         var since = w.since(W1).or(0L);
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1);
+        w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L,
+                      C,
+                      GOV,
+                      ALIVE_WITHOUT_W1,
+                      WITHOUT_W1);
         w.h.applyHeld(w.inferred().getFirst().correlationId());
         w.h.drain();
         var cleanup = w.h.submits(SubmitKind.CLEANUP).getFirst();
@@ -225,9 +253,15 @@ class BackstopTest {
         w.admit(CORE_1, 1L, 0x1111L);
         w.workers(C, 10, ALIVE_WITHOUT_W1, w3, M1, M2, M3, M4);
         w.h.admissions.put(w3, w.admit(w3, 1L, 0L));
-        w.instance(w3, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), 0L).target(ORDERS, 1, "WORKERS_ONLY").activate();
+        w.instance(w3,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   0L)
+         .target(ORDERS, 1, "WORKERS_ONLY")
+         .activate();
         w.evolve(C, GOV, ALIVE_WITHOUT_W1, List.of(w3, M1, M2, M3, M4), 10 * BW);
-
         assertThat(w.h.submits().stream().anyMatch(s -> wrote(s, w3) || removes(s, w3))).isFalse();
         assertThat(w.present(new SliceObservedKey(w3, ORDERS))).isTrue();
     }
@@ -259,7 +293,7 @@ class BackstopTest {
     // community: with company, a core-view judgment would make the whole community absent and the breaker would hide the defect.
     @Test
     void liveWorker_visibleInOneSignalOnly_isNeverRecorded() {
-        for (var inRoster : new boolean[] {true, false}) {
+        for (var inRoster : new boolean[]{true, false}) {
             var w = MbWorld.world(CORE_1);
             var w5 = node("w5");
             var alive = inRoster
@@ -275,7 +309,8 @@ class BackstopTest {
             var before = Rows.activeCount(w.h.model(), ORDERS);
 
             w.evolve(C, GOV, alive, listed, Math.max(2 * BRM, 3 * BW));
-            assertThat(w.h.submits().stream().anyMatch(s -> wrote(s, w5) || removes(s, w5))).as("inRoster=" + inRoster).isFalse();
+            assertThat(w.h.submits().stream().anyMatch(s -> wrote(s, w5) || removes(s, w5))).as("inRoster=" + inRoster)
+                      .isFalse();
             assertThat(Rows.activeCount(w.h.model(), ORDERS)).isEqualTo(before);
         }
     }
@@ -293,12 +328,19 @@ class BackstopTest {
             if (variant.equals("dissolved")) {
                 w.admit(w6, 1L, tokenOf(w6));
                 w.directive(w6, ActivationDirectiveValue.worker());
-                w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1))).withLocalAlive(Option.some(Set.of())));
+                w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1)))
+                              .withLocalAlive(Option.some(Set.of())));
             } else {
                 w.workers(C, 10, Set.of(), w6);
             }
 
-            w.instance(w6, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w6)).target(ORDERS, 1, "WORKERS_ONLY");
+            w.instance(w6,
+                       ORDERS,
+                       SliceGoal.ACTIVE,
+                       SliceObservedState.ACTIVE,
+                       gen(1),
+                       tokenOf(w6))
+             .target(ORDERS, 1, "WORKERS_ONLY");
             if (variant.equals("unwired")) {
                 w.seams(s -> s.withLocalAlive(Option.none()));
             }
@@ -344,7 +386,11 @@ class BackstopTest {
         var first = w.since(w7).or(0L);
 
         assertThat(first).isGreaterThan(0L);
-        w.evolveUntil(first + bounds().workerRemoval() - 1_000_000L - 1_000_000_000L, C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1);
+        w.evolveUntil(first + bounds().workerRemoval() - 1_000_000L - 1_000_000_000L,
+                      C,
+                      GOV,
+                      ALIVE_WITHOUT_W1,
+                      WITHOUT_W1);
         assertThat(w.inferred()).isEmpty();
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(M1, M2, M3, M4, w7))));
         assertThat(w.since(w7)).as("one sample in localAlive resets the clock").isEqualTo(Option.none());
@@ -362,7 +408,8 @@ class BackstopTest {
         w.h.deliver(new ClusterInput.WorkerJoin(w7, w.admit(w7, 2L, tokenOf(w7))));
         w.h.applyHeld(w.h.submits(SubmitKind.ADMISSION).getLast().correlationId());
         w.h.drain();
-        assertThat(w.h.applyHeld(inferred.getFirst().correlationId())).as("a concurrent ADMITTED refuses it as a whole").isInstanceOf(Settlement.Refused.class);
+        assertThat(w.h.applyHeld(inferred.getFirst().correlationId())).as("a concurrent ADMITTED refuses it as a whole")
+                  .isInstanceOf(Settlement.Refused.class);
         assertThat(w.recordOf(w7).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
     }
 
@@ -375,9 +422,17 @@ class BackstopTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, 0x2222L);
-        w.directive(CORE_2, ActivationDirectiveValue.core()).target(ORDERS, 1, "CORE_ONLY")
-         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), 0x2222L);
-        w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1))).withLocalAlive(Option.some(Set.of(CORE_1, CORE_2))));
+        w.directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .target(ORDERS, 1, "CORE_ONLY")
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   0x2222L);
+        w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1)))
+                      .withLocalAlive(Option.some(Set.of(CORE_1, CORE_2))));
         w.activate();
         w.announce(C, GOV, CORE_2);
         w.refreshSeams(s -> s);

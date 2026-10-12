@@ -16,6 +16,7 @@ import org.pragmatica.lang.Option;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 
+
 /// Helpers shared by the lifecycle / write-path / judgment tests (fork LC).
 final class LcSupport {
     static final String ATTEMPT = "attempt-1";
@@ -27,8 +28,8 @@ final class LcSupport {
         var h = FsmHarness.harness();
 
         h.commitLeader(FsmHarness.SELF, 1L);
-        h.seams = Seams.UNWIRED.withCountedCores(Set.of(CORE_1, CORE_2, CORE_3))
-                               .withReady(Set.of(CORE_1, CORE_2, CORE_3));
+        h.seams = Seams.UNWIRED.withCountedCores(Set.of(CORE_1, CORE_2, CORE_3)).withReady(Set.of(CORE_1, CORE_2, CORE_3));
+
         return h;
     }
 
@@ -43,14 +44,14 @@ final class LcSupport {
 
     static void publish(FsmHarness h, AppBlueprintValue value, Option<AppBlueprintValue> previous) {
         var id = value.blueprint().id();
-
         var version = h.store.get(new DeploymentOutcomeKey(id))
                              .filter(DeploymentOutcomeValue.class::isInstance)
                              .map(DeploymentOutcomeValue.class::cast)
                              .map(outcome -> outcome.outcomeVersion() + 1)
                              .or(1L);
 
-        h.seed(new DeploymentOutcomeKey(id), DeploymentOutcomeValue.inProgress(h.wallMs, version, value.attemptId()));
+        h.seed(new DeploymentOutcomeKey(id),
+               DeploymentOutcomeValue.inProgress(h.wallMs, version, value.attemptId()));
         h.seed(new DeploymentApplyKey(id), new DeploymentApplyValue(value.attemptId(), previous, h.wallMs));
         h.seed(new AppBlueprintKey(id), value);
         h.drain();
@@ -61,6 +62,7 @@ final class LcSupport {
         var h = active();
 
         publish(h, blueprint("org.example:app:1.0.0", false, ATTEMPT, slice(ORDERS, instances, 1, Set.of())));
+
         return h;
     }
 
@@ -68,12 +70,16 @@ final class LcSupport {
     static FsmHarness leader(org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity atomicity,
                              double jitter,
                              org.pragmatica.consensus.NodeId... cores) {
-        var settings = Settings.settings(FsmHarness.SELF, atomicity, Set.of(), Fixtures.bounds())
+        var settings = Settings.settings(FsmHarness.SELF,
+                                         atomicity,
+                                         Set.of(),
+                                         Fixtures.bounds())
                                .withJitter(_ -> jitter);
         var h = new FsmHarness(settings);
 
         h.commitLeader(FsmHarness.SELF, 1L);
         h.seams = Seams.UNWIRED.withCountedCores(Set.of(cores)).withReady(Set.of(cores));
+
         return h;
     }
 

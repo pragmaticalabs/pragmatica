@@ -172,7 +172,6 @@ public final class ClusterFsm {
     /// settlement of an earlier submission cannot match a new one.
     private static ClusterModel rebuiltAgain(ClusterModel model, Rebuild rebuild, Ctx ctx) {
         cancelTimers(model, ctx);
-
         var fresh = Lifecycle.rebuild(ctx, model.incarnation(), rebuild.snapshot());
 
         fresh.txSeq = model.txSeq;

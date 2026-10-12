@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
-import io.netty.buffer.ByteBufUtil;
-import io.netty.buffer.Unpooled;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.NodeCodecs;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
@@ -20,15 +17,23 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.serialization.FrameworkCodecs;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import io.netty.buffer.ByteBufUtil;
+import io.netty.buffer.Unpooled;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.LcSupport.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// NT-114: generations only grow (R-1.6.1): across GC and leader changes, adoption keeps the row's own, and the wire carries a
 /// `viewSequence` beyond 32 bits.
 class GenerationTest {
     private static Generation generationOf(FsmHarness h, org.pragmatica.consensus.NodeId node) {
-        return h.model().desired(pair(node, ORDERS)).map(SliceDesiredValue::generation).or(gen(0));
+        return h.model()
+                .desired(pair(node, ORDERS))
+                .map(SliceDesiredValue::generation)
+                .or(gen(0));
     }
 
     // NT-114
@@ -38,7 +43,8 @@ class GenerationTest {
         var h = leader();
 
         h.activate();
-        h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+        h.seed(new SliceTargetKey(ORDERS.base()),
+               SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
         h.drain();
         var first = generationOf(h, CORE_1);
         var n1 = node(h, CORE_1, 11);
@@ -55,14 +61,13 @@ class GenerationTest {
         h.drain();
         h.advance(60_000L);
         assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS)).isPresent()).as("garbage collected").isFalse();
-
         h.deliver(new ClusterInput.Deactivate());
         h.commitLeader(FsmHarness.SELF, 2L);
         h.drain();
         h.activate();
-        h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+        h.seed(new SliceTargetKey(ORDERS.base()),
+               SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
         h.drain();
-
         assertThat(generationOf(h, CORE_1)).as("after GC and a leader change").isGreaterThan(first);
         assertThat(generationOf(h, CORE_1).viewSequence()).isEqualTo(2L);
     }
@@ -74,11 +79,12 @@ class GenerationTest {
         var h = leader();
 
         h.seedQuietly(new SliceDesiredKey(CORE_3, BILLING), desired(SliceGoal.ACTIVE, gen(50)));
-        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_3, BILLING), row(SliceObservedState.ACTIVE, 1L, gen(50), process(13)));
+        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_3, BILLING),
+                      row(SliceObservedState.ACTIVE, 1L, gen(50), process(13)));
         h.activate();
-        h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+        h.seed(new SliceTargetKey(ORDERS.base()),
+               SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
         h.drain();
-
         assertThat(generationOf(h, CORE_1)).isGreaterThan(gen(50));
     }
 
@@ -88,10 +94,11 @@ class GenerationTest {
     void adoption_isWrittenAtTheRowsOwnGeneration() {
         var h = leader();
 
-        h.seedQuietly(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
-        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_2, ORDERS), row(SliceObservedState.ACTIVE, 1L, gen(33), process(12)));
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()),
+                      SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+        h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey(CORE_2, ORDERS),
+                      row(SliceObservedState.ACTIVE, 1L, gen(33), process(12)));
         h.activate();
-
         assertThat(h.model().desired(pair(CORE_2, ORDERS)).map(d -> d.generation())).isEqualTo(org.pragmatica.lang.Option.some(gen(33)));
         assertThat(h.model().desired(pair(CORE_2, ORDERS)).map(d -> d.goal())).isEqualTo(org.pragmatica.lang.Option.some(SliceGoal.ACTIVE));
     }
@@ -100,7 +107,7 @@ class GenerationTest {
     // Red when: a Generation with viewSequence > 2^32 does not round-trip through the wire codec.
     @Test
     void generationBeyondThirtyTwoBits_roundTripsThroughTheCodec() {
-        var generation = new Generation((1L << 32) + 5L, (1L << 33) + 9L);
+        var generation = new Generation((1L<< 32) + 5L, (1L<< 33) + 9L);
         var key = SliceDesiredKey.sliceDesiredKey(CORE_1, ORDERS);
         var value = new SliceDesiredValue(SliceGoal.ACTIVE, generation, 1_760_000_000_000L);
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
@@ -112,8 +119,8 @@ class GenerationTest {
 
         assertThat(decoded.value()).isEqualTo(value);
         assertThat(((SliceDesiredValue) decoded.value()).generation()).isEqualTo(generation)
-                                                                      .isGreaterThan(new Generation(1L << 32, 0L))
-                                                                      .isGreaterThan(new Generation(7L, 0L));
+                  .isGreaterThan(new Generation(1L<< 32, 0L))
+                  .isGreaterThan(new Generation(7L, 0L));
         assertThat(bytes.length).isPositive();
     }
 }

@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
@@ -21,8 +20,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The settlement of a departure write (R-4.3.0, 6.2) and the removal of a departed node's directive after an inferred
 /// departure: the arms the NT rows' orderings do not reach.
@@ -35,9 +37,16 @@ class GapDepartureTest {
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, TOKEN_2);
         w.admit(CORE_3, 1L, 0x3333L);
+
         return w.target(ORDERS, 1, "CORE_ONLY")
-                .directive(CORE_2, ActivationDirectiveValue.core())
-                .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), TOKEN_2)
+                .directive(CORE_2,
+                           ActivationDirectiveValue.core())
+                .instance(CORE_2,
+                          ORDERS,
+                          SliceGoal.ACTIVE,
+                          SliceObservedState.ACTIVE,
+                          gen(1),
+                          TOKEN_2)
                 .routes(CORE_2, ORDERS);
     }
 
@@ -51,7 +60,6 @@ class GapDepartureTest {
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         w.h.deliver(new ClusterInput.SelfShutdown(CORE_2));
-
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).hasSize(1);
     }
 
@@ -68,10 +76,9 @@ class GapDepartureTest {
         w.h.held.clear();
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 2L)));
-        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("J0 wrote ADMITTED first").isEqualTo(Option.some(DepartureState.ADMITTED));
-
+        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("J0 wrote ADMITTED first")
+                  .isEqualTo(Option.some(DepartureState.ADMITTED));
         w.h.settleHeld(held, w.h.refused(held));
-
         assertThat(w.h.model().isDeparting(CORE_2)).isFalse();
         assertThat(w.h.submits(SubmitKind.DEPARTURE)).as("no resubmission").hasSize(1);
         assertThat(w.counts(CORE_2)).isTrue();
@@ -108,16 +115,20 @@ class GapDepartureTest {
 
         assertThat(w.h.model().isDeparting(CORE_2)).isTrue();
         assertThat(w.counts(CORE_2)).as("not counted while departing").isFalse();
-
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.advance(30_000L);
-
         var again = w.h.submits(SubmitKind.DEPARTURE);
 
         assertThat(again).hasSize(2);
         assertThat(again.get(1).transaction().mutations()).as("the identical write (only the decision time differs)")
-                                                         .extracting(mutation -> mutation.key(), mutation -> mutation.expected())
-                                                         .isEqualTo(first.transaction().mutations().stream().map(mutation -> org.assertj.core.groups.Tuple.tuple(mutation.key(), mutation.expected())).toList());
+                  .extracting(mutation -> mutation.key(),
+                              mutation -> mutation.expected())
+                  .isEqualTo(first.transaction()
+                                  .mutations()
+                                  .stream()
+                                  .map(mutation -> org.assertj.core.groups.Tuple.tuple(mutation.key(),
+                                                                                       mutation.expected()))
+                                  .toList());
         assertThat(w.h.model().isDeparted(CORE_2)).isTrue();
         assertThat(w.h.model().isDeparting(CORE_2)).isFalse();
     }
@@ -133,13 +144,12 @@ class GapDepartureTest {
         w.h.advanceBySeconds(bound / 1000 + 61);
         var before = w.h.submits(SubmitKind.INFERRED_DEPARTURE).size();
 
-        assertThat(before).as("recorded after B_rm; every failure is retried at the re-read while it is still warranted").isGreaterThanOrEqualTo(1);
+        assertThat(before).as("recorded after B_rm; every failure is retried at the re-read while it is still warranted")
+                  .isGreaterThanOrEqualTo(1);
         assertThat(w.h.model().isDeparting(CORE_2)).isTrue();
-
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.refreshSeams(seams -> seams.withCoreView(Option.some(Set.of(CORE_1, CORE_2, CORE_3))));
         w.h.advance(31_000L);
-
         assertThat(w.h.submits(SubmitKind.INFERRED_DEPARTURE)).as("present again: not resubmitted").hasSize(before);
         assertThat(w.h.model().isDeparting(CORE_2)).as("and no longer departing").isFalse();
     }
@@ -152,21 +162,32 @@ class GapDepartureTest {
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.clearLog();
-        w.h.seed(new NodeDepartureKey(CORE_2), new NodeDepartureValue(DepartureState.DEPARTED, 1L, process(TOKEN_2), Option.some(DepartureCause.STALE), w.h.wallMs));
+        w.h.seed(new NodeDepartureKey(CORE_2),
+                 new NodeDepartureValue(DepartureState.DEPARTED,
+                                        1L,
+                                        process(TOKEN_2),
+                                        Option.some(DepartureCause.STALE),
+                                        w.h.wallMs));
         w.h.seedRemove(new ActivationDirectiveKey(CORE_2));
         w.h.drain();
-
         var removal = w.h.submits(SubmitKind.DIRECTIVE_REMOVAL);
 
         assertThat(removal).hasSize(1);
         var mutations = removal.getFirst().transaction().mutations();
 
-        assertThat(mutations).extracting(m -> m.key()).containsExactlyInAnyOrder(new NodeDepartureKey(CORE_2),
-                                                                                  new SliceObservedKey(CORE_2, ORDERS),
-                                                                                  new SliceDesiredKey(CORE_2, ORDERS),
-                                                                                  new NodeRoutesKey(CORE_2, ORDERS));
-        assertThat(mutations.stream().allMatch(m -> m.replacement().isEmpty())).as("only removals").isTrue();
-        assertThat(mutations.stream().filter(m -> m.key() instanceof NodeDepartureKey).findFirst().orElseThrow().expected().map(v -> ((NodeDepartureValue) v).state()))
-            .as("fenced on the DEPARTED value").isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(mutations).extracting(m -> m.key())
+                  .containsExactlyInAnyOrder(new NodeDepartureKey(CORE_2),
+                                             new SliceObservedKey(CORE_2, ORDERS),
+                                             new SliceDesiredKey(CORE_2, ORDERS),
+                                             new NodeRoutesKey(CORE_2, ORDERS));
+        assertThat(mutations.stream().allMatch(m -> m.replacement()
+                                                     .isEmpty())).as("only removals").isTrue();
+        assertThat(mutations.stream()
+                            .filter(m -> m.key() instanceof NodeDepartureKey)
+                            .findFirst()
+                            .orElseThrow()
+                            .expected()
+                            .map(v -> ((NodeDepartureValue) v).state())).as("fenced on the DEPARTED value")
+                  .isEqualTo(Option.some(DepartureState.DEPARTED));
     }
 }

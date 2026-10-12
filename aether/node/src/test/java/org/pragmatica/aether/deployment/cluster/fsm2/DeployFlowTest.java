@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
@@ -19,8 +18,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// A whole deploy on the real applier: publish, targets, placement, the node chain, the dependency gate, the verdict.
 class DeployFlowTest {
@@ -30,8 +32,8 @@ class DeployFlowTest {
         var h = FsmHarness.harness();
 
         h.commitLeader(FsmHarness.SELF, 1L);
-        h.seams = Seams.UNWIRED.withCountedCores(Set.of(CORE_1, CORE_2, CORE_3))
-                               .withReady(Set.of(CORE_1, CORE_2, CORE_3));
+        h.seams = Seams.UNWIRED.withCountedCores(Set.of(CORE_1, CORE_2, CORE_3)).withReady(Set.of(CORE_1, CORE_2, CORE_3));
+
         return h;
     }
 
@@ -51,22 +53,22 @@ class DeployFlowTest {
 
         h.activate();
         publish(h, blueprint("org.example:app:1.0.0", false, ATTEMPT, slice(ORDERS, 2, 1, Set.of())));
-
         assertThat(h.store.get(new SliceTargetKey(ORDERS.base())).isPresent()).as("the target batch committed").isTrue();
         var goals = h.model().desired.entries();
+
         assertThat(goals).as("two instances placed, least-loaded first, ties by id").hasSize(2);
         assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(SliceDesiredValue::goal)).isEqualTo(Option.some(SliceGoal.LOADED));
         assertThat(h.model().desired(SlicePair.slicePair(CORE_2, ORDERS)).map(SliceDesiredValue::goal)).isEqualTo(Option.some(SliceGoal.LOADED));
-
         new NodeSim(h, CORE_1, process(11)).follows(ORDERS);
         h.drain();
-        assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(SliceDesiredValue::goal)).as("LOADED answers the goal; the gate passes").isEqualTo(Option.some(SliceGoal.ACTIVE));
-
+        assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(SliceDesiredValue::goal)).as("LOADED answers the goal; the gate passes")
+                  .isEqualTo(Option.some(SliceGoal.ACTIVE));
         new NodeSim(h, CORE_1, process(11)).follows(ORDERS);
         h.drain();
-
         var outcome = h.store.get(new DeploymentOutcomeKey(blueprintId("org.example:app:1.0.0")));
+
         assertThat(outcome.map(value -> ((DeploymentOutcomeValue) value).status())).isEqualTo(Option.some(DeploymentOutcomeStatus.SUCCEEDED));
-        assertThat(h.store.get(new DeploymentApplyKey(blueprintId("org.example:app:1.0.0"))).isPresent()).as("SUCCEEDED and the apply GC are one transaction").isFalse();
+        assertThat(h.store.get(new DeploymentApplyKey(blueprintId("org.example:app:1.0.0"))).isPresent()).as("SUCCEEDED and the apply GC are one transaction")
+                  .isFalse();
     }
 }

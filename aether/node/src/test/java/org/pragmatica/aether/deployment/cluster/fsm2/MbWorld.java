@@ -39,6 +39,7 @@ import org.pragmatica.lang.Option;
 
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 
+
 /// A membership world for the tests of the membership half: the harness, the leader, the cores, and a **real**
 /// `BootTokens` registry that gives a node its boot token (`0` while the registry has recorded none, which is the unknown
 /// path of C8). Admissions handed to the FSM are built from the registry, never stubbed.
@@ -58,7 +59,9 @@ final class MbWorld {
         for (var core : cores) {
             w.cores.add(core);
         }
+
         w.syncCores();
+
         return w;
     }
 
@@ -68,18 +71,26 @@ final class MbWorld {
         for (var core : cores) {
             w.cores.add(core);
         }
+
         w.syncCores();
+
         return w;
     }
 
     /// A world whose communities are viable with `floor` live members (the default floor is 3).
     static MbWorld worldWithFloor(int floor, NodeId... cores) {
-        var w = new MbWorld(Settings.settings(FsmHarness.SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds()).withCommunitySizing(100, floor));
+        var w = new MbWorld(Settings.settings(FsmHarness.SELF,
+                                              DeploymentAtomicity.ALL_OR_NOTHING,
+                                              Set.of(),
+                                              bounds())
+                                    .withCommunitySizing(100, floor));
 
         for (var core : cores) {
             w.cores.add(core);
         }
+
         w.syncCores();
+
         return w;
     }
 
@@ -88,7 +99,6 @@ final class MbWorld {
     }
 
     // -- the registry ----------------------------------------------------------------------------------------------
-
     /// Membership admits `node` at `epoch`: the registry records `token` (nothing when 0, the unknown path), and the
     /// admission is built from what the registry says.
     Admission admit(NodeId node, long epoch, long token) {
@@ -96,6 +106,7 @@ final class MbWorld {
         var admission = admissionOf(node, epoch);
 
         h.admissions.put(node, admission);
+
         return admission;
     }
 
@@ -105,59 +116,83 @@ final class MbWorld {
     }
 
     // -- fixtures written before activation ------------------------------------------------------------------------
-
     MbWorld target(Artifact artifact, int instances, String placement) {
-        var target = new SliceTargetValue(artifact.version(), instances, 1, Option.none(), placement, FsmHarness.START_WALL, Option.none(), Option.none(), Option.none());
+        var target = new SliceTargetValue(artifact.version(),
+                                          instances,
+                                          1,
+                                          Option.none(),
+                                          placement,
+                                          FsmHarness.START_WALL,
+                                          Option.none(),
+                                          Option.none(),
+                                          Option.none());
 
         h.seedQuietly(new SliceTargetKey(artifact.base()), target);
+
         return this;
     }
 
     MbWorld directive(NodeId node, ActivationDirectiveValue directive) {
         h.seedQuietly(new ActivationDirectiveKey(node), directive);
+
         return this;
     }
 
     MbWorld community(String id, int targetSize, CommunityState state) {
         h.seedQuietly(new CommunityKey(id), Fixtures.community("default", targetSize, state));
+
         return this;
     }
 
     /// An instance the way a healthy node leaves it: the goal at `gen`, and the node's row for that generation.
-    MbWorld instance(NodeId node, Artifact artifact, SliceGoal goal, SliceObservedState state, Generation gen, long token) {
+    MbWorld instance(NodeId node,
+                     Artifact artifact,
+                     SliceGoal goal,
+                     SliceObservedState state,
+                     Generation gen,
+                     long token) {
         h.seedQuietly(new SliceDesiredKey(node, artifact), desired(goal, gen));
         h.seedQuietly(new SliceObservedKey(node, artifact), row(state, 1L, gen, process(token)));
+
         return this;
     }
 
     MbWorld routes(NodeId node, Artifact artifact) {
         h.seedQuietly(new NodeRoutesKey(node, artifact), new NodeRoutesValue(List.of(), Epoch.ZERO));
+
         return this;
     }
 
     MbWorld record(NodeId node, DepartureState state, long epoch, long token, DepartureCause cause) {
         h.seedQuietly(new NodeDepartureKey(node),
-                      new NodeDepartureValue(state, epoch, process(token), cause == null
-                                                                           ? Option.none()
-                                                                           : Option.some(cause), FsmHarness.START_WALL));
+                      new NodeDepartureValue(state,
+                                             epoch,
+                                             process(token),
+                                             cause == null
+                                             ? Option.none()
+                                             : Option.some(cause),
+                                             FsmHarness.START_WALL));
+
         return this;
     }
 
     MbWorld seams(UnaryOperator<Seams> change) {
         h.seams = change.apply(h.seams);
+
         return this;
     }
 
     // -- while active ----------------------------------------------------------------------------------------------
-
     MbWorld refreshSeams(UnaryOperator<Seams> change) {
         h.seams = change.apply(h.seams);
         h.deliver(new ClusterInput.SeamsRefreshed(h.seams));
+
         return this;
     }
 
     MbWorld activate() {
         h.activate();
+
         return this;
     }
 
@@ -165,12 +200,14 @@ final class MbWorld {
     MbWorld announce(String community, NodeId governor, NodeId... members) {
         h.seed(new GovernorAnnouncementKey(community), roster(governor, false, members));
         h.drain();
+
         return this;
     }
 
     MbWorld announceDissolved(String community, NodeId governor, NodeId... members) {
         h.seed(new GovernorAnnouncementKey(community), roster(governor, true, members));
         h.drain();
+
         return this;
     }
 
@@ -187,6 +224,7 @@ final class MbWorld {
             refreshSeams(s -> s.withLocalAlive(Option.some(alive)));
             h.advance(reannounceMs());
         }
+
         return this;
     }
 
@@ -199,7 +237,8 @@ final class MbWorld {
     }
 
     Option<NodeDepartureValue> recordOf(NodeId node) {
-        return stored(new NodeDepartureKey(node)).filter(NodeDepartureValue.class::isInstance).map(NodeDepartureValue.class::cast);
+        return stored(new NodeDepartureKey(node)).filter(NodeDepartureValue.class::isInstance)
+                     .map(NodeDepartureValue.class::cast);
     }
 
     boolean counts(NodeId node) {
@@ -211,7 +250,6 @@ final class MbWorld {
     }
 
     // -- worker communities and time (membership half) -------------------------------------------------------------
-
     static final String C = "default-w-0";
     static final NodeId GOV = node("governor-1");
 
@@ -226,6 +264,7 @@ final class MbWorld {
         for (var member : members) {
             admit(member, 1L, tokenOf(member));
         }
+
         return workersUnadmitted(community, targetSize, alive, members);
     }
 
@@ -239,7 +278,10 @@ final class MbWorld {
         var ready = new HashSet<NodeId>(cores);
 
         ready.addAll(List.of(members));
-        return seams(s -> s.withCoreView(Option.some(Set.copyOf(cores))).withReady(ready).withLocalAlive(Option.some(Set.copyOf(alive))));
+
+        return seams(s -> s.withCoreView(Option.some(Set.copyOf(cores)))
+                           .withReady(ready)
+                           .withLocalAlive(Option.some(Set.copyOf(alive))));
     }
 
     /// The governor re-announces `listed` at the real rate for `durationMs`, the local alive view following `alive`; every
@@ -255,6 +297,7 @@ final class MbWorld {
             h.advance(step);
             elapsed += step;
         }
+
         return this;
     }
 
@@ -262,6 +305,7 @@ final class MbWorld {
     MbWorld evolveUntil(long targetNs, String community, NodeId governor, Set<NodeId> alive, List<NodeId> listed) {
         evolve(community, governor, alive, listed, Math.max(0L, (targetNs - h.monoNs) / 1_000_000L));
         h.deliver(new ClusterInput.Reconcile());
+
         return this;
     }
 
@@ -270,6 +314,7 @@ final class MbWorld {
     }
 
     Option<Long> since(NodeId node) {
-        return h.model().absentSince(node);
+        return h.model()
+                .absentSince(node);
     }
 }

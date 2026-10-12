@@ -6,7 +6,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
@@ -14,8 +13,11 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
 import org.pragmatica.lang.Option;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The ways an exclusion (`unresponsive[n]`, R-4.2.5) ends, beyond the answers and the expiry the NT rows cover.
 class GapJudgmentTest {
@@ -28,10 +30,15 @@ class GapJudgmentTest {
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, OLD_TOKEN);
         w.admit(CORE_3, 1L, 0x3333L);
-        w.target(ORDERS, 1, "CORE_ONLY")
-         .record(CORE_2, DepartureState.ADMITTED, 1L, OLD_TOKEN, null);
+        w.target(ORDERS, 1, "CORE_ONLY").record(CORE_2, DepartureState.ADMITTED, 1L, OLD_TOKEN, null);
         w.h.seedQuietly(new ArtifactJudgmentKey(ORDERS),
-                        new ArtifactJudgmentValue(false, Map.of(), Map.of(CORE_2, new UnresponsiveEntry(gen(1), SliceGoal.LOADED, FsmHarness.START_WALL))));
+                        new ArtifactJudgmentValue(false,
+                                                  Map.of(),
+                                                  Map.of(CORE_2,
+                                                         new UnresponsiveEntry(gen(1),
+                                                                               SliceGoal.LOADED,
+                                                                               FsmHarness.START_WALL))));
+
         return w;
     }
 
@@ -41,10 +48,9 @@ class GapJudgmentTest {
     void admissionOfADifferentProcess_endsTheExclusion() {
         var w = excluded().activate();
 
-        assertThat(w.h.model().judgment(ORDERS).map(judgment -> judgment.unresponsive().containsKey(CORE_2))).isEqualTo(Option.some(true));
-
+        assertThat(w.h.model().judgment(ORDERS).map(judgment -> judgment.unresponsive()
+                                                                        .containsKey(CORE_2))).isEqualTo(Option.some(true));
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, Fixtures.admission(2L, NEW_TOKEN)));
-
         assertThat(w.h.model().judgment(ORDERS)).as("nothing left to record").isEqualTo(Option.none());
     }
 
@@ -55,8 +61,8 @@ class GapJudgmentTest {
         var w = excluded().activate();
 
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, OLD_TOKEN)));
-
-        assertThat(w.h.model().judgment(ORDERS).map(judgment -> judgment.unresponsive().containsKey(CORE_2))).isEqualTo(Option.some(true));
+        assertThat(w.h.model().judgment(ORDERS).map(judgment -> judgment.unresponsive()
+                                                                        .containsKey(CORE_2))).isEqualTo(Option.some(true));
     }
 
     /// Red when: a departure that commits does not end the node's exclusions (R-4.2.5: n's departure, recorded by C17 or C17s).
@@ -65,7 +71,6 @@ class GapJudgmentTest {
         var w = excluded().activate();
 
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
-
         assertThat(w.h.submits(ClusterModel.SubmitKind.DEPARTURE)).hasSize(1);
         assertThat(w.h.model().judgment(ORDERS)).isEqualTo(Option.none());
     }

@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.List;
 import java.util.Set;
 
-import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -20,7 +19,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
@@ -37,11 +35,14 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
+
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.C;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.GOV;
 import static org.pragmatica.aether.deployment.cluster.fsm2.MbWorld.tokenOf;
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Community-level absence rules (spec C11, R-2.15, R-2.16, R-2.17, NT-08, NT-09, NT-35, NT-128): the retiring exemption, the
 /// freshness requirement, the bounded residual and its reversal, and the community breaker.
@@ -52,6 +53,7 @@ class CommunityBackstopTest {
     private static final NodeId M4 = node("m4");
     private static final NodeId M5 = node("m5");
     private static final long BW = ms(bounds().workerRemoval());
+
     private static final String CONFIG = """
         config_version = "1.0.0"
         [cluster]
@@ -72,7 +74,12 @@ class CommunityBackstopTest {
         """;
 
     private static boolean recordsOrRemoves(MbWorld w, NodeId node) {
-        return w.h.submits().stream().anyMatch(s -> s.transaction().mutations().stream().anyMatch(m -> switch (m.key()) {
+        return w.h.submits()
+                  .stream()
+                  .anyMatch(s -> s.transaction()
+                                  .mutations()
+                                  .stream()
+                                  .anyMatch(m -> switch (m.key()) {
             case NodeDepartureKey k -> k.nodeId().equals(node);
             case SliceObservedKey k -> k.nodeId().equals(node) && m.replacement().isEmpty();
             case SliceDesiredKey k -> k.nodeId().equals(node) && m.replacement().isEmpty();
@@ -125,12 +132,21 @@ class CommunityBackstopTest {
                                                                          actuator,
                                                                          _ -> {},
                                                                          (_, _) -> {},
-                                                                         org.pragmatica.lang.io.TimeSpan.timeSpan(60_000).millis());
+                                                                         org.pragmatica.lang.io.TimeSpan.timeSpan(60_000)
+                                                                                                        .millis());
     }
 
     private static void seedConfig(MbWorld w, int target, long version) {
         w.h.seed(ClusterConfigKey.CURRENT,
-                 new ClusterConfigValue(Option.some(CONFIG.replace("TARGET", Integer.toString(target))), "test", "1.0.0", List.of(), 3, 3, "forge", version, 0));
+                 new ClusterConfigValue(Option.some(CONFIG.replace("TARGET", Integer.toString(target))),
+                                        "test",
+                                        "1.0.0",
+                                        List.of(),
+                                        3,
+                                        3,
+                                        "forge",
+                                        version,
+                                        0));
     }
 
     // NT-128 (a)
@@ -145,18 +161,24 @@ class CommunityBackstopTest {
         w.workers("stable", 1, Set.of(M1), w8, M1).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(w8, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w8)).routes(w8, ORDERS);
         w.h.seedQuietly(new NodePlacementKey(w8), new NodePlacementValue("pool", Option.some("old"), "old-instance"));
-        w.h.seedQuietly(new CommunityKey("stable"), new CommunityValue("pool", AetherValue.ActivationDirectiveValue.WORKER, 1, CommunityState.ACTIVE, FsmHarness.START_WALL, Option.none()));
+        w.h.seedQuietly(new CommunityKey("stable"),
+                        new CommunityValue("pool",
+                                           AetherValue.ActivationDirectiveValue.WORKER,
+                                           1,
+                                           CommunityState.ACTIVE,
+                                           FsmHarness.START_WALL,
+                                           Option.none()));
         seedConfig(w, 1, 1L);
         w.activate();
         seedConfig(w, 0, 2L);
         placement(w, Set.of(CORE_1, w8, M1)).reconcile().await().unwrap();
         w.h.drain();
-
-        assertThat(w.h.store.getTyped(new CommunityKey("stable"), CommunityValue.class).map(CommunityValue::targetSize))
-            .as("alignCommunity wrote targetSize = 0 through the applier").isEqualTo(Option.some(0));
-        assertThat(w.h.model().communities.get("stable").map(CommunityValue::targetSize)).as("the FSM saw it").isEqualTo(Option.some(0));
+        assertThat(w.h.store.getTyped(new CommunityKey("stable"),
+                                      CommunityValue.class).map(CommunityValue::targetSize)).as("alignCommunity wrote targetSize = 0 through the applier")
+                  .isEqualTo(Option.some(0));
+        assertThat(w.h.model().communities.get("stable").map(CommunityValue::targetSize)).as("the FSM saw it")
+                  .isEqualTo(Option.some(0));
         w.evolve("stable", GOV, Set.of(M1), List.of(M1), 10 * BW);
-
         assertThat(recordsOrRemoves(w, w8)).isFalse();
         assertThat(w.inferred()).isEmpty();
         assertThat(w.present(new ActivationDirectiveKey(w8))).as("only the placement reconciler removes it").isTrue();
@@ -172,10 +194,15 @@ class CommunityBackstopTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.workers("gone", 5, Set.of(M1), w8, M1).target(ORDERS, 1, "WORKERS_ONLY");
-        w.h.seedQuietly(new CommunityKey("gone"), new CommunityValue("pool", AetherValue.ActivationDirectiveValue.WORKER, 5, CommunityState.DISSOLVED, FsmHarness.START_WALL, Option.some(1L)));
+        w.h.seedQuietly(new CommunityKey("gone"),
+                        new CommunityValue("pool",
+                                           AetherValue.ActivationDirectiveValue.WORKER,
+                                           5,
+                                           CommunityState.DISSOLVED,
+                                           FsmHarness.START_WALL,
+                                           Option.some(1L)));
         w.instance(w8, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w8)).activate();
         w.evolve("gone", GOV, Set.of(M1), List.of(M1), 10 * BW);
-
         assertThat(recordsOrRemoves(w, w8)).isFalse();
     }
 
@@ -190,9 +217,9 @@ class CommunityBackstopTest {
         w.admit(CORE_1, 1L, 0x1111L);
         w.workers(C, 10, Set.of(M1, M2, M3, M4), w9, M1, M2, M3, M4).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(w9, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w9));
-        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C), roster(GOV, false, M1, M2, M3, M4));
+        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C),
+                        roster(GOV, false, M1, M2, M3, M4));
         w.activate();
-
         for (var i = 0L; i < BW / 30_000L; i++) {
             w.h.advance(30_000L);
             assertThat(w.since(w9)).as("a cold leader: absentSince is never set").isEqualTo(Option.none());
@@ -221,6 +248,7 @@ class CommunityBackstopTest {
         w.activate();
         w.announce(C, GOV, w10, M1, M2, M3, M4);
         w.refreshSeams(s -> s.withLocalAlive(Option.some(all)));
+
         return w;
     }
 
@@ -240,10 +268,11 @@ class CommunityBackstopTest {
         var since = w.since(w10).or(0L);
 
         w.evolveUntil(since + bounds().workerRemoval() + 1_000_000L + 31_000_000_000L, C, GOV, aliveOthers, others);
-
-        assertThat(w.recordOf(w10).flatMap(NodeDepartureValue::cause)).as("the residual is reachable").isEqualTo(Option.some(DepartureCause.STALE));
+        assertThat(w.recordOf(w10).flatMap(NodeDepartureValue::cause)).as("the residual is reachable")
+                  .isEqualTo(Option.some(DepartureCause.STALE));
         assertThat(w.present(new SliceObservedKey(w10, ORDERS)) || w.present(new SliceObservedKey(w10, BILLING))).isFalse();
-        assertThat(w.present(new ActivationDirectiveKey(w10)) && w.present(new NodePlacementKey(w10))).as("identity persists").isTrue();
+        assertThat(w.present(new ActivationDirectiveKey(w10)) && w.present(new NodePlacementKey(w10))).as("identity persists")
+                  .isTrue();
         for (var artifact : List.of(ORDERS, BILLING)) {
             var elsewhere = others.stream().filter(m -> w.present(new SliceDesiredKey(m, artifact))).toList();
 
@@ -255,8 +284,8 @@ class CommunityBackstopTest {
         var all = List.of(w10, M1, M2, M3, M4);
 
         w.evolve(C, GOV, Set.copyOf(all), all, 31_000L);
-
-        assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).as("J2 replaced the STALE record").isEqualTo(Option.some(DepartureState.ADMITTED));
+        assertThat(w.recordOf(w10).map(NodeDepartureValue::state)).as("J2 replaced the STALE record")
+                  .isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.h.warns("departure-inferred-reversed")).hasSize(1);
         assertThat(w.h.metricTotal("aether_deployment_fsm_departures_inferred_reversed_total", t -> true)).isEqualTo(reversedBefore + 1);
         assertThat(w.counts(w10)).isTrue();
@@ -284,14 +313,16 @@ class CommunityBackstopTest {
 
     private MbWorld sixWorkers() {
         var w = MbWorld.world(CORE_1);
-        var members = new NodeId[] {node("e1"), node("e2"), node("e3"), node("e4"), node("e5"), node("e6")};
+        var members = new NodeId[]{node("e1"), node("e2"), node("e3"), node("e4"), node("e5"), node("e6")};
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.workers("e-comm", 10, Set.of(members), members).target(ORDERS, 1, "WORKERS_ONLY");
         for (var member : members) {
             w.instance(member, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(member));
         }
+
         w.activate();
+
         return w;
     }
 
@@ -306,15 +337,16 @@ class CommunityBackstopTest {
         var present = List.of(e.get(4), e.get(5));
 
         w.evolve("e-comm", GOV, Set.copyOf(present), present, 3 * BW);
-
         assertThat(w.inferred()).isEmpty();
         assertThat(w.h.warns("departure-inferred-suppressed")).hasSize(1);
-        assertThat(w.h.metricTotal("aether_deployment_fsm_departures_inferred_suppressed_total", t -> "e-comm".equals(t.get("community")))).isGreaterThan(0L);
+        assertThat(w.h.metricTotal("aether_deployment_fsm_departures_inferred_suppressed_total",
+                                   t -> "e-comm".equals(t.get("community")))).isGreaterThan(0L);
         var healed = List.of(e.get(1), e.get(2), e.get(3), e.get(4), e.get(5));
 
         w.evolve("e-comm", GOV, Set.copyOf(healed), healed, 31_000L + 30_000L);
-        assertThat(w.inferred().stream().map(s -> s.transaction().key())).as("the one still absent worker is recorded once its own B_w elapsed")
-            .containsExactly(new NodeDepartureKey(e.get(0)));
+        assertThat(w.inferred().stream().map(s -> s.transaction()
+                                                   .key())).as("the one still absent worker is recorded once its own B_w elapsed")
+                  .containsExactly(new NodeDepartureKey(e.get(0)));
     }
 
     // NT-128 floor arm
@@ -329,8 +361,8 @@ class CommunityBackstopTest {
         w.workers("f-comm", 10, Set.of(f1, f2), f1, f2).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(f1, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(f1)).activate();
         w.evolve("f-comm", GOV, Set.of(f2), List.of(f2), BW + 31_000L + 30_000L);
-
-        assertThat(w.inferred().stream().map(s -> s.transaction().key())).containsExactly(new NodeDepartureKey(f1));
+        assertThat(w.inferred().stream().map(s -> s.transaction()
+                                                   .key())).containsExactly(new NodeDepartureKey(f1));
     }
 
     // NT-08
@@ -367,8 +399,10 @@ class CommunityBackstopTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.workers(C, 10, Set.of(M1, M2), wx, M1, M2).target(ORDERS, 1, "WORKERS_ONLY");
-        w.h.seedQuietly(new SliceObservedKey(wx, ORDERS), row(SliceObservedState.ACTIVE, 1L, gen(1), process(tokenOf(wx))));
-        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C), roster(GOV, false, M1, M2));
+        w.h.seedQuietly(new SliceObservedKey(wx, ORDERS),
+                        row(SliceObservedState.ACTIVE, 1L, gen(1), process(tokenOf(wx))));
+        w.h.seedQuietly(new org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey(C),
+                        roster(GOV, false, M1, M2));
         w.activate();
         w.announce(C, GOV, M1, M2);
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(M1, M2))));
@@ -396,8 +430,8 @@ class CommunityBackstopTest {
         assertThat(w.present(new SliceDesiredKey(spare, ORDERS))).isFalse();
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(M1, spare))));
         w.announce(C, GOV, M1, spare);
-
-        assertThat(w.present(new SliceDesiredKey(spare, ORDERS))).as("the dropped member's instance no longer counts: replaced").isTrue();
+        assertThat(w.present(new SliceDesiredKey(spare, ORDERS))).as("the dropped member's instance no longer counts: replaced")
+                  .isTrue();
     }
 
     // NT-35
@@ -409,8 +443,15 @@ class CommunityBackstopTest {
 
         w.admit(CORE_1, 1L, 0x1111L);
         w.admit(CORE_2, 1L, 0x2222L);
-        w.directive(CORE_2, ActivationDirectiveValue.core()).target(ORDERS, 1, "CORE_ONLY")
-         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), 0x2222L);
+        w.directive(CORE_2,
+                    ActivationDirectiveValue.core())
+         .target(ORDERS, 1, "CORE_ONLY")
+         .instance(CORE_2,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   0x2222L);
         w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1))));
         w.activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
@@ -441,9 +482,10 @@ class CommunityBackstopTest {
         var present = List.of(g.get(2), g.get(3));
 
         four.evolve("g-comm", GOV, Set.copyOf(present), present, BW + 31_000L + 30_000L);
-        assertThat(four.inferred().stream().map(s -> s.transaction().key()))
-            .as("2 of 4 is exactly half: not more than half, the breaker does not hold").containsExactlyInAnyOrder(new NodeDepartureKey(g.get(0)), new NodeDepartureKey(g.get(1)));
-
+        assertThat(four.inferred().stream().map(s -> s.transaction()
+                                                      .key())).as("2 of 4 is exactly half: not more than half, the breaker does not hold")
+                  .containsExactlyInAnyOrder(new NodeDepartureKey(g.get(0)),
+                                             new NodeDepartureKey(g.get(1)));
         var single = MbWorld.world(CORE_1);
         var only = node("only");
 
@@ -451,6 +493,8 @@ class CommunityBackstopTest {
         single.workers("s-comm", 10, Set.of(), only).target(ORDERS, 1, "WORKERS_ONLY");
         single.instance(only, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(only)).activate();
         single.evolve("s-comm", GOV, Set.of(), List.of(M1), BW + 31_000L + 30_000L);
-        assertThat(single.inferred().stream().map(s -> s.transaction().key())).as("the floor of 2 covers a single-worker community").containsExactly(new NodeDepartureKey(only));
+        assertThat(single.inferred().stream().map(s -> s.transaction()
+                                                        .key())).as("the floor of 2 covers a single-worker community")
+                  .containsExactly(new NodeDepartureKey(only));
     }
 }
