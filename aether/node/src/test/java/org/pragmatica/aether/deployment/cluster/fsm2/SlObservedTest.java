@@ -247,6 +247,10 @@ class SlObservedTest {
             h.settleHeld(first.get(0), new ClusterInput.Settlement.Failed("lost"));
             h.settleHeld(first.get(1), new ClusterInput.Settlement.Failed("lost"));
 
+            assertThat(h.submits()).as("a failed write is not retried in a hot loop: the next reconcile waits one retry base")
+                                   .hasSize(2);
+            h.advance(Timing.DEFAULT.retryBase());
+
             assertThat(h.submits()).as("both are submitted again").hasSize(4);
             assertThat(h.model().pendingGoals.size()).as("and counted once").isEqualTo(2);
         }
