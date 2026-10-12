@@ -43,7 +43,7 @@ class GapJudgmentTest {
 
         assertThat(w.h.model().judgment(ORDERS).map(judgment -> judgment.unresponsive().containsKey(CORE_2))).isEqualTo(Option.some(true));
 
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, NEW_TOKEN)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, Fixtures.admission(2L, NEW_TOKEN)));
 
         assertThat(w.h.model().judgment(ORDERS)).as("nothing left to record").isEqualTo(Option.none());
     }
@@ -66,7 +66,7 @@ class GapJudgmentTest {
 
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
 
-        assertThat(w.h.model().isDeparted(CORE_2)).isTrue();
+        assertThat(w.h.submits(ClusterModel.SubmitKind.DEPARTURE)).hasSize(1);
         assertThat(w.h.model().judgment(ORDERS)).isEqualTo(Option.none());
     }
 }
