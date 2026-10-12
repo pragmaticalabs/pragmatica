@@ -225,6 +225,35 @@ class NodeDeploymentStateStreamGuardAndLoadChainTest {
                 .isFalse();
     }
 
+    // ---------------------------------------------------------------- #2163: KV-convergence redeploy chain (`redeployClaimedActiveSlice`)
+
+    /// CONTROL: redeploy chain, genuine load failure stays fatal.
+    @Test
+    void redeploy_genuineLoadFailure_isStillFatal() {
+        store.loadFailure = Causes.cause("malformed manifest");
+        harness.dispatch(new NodeArtifactPutReceived(put(SliceState.ACTIVE)));
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(failedPuts()).isNotEmpty());
+        assertThat(failedPuts().getFirst().fatal()).as("REDEPLOY control: bad artifact is PERMANENT").isTrue();
+    }
+
+    /// PROBE: redeploy chain, LOADING write fails.
+    @Test
+    void redeploy_loadingWriteFails_isNotFatal() {
+        cluster.refuse = c -> c instanceof KVCommand.Put<AetherKey, ?> p && p.value() instanceof NodeArtifactValue v && v.state() == SliceState.LOADING;
+        harness.dispatch(new NodeArtifactPutReceived(put(SliceState.ACTIVE)));
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(failedPuts()).isNotEmpty());
+        assertThat(failedPuts().getFirst().fatal()).as("REDEPLOY: LOADING write failed (%s)", failedPuts().getFirst().failureReason().or("?")).isFalse();
+    }
+
+    /// PROBE: redeploy chain, LOADED write fails.
+    @Test
+    void redeploy_loadedWriteFails_isNotFatal() {
+        cluster.refuse = c -> c instanceof KVCommand.Put<AetherKey, ?> p && p.value() instanceof NodeArtifactValue v && v.state() == SliceState.LOADED;
+        harness.dispatch(new NodeArtifactPutReceived(put(SliceState.ACTIVE)));
+        await().atMost(5, TimeUnit.SECONDS).untilAsserted(() -> assertThat(failedPuts()).isNotEmpty());
+        assertThat(failedPuts().getFirst().fatal()).as("REDEPLOY: LOADED write failed (%s)", failedPuts().getFirst().failureReason().or("?")).isFalse();
+    }
+
     // ---------------------------------------------------------------- #2164
 
     /// CONTROL + REFUTATION of the stream-subscription arm: the registration is cluster KV state; suspension writes
