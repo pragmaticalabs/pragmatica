@@ -115,7 +115,9 @@ class GapDepartureTest {
         var again = w.h.submits(SubmitKind.DEPARTURE);
 
         assertThat(again).hasSize(2);
-        assertThat(again.get(1).transaction().mutations()).as("the identical write").isEqualTo(first.transaction().mutations());
+        assertThat(again.get(1).transaction().mutations()).as("the identical write (only the decision time differs)")
+                                                         .extracting(mutation -> mutation.key(), mutation -> mutation.expected())
+                                                         .isEqualTo(first.transaction().mutations().stream().map(mutation -> org.assertj.core.groups.Tuple.tuple(mutation.key(), mutation.expected())).toList());
         assertThat(w.h.model().isDeparted(CORE_2)).isTrue();
         assertThat(w.h.model().isDeparting(CORE_2)).isFalse();
     }

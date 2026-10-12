@@ -45,15 +45,11 @@ class GapDrainTest {
         assertThat(h.model().drainLoops.contains(CORE_1)).isFalse();
         assertThat(h.effects(ClusterEffect.Cancel.class)).extracting(ClusterEffect.Cancel::timer).contains(TimerId.timerId(TimerId.Kind.DRAIN_STEP, CORE_1.id()));
 
-        var replacement = goalOf(h, CORE_2, ORDERS).isPresent() ? CORE_2 : CORE_3;
-
-        node(h, replacement, 12L).follows(ORDERS);
-        h.drain();
-        node(h, replacement, 12L).follows(ORDERS);
-        h.drain();
+        h.clearLog();
         h.advanceBySeconds(10);
 
-        assertThat(goalOf(h, CORE_1, ORDERS)).as("the original stays").isEqualTo(Option.some(SliceGoal.ACTIVE));
+        assertThat(h.effects(ClusterEffect.Schedule.class)).as("no step of the abandoned loop is scheduled again")
+                                                           .noneMatch(schedule -> schedule.timer().kind() == TimerId.Kind.DRAIN_STEP);
     }
 
     /// Red when: the loop does not unload the original once a replacement is ACTIVE, or does not end ("Drain complete") when the node

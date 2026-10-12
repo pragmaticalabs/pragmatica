@@ -50,6 +50,7 @@ import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
 /// right, and the two leader-local clocks start empty (R-2.14c, R-2.15). Then each family's committed removal drops it again.
 class GapRebuildTest {
     private static final NodeIdHolder IDS = new NodeIdHolder();
+    private static final org.pragmatica.aether.slice.blueprint.BlueprintId OTHER = blueprintId("org.example:other:1.0.0");
 
     private static final class NodeIdHolder {
         final org.pragmatica.consensus.NodeId worker = node("worker-1");
@@ -73,8 +74,8 @@ class GapRebuildTest {
         h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(IDS.worker, false, IDS.worker, IDS.gone));
         h.seedQuietly(new NodeDepartureKey(IDS.gone), new NodeDepartureValue(DepartureState.DEPARTED, 3L, process(22L), Option.some(DepartureCause.WORKER_LEAVE), 5L));
         h.seedQuietly(new ArtifactJudgmentKey(ORDERS_V2), new ArtifactJudgmentValue(true, Map.of(CORE_1, 2), Map.of()));
-        h.seedQuietly(new DeploymentApplyKey(id), new DeploymentApplyValue(ATTEMPT, Option.none(), FsmHarness.START_WALL));
-        h.seedQuietly(new DeploymentOutcomeKey(id), DeploymentOutcomeValue.inProgress(FsmHarness.START_WALL, 1L, ATTEMPT));
+        h.seedQuietly(new DeploymentApplyKey(OTHER), new DeploymentApplyValue(ATTEMPT, Option.none(), FsmHarness.START_WALL));
+        h.seedQuietly(new DeploymentOutcomeKey(OTHER), DeploymentOutcomeValue.inProgress(FsmHarness.START_WALL, 1L, ATTEMPT));
         h.seedQuietly(new SchemaVersionKey("ds"), new SchemaVersionValue("ds", 1, "m1", SchemaStatus.COMPLETED, "g:a:1", id, 0, FsmHarness.START_WALL));
         h.seedQuietly(new SchemaMigrationLockKey("ds"), new SchemaMigrationLockValue("ds", CORE_1, 1L, 2L, 1L));
         h.seedQuietly(new NodeRoutesKey(CORE_1, ORDERS), new NodeRoutesValue(List.of(), Epoch.ZERO));
@@ -107,8 +108,8 @@ class GapRebuildTest {
         assertThat(m.communities.containsKey("east-w-0")).isTrue();
         assertThat(m.rosterCount.get(IDS.worker)).isEqualTo(Option.some(1));
         assertThat(m.judgment(ORDERS_V2).map(ArtifactJudgmentValue::retries)).isEqualTo(Option.some(Map.of(CORE_1, 2)));
-        assertThat(m.apply(id).isPresent()).isTrue();
-        assertThat(m.outcomes.containsKey(id)).isTrue();
+        assertThat(m.apply(OTHER).isPresent()).isTrue();
+        assertThat(m.outcomes.containsKey(OTHER)).isTrue();
         assertThat(m.schemas.containsKey("ds")).isTrue();
         assertThat(m.schemaLocks.containsKey("ds")).isTrue();
         assertThat(m.routes.containsKey(SlicePair.slicePair(CORE_1, ORDERS))).isTrue();
@@ -130,8 +131,8 @@ class GapRebuildTest {
         h.deliver(new ClusterInput.KvRemove(new GovernorAnnouncementKey("east-w-0")));
         h.deliver(new ClusterInput.KvRemove(new CommunityKey("east-w-0")));
         h.deliver(new ClusterInput.KvRemove(new SchemaVersionKey("ds")));
-        h.deliver(new ClusterInput.KvRemove(new DeploymentApplyKey(id)));
-        h.deliver(new ClusterInput.KvRemove(new DeploymentOutcomeKey(id)));
+        h.deliver(new ClusterInput.KvRemove(new DeploymentApplyKey(OTHER)));
+        h.deliver(new ClusterInput.KvRemove(new DeploymentOutcomeKey(OTHER)));
         h.deliver(new ClusterInput.KvRemove(new ArtifactJudgmentKey(ORDERS_V2)));
         h.deliver(new ClusterInput.KvRemove(new SchemaMigrationLockKey("ds")));
         h.deliver(new ClusterInput.KvRemove(new NodeRoutesKey(CORE_1, ORDERS)));

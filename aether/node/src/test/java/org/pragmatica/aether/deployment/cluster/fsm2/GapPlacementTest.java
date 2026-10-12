@@ -25,7 +25,7 @@ class GapPlacementTest {
     private static final Set<NodeId> ALL = Set.of(CORE_1, CORE_2, CORE_3, W1, W2);
 
     private static MbWorld clusterWithWorkers(String placement, int instances) {
-        var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
+        var w = MbWorld.worldWithFloor(2, CORE_1, CORE_2, CORE_3)
                         .target(ORDERS, instances, placement)
                         .directive(W1, worker("east-w-0"))
                         .directive(W2, worker("east-w-0"))
@@ -78,7 +78,7 @@ class GapPlacementTest {
     /// ACTIVE (load before unload, B-033), or is not retired afterwards.
     @Test
     void displacedInstance_isRetired_onlyAfterTheReplacementIsActive() {
-        var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
+        var w = MbWorld.worldWithFloor(2, CORE_1, CORE_2, CORE_3)
                         .target(ORDERS, 1, "CORE_ONLY")
                         .directive(W1, worker("east-w-0"))
                         .community("east-w-0", 3, CommunityState.ACTIVE)

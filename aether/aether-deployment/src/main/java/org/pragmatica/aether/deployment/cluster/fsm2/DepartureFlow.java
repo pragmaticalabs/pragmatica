@@ -62,7 +62,10 @@ public sealed interface DepartureFlow {
                                                            inferred,
                                                            ctx.monoNs()));
         dropGoalsOf(m, node);
-        Absence.clear(m, node);
+        if (!inferred) {
+            Absence.clear(m, node);
+        }
+
         Outbox.direct(m, departureDraft(m, ctx, node, admission, expected, cause, inferred, 0));
 
         return Reconcile.request(m, ctx);
