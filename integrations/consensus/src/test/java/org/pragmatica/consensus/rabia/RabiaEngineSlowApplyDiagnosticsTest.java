@@ -113,8 +113,11 @@ class RabiaEngineSlowApplyDiagnosticsTest {
         var release = new CountDownLatch(1);
 
         engine.slowTaskSinkForTesting(reports::add);
+        var submitNanos = System.nanoTime();
+
         engine.safeExecuteForTesting(() -> blockedInTheCallUnderTest(entered, release));
         awaitParkedInTheCall(entered);
+        var parkedNanos = System.nanoTime();
 
         try {
             var deadline = System.nanoTime() + timeSpan(8).seconds().nanos();
@@ -126,9 +129,17 @@ class RabiaEngineSlowApplyDiagnosticsTest {
             assertThat(reports)
                 .as("the scheduled watchdog must find the task once it has run past one second")
                 .hasSize(1);
-            // the FIRST report may land while the worker is still starting up (one task, one report), so only its shape is
-            // pinned here; that the stack names the blocking call is pinned deterministically by the first test above
-            assertThat(reports.getFirst()).containsPattern("queueDepth=\\d+ ms=\\d+ thread=.* stack:");
+            var report = reports.getFirst();
+
+            assertThat(report).containsPattern("queueDepth=\\d+ ms=\\d+ thread=.* stack:");
+            assertThat(report).as("the report carries frames, not just its header").containsPattern("stack:\\n\\tat ");
+
+            // The watchdog samples no earlier than begin() + 1 s >= submitNanos + 1 s. A worker that parked before that
+            // is parked at the sample, so the stack must name the blocking call; a worker that parked later (a slow
+            // runner) may be sampled during start-up, and only the shape above holds.
+            if (parkedNanos < submitNanos + RabiaEngine.SLOW_TASK_STACK_THRESHOLD_NANOS) {
+                assertThat(report).as("parked before the earliest possible sample: the stack names the call").contains("blockedInTheCallUnderTest");
+            }
         } finally {
             release.countDown();
         }
