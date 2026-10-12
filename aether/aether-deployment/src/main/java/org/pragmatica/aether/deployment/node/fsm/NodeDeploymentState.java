@@ -41,6 +41,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceLoadingFailure.Intermittent.SliceNotInStore;
 import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.SliceState;
@@ -452,9 +453,18 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return;
             }
 
-            transitionTo(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
-                        .flatMap(key -> transitionTo(key, SliceState.LOADED))
-                        .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
+            transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
+                             .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
+                             .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
+        }
+
+        /// The LOADING and LOADED consensus writes of the load chains. Their exhausted retries are an infrastructure
+        /// fault, not a verdict on the artifact: the cause is typed `Intermittent`, so `handleLoadingFailure`'s
+        /// PERMANENT disposition (#930, which is for a load that fails on the artifact itself) does not condemn a
+        /// healthy artifact as fatal (#2163). Deliberately not done inside the shared `updateSliceStateWithRetry`.
+        private Promise<SliceNodeKey> transitionForLoad(SliceNodeKey sliceKey, SliceState newState) {
+            return transitionTo(sliceKey, newState).mapError(cause -> new SliceLoadingFailure.Intermittent.Timeout("consensus write of " + newState,
+                                                                                                                   cause));
         }
 
         private Promise<SliceNodeKey> loadSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -898,10 +908,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             log.info("Node {} KV claims ACTIVE for {} but the slice is not loaded locally — redeploying (KV convergence)",
                      ctx.self().id(),
                      sliceKey.artifact());
-            transitionTo(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
-                        .flatMap(key -> transitionTo(key, SliceState.LOADED))
-                        .onSuccess(key -> processStateTransition(key, SliceState.ACTIVATE))
-                        .onFailure(cause -> handleLoadingFailure(sliceKey, cause));
+            transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
+                             .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
+                             .onSuccess(key -> processStateTransition(key, SliceState.ACTIVATE))
+                             .onFailure(cause -> handleLoadingFailure(sliceKey, cause));
         }
 
         /// #1068 — the node-side half of "a rolled-back version never starts again". Every path that
@@ -1753,6 +1763,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return Promise.unitPromise();
             }
 
+            if (artifactHostedElsewhere(artifact)) {
+                log.debug("Skipping stream-subscription unpublish for {} — still hosted on other nodes", artifact);
+
+                return Promise.unitPromise();
+            }
+
             var commands = entries.stream()
                                   .<KVCommand<AetherKey>> map(entry -> buildStreamSubscriptionRemoveCommand(artifact,
                                                                                                             entry))
@@ -2428,6 +2444,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                       .flatMap(key -> publishEndpoints(key).map(_ -> key))
                                       .flatMap(this::publishTopicSubscriptions)
                                       .flatMap(this::publishScheduledTasks)
+                                      .flatMap(this::registerAndNotifyConfig)
                                       .onSuccess(_ -> log.debug("Reactivated slice {}",
                                                                 sliceKey.artifact()))
                                       .onFailure(cause -> handleReactivationFailure(sliceKey, cause));
