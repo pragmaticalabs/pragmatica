@@ -497,6 +497,7 @@ public sealed interface Outbox {
         var stayGuards = new ArrayList<KVCommand.ReadWitness<AetherKey>>();
         var stayPairs = new HashSet<SlicePair>();
         var shared = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+        var movedAny = false;
 
         for (var mutation : draft.mutations()) {
             var pairs = draft.pairs().stream().filter(pair -> pair.desiredKey()
@@ -517,6 +518,7 @@ public sealed interface Outbox {
 
             if (pairMoved || draft.attempt() >= limit) {
                 Indexer.clearPending(m, pair);
+                movedAny = movedAny || pairMoved;
                 continue;
             }
 
@@ -524,8 +526,6 @@ public sealed interface Outbox {
             stayPairs.add(pair);
             guard.ifPresent(stayGuards::add);
         }
-
-        var moved = stayPairs.size() < draft.pairs().size();
 
         if (!stayPairs.isEmpty()) {
             var rest = new ArrayList<>(stay);
@@ -539,14 +539,23 @@ public sealed interface Outbox {
                                       stayPairs,
                                       draft.node(),
                                       draft.attempt() + 1,
-                                      List.of()));
+                                      stillStarted(draft, stayPairs)));
         }
-
-        if (moved || stayPairs.isEmpty()) {
+        // a pair whose keys moved is re-derived at once; one that merely ran out of resubmissions waits for the tick (5.7.2)
+        if (movedAny) {
             Reconcile.request(m, ctx);
         }
 
         return m;
+    }
+
+    /// The events to route on acceptance that still concern a pair of the resubmitted transaction.
+    private static List<RoutedEvent> stillStarted(TxDraft draft, Set<SlicePair> pairs) {
+        return draft.onAccepted()
+                    .stream()
+                    .filter(event -> !(event instanceof RoutedEvent.DeploymentStarted started) || pairs.contains(SlicePair.slicePair(started.node(),
+                                                                                                                                     started.artifact())))
+                    .toList();
     }
 
     private static boolean mutatedElsewhere(ClusterModel m, KVCommand.Mutation<AetherKey, AetherValue> mutation) {

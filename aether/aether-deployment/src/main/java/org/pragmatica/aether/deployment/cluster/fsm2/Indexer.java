@@ -44,6 +44,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 
 /// The incremental fact and derived indexes of the model (spec R-3.3.1): one `index...` function per KV key family,
@@ -224,10 +225,15 @@ public sealed interface Indexer {
 
     // -- the slice pair: desired, observed, derived (R-3.3.1, R-3.3.11) --------------------------------------------
     static ClusterModel indexDesired(ClusterModel m, Ctx ctx, SlicePair pair, SliceDesiredValue value) {
+        var unchanged = m.desired.get(pair).equals(Option.some(value));
+
         m.desired = m.desired.put(pair, value);
         m.desiredByNode = Idx.add(m.desiredByNode, pair.node(), pair.artifact());
         m.desiredByArtifact = Idx.add(m.desiredByArtifact, pair.artifact(), pair.node());
-        m.seenAt = m.seenAt.put(pair, ctx.monoNs());
+        if (!unchanged) {
+            m.seenAt = m.seenAt.put(pair, ctx.monoNs());
+        }
+
         clearPending(m, pair);
         noteGeneration(m, value.generation());
         trackVersion(m, pair);

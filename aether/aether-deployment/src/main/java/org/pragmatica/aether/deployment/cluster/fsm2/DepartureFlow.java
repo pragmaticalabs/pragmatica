@@ -194,7 +194,9 @@ public sealed interface DepartureFlow {
            .forEach(artifact -> Outbox.artifact(m,
                                                 artifact,
                                                 intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node))));
-        cleanup(m, ctx, node, 0);
+        // C17b runs from the reconcile this step queues (step 10): the committed transaction notifies its mutations in
+        // order, so the desired and route removals of C17 arrive after the record, and a cleanup built now would expect
+        // values that are about to go and be refused as a whole.
     }
 
     /// An ADMITTED record committed. If it replaced a DEPARTED(STALE), the wrong recording is reversed (C11f, R-2.16).
