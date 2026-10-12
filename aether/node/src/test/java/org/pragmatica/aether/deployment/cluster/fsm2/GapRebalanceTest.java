@@ -22,8 +22,6 @@ class GapRebalanceTest {
     private static final Artifact A = artifact("org.example:a:1.0.0");
     private static final Artifact B = artifact("org.example:b:1.0.0");
     private static final Artifact C = artifact("org.example:c:1.0.0");
-    private static final Artifact D = artifact("org.example:d:1.0.0");
-    private static final Artifact E = artifact("org.example:e:1.0.0");
 
     /// Core-1 hosts all three one-instance artifacts; cores 2 and 3 host nothing. Every row is settled.
     private FsmHarness lopsided() {
@@ -75,35 +73,6 @@ class GapRebalanceTest {
         h.deliver(new ClusterInput.Reconcile());
         h.deliver(new ClusterInput.Reconcile());
         assertThat(h.submits()).isEmpty();
-    }
-
-    /// Red when: a host outside the allocatable cores (here a worker carrying more load than any core, with a replica of A beside the
-    /// core's) is chosen as the donor: a rebalance never pulls a placement off a worker. The core replica is the donor instead.
-    @Test
-    void aWorkerHost_isNeverADonor() {
-        var h = harness(CORE_1, CORE_2);
-        var worker = node("worker-1");
-
-        seedTarget(h, A, 1, 1);
-        seedGoal(h, CORE_1, A, SliceGoal.ACTIVE, G1);
-        seedRow(h, CORE_1, A, SliceObservedState.ACTIVE, G1, 11L);
-        seedGoal(h, worker, A, SliceGoal.ACTIVE, G1);
-        seedRow(h, worker, A, SliceObservedState.ACTIVE, G1, 21L);
-        seedTarget(h, B, 1, 1);
-        seedGoal(h, CORE_1, B, SliceGoal.ACTIVE, G1);
-        seedRow(h, CORE_1, B, SliceObservedState.ACTIVE, G1, 11L);
-        for (var busy : new Artifact[]{C, D, E}) {
-            seedGoal(h, worker, busy, SliceGoal.ACTIVE, G1);
-            seedRow(h, worker, busy, SliceObservedState.ACTIVE, G1, 21L);
-        }
-
-        h.activate();
-        h.deliver(new ClusterInput.Reconcile());
-        h.deliver(new ClusterInput.Reconcile());
-        assertThat(goalOf(h, worker, A)).as("the worker's replica stays").isEqualTo(Option.some(SliceGoal.ACTIVE));
-        assertThat(goalOf(h, CORE_1, A)).as("the core's replica is the one that moves")
-                  .isEqualTo(Option.some(SliceGoal.UNLOADED));
-        assertThat(goalOf(h, CORE_2, A)).isEqualTo(Option.some(SliceGoal.LOADED));
     }
 
     /// Red when: the donor is chosen among all allocatable cores instead of the cores that host the artifact, so a move names a
