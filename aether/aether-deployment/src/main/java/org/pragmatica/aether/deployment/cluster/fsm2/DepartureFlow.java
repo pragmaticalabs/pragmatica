@@ -353,17 +353,17 @@ public sealed interface DepartureFlow {
         return Joins.writeAdmission(m, ctx, node, admission.or(Admission.UNKNOWN), record);
     }
 
-    /// Step 10, "the `departing` re-reads" (R-4.3.0): a departure that is not in flight and has stood for one consensus timeout
+    /// Step 10, "the `departing` re-reads" (R-4.3.0): a departure that has stood for one consensus timeout without resolving
     /// is read again. A timer covers a submission that failed; this covers one whose draft was dropped (a suspended flush, an
-    /// expired submission) and so never reached a settlement.
+    /// expired submission) and so never reached a settlement. A submission older than the timeout is dropped by
+    /// `Outbox.expire`, which runs first in the same pass, so nothing in flight is submitted twice.
     static ClusterModel rereadOverdue(ClusterModel m, Ctx ctx) {
         var bound = ctx.settings().timing().departingReread() * 1_000_000L;
 
         m.departing.entries()
                    .stream()
                    .filter(entry -> ctx.monoNs() - entry.getValue()
-                                                        .sinceMono() >= bound && !departureInFlight(m,
-                                                                                                    entry.getKey()))
+                                                        .sinceMono() >= bound)
                    .sorted(Map.Entry.comparingByKey())
                    .forEach(entry -> rereadPending(m,
                                                    ctx,
@@ -371,21 +371,6 @@ public sealed interface DepartureFlow {
                                                    entry.getValue()));
 
         return m;
-    }
-
-    private static boolean departureInFlight(ClusterModel m, NodeId node) {
-        return m.submitted.values()
-                          .stream()
-                          .flatMap(submitted -> submitted.drafts()
-                                                         .stream())
-                          .anyMatch(draft -> concernsDeparture(draft, node)) || m.outbox.stream()
-                                                                                        .anyMatch(draft -> concernsDeparture(draft,
-                                                                                                                             node));
-    }
-
-    private static boolean concernsDeparture(TxDraft draft, NodeId node) {
-        return (draft.kind() == SubmitKind.DEPARTURE || draft.kind() == SubmitKind.INFERRED_DEPARTURE) && draft.node()
-                                                                                                               .equals(Option.some(node));
     }
 
     static boolean admissionInFlight(ClusterModel m, NodeId node) {

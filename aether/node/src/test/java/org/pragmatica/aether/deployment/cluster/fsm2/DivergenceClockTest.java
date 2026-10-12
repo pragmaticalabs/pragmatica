@@ -246,6 +246,35 @@ class DivergenceClockTest {
                   .isEqualTo(Option.some(SliceGoal.LOADED));
     }
 
+    // NT-100 (departing node)
+    // Red when: the clock re-issues a goal for a node whose departure is in flight; the pair is removed with the departure, and the write
+    // would put a goal on a node that is leaving (R-4.3.0, R-5.7.4).
+    @Test
+    void divergenceReissue_isNotWrittenForADepartingNode() {
+        var h = withTarget(1);
+
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.deliver(new ClusterInput.NodeRemoved(N1));
+        var before = goalWritesFor(h, N1);
+
+        h.advance(T_LOAD_MS + 1_000L);
+        assertThat(goalWritesFor(h, N1)).as("no goal is written for the departing node").isEqualTo(before);
+    }
+
+    private static long goalWritesFor(FsmHarness h, NodeId node) {
+        return h.submits()
+                .stream()
+                .flatMap(submit -> submit.transaction()
+                                         .mutations()
+                                         .stream())
+                .filter(mutation -> mutation.key() instanceof SliceDesiredKey desired
+                                    && desired.nodeId()
+                                              .equals(node)
+                                    && mutation.replacement()
+                                               .isPresent())
+                .count();
+    }
+
     // NT-102
     // Red when: a late ACTIVE for g triggers a goal or counts; control: UNLOADED for g clears unresponsive.
     @Test

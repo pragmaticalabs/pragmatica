@@ -22,6 +22,7 @@ class GapRebalanceTest {
     private static final Artifact A = artifact("org.example:a:1.0.0");
     private static final Artifact B = artifact("org.example:b:1.0.0");
     private static final Artifact C = artifact("org.example:c:1.0.0");
+    private static final Artifact D = artifact("org.example:d:1.0.0");
 
     /// Core-1 hosts all three one-instance artifacts; cores 2 and 3 host nothing. Every row is settled.
     private FsmHarness lopsided() {
@@ -85,6 +86,9 @@ class GapRebalanceTest {
         seedTarget(h, A, 1, 1);
         seedGoal(h, worker, A, SliceGoal.ACTIVE, G1);
         seedRow(h, worker, A, SliceObservedState.ACTIVE, G1, 21L);
+        seedTarget(h, D, 1, 1);
+        seedGoal(h, worker, D, SliceGoal.ACTIVE, G1);
+        seedRow(h, worker, D, SliceObservedState.ACTIVE, G1, 21L);
         seedTarget(h, B, 1, 1);
         seedGoal(h, CORE_1, B, SliceGoal.ACTIVE, G1);
         seedRow(h, CORE_1, B, SliceObservedState.ACTIVE, G1, 11L);
@@ -95,5 +99,7 @@ class GapRebalanceTest {
         h.deliver(new ClusterInput.Reconcile());
         h.deliver(new ClusterInput.Reconcile());
         assertThat(goalOf(h, worker, A)).as("the worker's instance stays").isEqualTo(Option.some(SliceGoal.ACTIVE));
+        assertThat(goalOf(h, worker, D)).as("and so does its second one: the worker carries more load than any idle core")
+                  .isEqualTo(Option.some(SliceGoal.ACTIVE));
     }
 }

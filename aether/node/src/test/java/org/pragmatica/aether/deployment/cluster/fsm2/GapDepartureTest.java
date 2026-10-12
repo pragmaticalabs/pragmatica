@@ -86,6 +86,29 @@ class GapDepartureTest {
         assertThat(w.counts(CORE_2)).isTrue();
     }
 
+    /// Red when: a departure whose refusal re-read shows an ADMITTED record at an epoch at or above the departed one (the record not
+    /// yet notified) is resubmitted instead of being dropped as obsolete (R-4.3.0).
+    @Test
+    void refusedDeparture_whoseReReadShowsALaterAdmission_isObsolete() {
+        var w = world().record(CORE_2, DepartureState.ADMITTED, 1L, TOKEN_2, null).activate();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        var held = w.h.submits(SubmitKind.DEPARTURE).getFirst();
+        var next = w.admissionOf(CORE_2, 2L);
+
+        w.h.held.clear();
+        w.h.seedQuietly(new NodeDepartureKey(CORE_2),
+                        new NodeDepartureValue(DepartureState.ADMITTED,
+                                               next.epoch(),
+                                               next.process(),
+                                               Option.none(),
+                                               w.h.wallMs));
+        w.h.settleHeld(held, w.h.refused(held));
+        assertThat(w.h.model().isDeparting(CORE_2)).isFalse();
+        assertThat(w.h.submits(SubmitKind.DEPARTURE)).as("no resubmission").hasSize(1);
+    }
+
     /// Red when: a departure that was refused for a reason other than a re-admission is not resubmitted against the record the
     /// mirror holds, or is resubmitted more than five times.
     @Test
@@ -111,6 +134,7 @@ class GapDepartureTest {
     void failedDeparture_staysInDeparting_andTheRereadResubmitsIt() {
         var w = world().activate();
 
+        w.h.advance(10_000L);
         w.h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         var first = w.h.submits(SubmitKind.DEPARTURE).getFirst();

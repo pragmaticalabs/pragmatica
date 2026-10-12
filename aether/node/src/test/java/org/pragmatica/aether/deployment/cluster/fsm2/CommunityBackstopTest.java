@@ -452,7 +452,8 @@ class CommunityBackstopTest {
                    SliceGoal.ACTIVE,
                    SliceObservedState.ACTIVE,
                    gen(1),
-                   0x2222L);
+                   0x2222L)
+         .record(CORE_2, DepartureState.ADMITTED, 1L, 0x2222L, null);
         w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1))));
         w.activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;

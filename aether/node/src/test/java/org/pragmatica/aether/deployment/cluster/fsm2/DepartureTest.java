@@ -132,7 +132,7 @@ class DepartureTest {
     // Red when: C17b runs before the DEPARTED record commits; or a C17b with a stale expected value is applied.
     @Test
     void cleanup_waitsForTheCommittedRecord_andANewerRowIsNotRemovedByAStaleExpectation() {
-        var w = world().activate();
+        var w = world().record(CORE_2, DepartureState.ADMITTED, 1L, TOKEN_2, null).activate();
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.clearLog();

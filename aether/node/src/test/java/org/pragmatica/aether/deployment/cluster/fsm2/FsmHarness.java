@@ -198,6 +198,8 @@ final class FsmHarness {
                                                                                                          aetherValue));
                                                                   }
                                                                   });
+        entries.sort(Comparator.comparing(entry -> entry.key()
+                                                        .toString()));
 
         return ClusterInput.Snapshot.snapshot(entries, seams, admissions, committedLeader());
     }
