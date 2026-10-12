@@ -1174,6 +1174,13 @@ public final class SwimProtocol implements SwimMessageHandler {
             return false;
         }
 
+        if (coldBootSuppressedFaulty.containsKey(member.nodeId())) {
+            // The cold-boot rule deferred this member's death. Sweeping it first would clear the deferral with its death
+            // memory (clearDeathMemory) and the verdict would be lost: the sweep (3 x suspectTimeout after the edge) can
+            // come before the convergence window closes. The member stays FAULTY until the replay emits it, then expires.
+            return false;
+        }
+
         return option(faultyStampedAtMs.get(member.nodeId())).map(faultyAt -> now - faultyAt > threshold)
                      .or(true);
     }
@@ -2384,8 +2391,22 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the conflicting token, the resident process is treated as dead — FAULTY now, unless it already
     /// is — so a same-address new process answering probes can never keep the old member alive.
     private void onRetired(NodeId peer) {
-        option(members.get(peer)).filter(member -> member.state() != MemberState.FAULTY)
-              .onPresent(this::transitionToFaulty);
+        option(members.get(peer)).onPresent(this::declareRetiredDead);
+    }
+
+    /// A retirement is positive evidence of death: it follows only a boot-token conflict that the member's own answer to
+    /// a probe (or a verified handshake) proved, never a partition heal, which keeps the process's token. So the death is
+    /// emitted at once, past the cold-boot suppression, the transport veto and the co-confirmation gate (see
+    /// [#emitFaultyOrUnknown]). A member already FAULTY gets no new edge, but its earlier edge may have been deferred
+    /// before the retirement; the retirement replaces that deferral with the death.
+    private void declareRetiredDead(SwimMember member) {
+        if (member.state() != MemberState.FAULTY) {
+            transitionToFaulty(member);
+
+            return;
+        }
+
+        emitFaultyOrUnknown(member.nodeId(), member.incarnation(), true);
     }
 
     private boolean isRetired(NodeId peer) {
@@ -3127,6 +3148,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// or a current transport death hint (#1061) — so a single prober's transient SUSPECT cannot terminally
     /// depart an established peer.
     private void emitFaultyOrUnknown(NodeId peer, long incarnation, boolean firstHand) {
+        if (isRetired(peer)) {
+            coldBootSuppressedFaulty.remove(peer);
+            transportVetoedFaulty.remove(peer);
+            emitFaultyAndDeparted(peer, incarnation);
+            emitClusterFaulty(peer);
+
+            return;
+        }
+
         var booting = isBooting.getAsBoolean();
 
         if (booting && !everSeenHealthy.contains(peer) && !refutedIdentities.contains(peer)) {
