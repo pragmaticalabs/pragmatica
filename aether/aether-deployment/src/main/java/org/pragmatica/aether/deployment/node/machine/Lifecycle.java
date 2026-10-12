@@ -304,14 +304,10 @@ sealed interface Lifecycle {
                       .isPresent();
     }
 
+    /// Only what survives the outage is kept: a park, the serving flag, a suspension. Chains, writes and owed failures are not
+    /// carried; the next Rebuild seeds every key from the snapshot and reconciles it (spec 3.4: in-flight keys are reconciled).
     private static InstanceRecord dropped(InstanceRecord rec, boolean serves) {
-        return rec.withChain(none())
-                  .withWrite(none())
-                  .withUnconfirmed(none())
-                  .withDeferredFailure(none())
-                  .withDesiredPending(false)
-                  .withTombstoneArmed(0L)
-                  .withSuspended(serves)
+        return rec.withSuspended(serves)
                   .withServing(rec.serving() && !serves);
     }
 

@@ -20,6 +20,7 @@ import org.pragmatica.lang.utils.Causes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.node.machine.NodeHarness.ARTIFACT;
 import static org.pragmatica.aether.deployment.node.machine.NodeHarness.ARTIFACT_B;
+import static org.pragmatica.aether.deployment.node.machine.NodeHarness.ARTIFACT_C;
 import static org.pragmatica.aether.deployment.node.machine.NodeHarness.G1;
 import static org.pragmatica.aether.deployment.node.machine.NodeHarness.G2;
 import static org.pragmatica.aether.deployment.node.machine.NodeHarness.leg;
@@ -275,6 +276,28 @@ class NodeFsmChainTest {
             assertThat(h.observed(ARTIFACT).map(SliceObservedValue::version).or(0L)).isEqualTo(failedAt);
         }
 
+        /// Red when: a duplicate settlement of a step that already ended is taken for the settlement of the step now running, so
+        /// the chain moves on before that step ended (B-142: a step is identified by its token, not by its position).
+        @Test
+        @DisplayName("NT-59 B-142: a duplicate settlement of an earlier step does not advance the chain")
+        void nt59_duplicateSettlementOfAnEarlierStep_isIgnored() {
+            var h = new NodeHarness();
+
+            h.hold(LocalStep.ACTIVATE).hold(LocalStep.REGISTER_BRIDGE).establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.ACTIVE, G1);
+
+            var activate = h.pendingLocal.values().iterator().next().op();
+
+            h.settle(LocalStep.ACTIVATE, LocalOutcome.done());
+
+            assertThat(h.localSteps()).endsWith(LocalStep.REGISTER_BRIDGE);
+
+            h.clearEffects();
+            h.feed(new NodeFsmInput.LocalOpSettled(activate.incarnation(), ARTIFACT, activate.token(), LocalOutcome.done()));
+
+            assertThat(h.localOps()).as("the running step has not ended: nothing follows it yet").isEmpty();
+            assertThat(h.record(ARTIFACT).serving()).isFalse();
+        }
+
         /// Red when: a route publication failure does not fail the chain (an ACTIVE row is written).
         @Test
         @DisplayName("NT-75 B-169: a route publication failure fails the chain")
@@ -372,7 +395,7 @@ class NodeFsmChainTest {
             var h = active();
             var topic = leg(LegCommand.LegKind.TOPIC_SUBSCRIPTION, ARTIFACT_B);
             var scheduled = leg(LegCommand.LegKind.SCHEDULED_TASK, ARTIFACT_B.base().withVersion(ARTIFACT.version()));
-            var release = leg(LegCommand.LegKind.STREAM_REF, ARTIFACT_B.base().withVersion(ARTIFACT.version()));
+            var release = leg(LegCommand.LegKind.STREAM_REF, ARTIFACT_C);
 
             h.script(LocalStep.PREPARE_TEARDOWN, LocalOutcome.done(List.of(topic, scheduled, release)));
             h.clearEffects().goal(ARTIFACT, SliceGoal.LOADED, G2);

@@ -180,6 +180,11 @@ sealed interface Chains {
         };
     }
 
+    /// FER (degrade and continue): a teardown preparation, an unpublish or an unload that fails must not strand the chain, so
+    /// the failure is logged at the call site and the chain goes on to its closing write. The guarantee earned: the row still
+    /// reaches DEACTIVATING / LOADED or UNLOADING / UNLOADED, so the leader's goal is answered. The mechanism is a single
+    /// attempt with no retry: a lost remove or release leaves its topic, stream or ref key behind until the next goal for the
+    /// pair or the leader's sweep (B-143, B-147).
     private static Transition bestEffort(NodeFsm fsm, Transition t, Artifact artifact, Chain chain, LocalStep step) {
         var carried = t.update(artifact,
                                rec -> rec.withChain(some(chain.collecting(List.of(),

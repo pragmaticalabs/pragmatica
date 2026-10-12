@@ -31,20 +31,14 @@ sealed interface Plans {
                        InstanceRecord rec,
                        SliceDesiredValue desired) {
         var row = Rows.current(fsm.config(), rec);
-        var state = Rows.stateOf(row);
 
-        if (isUnknown(state) || desired.goal() == SliceGoal.UNKNOWN) {
+        if (desired.goal() == SliceGoal.UNKNOWN) {
             return Plan.unknown();
         }
 
         return failedForGeneration(rec, row, desired)
                ? Plan.adopted()
-               : forGoal(model, artifact, desired.goal(), state);
-    }
-
-    private static boolean isUnknown(Option<SliceObservedState> state) {
-        return state.filter(s -> s == SliceObservedState.UNKNOWN)
-                    .isPresent();
+               : forGoal(model, artifact, desired.goal(), Rows.stateOf(row));
     }
 
     /// A FAILED row for the generation already executed starts no new chain: the leader's failure handling re-issues at a new
@@ -71,7 +65,8 @@ sealed interface Plans {
         return switch (goal) {
             case LOADED -> state.fold(Plans::plannedLoad, s -> forLoaded(model, artifact, s));
             case ACTIVE -> state.fold(Plans::plannedRedeploy, s -> forActive(model, artifact, s));
-            case UNLOADED, UNKNOWN -> state.fold(() -> forAbsentUnloaded(model, artifact), s -> forUnloaded(s));
+            case UNLOADED -> state.fold(() -> forAbsentUnloaded(model, artifact), s -> forUnloaded(s));
+            case UNKNOWN -> Plan.unknown();
         };
     }
 

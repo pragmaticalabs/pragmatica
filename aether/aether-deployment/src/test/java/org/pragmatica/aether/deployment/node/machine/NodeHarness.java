@@ -49,6 +49,7 @@ final class NodeHarness {
     static final long BOOT_INCARNATION = 1_760_000_000_000L;
     static final Artifact ARTIFACT = Artifact.artifact("org.example:orders:1.0.0").unwrap();
     static final Artifact ARTIFACT_B = Artifact.artifact("org.example:billing:2.0.0").unwrap();
+    static final Artifact ARTIFACT_C = Artifact.artifact("org.example:audit:3.0.0").unwrap();
     static final Generation G1 = new Generation(5L, 1L);
     static final Generation G2 = new Generation(5L, 2L);
     static final Generation G3 = new Generation(5L, 3L);

@@ -131,6 +131,13 @@ class NodeFsmStaleRowTest {
             assertThat(h.localOps()).as("token " + token).isEmpty();
             assertThat(h.record(ARTIFACT).appliedGeneration().or(G3)).as("token " + token).isEqualTo(G1);
             assertThat(h.record(ARTIFACT).lastVersion()).isEqualTo(STALE_VERSION);
+
+            var noGoal = new NodeHarness();
+
+            noGoal.seedRow(ARTIFACT, SliceObservedState.ACTIVE, token, STALE_VERSION, G1).establish();
+
+            assertThat(noGoal.record(ARTIFACT).appliedGeneration().or(G3)).as("token " + token + ": N0 corroborates the row's generation").isEqualTo(G1);
+            assertThat(noGoal.effectsOf(NodeFsmEffect.Submit.class)).as("token " + token + ": and writes nothing").isEmpty();
         }
     }
 

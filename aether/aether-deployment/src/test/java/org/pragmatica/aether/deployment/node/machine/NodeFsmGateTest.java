@@ -63,10 +63,13 @@ class NodeFsmGateTest {
 
             assertThat(h.effectsOf(NodeFsmEffect.Warn.class)).isEmpty();
 
+            var timer = h.timersOf(TimerId.TimerKind.PARKED_ESCALATION).stream().findFirst();
+
             h.advance(1L);
             h.advance(h.timings.parkedBoundMs());
+            timer.ifPresent(h::fire);
 
-            assertThat(h.effectsOf(NodeFsmEffect.Warn.class)).hasSize(1);
+            assertThat(h.effectsOf(NodeFsmEffect.Warn.class)).as("once, even if the timer is delivered again").hasSize(1);
             assertThat(h.effectsOf(NodeFsmEffect.Warn.class).getFirst().code()).isEqualTo(OperatorWarningCode.SLICE_START_AWAITING_TARGET.code());
 
             h.permit(ARTIFACT);
@@ -82,6 +85,30 @@ class NodeFsmGateTest {
             quiet.permit(ARTIFACT);
 
             assertThat(quiet.effectsOf(NodeFsmEffect.WarnResolved.class)).as("no warning, no recovery").isEmpty();
+        }
+
+        /// Red when: an escalation timer that fires before the bound has elapsed on the node's clock raises the warning (the
+        /// bound is checked against the wall clock, B-158), or one for a park that ended is acted on.
+        @Test
+        @DisplayName("NT-71 B-158: an escalation timer that fires early is ignored")
+        void nt71_earlyEscalationTimer_isIgnored() {
+            var h = new NodeHarness();
+
+            h.establish().goal(ARTIFACT, SliceGoal.LOADED, G1);
+
+            var parkedAt = h.wall;
+            var timer = h.timersOf(TimerId.TimerKind.PARKED_ESCALATION).getFirst();
+
+            h.wall = parkedAt + h.timings.parkedBoundMs() - 1L;
+            h.fire(timer);
+
+            assertThat(h.effectsOf(NodeFsmEffect.Warn.class)).isEmpty();
+            assertThat(h.record(ARTIFACT).parked().map(Parked::warned).or(true)).isFalse();
+
+            h.wall = parkedAt + h.timings.parkedBoundMs();
+            h.fire(timer);
+
+            assertThat(h.effectsOf(NodeFsmEffect.Warn.class)).hasSize(1);
         }
 
         /// Red when: a version a rolling update names is refused (the routing entry is ignored), or an absent target permits.
