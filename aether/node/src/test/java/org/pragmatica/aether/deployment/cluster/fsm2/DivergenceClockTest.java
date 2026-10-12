@@ -258,7 +258,14 @@ class DivergenceClockTest {
         var before = goalWritesFor(h, N1);
 
         h.advance(T_LOAD_MS + 1_000L);
+        h.deliver(new ClusterInput.Reconcile());
         assertThat(goalWritesFor(h, N1)).as("no goal is written for the departing node").isEqualTo(before);
+        var control = withTarget(1);
+
+        control.advance(T_LOAD_MS + 1_000L);
+        control.deliver(new ClusterInput.Reconcile());
+        assertThat(goalWritesFor(control, N1)).as("control: without the departure the same clock does re-issue the goal")
+                  .isGreaterThan(goalWritesFor(h, N1));
     }
 
     private static long goalWritesFor(FsmHarness h, NodeId node) {
