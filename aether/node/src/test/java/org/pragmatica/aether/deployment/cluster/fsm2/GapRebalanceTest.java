@@ -105,4 +105,32 @@ class GapRebalanceTest {
                   .isEqualTo(Option.some(SliceGoal.UNLOADED));
         assertThat(goalOf(h, CORE_2, A)).isEqualTo(Option.some(SliceGoal.LOADED));
     }
+
+    /// Red when: the donor is chosen among all allocatable cores instead of the cores that host the artifact, so a move names a
+    /// node that holds no instance of it (an UNLOADED goal for a pair that does not exist, a load without an unload).
+    @Test
+    void theDonor_isAlwaysAHostOfTheArtifact() {
+        var h = threeCores();
+
+        for (var artifact : new Artifact[]{A, B, C}) {
+            seedTarget(h, artifact, 1, 1);
+        }
+
+        seedGoal(h, CORE_2, A, SliceGoal.ACTIVE, G1);
+        seedRow(h, CORE_2, A, SliceObservedState.ACTIVE, G1, 12L);
+        for (var artifact : new Artifact[]{B, C}) {
+            seedGoal(h, CORE_1, artifact, SliceGoal.ACTIVE, G1);
+            seedRow(h, CORE_1, artifact, SliceObservedState.ACTIVE, G1, 11L);
+        }
+
+        h.activate();
+        h.deliver(new ClusterInput.Reconcile());
+        h.deliver(new ClusterInput.Reconcile());
+        assertThat(goalOf(h, CORE_1, A)).as("core-1 holds no instance of A: nothing is written for it")
+                  .isEqualTo(Option.none());
+        assertThat(goalOf(h, CORE_2, A)).as("A, hosted by the one core with a single instance, stays")
+                  .isEqualTo(Option.some(SliceGoal.ACTIVE));
+        assertThat(goalOf(h, CORE_1, B)).as("control: the move that does happen is B, off core-1")
+                  .isEqualTo(Option.some(SliceGoal.UNLOADED));
+    }
 }
