@@ -331,18 +331,25 @@ class NodeFsmWriteTest {
             assertThat(h.record(ARTIFACT).lastVersion()).as("the chain restarts at 1 after a Remove").isZero();
         }
 
-        /// Red when: a newer goal does not cancel the pending Remove, so the tombstone is Removed under a live chain.
+        /// Red when: a newer goal does not cancel the pending Remove, so the tombstone is Removed although a goal now asks for
+        /// the pair. The goal is parked (its target is gone) so that no chain overwrites the tombstone first and the Remove
+        /// would be the only thing that could take it away.
         @Test
         @DisplayName("NT-93 R-1.6.3: a newer goal cancels the pending tombstone Remove")
         void nt93_newerGoal_cancelsTheRemove() {
             var h = tombstoned();
+            var tombstone = row(h);
 
-            h.permit(ARTIFACT).goal(ARTIFACT, SliceGoal.LOADED, G3);
+            h.feed(new NodeFsmInput.TargetRemove(ARTIFACT.base()));
+            h.goal(ARTIFACT, SliceGoal.LOADED, G3);
+
+            assertThat(h.record(ARTIFACT).parked().isPresent()).isTrue();
+
             h.clearEffects().advance(h.timings.tombstoneGraceMs() * 2L);
 
             assertThat(h.effects.stream().filter(effect -> effect instanceof NodeFsmEffect.Submit submit
                                                          && submit.commands().stream().anyMatch(KVCommand.Remove.class::isInstance))).isEmpty();
-            assertThat(row(h).state()).isEqualTo(SliceObservedState.LOADED);
+            assertThat(row(h)).as("the tombstone is still the committed row").isEqualTo(tombstone);
         }
 
         /// Red when: the Remove is issued with an own write in flight on the key (R-3.4.9 (2)).

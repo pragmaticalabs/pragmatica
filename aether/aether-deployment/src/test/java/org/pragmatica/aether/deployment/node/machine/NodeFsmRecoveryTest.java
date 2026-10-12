@@ -161,6 +161,85 @@ class NodeFsmRecoveryTest {
     }
 
     @Nested
+    class Rule60 {
+        private NodeFsmModel owing(NodeHarness h, SliceObservedState committed, long committedVersion, long owedVersion, long rowToken) {
+            var row = new SliceObservedValue(committed,
+                                             committedVersion,
+                                             G1,
+                                             new org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation(NodeHarness.BOOT_INCARNATION, rowToken),
+                                             Option.none(),
+                                             false,
+                                             0,
+                                             List.of(),
+                                             h.wall);
+            var note = FailureNote.failureNote("corrupt jar", false, G1);
+            var rec = InstanceRecord.instanceRecord()
+                                    .withDesired(Option.some(new SliceDesiredValue(SliceGoal.LOADED, G1, h.wall)))
+                                    .withObserved(Option.some(row))
+                                    .withLastVersion(committedVersion)
+                                    .withChainGeneration(Option.some(G1))
+                                    .withUnconfirmed(Option.some(Unconfirmed.unconfirmed(SliceObservedState.FAILED, owedVersion, Option.some(note))));
+
+            return NodeFsmModel.nodeFsmModel().withActive(true, 1L).withInstance(ARTIFACT, rec);
+        }
+
+        private Transition redrive(NodeHarness h, NodeFsmModel model) {
+            return Redrive.redrive(h.fsm, Transition.transition(model), ARTIFACT, 0);
+        }
+
+        /// Red when: R-6.0 step 3 or 4 is not applied: a FAILED write the committed row already shows (or has passed), or a
+        /// teardown or terminal row, is overwritten instead of adopted.
+        @Test
+        @DisplayName("R-6.0 steps 3 and 4: a committed row at or past the write, or a teardown row, is adopted with no write")
+        void redrive_adoptsCommittedRows() {
+            var h = new NodeHarness();
+
+            for (var committed : List.of(SliceObservedState.FAILED, SliceObservedState.UNLOADING, SliceObservedState.DEACTIVATING, SliceObservedState.UNLOADED)) {
+                var step = redrive(h, owing(h, committed, 2L, 3L, NodeHarness.SELF_TOKEN));
+
+                assertThat(step.effects().stream().filter(effect -> effect instanceof NodeFsmEffect.Submit)).as(committed.name()).isEmpty();
+                assertThat(step.instance(ARTIFACT).unconfirmed().isEmpty()).as(committed.name()).isTrue();
+            }
+
+            var atTarget = redrive(h, owing(h, SliceObservedState.LOADING, 3L, 3L, NodeHarness.SELF_TOKEN));
+
+            assertThat(atTarget.effects().stream().filter(effect -> effect instanceof NodeFsmEffect.Submit)).as("a row at the write's version").isEmpty();
+        }
+
+        /// Red when: R-6.0 step 5 is not applied: a row earlier in the chain does not get the FAILED write rebuilt at the next
+        /// version, or a stale row (step 2) is adopted instead of treated as absent.
+        @Test
+        @DisplayName("R-6.0 steps 2 and 5: a row earlier in the chain gets the write rebuilt; a stale row is never adopted")
+        void redrive_rebuildsForEarlierRows_andNeverAdoptsAStaleRow() {
+            var h = new NodeHarness();
+
+            for (var committed : List.of(SliceObservedState.LOADING, SliceObservedState.LOADED, SliceObservedState.ACTIVATING, SliceObservedState.ACTIVE)) {
+                var step = redrive(h, owing(h, committed, 2L, 3L, NodeHarness.SELF_TOKEN));
+                var submits = step.effects().stream().filter(NodeFsmEffect.Submit.class::isInstance).map(NodeFsmEffect.Submit.class::cast).toList();
+
+                assertThat(submits).as(committed.name()).hasSize(1);
+                assertThat(NodeHarness.putOf(submits.getFirst()).map(SliceObservedValue::version).or(0L)).as(committed.name()).isEqualTo(3L);
+                assertThat(NodeHarness.putOf(submits.getFirst()).map(SliceObservedValue::state).or(SliceObservedState.UNKNOWN)).as(committed.name()).isEqualTo(SliceObservedState.FAILED);
+            }
+
+            var stale = redrive(h, owing(h, SliceObservedState.UNLOADING, 2L, 3L, NodeHarness.OTHER_PROCESS_TOKEN));
+
+            assertThat(stale.effects().stream().filter(effect -> effect instanceof NodeFsmEffect.Submit)).as("a stale teardown row reads as absent").hasSize(1);
+        }
+
+        /// Red when: the remediation line does not name the node, the goal, the local write and the committed state (step 6).
+        @Test
+        @DisplayName("R-6.0 step 6: the remediation line names the node, goal, local and observed state")
+        void redrive_namesNodeGoalLocalAndObserved() {
+            var h = new NodeHarness();
+            var step = redrive(h, owing(h, SliceObservedState.LOADING, 2L, 3L, NodeHarness.SELF_TOKEN));
+            var line = step.effects().stream().filter(NodeFsmEffect.Log.class::isInstance).map(NodeFsmEffect.Log.class::cast).findFirst().orElseThrow().message();
+
+            assertThat(line).contains(SELF.id(), "LOADED", "FAILED", "LOADING", ARTIFACT.asString());
+        }
+    }
+
+    @Nested
     class Departed {
         /// Red when: the desired keys of a falsely departed node going away does not run the forced cleanup (N17), the node
         /// writes anything while it is cleaned up, or the leader's witnessed removal of its rows (C17b) leaves a record behind.
