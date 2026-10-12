@@ -24,7 +24,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
-import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
