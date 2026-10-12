@@ -578,12 +578,21 @@ public sealed interface Outbox {
                                       stayPairs,
                                       draft.node(),
                                       draft.attempt() + 1,
-                                      List.of()));
+                                      stillStarted(draft, stayPairs)));
         }
 
         return movedAny
                ? Reconcile.request(m, ctx)
                : m;
+    }
+
+    /// The events to route on acceptance that still concern a pair of the resubmitted transaction.
+    private static List<RoutedEvent> stillStarted(TxDraft draft, Set<SlicePair> pairs) {
+        return draft.onAccepted()
+                    .stream()
+                    .filter(event -> !(event instanceof RoutedEvent.DeploymentStarted started) || pairs.contains(SlicePair.slicePair(started.node(),
+                                                                                                                                     started.artifact())))
+                    .toList();
     }
 
     private static boolean mutatedElsewhere(ClusterModel m, KVCommand.Mutation<AetherKey, AetherValue> mutation) {
