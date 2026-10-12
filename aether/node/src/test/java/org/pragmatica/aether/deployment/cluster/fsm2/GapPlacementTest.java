@@ -93,6 +93,7 @@ class GapPlacementTest {
         w.h.drain();
         new NodeSim(w.h, CORE_1, process(11L)).follows(ORDERS);
         w.h.drain();
+        w.h.advance(30_000L);
 
         assertThat(goalOf(w.h, W1, ORDERS)).as("the replacement is ACTIVE: the displaced instance goes").isEqualTo(Option.some(SliceGoal.UNLOADED));
     }

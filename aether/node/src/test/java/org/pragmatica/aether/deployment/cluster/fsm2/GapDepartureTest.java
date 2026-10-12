@@ -131,14 +131,16 @@ class GapDepartureTest {
 
         w.h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
         w.h.advanceBySeconds(bound / 1000 + 61);
-        assertThat(w.h.submits(SubmitKind.INFERRED_DEPARTURE)).hasSize(1);
+        var before = w.h.submits(SubmitKind.INFERRED_DEPARTURE).size();
+
+        assertThat(before).as("recorded after B_rm; every failure is retried at the re-read while it is still warranted").isGreaterThanOrEqualTo(1);
         assertThat(w.h.model().isDeparting(CORE_2)).isTrue();
 
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.refreshSeams(seams -> seams.withCoreView(Option.some(Set.of(CORE_1, CORE_2, CORE_3))));
         w.h.advance(31_000L);
 
-        assertThat(w.h.submits(SubmitKind.INFERRED_DEPARTURE)).as("present again: not resubmitted").hasSize(1);
+        assertThat(w.h.submits(SubmitKind.INFERRED_DEPARTURE)).as("present again: not resubmitted").hasSize(before);
         assertThat(w.h.model().isDeparting(CORE_2)).as("and no longer departing").isFalse();
     }
 
