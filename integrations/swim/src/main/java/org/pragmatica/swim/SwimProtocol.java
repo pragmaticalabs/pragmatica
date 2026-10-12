@@ -1040,7 +1040,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                 tombstoneIfWasHealthy(entry.getKey(),
                                       entry.getValue().incarnation(),
                                       now);
-                keepDeferredDeath(entry.getKey(), entry.getValue().incarnation());
+                keepDeferredDeath(entry.getKey(),
+                                  entry.getValue().incarnation());
                 clearDeathMemory(entry.getKey());
             }
         }
@@ -1052,7 +1053,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// [#clearDeathMemory], which erases the live deferral.
     private void keepDeferredDeath(NodeId peer, long incarnation) {
         option(coldBootSuppressedFaulty.get(peer)).onPresent(firstHand -> sweptSuppressedDeaths.put(peer,
-                                                                                                   new SweptDeath(incarnation, firstHand)));
+                                                                                                    new SweptDeath(incarnation,
+                                                                                                                   firstHand)));
     }
 
     /// Wave-6 H8 journal line (residency decision logging, per the Wave-1 diagnostic
