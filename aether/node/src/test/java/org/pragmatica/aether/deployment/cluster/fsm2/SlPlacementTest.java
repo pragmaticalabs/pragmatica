@@ -101,6 +101,8 @@ class SlPlacementTest {
             h.advanceBySeconds(10);
 
             assertThat(hosts(h, ORDERS)).containsExactly(CORE_1);
+            assertThat(h.submits()).as("the goal in place counts as placed: nothing is written").isEmpty();
+            assertThat(h.model().desired(SlicePair.slicePair(CORE_1, ORDERS)).map(SliceDesiredValue::generation)).isEqualTo(Option.some(G1));
         }
 
         /// NT-14. Red when: an `unresponsive` node is chosen.
