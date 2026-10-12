@@ -4,7 +4,7 @@
 - Every leader write is a `LeaderTransaction` with the committed `LeaderValue` and the exact expected values of the mirror (R-5.7.1); refusals are re-derived per pair (R-5.7.2), a deposed leader suspends instead of resubmitting.
   [verified: `aether/node/src/test/java/org/pragmatica/aether/deployment/cluster/fsm2/WritePathTest.java`, `GapEngineTest.java`]
 - The old `ClusterDeploymentState`, `NodeArtifactKey` and its readers are untouched and nothing is wired to the new FSM: this phase changes no behaviour. [mechanism: no production caller of `fsm2`]
-- 218 tests on the real `KVStore` applier (no running cluster), every NT row that belongs to the cluster FSM and can be asserted without wiring; the rest are listed in the phase report as phase 3.
+- 228 tests on the real `KVStore` applier (no running cluster), every NT row that belongs to the cluster FSM and can be asserted without wiring; the rest are listed in the phase report as phase 3.
   [verified: `aether/node/src/test/java/org/pragmatica/aether/deployment/cluster/fsm2/`]
 
 ### Changed (2026-10-12 — #2174: `ArtifactJudgmentValue.retries` is per node)
