@@ -152,16 +152,18 @@ class DeploymentFsmKvRecordsCodecTest {
 
         @Test
         void sliceObserved_roundTripsEveryComponentDistinctly() {
-            roundTrip(SliceObservedKey.sliceObservedKey(NODE, ARTIFACT),
-                      new SliceObservedValue(SliceState.FAILED,
-                                             12L,
-                                             GENERATION,
-                                             PROCESS,
-                                             Option.some("load failed"),
-                                             true,
-                                             5,
-                                             List.of("handle", "describe"),
-                                             1_760_000_222_000L));
+            var value = new SliceObservedValue(SliceState.FAILED,
+                                               12L,
+                                               GENERATION,
+                                               PROCESS,
+                                               Option.some("load failed"),
+                                               true,
+                                               5,
+                                               List.of("handle", "describe"),
+                                               1_760_000_222_000L);
+
+            assertThat(value.methods()).as("the constructor keeps what it is given").containsExactly("handle", "describe");
+            roundTrip(SliceObservedKey.sliceObservedKey(NODE, ARTIFACT), value);
         }
 
         @Test
@@ -195,7 +197,10 @@ class DeploymentFsmKvRecordsCodecTest {
                                       OTHER_NODE,
                                       new UnresponsiveEntry(OTHER_GENERATION, SliceGoal.LOADED, 1_760_000_666_000L));
 
-            roundTrip(key, new ArtifactJudgmentValue(true, 4, unresponsive));
+            var judgment = new ArtifactJudgmentValue(true, 4, unresponsive);
+
+            assertThat(judgment.unresponsive()).as("the constructor keeps what it is given").isEqualTo(unresponsive);
+            roundTrip(key, judgment);
             roundTrip(key, new ArtifactJudgmentValue(false, 0, Map.of()));
         }
 
