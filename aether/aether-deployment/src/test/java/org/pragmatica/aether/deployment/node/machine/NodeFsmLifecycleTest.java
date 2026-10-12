@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.deployment.node.machine.NodeHarness.ARTIFACT;
@@ -75,38 +76,73 @@ class NodeFsmLifecycleTest {
 
     @Nested
     class QuorumCycle {
-        /// Red when: a timer of incarnation 1 writes after a quorum cycle, a local step of incarnation 1 ends in a write, or the
-        /// in-flight key is not reconciled at entry (the resumed LOAD is not issued again, under incarnation 2).
+        /// Red when: the in-flight key is not reconciled at entry (the resumed LOAD is not issued again, under incarnation 2),
+        /// or a local step that ends under incarnation 1 is acted on although its token is the live one.
         @Test
-        @DisplayName("NT-46 B-108/B-170: an incarnation-1 timer and step write nothing after a quorum cycle; the in-flight key is reconciled")
-        void nt46_quorumCycle_dropsOldIncarnationAndReconcilesTheInFlightKey() {
+        @DisplayName("NT-46 B-108/B-170: the in-flight key is reconciled at entry and an incarnation-1 step result is dropped")
+        void nt46_quorumCycle_reconcilesTheInFlightKey_andDropsOldIncarnationSteps() {
             var h = new NodeHarness();
 
             h.hold(LocalStep.LOAD);
             h.establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.LOADED, G1);
 
-            var oldTimer = h.timers.keySet().stream().filter(t -> t.kind() == TimerId.TimerKind.WRITE_CONFIRM).findFirst();
             var oldIncarnation = h.model.incarnation();
-            var heldLoad = h.pendingLocal.values().iterator().next().op();
 
             assertThat(h.observed(ARTIFACT).map(row -> row.state()).or(SliceObservedState.UNKNOWN)).isEqualTo(SliceObservedState.LOADING);
 
             h.feed(new NodeFsmInput.QuorumDisappeared());
             h.clearEffects();
-            h.hold(LocalStep.LOAD);
+            h.pendingLocal.clear();
             h.establish();
 
             assertThat(h.model.incarnation()).isEqualTo(oldIncarnation + 1L);
-            assertThat(h.localOps()).as("the in-flight key is reconciled at entry: its LOAD is issued again").anyMatch(op -> op.step() == LocalStep.LOAD
-                                                                                                                         && op.incarnation() == oldIncarnation + 1L);
+
+            var reissued = h.localOps().stream().filter(op -> op.step() == LocalStep.LOAD).findFirst().orElseThrow();
+
+            assertThat(reissued.incarnation()).as("the in-flight key is reconciled at entry: its LOAD is issued again").isEqualTo(oldIncarnation + 1L);
 
             h.clearEffects();
-            oldTimer.ifPresent(h::fire);
-            h.feed(new NodeFsmInput.TimerFired(TimerId.timerId(TimerId.TimerKind.CHAIN_BOUND, ARTIFACT, oldIncarnation, 1L)));
-            h.feed(new NodeFsmInput.LocalOpSettled(heldLoad.incarnation(), ARTIFACT, heldLoad.token(), LocalOutcome.done()));
+            h.feed(new NodeFsmInput.LocalOpSettled(oldIncarnation, ARTIFACT, reissued.token(), LocalOutcome.done()));
 
-            assertThat(h.effectsOf(NodeFsmEffect.Submit.class)).as("nothing of incarnation 1 writes").isEmpty();
+            assertThat(h.effectsOf(NodeFsmEffect.Submit.class)).as("an incarnation-1 result carrying the live token writes nothing").isEmpty();
             assertThat(h.localOps()).isEmpty();
+
+            h.feed(new NodeFsmInput.LocalOpSettled(reissued.incarnation(), ARTIFACT, reissued.token(), LocalOutcome.done()));
+
+            assertThat(h.submitsOf(SliceObservedState.LOADED)).as("control: the same result under the live incarnation is acted on").hasSize(1);
+        }
+
+        /// Red when: a write-confirm timer or a write settlement of incarnation 1 acts after a quorum cycle, although it carries
+        /// the correlation of the write now in flight (a retry or a re-drive would follow).
+        @Test
+        @DisplayName("NT-46 B-108/B-170: an incarnation-1 timer and settlement carrying the live correlation write nothing")
+        void nt46_quorumCycle_dropsOldIncarnationTimersAndSettlements() {
+            var h = new NodeHarness();
+
+            h.writeMode = NodeHarness.WriteMode.LOST;
+            h.establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.LOADED, G1);
+
+            var oldIncarnation = h.model.incarnation();
+
+            h.feed(new NodeFsmInput.QuorumDisappeared());
+            h.establish();
+
+            var live = h.record(ARTIFACT).write().orElse(Option.none()).or((InFlight) null);
+
+            assertThat(live).as("the entry reconcile has a write in flight").isNotNull();
+
+            h.clearEffects();
+            h.feed(new NodeFsmInput.TimerFired(TimerId.timerId(TimerId.TimerKind.WRITE_CONFIRM, ARTIFACT, oldIncarnation, live.correlation())));
+            h.feed(new NodeFsmInput.WriteSettled(oldIncarnation,
+                                                 ARTIFACT,
+                                                 live.correlation(),
+                                                 NodeFsmInput.WriteOutcome.failed(org.pragmatica.lang.utils.Causes.cause("old"))));
+
+            assertThat(h.effectsOf(NodeFsmEffect.Submit.class)).as("nothing of incarnation 1 retries the write").isEmpty();
+
+            h.feed(new NodeFsmInput.TimerFired(TimerId.timerId(TimerId.TimerKind.WRITE_CONFIRM, ARTIFACT, h.model.incarnation(), live.correlation())));
+
+            assertThat(h.effectsOf(NodeFsmEffect.Submit.class)).as("control: the live timer retries").hasSize(1);
         }
     }
 
