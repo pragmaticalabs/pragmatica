@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
+
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Snapshot;
 import org.pragmatica.aether.deployment.cluster.fsm2.TimerId.Kind;
@@ -54,11 +56,11 @@ public sealed interface Lifecycle {
         m.leader = Option.some(value);
         if (wasSuspended && !isSuspended(m, ctx)) {
             m.parked.forEach(draft -> Outbox.direct(m, draft));
-            m.parked = java.util.List.of();
+            m.parked = List.of();
             m.parkedOps.forEach(entry -> Outbox.artifact(m,
                                                          entry.getKey(),
                                                          intent -> intent.withOp(entry.getValue())));
-            m.parkedOps = java.util.List.of();
+            m.parkedOps = List.of();
             Reconcile.request(m, ctx);
         }
 

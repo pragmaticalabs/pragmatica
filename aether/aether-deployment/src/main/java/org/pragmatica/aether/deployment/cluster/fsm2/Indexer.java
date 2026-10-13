@@ -240,7 +240,7 @@ public sealed interface Indexer {
             m.seenAt = m.seenAt.put(pair, ctx.monoNs());
         }
 
-        clearPending(m, pair);
+        clearMatchingPending(m, pair, value.generation());
         noteGeneration(m, value.generation());
         trackVersion(m, pair);
 
@@ -251,7 +251,7 @@ public sealed interface Indexer {
         m.desired = m.desired.remove(pair);
         m.desiredByNode = Idx.remove(m.desiredByNode, pair.node(), pair.artifact());
         m.desiredByArtifact = Idx.remove(m.desiredByArtifact, pair.artifact(), pair.node());
-        clearPending(m, pair);
+        clearRemovedPending(m, pair);
         m.reissues = m.reissues.remove(pair);
         trackVersion(m, pair);
 
@@ -293,6 +293,23 @@ public sealed interface Indexer {
     }
 
     /// A goal in flight is answered by the desired key that carries it (C11b), and is dropped when the desired key goes.
+    /// C11b: a committed desired key answers only the in-flight goal of its own generation; a goal issued later stays in flight.
+    static ClusterModel clearMatchingPending(ClusterModel m, SlicePair pair, AetherValue.Generation committed) {
+        return m.pendingGoals.get(pair)
+                             .filter(pending -> pending.generation()
+                                                       .equals(committed))
+                             .map(_ -> clearPending(m, pair))
+                             .or(m);
+    }
+
+    /// C11b: a committed removal answers an in-flight UNLOADED goal only; a placement issued after it stays in flight.
+    static ClusterModel clearRemovedPending(ClusterModel m, SlicePair pair) {
+        return m.pendingGoals.get(pair)
+                             .filter(pending -> pending.goal() == SliceGoal.UNLOADED)
+                             .map(_ -> clearPending(m, pair))
+                             .or(m);
+    }
+
     static ClusterModel clearPending(ClusterModel m, SlicePair pair) {
         m.pendingGoals = m.pendingGoals.remove(pair);
         m.pendingByArtifact = Idx.remove(m.pendingByArtifact, pair.artifact(), pair.node());

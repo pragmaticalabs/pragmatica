@@ -330,12 +330,15 @@ public sealed interface DepartureFlow {
     // FER (degrade forward): a refused C17b whose record moved is not resubmitted. Guarantee: nothing is removed against a record that
     // is no longer the one the cleanup was derived from. Mechanism: the guard on the DEPARTED record; the departed node's rows are
     // collected by the next reconcile's step 10, which derives a fresh C17b from the mirror.
+    // Design-out: a C17b always carries its node (`cleanupDraft` sets it), so a draft without one cannot be built; the arm exists to total the
+    // switch and nothing is lost by returning the model unchanged.
     static ClusterModel cleanupRefused(ClusterModel m, Ctx ctx, TxDraft draft) {
         return draft.node()
                     .fold(() -> m,
                           node -> resubmitIfUnchanged(m, node, draft));
     }
 
+    // FER: a C17b past its bound, or whose record moved, is not resubmitted; the next reconcile builds a fresh one from the mirror.
     private static ClusterModel resubmitIfUnchanged(ClusterModel m, NodeId node, TxDraft draft) {
         return draft.attempt() < Outbox.GOAL_RESUBMISSIONS && recordUnchanged(m, node, draft)
                ? resubmitUnmoved(m, draft)
@@ -417,12 +420,15 @@ public sealed interface DepartureFlow {
     // -- settlement of a departure write (R-4.3.0, 6.2) -------------------------------------------------------------
     /// Refused (after the re-read): an ADMITTED with an epoch at or above the departed one makes the departure obsolete;
     /// otherwise it is re-derived from the mirror. A C17s is re-derived only while step 7 still warrants it.
+    // Design-out: every departure and admission draft carries its node (`departureDraft`, `admissionDraft`), so the empty arm cannot be reached.
     static ClusterModel refused(ClusterModel m, Ctx ctx, TxDraft draft) {
         return draft.node()
                     .fold(() -> m,
                           node -> refusedFor(m, ctx, draft, node));
     }
 
+    // Design-out: a refusal for a node that is no longer `departing` was resolved meanwhile (a committed DEPARTED or a later ADMITTED); there is
+    // nothing left to resubmit. Mechanism: `resolveInFlight` removed the entry when the record arrived.
     private static ClusterModel refusedFor(ClusterModel m, Ctx ctx, TxDraft draft, NodeId node) {
         if (draft.kind() == SubmitKind.ADMISSION) {
             return Joins.rerun(m, ctx, node);
@@ -465,6 +471,8 @@ public sealed interface DepartureFlow {
     /// Re-derive the identical write against the mirror's current record. A C17s is re-derived only while step 7 still
     /// warrants it for the node's class (R-4.3.0): a node present again, exempt, unjudgeable or behind a holding breaker
     /// gets no resubmission and leaves `departing`.
+    // FER: a C17s that step 7 no longer warrants (the node is present again, exempt or unjudgeable) leaves `departing` without a resubmission;
+    // the backstop re-derives it only if the absence returns.
     private static ClusterModel resubmit(ClusterModel m, Ctx ctx, NodeId node, PendingDeparture pending, int attempt) {
         if (pending.inferred() && !Backstop.warrants(m, ctx, node)) {
             return resolveObsolete(m, ctx, node);
@@ -496,6 +504,8 @@ public sealed interface DepartureFlow {
     }
 
     /// Failed or unattributable: n stays in `departing`, and a timer re-reads the record after one consensus timeout.
+    // Design-out: departure drafts always carry their node, so the empty arm cannot be reached; a failed departure stays in `departing` and
+    // its re-read timer (or the step-10 re-read) resubmits it.
     static ClusterModel failed(ClusterModel m, Ctx ctx, TxDraft draft) {
         return draft.kind() == SubmitKind.DEPARTURE || draft.kind() == SubmitKind.INFERRED_DEPARTURE
                ? draft.node()

@@ -279,7 +279,8 @@ public sealed interface Joins {
                                       Option<NodeDepartureValue> expected,
                                       List<KVCommand.ReadWitness<AetherKey>> guards) {
         m.pendingJoins = m.pendingJoins.put(node, join);
-
+        // Design-out: one admission write per node at a time. A second would expect the same record and be refused; the pending join above
+        // is re-evaluated when the first one lands (C11c), so no input is lost by not writing again.
         return DepartureFlow.admissionInFlight(m, node)
                ? m
                : Outbox.direct(m, admissionDraft(ctx, node, join.admission(), expected, guards));

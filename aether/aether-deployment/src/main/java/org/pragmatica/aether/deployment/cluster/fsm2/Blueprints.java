@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Stream;
 import java.util.Map;
 
 import org.pragmatica.aether.artifact.Version;
@@ -21,6 +22,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
@@ -113,26 +115,29 @@ public sealed interface Blueprints {
                                         boolean republish) {
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
-        expanded.loadOrder().forEach(slice -> mutations.add(declareSlice(m, ctx, id, slice, republish)));
+        expanded.loadOrder().forEach(slice -> mutations.addAll(declareSlice(m, ctx, id, slice, republish)));
 
         return submitAll(m, SubmitKind.TARGETS, mutations);
     }
 
-    /// One declared slice: its target is recorded as in flight and put; a republish drops the artifact's judgment.
-    private static KVCommand.Mutation<AetherKey, AetherValue> declareSlice(ClusterModel m,
-                                                                           Ctx ctx,
-                                                                           BlueprintId id,
-                                                                           ResolvedSlice slice,
-                                                                           boolean republish) {
+    /// One declared slice: its target is recorded as in flight and put; a republish drops the artifact's judgment in the same
+    /// transaction (G-R.1: one batch), so a refused batch cannot leave the mark erased without the republish.
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> declareSlice(ClusterModel m,
+                                                                                 Ctx ctx,
+                                                                                 BlueprintId id,
+                                                                                 ResolvedSlice slice,
+                                                                                 boolean republish) {
         var target = declaredTarget(m, ctx, id, slice);
         var base = slice.artifact().base();
 
         m.pendingTargetPuts = m.pendingTargetPuts.put(base, target);
-        if (republish) {
-            clearJudgment(m, slice.artifact());
-        }
 
-        return targetPut(m, base, target);
+        return republish
+               ? Stream.concat(Stream.of(targetPut(m, base, target)),
+                               judgmentRemoval(m,
+                                               slice.artifact()).stream())
+                       .toList()
+               : List.of(targetPut(m, base, target));
     }
 
     private static ClusterModel submitAll(ClusterModel m,
@@ -146,14 +151,13 @@ public sealed interface Blueprints {
                                              mutations));
     }
 
-    private static ClusterModel clearJudgment(ClusterModel m, Artifact artifact) {
-        if (m.judgments.containsKey(artifact)) {
-            Outbox.artifact(m,
-                            artifact,
-                            intent -> intent.withOp(new JudgmentOp.ClearAll()));
-        }
-
-        return m;
+    /// The removal of the artifact's committed judgment, at its exact value.
+    private static Option<KVCommand.Mutation<AetherKey, AetherValue>> judgmentRemoval(ClusterModel m,
+                                                                                      Artifact artifact) {
+        return m.judgments.get(artifact)
+                          .map(judgment -> new KVCommand.Mutation<AetherKey, AetherValue>(new ArtifactJudgmentKey(artifact),
+                                                                                          Option.some((AetherValue) judgment),
+                                                                                          Option.none()));
     }
 
     private static KVCommand.Mutation<AetherKey, AetherValue> targetPut(ClusterModel m,
@@ -265,7 +269,7 @@ public sealed interface Blueprints {
 
         m.pendingTargetPuts = m.pendingTargetPuts.remove(base);
         deallocateAll(m, ctx, base, "blueprint-removed");
-        clearJudgment(m, slice.artifact());
+        judgmentRemoval(m, slice.artifact()).onPresent(mutations::add);
         m.targets.get(base)
                  .onPresent(target -> mutations.add(new KVCommand.Mutation<>(new SliceTargetKey(base),
                                                                              Option.some((AetherValue) target),

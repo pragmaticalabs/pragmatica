@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -136,7 +137,7 @@ public final class ClusterModel {
     PMap<String, Submitted> submitted = PMap.empty(scans);
     List<TxDraft> outbox = List.of();
     List<TxDraft> parked = List.of();
-    List<java.util.Map.Entry<Artifact, JudgmentOp>> parkedOps = List.of();
+    List<Map.Entry<Artifact, JudgmentOp>> parkedOps = List.of();
 
     ClusterModel() {}
 

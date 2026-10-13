@@ -157,20 +157,10 @@ public sealed interface Outbox {
     /// submitted and the intents are dropped; the exit on CI-16 re-derives them (3.2, R-5.7.1 (a)).
     static ClusterModel flush(ClusterModel m, Ctx ctx, boolean suspended) {
         m.flushQueued = false;
+        // Design-out by parking: while suspended nothing is submitted; event-only intents are parked and replayed on the CI-16 resume
+        // (`Lifecycle.onLeader`), the rest are level-triggered and re-derived by the reconcile the resume queues.
         if (suspended || m.leader.isEmpty()) {
-            m.parked = java.util.stream.Stream.concat(m.parked.stream(),
-                                                      m.outbox.stream()
-                                                              .filter(draft -> draft.kind() == SubmitKind.BLUEPRINT_REMOVAL || draft.kind() == SubmitKind.DIRECTIVE))
-                                              .toList();
-            m.parkedOps = java.util.stream.Stream.concat(m.parkedOps.stream(),
-                                                         m.artifactIntents.entries()
-                                                                          .stream()
-                                                                          .flatMap(entry -> entry.getValue()
-                                                                                                 .ops()
-                                                                                                 .stream()
-                                                                                                 .map(op -> java.util.Map.entry(entry.getKey(),
-                                                                                                                                op))))
-                                                 .toList();
+            park(m);
             dropIntents(m, ctx);
             clearIntents(m);
 
@@ -180,10 +170,29 @@ public sealed interface Outbox {
         var drafts = materialize(m, ctx);
 
         clearIntents(m);
-
+        // Design-out: the leader is present here (an empty leader returned above), so the empty arm only totals the fold.
         return drafts.isEmpty()
                ? m
                : m.leader.fold(() -> m, leader -> submit(m, ctx, drafts, leader));
+    }
+
+    /// Event-only intents (a blueprint removal, a directive, judgment operations) survive a suspension: nothing re-derives them.
+    private static ClusterModel park(ClusterModel m) {
+        m.parked = Stream.concat(m.parked.stream(),
+                                 m.outbox.stream()
+                                         .filter(draft -> draft.kind() == SubmitKind.BLUEPRINT_REMOVAL || draft.kind() == SubmitKind.DIRECTIVE))
+                         .toList();
+        m.parkedOps = Stream.concat(m.parkedOps.stream(),
+                                    m.artifactIntents.entries()
+                                                     .stream()
+                                                     .flatMap(entry -> entry.getValue()
+                                                                            .ops()
+                                                                            .stream()
+                                                                            .map(op -> Map.entry(entry.getKey(),
+                                                                                                 op))))
+                            .toList();
+
+        return m;
     }
 
     private static ClusterModel clearIntents(ClusterModel m) {
@@ -457,10 +466,20 @@ public sealed interface Outbox {
 
     // -- settlement (CI-14, 5.7.2, 6.2) ----------------------------------------------------------------------------
     /// The outcome of a submission. A settlement of another incarnation never reaches here (the FSM drops it, R-3.1.3).
+    // FER (degrade forward): a settlement for a correlation that is not in `submitted` (expired by `expire`, or from a model replaced by a
+    // Rebuild) is dropped and counted. Guarantee: nothing is applied twice and the loss is visible. Mechanism: the `settled_unknown` metric;
+    // the submission's pending entries were already released and its intent is re-derived level-triggered from the mirror.
     static ClusterModel settle(ClusterModel m, Ctx ctx, ClusterInput.WriteSettled settled) {
         return m.submitted.get(settled.correlationId())
-                          .fold(() -> m,
+                          .fold(() -> unknownSettlement(m, ctx),
                                 submission -> settleKnown(m, ctx, submission, settled));
+    }
+
+    private static ClusterModel unknownSettlement(ClusterModel m, Ctx ctx) {
+        ctx.metric("aether_deployment_fsm_submissions_total",
+                   Map.of("fsm", "cluster", "kind", "any", "outcome", "settled_unknown"));
+
+        return m;
     }
 
     private static ClusterModel settleKnown(ClusterModel m,
@@ -546,6 +565,7 @@ public sealed interface Outbox {
                                              Submitted submission,
                                              Settlement.Refused refused,
                                              boolean corrected) {
+        // BER-free design-out: a deposed leader submits nothing more; the new leader derives the same intents from the mirror (R-5.7.2).
         if (!namesSelf(ctx, refused.leader())) {
             metric(ctx, submission, "refused_deposed");
             submission.drafts().forEach(draft -> dropPending(m, draft));
@@ -639,6 +659,9 @@ public sealed interface Outbox {
         return switch (draft.kind()) {
             case DEPARTURE, INFERRED_DEPARTURE, ADMISSION -> DepartureFlow.refused(m, ctx, draft);
             case CLEANUP -> DepartureFlow.cleanupRefused(m, ctx, draft);
+            case BLUEPRINT_REMOVAL -> rederiveRemoval(m, draft);
+            // 6.2: a refused target batch is not resubmitted at once; the awaited-target sweep (reconcile step 1) re-sends it after its bound.
+            case TARGETS -> m;
             default -> rederiveByPair(m, ctx, draft);
         };
     }
@@ -646,6 +669,31 @@ public sealed interface Outbox {
     /// 5.7.2 / NT-122: the pairs of a refused goal transaction are split by whether their keys moved. The ones that
     /// did not are resubmitted at once (in this same step), up to the bound; the ones that did are re-derived by the
     /// next reconcile. A single-purpose draft is resubmitted if nothing it expects moved, else dropped.
+    /// A refused blueprint removal is re-derived against the mirror's current values: no reconcile step derives it again, because the
+    /// blueprint is already unindexed. A key that is gone needs no removal; a key whose value moved is removed at its new value.
+    private static ClusterModel rederiveRemoval(ClusterModel m, TxDraft draft) {
+        var current = draft.mutations()
+                           .stream()
+                           .flatMap(mutation -> mirrored(m,
+                                                         mutation.key()).map(value -> new KVCommand.Mutation<AetherKey, AetherValue>(mutation.key(),
+                                                                                                                                     Option.some(value),
+                                                                                                                                     Option.none()))
+                                                        .stream())
+                           .toList();
+
+        return current.isEmpty() || draft.attempt() >= GOAL_RESUBMISSIONS
+               ? m
+               : Outbox.direct(m,
+                               new TxDraft(draft.kind(),
+                                           current.getFirst().key(),
+                                           current,
+                                           List.of(),
+                                           Set.of(),
+                                           draft.node(),
+                                           draft.attempt() + 1,
+                                           List.of()));
+    }
+
     private static ClusterModel rederiveByPair(ClusterModel m, Ctx ctx, TxDraft draft) {
         var limit = draft.kind() == SubmitKind.ROLLBACK
                     ? ROLLBACK_RESUBMISSIONS
@@ -685,7 +733,7 @@ public sealed interface Outbox {
             var guard = Option.from(draft.guards().stream().filter(g -> g.key()
                                                                          .equals(pair.observedKey())).findFirst());
             var pairMoved = pairMoved(m, mutation, guard);
-
+            // FER: a pair past the resubmission bound is released and re-derived by the next reconcile (6.2); one that moved is re-derived by it.
             if (pairMoved || draft.attempt() >= limit) {
                 Indexer.clearPending(m, pair);
                 movedAny = movedAny || pairMoved;
@@ -780,6 +828,8 @@ public sealed interface Outbox {
                                           mutation.key()));
     }
 
+    // FER (degrade forward): a single-purpose draft refused past its bound is dropped; the next tick's reconcile derives it again from the
+    // mirror (spec 6.2 "then wait for the tick"). Guarantee: a bounded number of immediate retries, then one derivation per tick.
     private static ClusterModel rederiveWhole(ClusterModel m, Ctx ctx, TxDraft draft, int limit) {
         if (!moved(m, draft) && draft.attempt() < limit) {
             return Outbox.direct(m, draft.nextAttempt());
@@ -792,6 +842,7 @@ public sealed interface Outbox {
 
     /// Failed or unattributable (R-4.3.0, 6.2): a goal transaction that failed clears its pending entries (M-3) and the
     /// next reconcile re-derives; a departure stays in `departing` and is re-read by its timer.
+    // FER: a failed write is not retried at once; its pending entries are released and the reconcile `retryLater` queues re-derives it.
     private static ClusterModel failed(ClusterModel m, Ctx ctx, Submitted submission, Settlement.Failed failed) {
         metric(ctx, submission, "failed");
         for (var draft : submission.drafts()) {

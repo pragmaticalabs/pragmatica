@@ -32,15 +32,21 @@ public sealed interface Gc {
                                                                       Option.some((AetherValue) value),
                                                                       Option.none());
 
-        return Option.from(m.outbox.stream().filter(draft -> draft.kind() == SubmitKind.GC).findFirst()).fold(() -> Outbox.direct(m,
-                                                                                                                                  TxDraft.draft(SubmitKind.GC,
-                                                                                                                                                pair.desiredKey(),
-                                                                                                                                                List.of(mutation))
-                                                                                                                                         .withPairs(Set.of(pair))),
-                                                                                                              draft -> merge(m,
-                                                                                                                             draft,
-                                                                                                                             pair,
-                                                                                                                             mutation));
+        return Option.from(m.outbox.stream()
+                                   .filter(draft -> draft.kind() == SubmitKind.GC && desiredOnly(draft))
+                                   .findFirst()).fold(() -> Outbox.direct(m,
+                                                                          TxDraft.draft(SubmitKind.GC,
+                                                                                        pair.desiredKey(),
+                                                                                        List.of(mutation))
+                                                                                 .withPairs(Set.of(pair))),
+                                                      draft -> merge(m, draft, pair, mutation));
+    }
+
+    /// Desired-key removals batch with each other only: the record-GC draft of a departed node is its own transaction.
+    private static boolean desiredOnly(TxDraft draft) {
+        return draft.mutations()
+                    .stream()
+                    .allMatch(mutation -> mutation.key() instanceof AetherKey.SliceDesiredKey);
     }
 
     private static ClusterModel merge(ClusterModel m,

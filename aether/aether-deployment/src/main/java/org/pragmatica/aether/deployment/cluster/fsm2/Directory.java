@@ -186,13 +186,24 @@ public sealed interface Directory {
                                    .flatMap(placement -> placement.observedZone());
 
         return reserved(m, node, source, zone, policies).orElse(() -> configured(m, source, zone, policies))
-                       .fold(() -> m,
+                       .fold(() -> unplaceable(m, ctx, node, source),
                              policy -> commit(m,
                                               ctx,
                                               node,
                                               policy.id(),
                                               "",
                                               policy.targetSize()));
+    }
+
+    // FER (degrade forward): a worker whose source matches no reserved and no configured community policy gets no directive now and is
+    // reported. Guarantee: the failure is visible, never silent. Mechanism: the warning below; a later input for the node (a seams refresh
+    // that adds a policy, a rejoin) runs J5 again.
+    private static ClusterModel unplaceable(ClusterModel m, Ctx ctx, NodeId node, String source) {
+        ctx.warn("worker-no-community-policy",
+                 node.id(),
+                 "No community policy accepts worker " + node.id() + " of source " + source + "; it gets no directive");
+
+        return m;
     }
 
     private static Option<CommunityPlacement> reserved(ClusterModel m,
