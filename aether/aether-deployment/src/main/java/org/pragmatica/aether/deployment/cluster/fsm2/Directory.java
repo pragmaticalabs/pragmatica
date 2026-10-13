@@ -316,8 +316,8 @@ public sealed interface Directory {
 
     private static Option<TxDraft> minting(ClusterModel m, CommunityKey communityKey) {
         return Option.from(m.outbox.stream()
-                                 .filter(draft -> draft.kind() == SubmitKind.DIRECTIVE && writes(draft, communityKey))
-                                 .findFirst());
+                                   .filter(draft -> draft.kind() == SubmitKind.DIRECTIVE && writes(draft, communityKey))
+                                   .findFirst());
     }
 
     /// Appends `node`'s directive to the minting draft; the draft keeps its first worker as `node` (see `directiveInFlight`).

@@ -70,10 +70,7 @@ public sealed interface Schemas {
 
     /// CI-16 resume: the FAILED records committed while suspended are announced, once each, in datasource order.
     static ClusterModel announceWithheld(ClusterModel m, Ctx ctx) {
-        var withheld = m.withheldBlocked.toList()
-                                        .stream()
-                                        .sorted()
-                                        .toList();
+        var withheld = m.withheldBlocked.toList().stream().sorted().toList();
 
         m.withheldBlocked = PSet.empty(m.scans);
         withheld.forEach(datasource -> m.schemas.get(datasource)

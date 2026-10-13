@@ -4,9 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.PendingGoal;
@@ -26,6 +27,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
 import org.pragmatica.consensus.NodeId;
 
@@ -212,7 +214,7 @@ class V2174bPinsTest {
         assertThat(excluded(h, CORE_2)).as("CORE_2 answered UNLOADED: its exclusion is cleared, not left to the 10T expiry").isFalse();
     }
 
-    private static long adjustmentsOf(FsmHarness h, org.pragmatica.aether.artifact.Artifact artifact) {
+    private static long adjustmentsOf(FsmHarness h, Artifact artifact) {
         return h.effects(ClusterEffect.Route.class)
                 .stream()
                 .filter(route -> route.event() instanceof RoutedEvent.ReconciliationAdjustment adjustment && adjustment.artifact().equals(artifact))
@@ -243,7 +245,7 @@ class V2174bPinsTest {
     }
 
     // -- F6b, X1 and the ownership of the meter -----------------------------------------------------------------------------------
-    private static long scanMetrics(java.util.List<ClusterEffect> effects) {
+    private static long scanMetrics(List<ClusterEffect> effects) {
         return effects.stream()
                       .filter(ClusterEffect.Metric.class::isInstance)
                       .map(ClusterEffect.Metric.class::cast)
@@ -260,9 +262,7 @@ class V2174bPinsTest {
         h.activate();
         h.clearLog();
         h.deliver(new ClusterInput.KvPut(new SliceTargetKey(ORDERS.base()),
-                                         org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(),
-                                                                                                                             1,
-                                                                                                                             1)));
+                                         SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1)));
         assertThat(h.steps).as("precondition: the input was handled").isNotEmpty();
         assertThat(h.steps.stream().mapToLong(V2174bPinsTest::scanMetrics).sum()).as("no scan metric effect at all").isZero();
     }
@@ -383,7 +383,7 @@ class V2174bPinsTest {
 
         for (var i = 1; i <= 5; i++) {
             w.h.seed(new SliceTargetKey(ORDERS.base()),
-                     org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), i, 1));
+                     SliceTargetValue.sliceTargetValue(ORDERS.version(), i, 1));
             w.h.drain();
         }
 
