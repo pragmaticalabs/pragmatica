@@ -19,7 +19,8 @@ import org.pragmatica.consensus.NodeId;
 /// - `submissionExpiry` (ms): how long a submission may stay unsettled before it counts as lost (#2143, MQ-7). It must exceed the
 ///   consensus `applyTimeout`, so the FSM never releases a batch the consensus engine still owns: `applyTimeout + 5 s`
 ///   `[guess: the margin, settled by the timeout jitter of E-04]`.
-/// - `process`: this JVM's process identity; it qualifies every correlation id (P3-Q16), so ids of two processes never collide.
+/// - `process`: this JVM's process identity; it qualifies every correlation id (P3-Q16), so ids of two processes never collide
+///   `[guess: the boot incarnation and token, formatted c<bootIncarnation>.<bootToken>-<incarnation>-<seq>; P3-Q16 fixes neither the qualifier nor the format]`.
 ///
 /// `jitter` maps a subject (an artifact-node key) to a number in `[0, 1)` for the retry delays (R-3.3.7). It is
 /// injected so that `step` stays a function of its arguments: the interpreter supplies a random source, a test a

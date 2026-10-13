@@ -134,13 +134,14 @@ public final class ClusterModel {
     PMap<NodeId, Long> livenessSince = PMap.empty(scans);
     /// R-2.11 (G-4): cores whose current listing a removal input has broken; they accrue liveness only after a sample that does not list them.
     PSet<NodeId> livenessVetoed = PSet.empty(scans);
-    /// A `SeamsRefreshed` sample was taken after `Rebuild` (R-2.11): the `localAlive` view of the `Rebuild` snapshot is not C11f evidence.
+    /// A `SeamsRefreshed` sample was taken after `Rebuild` (R-2.11): the `localAlive` view of the `Rebuild` snapshot is not C11f evidence
+    /// `[guess: a flag set by the first sample is the mechanism for "a sample taken after Rebuild"; the spec fixes none]`.
     boolean sampledAfterRebuild;
     PSet<NodeId> departed = PSet.empty(scans);
     PMap<NodeId, PendingDeparture> departing = PMap.empty(scans);
     PMap<NodeId, PendingJoin> pendingJoins = PMap.empty(scans);
     /// NT-88 J9 test hook: ids whose joins are treated as matching no row. Under MQ-4 no enumerated combination reaches J9, so a test injects
-    /// one here. Production code never writes it.
+    /// one here. Production code never writes it `[guess: a model field set by tests is the shape of "a test hook"; the spec fixes none]`.
     PSet<NodeId> unforeseenJoins = PSet.empty(scans);
     PMap<NodeId, PSet<Artifact>> unresponsiveByNode = PMap.empty(scans);
     PMap<NodeId, Long> absentSince = PMap.empty(scans);

@@ -77,7 +77,8 @@ public sealed interface Liveness {
     }
 
     /// A removal input (or a C17s submission) for `node` breaks its listing: the sample it came from is older than the removal, so
-    /// the core accrues liveness again only after a sample that does not list it.
+    /// the core accrues liveness again only after a sample that does not list it `[guess: the spec says only that a removal input resolves the
+    /// window negatively (R-2.11, G-4); the veto keeps a stale sample from restarting the clock the removal just stopped]`.
     static ClusterModel broken(ClusterModel m, NodeId node) {
         m.livenessSince = m.livenessSince.remove(node);
         if (isListed(m, node)) {
