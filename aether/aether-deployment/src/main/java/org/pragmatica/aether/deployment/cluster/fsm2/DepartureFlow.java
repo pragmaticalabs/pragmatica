@@ -43,21 +43,17 @@ import org.pragmatica.lang.Option;
 /// - The epoch is leader-assigned (MQ-4): a departure keeps `epochOf(n)`, an admission writes `epochOf(n) + 1`.
 public sealed interface DepartureFlow {
     // -- C17 / C17s: the fenced record -----------------------------------------------------------------------------
-    /// C17: a membership departure input for `node`.
-    /// The removal clears `joined[n]` whether or not a departure is recorded (R-2.11), which can turn a superseded record back into a
-    /// departure: C17b then follows from the reconcile.
+    /// C17: a membership departure input for `node`. The removal clears `joined[n]` whether or not a departure is recorded (R-2.11). The guard
+    /// reads the state before the clearing: a node whose record is superseded (joined, same process) is not departed, so its removal is
+    /// recorded like any other.
     static ClusterModel onDeparture(ClusterModel m, Ctx ctx, NodeId node, DepartureCause cause) {
-        var wasDeparted = m.departed.contains(node);
-        var recorded = wasDeparted || m.departing.containsKey(node);
+        var recorded = m.departed.contains(node) || m.departing.containsKey(node);
 
         Joins.clearJoined(m, node);
-        if (!recorded) {
-            return depart(m, ctx, node, cause, false);
-        }
 
-        return ! wasDeparted && m.departed.contains(node)
-               ? Reconcile.request(m, ctx)
-               : m;
+        return recorded
+               ? m
+               : depart(m, ctx, node, cause, false);
     }
 
     /// C17s: the backstop records the departure its class's own signals imply. The submission stands in for the lost removal input, so

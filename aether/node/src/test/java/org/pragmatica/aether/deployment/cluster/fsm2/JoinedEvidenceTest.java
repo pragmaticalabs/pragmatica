@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.KvPut;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -483,6 +484,181 @@ class JoinedEvidenceTest {
 
         assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
         assertThat(w.counts(W1)).isFalse();
+    }
+
+    // -- the extra arms of the supersession machinery -------------------------------------------------------------------------
+    // Red when: the liveness-promoted core's ADMITTED rewrite is written more than once while its write is in flight (every reconcile pass would
+    // submit another one).
+    @Test
+    void rewrite_isWrittenOnce_whileItsWriteIsInFlight() {
+        var w = deadCoreSeenBy(ALL_CORES).activate();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        run(w, SUSPICION_MS + TICK_MS);
+        for (var i = 0; i < 5; i++) {
+            w.h.deliver(new ClusterInput.Reconcile());
+        }
+
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).hasSize(1);
+    }
+
+    // Red when: a core promoted by liveness alone (its admission carries no known token) is rewritten with the unknown process, erasing what the
+    // committed record knows (C8: unknown is the same process, and the record keeps the process it names).
+    @Test
+    void rewrite_keepsTheRecordedProcess_whenTheAdmissionCarriesNoToken() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.directive(CORE_2, ActivationDirectiveValue.core())
+         .record(CORE_2, DepartureState.DEPARTED, E, TOKEN_2, DepartureCause.NODE_REMOVED)
+         .seams(s -> s.withCoreView(Option.some(ALL_CORES)))
+         .activate();
+        run(w, SUSPICION_MS + 2 * TICK_MS);
+
+        assertThat(epochOf(w, N)).isEqualTo(Option.some(E + 1));
+        assertThat(w.recordOf(N).map(NodeDepartureValue::process)).isEqualTo(Option.some(process(TOKEN_2)));
+    }
+
+    // Red when: a removal that the leader orders after a join whose ADMITTED write is still in its own outbox (the same drain) is dropped as obsolete
+    // once that write lands, so a node that membership removed stays admitted.
+    @Test
+    void removalOrderedAfterAJoin_inTheSameDrain_isStillRecorded() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.directive(CORE_2, ActivationDirectiveValue.core())
+         .record(CORE_2, DepartureState.DEPARTED, 1L, TOKEN_2, DepartureCause.NODE_REMOVED)
+         .activate();
+        w.h.deliverTogether(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)), new ClusterInput.NodeRemoved(CORE_2));
+
+        assertThat(stateOf(w, CORE_2)).as("the departure stands").isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(epochOf(w, CORE_2)).as("it ends the admission that landed first").isEqualTo(Option.some(2L));
+        assertThat(w.counts(CORE_2)).isFalse();
+    }
+
+    // Red when: a removal that stopped a core's liveness clock leaves the veto in place after the core left the view and came back: the core never
+    // accrues liveness again.
+    @Test
+    void veto_endsWhenTheCoreLeavesTheView() {
+        var w = deadCoreSeenBy(ALL_CORES).activate();
+
+        w.h.deliver(new ClusterInput.NodeRemoved(N));
+        w.refreshSeams(s -> s.withCoreView(Option.some(OTHER_CORES)));
+        w.refreshSeams(s -> s.withCoreView(Option.some(ALL_CORES)));
+        run(w, SUSPICION_MS + 2 * TICK_MS);
+
+        assertThat(epochOf(w, N)).as("listed again for a full window after the removal").isEqualTo(Option.some(E + 1));
+    }
+
+    // Red when: a core view that goes unwired keeps the old liveness clocks: the window then ends a window after the first listing, not after the
+    // view came back.
+    @Test
+    void unwiredView_dropsTheClocks() {
+        var w = deadCoreSeenBy(ALL_CORES).activate();
+
+        run(w, SUSPICION_MS - 2 * TICK_MS);
+        w.refreshSeams(s -> s.withCoreView(Option.none()));
+        w.refreshSeams(s -> s.withCoreView(Option.some(ALL_CORES)));
+        run(w, 4 * TICK_MS);
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).as("not a window after the first listing").isEmpty();
+        run(w, SUSPICION_MS);
+        assertThat(epochOf(w, N)).as("a window after the view came back").isEqualTo(Option.some(E + 1));
+    }
+
+    // Red when: C11f re-admits a departed core (a core is re-admitted by membership's join input, never by a roster or the local alive view).
+    @Test
+    void c11f_neverReadmitsACore() {
+        var w = deadCore().activate();
+
+        w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(N))));
+        run(w, 3 * TICK_MS);
+
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        assertThat(w.counts(N)).isFalse();
+    }
+
+    // Red when: `inherited` is not exactly the non-STALE DEPARTED records of the Rebuild snapshot (a STALE record, an ADMITTED record or an absent one is in it).
+    @Test
+    void rebuild_seedsInherited_fromTheNonStaleDepartedRecordsOnly() {
+        var left = node("left-w");
+        var stale = node("stale-w");
+        var w = MbWorld.world(CORE_1);
+
+        w.record(left, DepartureState.DEPARTED, 1L, 0x7001L, DepartureCause.WORKER_LEAVE)
+         .record(stale, DepartureState.DEPARTED, 1L, 0x7002L, DepartureCause.STALE)
+         .record(CORE_1, DepartureState.ADMITTED, 1L, 0x1111L, null)
+         .activate();
+
+        assertThat(w.h.model().inherited.toList()).containsExactly(left);
+        assertThat(w.h.model().joined.isEmpty()).as("joined starts empty").isTrue();
+    }
+
+    // Red when: the notification of the very record the Rebuild snapshot already holds takes the node out of `inherited` (only a changed record does).
+    @Test
+    void inherited_survivesTheRenotificationOfTheSameRecord() {
+        var w = lostReadmission(DepartureCause.WORKER_LEAVE, COMMUNITY_WITHOUT_W1);
+        var record = w.recordOf(W1).or((NodeDepartureValue) null);
+
+        w.h.deliver(new KvPut(new NodeDepartureKey(W1), record));
+
+        assertThat(w.h.model().inherited.contains(W1)).isTrue();
+        w.announce(C, GOV, W1, M1, M2, M3, M4);
+        assertThat(epochOf(w, W1)).isEqualTo(Option.some(E + 1));
+    }
+
+    // -- C15 / C16: which rows join the node (R-2.11 (a)) ----------------------------------------------------------------------
+    // Red when: a join input that an admitting row handles (J0, J3, J5, J6) does not add the id to `joined`.
+    @Test
+    void joinInput_marksTheNodeJoined_inEveryAdmittingRow() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+        var fresh = node("fresh-core");
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.admit(CORE_3, 0x3333L);
+        w.directive(CORE_1, ActivationDirectiveValue.core())
+         .directive(CORE_3, ActivationDirectiveValue.core())
+         .record(CORE_3, DepartureState.DEPARTED, 1L, 0x3333L, DepartureCause.NODE_REMOVED)
+         .activate();
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_1, w.admissionOf(CORE_1)));
+        assertThat(w.h.model().joined.contains(CORE_1)).as("J6: a member with its directive").isTrue();
+        w.h.deliver(new ClusterInput.NodeJoined(fresh, w.admit(fresh, 0x9L)));
+        assertThat(w.h.model().joined.contains(fresh)).as("J5: a fresh id").isTrue();
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_3, w.admissionOf(CORE_3)));
+        assertThat(w.h.model().joined.contains(CORE_3)).as("J3: a departed same-process core").isTrue();
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
+        assertThat(w.h.model().joined.contains(CORE_2)).as("J0: a join while its departure is in flight").isTrue();
+    }
+
+    // Red when: a join that no admitting row handles (J1 refuses a superseded worker, J8 refuses a different process, J7 defers a worker without a
+    // directive) adds the id to `joined`, so the DEPARTED record that the refusal leaves standing is superseded.
+    @Test
+    void joinInput_doesNotMarkTheNodeJoined_whenTheTableRefusesOrDefersIt() {
+        var superseded = node("superseded-w");
+        var foreign = node("foreign-w");
+        var bare = node("bare-w");
+        var w = communityOfW1(COMMUNITY);
+
+        w.admit(superseded, 0xA1L);
+        w.admit(foreign, 0xA2L);
+        w.admit(bare, 0xA3L);
+        w.directive(superseded, Fixtures.worker(C))
+         .directive(foreign, Fixtures.worker(C))
+         .record(superseded, DepartureState.DEPARTED, 1L, 0xA1L, DepartureCause.WORKER_LEAVE)
+         .record(foreign, DepartureState.DEPARTED, 1L, 0xA2L, DepartureCause.WORKER_LEAVE)
+         .record(bare, DepartureState.DEPARTED, 1L, 0xA3L, DepartureCause.WORKER_LEAVE)
+         .seams(s -> s.withSuperseded(Set.of(superseded)))
+         .activate();
+        w.h.deliver(new ClusterInput.WorkerJoin(superseded, w.admissionOf(superseded)));
+        assertThat(w.h.model().joined.contains(superseded)).as("J1").isFalse();
+        w.h.deliver(new ClusterInput.WorkerJoin(foreign, new Admission(process(0xFFFFL))));
+        assertThat(w.h.model().joined.contains(foreign)).as("J8 worker").isFalse();
+        w.h.deliver(new ClusterInput.WorkerJoin(bare, w.admissionOf(bare)));
+        assertThat(w.h.model().joined.contains(bare)).as("J7").isFalse();
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        assertThat(w.counts(superseded) || w.counts(foreign) || w.counts(bare)).isFalse();
     }
 
     // -- joined is cleared by a removal input and by C17s ------------------------------------------------------------------

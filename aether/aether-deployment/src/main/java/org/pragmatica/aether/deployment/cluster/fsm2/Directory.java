@@ -24,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -63,12 +64,11 @@ public sealed interface Directory {
         return Reconcile.request(submitRemovals(m, node), ctx);
     }
 
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> removalMutations(ClusterModel m, NodeId node) {
-        return Stream.of(m.records.get(node)
-                                  .map(value -> DepartureFlow.removal(new NodeDepartureKey(node),
-                                                                      value))
-                                  .stream()
-                                  .toList(),
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> removalMutations(ClusterModel m,
+                                                                                     NodeId node,
+                                                                                     NodeDepartureValue record) {
+        return Stream.of(List.of(DepartureFlow.removal(new NodeDepartureKey(node),
+                                                       record)),
                          DepartureFlow.observedRemovals(m, node),
                          DepartureFlow.desiredRemovals(m, node),
                          DepartureFlow.routeRemovals(m, node))
@@ -92,19 +92,23 @@ public sealed interface Directory {
         return removalDraft(m, node, 0).fold(() -> m, draft -> Outbox.direct(m, draft));
     }
 
+    /// The record's removal first (it expects the DEPARTED value), then the rows, desired keys and route keys at their current values.
     private static Option<TxDraft> removalDraft(ClusterModel m, NodeId node, int attempt) {
-        var mutations = removalMutations(m, node);
+        return m.records.get(node)
+                        .map(record -> removalDraft(m, node, record, attempt));
+    }
 
-        return mutations.isEmpty()
-               ? Option.none()
-               : Option.some(new TxDraft(SubmitKind.DIRECTIVE_REMOVAL,
-                                         mutations.getFirst().key(),
-                                         mutations,
-                                         List.of(),
-                                         Set.of(),
-                                         Option.some(node),
-                                         attempt,
-                                         List.of()));
+    private static TxDraft removalDraft(ClusterModel m, NodeId node, NodeDepartureValue record, int attempt) {
+        var mutations = removalMutations(m, node, record);
+
+        return new TxDraft(SubmitKind.DIRECTIVE_REMOVAL,
+                           mutations.getFirst().key(),
+                           mutations,
+                           List.of(),
+                           Set.of(),
+                           Option.some(node),
+                           attempt,
+                           List.of());
     }
 
     // -- C14, C11e: announcements and communities ------------------------------------------------------------------

@@ -198,4 +198,43 @@ class SettingsSourcedTest {
         assertThat(blocked.getFirst().attemptCount()).isEqualTo(3);
         assertThat(blocked.getFirst().slices()).contains(ORDERS.asString());
     }
+
+    // Red when: the default settings carry a process: the unknown process (0, 0) is the default, so an id minted without one is `c0.0-<inc>-<seq>`.
+    @Test
+    void correlationId_defaultsToTheUnknownProcess() {
+        var h = harness(s -> s);
+
+        seedTarget(h, ORDERS, 1, 1);
+        h.policy = FsmHarness.SettlePolicy.LOSE;
+        h.activate();
+
+        assertThat(h.submits().getFirst().correlationId()).startsWith("c0.0-1-");
+    }
+
+    // Red when: any `with*` of Settings drops a field it does not set (the fields added for the process, the divergence timeouts and the submission
+    // expiry are carried by every copy).
+    @Test
+    void withers_keepEveryOtherField() {
+        var timing = Timing.DEFAULT.withTick(12_345L);
+        var divergence = DivergenceBounds.divergenceBounds(1L, 2L, 3L, 4L);
+        var process = new ProcessIncarnation(7L, 8L);
+        var settings = Settings.settings(FsmHarness.SELF, DeploymentAtomicity.BEST_EFFORT, Set.of(CORE_1), bounds())
+                               .withTiming(timing)
+                               .withCommunitySizing(7, 2)
+                               .withDivergence(divergence)
+                               .withSubmissionExpiry(99_000L)
+                               .withProcess(process)
+                               .withJitter(_ -> 0.25d);
+
+        assertThat(settings.timing()).isEqualTo(timing);
+        assertThat(settings.communityTargetSize()).isEqualTo(7);
+        assertThat(settings.communityViabilityFloor()).isEqualTo(2);
+        assertThat(settings.divergence()).isEqualTo(divergence);
+        assertThat(settings.submissionExpiry()).isEqualTo(99_000L);
+        assertThat(settings.process()).isEqualTo(process);
+        assertThat(settings.jitter().applyAsDouble("x")).isEqualTo(0.25d);
+        assertThat(settings.atomicity()).isEqualTo(DeploymentAtomicity.BEST_EFFORT);
+        assertThat(settings.seedNodes()).containsExactly(CORE_1);
+        assertThat(settings.bounds()).isEqualTo(bounds());
+    }
 }

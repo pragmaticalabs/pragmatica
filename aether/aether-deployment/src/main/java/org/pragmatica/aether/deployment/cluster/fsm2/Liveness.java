@@ -78,13 +78,6 @@ public sealed interface Liveness {
         return m;
     }
 
-    /// A join input is a fresh listing: the veto of an earlier removal ends.
-    static ClusterModel restored(ClusterModel m, NodeId node) {
-        m.livenessVetoed = m.livenessVetoed.remove(node);
-
-        return m;
-    }
-
     /// G-4: `node` is departed and this leader's view lists it, with its window unresolved. Only the removal of its rows waits.
     static boolean isPending(ClusterModel m, NodeId node) {
         return m.departed.contains(node)

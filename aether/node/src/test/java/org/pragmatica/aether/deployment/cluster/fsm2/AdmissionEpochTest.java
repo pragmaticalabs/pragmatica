@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -16,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
@@ -262,7 +264,7 @@ class AdmissionEpochTest {
         var w = MbWorld.world(CORE_1);
 
         w.admit(W1, 0xBBBBL);
-        w.community("east-w-0", 5, org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE)
+        w.community("east-w-0", 5, CommunityState.ACTIVE)
          .directive(W1, Fixtures.worker("east-w-0"))
          .target(ORDERS, 1, "WORKERS_ONLY")
          .instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), 0xBBBBL)
@@ -338,5 +340,57 @@ class AdmissionEpochTest {
         w.h.advance(w.h.settings.submissionExpiry() + w.h.settings.timing().tick());
 
         assertThat(stateOf(w, W1)).as("the record moved: the stale removal stops").isEqualTo(Option.some(DepartureState.ADMITTED));
+    }
+
+    // Red when: an R-4.3.3 that is derived again removes the record of a node that was re-admitted meanwhile without a directive (the record moved to ADMITTED).
+    @Test
+    void spotExit_derivedAgain_stopsWhenTheRecordMoved() {
+        var w = spotWorker();
+
+        w.h.policy = FsmHarness.SettlePolicy.LOSE;
+        w.h.seedRemove(new ActivationDirectiveKey(W1));
+        w.h.drain();
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.seed(new NodeDepartureKey(W1),
+                 new NodeDepartureValue(DepartureState.ADMITTED, 1L, process(0xBBBBL), Option.none(), w.h.wallMs));
+        w.h.advance(w.h.settings.submissionExpiry() + w.h.settings.timing().tick());
+
+        assertThat(stateOf(w, W1)).isEqualTo(Option.some(DepartureState.ADMITTED));
+    }
+
+    // Red when: an R-4.3.3 that is derived again removes the record although the directive is back (the id was minted a new directive).
+    @Test
+    void spotExit_derivedAgain_stopsWhenTheDirectiveIsBack() {
+        var w = spotWorker();
+
+        w.h.policy = FsmHarness.SettlePolicy.LOSE;
+        w.h.seedRemove(new ActivationDirectiveKey(W1));
+        w.h.drain();
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.seed(new ActivationDirectiveKey(W1), Fixtures.worker("east-w-0"));
+        w.h.advance(w.h.settings.submissionExpiry() + w.h.settings.timing().tick());
+
+        assertThat(stateOf(w, W1)).isEqualTo(Option.some(DepartureState.DEPARTED));
+    }
+
+    // Red when: an R-4.3.3 refused more than the bound is dropped instead of being parked for the next reconcile, so the record of the terminated id persists.
+    @Test
+    void spotExit_pastTheBound_isParkedForTheNextReconcile() {
+        var w = spotWorker();
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.seedRemove(new ActivationDirectiveKey(W1));
+        w.h.drain();
+        for (var round = 0; round < 8; round++) {
+            var open = List.copyOf(w.h.held.values());
+
+            w.h.held.clear();
+            open.forEach(submit -> w.h.settleHeld(submit, w.h.refused(submit)));
+        }
+
+        assertThat(w.recordOf(W1).isPresent()).as("precondition: refused past the bound, still there").isTrue();
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.advance(w.h.settings.timing().tick() + 1);
+        assertThat(w.recordOf(W1).isEmpty()).as("the next reconcile derives it again").isTrue();
     }
 }
