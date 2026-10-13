@@ -294,10 +294,18 @@ class JoinTableTest {
     void j9_deferredJoin_isEvaluatedByTheReconcilePassThatFollowsAChange_notOnlyOnTheTick() {
         var w = world();
 
-        w.record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE).activate();
+        w.record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE)
+         .instance(W1,
+                   ORDERS,
+                   SliceGoal.ACTIVE,
+                   SliceObservedState.ACTIVE,
+                   gen(1),
+                   B)
+         .target(ORDERS, 1, "CORE_ONLY")
+         .activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 1L, B)));
-        assertThat(w.h.warns("join-unmatched")).as("precondition: J7 defers silently").isEmpty();
+        assertThat(w.h.warns("join-unmatched")).as("precondition: J7 defers silently while the record stands").isEmpty();
         w.h.seed(new ActivationDirectiveKey(W1), ActivationDirectiveValue.worker("east-w-0", ""));
         w.h.drain();
         assertThat(w.h.warns("join-unmatched")).as("evaluated by the pass the directive queued, no tick needed").hasSize(1);
