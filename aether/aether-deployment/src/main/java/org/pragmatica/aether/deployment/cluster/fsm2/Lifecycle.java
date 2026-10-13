@@ -8,6 +8,9 @@ import java.util.List;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Snapshot;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.deployment.cluster.fsm2.TimerId.Kind;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 
@@ -17,8 +20,10 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 public sealed interface Lifecycle {
     // -- Rebuild (C1) ----------------------------------------------------------------------------------------------
     /// Build every index from the committed mirror, once (R-3.3.1, R-7.3.1: the only full scan). `absentSince` and
-    /// `announcementSeenAt` start **empty** (R-2.14c, R-2.15) and `incarnationStart` is taken from the monotonic clock.
-    /// Then schedule the two timers (NT-07) and queue the first reconcile; strays, intake re-drive and departed rows are
+    /// `announcementSeenAt` start **empty** (R-2.14c, R-2.15), `joined` starts **empty** (R-2.11, D-4 (ii): the seed never
+    /// supersedes a committed DEPARTED), `inherited` is seeded from the snapshot's non-STALE DEPARTED records (H-1), and
+    /// `incarnationStart` is taken from the monotonic clock. The `coreView` of the snapshot only starts the liveness clocks
+    /// (R-2.11 (b)). Then schedule the two timers (NT-07) and queue the first reconcile; strays, intake re-drive and departed rows are
     /// handled by that reconcile.
     static ClusterModel rebuild(Ctx ctx, long incarnation, Snapshot snapshot) {
         var m = new ClusterModel();
@@ -29,8 +34,10 @@ public sealed interface Lifecycle {
         m.seams = snapshot.seams();
         snapshot.admissions().forEach((node, admission) -> m.admissions = m.admissions.put(node, admission));
         snapshot.entries().forEach(entry -> Indexer.indexPut(m, ctx, entry.key(), entry.value()));
+        m.inherited = inheritedAtRebuild(m);
         m.announcementSeenAt = PMap.empty(m.scans);
         m.absentSince = PMap.empty(m.scans);
+        Liveness.refresh(m, ctx);
         m.auditDue = true;
         schedule(m,
                  ctx,
@@ -45,6 +52,25 @@ public sealed interface Lifecycle {
         Reconcile.request(m, ctx);
 
         return m;
+    }
+
+    /// H-1: C11f's non-STALE extension applies to the DEPARTED records that were already committed when this leader rebuilt.
+    private static PSet<NodeId> inheritedAtRebuild(ClusterModel m) {
+        var inherited = PSet.<NodeId> empty(m.scans);
+
+        for (var entry : m.records.entries()) {
+            if (Departures.isDeparted(entry.getValue()) && !isStale(entry.getValue())) {
+                inherited = inherited.add(entry.getKey());
+            }
+        }
+
+        return inherited;
+    }
+
+    private static boolean isStale(NodeDepartureValue record) {
+        return record.cause()
+                     .map(DepartureCause.STALE::equals)
+                     .or(false);
     }
 
     // -- the leader mirror and the witness (3.2, R-5.7.1 (a), C23) ---------------------------------------------------
@@ -84,6 +110,8 @@ public sealed interface Lifecycle {
         var before = m.seams;
 
         m.seams = seams;
+        m.sampledAfterRebuild = true;
+        Liveness.refresh(m, ctx);
         Absence.refreshAll(m, ctx);
         if (!before.countedCores().equals(seams.countedCores()) || !before.ready().equals(seams.ready()) || !before.draining()
                                                                                                                    .equals(seams.draining())) {
@@ -126,6 +154,7 @@ public sealed interface Lifecycle {
     private static ClusterModel tick(ClusterModel m, Ctx ctx) {
         m.tickCount = m.tickCount + 1;
         m.joinWarningsDue = true;
+        Liveness.refresh(m, ctx);
         m.auditDue = m.auditDue || m.tickCount % Orphans.AUDIT_EVERY_TICKS == 0;
         schedule(m,
                  ctx,

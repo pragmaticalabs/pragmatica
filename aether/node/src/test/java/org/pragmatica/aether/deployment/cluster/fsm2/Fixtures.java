@@ -78,8 +78,8 @@ final class Fixtures {
         return new ProcessIncarnation(1_760_000_000_000L + token, token);
     }
 
-    static Admission admission(long epoch, long token) {
-        return new Admission(epoch, process(token));
+    static Admission admission(long token) {
+        return new Admission(process(token));
     }
 
     static Generation gen(long counter) {

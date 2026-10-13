@@ -125,9 +125,23 @@ public final class ClusterModel {
     PMap<String, Long> announcementSeenAt = PMap.empty(scans);
     PMap<NodeId, Admission> admissions = PMap.empty(scans);
     PMap<NodeId, NodeDepartureValue> records = PMap.empty(scans);
+    /// R-2.11: ids this leader observed joining **after** its `Rebuild` (a join input, C11f, or core liveness). Empty at `Rebuild`: the
+    /// seed never supersedes a committed DEPARTED (D-4 (ii)).
+    PSet<NodeId> joined = PSet.empty(scans);
+    /// R-2.11 (H-1): the non-STALE DEPARTED records present in the `Rebuild` snapshot; an id leaves the set when its record changes.
+    PSet<NodeId> inherited = PSet.empty(scans);
+    /// R-2.11 (b): when each core of `coreView` was first listed, in the leader-local monotonic clock; `Liveness`.
+    PMap<NodeId, Long> livenessSince = PMap.empty(scans);
+    /// R-2.11 (G-4): cores whose current listing a removal input has broken; they accrue liveness only after a sample that does not list them.
+    PSet<NodeId> livenessVetoed = PSet.empty(scans);
+    /// A `SeamsRefreshed` sample was taken after `Rebuild` (R-2.11): the `localAlive` view of the `Rebuild` snapshot is not C11f evidence.
+    boolean sampledAfterRebuild;
     PSet<NodeId> departed = PSet.empty(scans);
     PMap<NodeId, PendingDeparture> departing = PMap.empty(scans);
     PMap<NodeId, PendingJoin> pendingJoins = PMap.empty(scans);
+    /// NT-88 J9 test hook: ids whose joins are treated as matching no row. Under MQ-4 no enumerated combination reaches J9, so a test injects
+    /// one here. Production code never writes it.
+    PSet<NodeId> unforeseenJoins = PSet.empty(scans);
     PMap<NodeId, PSet<Artifact>> unresponsiveByNode = PMap.empty(scans);
     PMap<NodeId, Long> absentSince = PMap.empty(scans);
     PSet<String> unjudgeableWarned = PSet.empty(scans);
@@ -213,9 +227,15 @@ public final class ClusterModel {
         c.announcementSeenAt = announcementSeenAt.rebound(meter);
         c.admissions = admissions.rebound(meter);
         c.records = records.rebound(meter);
+        c.joined = joined.rebound(meter);
+        c.inherited = inherited.rebound(meter);
+        c.livenessSince = livenessSince.rebound(meter);
+        c.livenessVetoed = livenessVetoed.rebound(meter);
+        c.sampledAfterRebuild = sampledAfterRebuild;
         c.departed = departed.rebound(meter);
         c.departing = departing.rebound(meter);
         c.pendingJoins = pendingJoins.rebound(meter);
+        c.unforeseenJoins = unforeseenJoins.rebound(meter);
         c.unresponsiveByNode = unresponsiveByNode.rebound(meter);
         c.absentSince = absentSince.rebound(meter);
         c.unjudgeableWarned = unjudgeableWarned.rebound(meter);
@@ -400,12 +420,21 @@ public final class ClusterModel {
     public record ReissueMark(Generation generation, int level) {}
 
     /// A C17 / C17s that was submitted and is not yet resolved (R-4.3.0): the record value it expects, the
-    /// admission it names, whether it was inferred, and when it started.
+    /// admission it names, whether it was inferred, and when it started. `inFlightEpoch` is the epoch of an admission write that was in
+    /// flight when the departure was decided (0 when none): the removal is ordered after that join, so an ADMITTED record of that epoch is
+    /// the admission this departure ends, never one that makes it obsolete `[guess: the mailbox order of a join and a later removal,
+    /// R-4.3.0 "within one leader incarnation", applied to a join whose write has not committed yet]`.
     public record PendingDeparture(Admission admission,
                                    Option<NodeDepartureValue> expected,
                                    Option<DepartureCause> cause,
                                    boolean inferred,
-                                   long sinceMono) {}
+                                   long sinceMono,
+                                   long inFlightEpoch) {
+        /// The epoch this departure ends (R-4.3.0): `epochOf(n)` at the decision, or that of the admission in flight then.
+        public long epoch() {
+            return Math.max(Departures.epochOf(expected), inFlightEpoch);
+        }
+    }
 
     /// A join the join table could not place (J7, J9): re-evaluated on the next membership input for the node, on a
     /// record change, and on every tick.

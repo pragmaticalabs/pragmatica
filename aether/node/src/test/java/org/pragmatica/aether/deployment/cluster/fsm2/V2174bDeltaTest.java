@@ -33,8 +33,8 @@ class V2174bDeltaTest {
         var w = twoWorkers(w1, w2);
 
         w.h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
-        w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 1L, 21L)),
-                            new ClusterInput.WorkerJoin(w2, w.admit(w2, 1L, 22L)));
+        w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 21L)),
+                            new ClusterInput.WorkerJoin(w2, w.admit(w2, 22L)));
         assertThat(w.h.submits(SubmitKind.DIRECTIVE)).as("precondition: one joint directive write").hasSize(1);
         assertThat(w.h.submits(SubmitKind.DIRECTIVE).getFirst().transaction().mutations()).as("precondition: it carries both directives and the mint")
                                                                                         .hasSize(3);
@@ -83,8 +83,8 @@ class V2174bDeltaTest {
         var w = twoWorkers(w1, w2);
 
         w.h.policy = FsmHarness.SettlePolicy.LOSE;
-        w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 1L, 21L)),
-                            new ClusterInput.WorkerJoin(w2, w.admit(w2, 1L, 22L)));
+        w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 21L)),
+                            new ClusterInput.WorkerJoin(w2, w.admit(w2, 22L)));
         assertThat(w.h.submits(SubmitKind.DIRECTIVE)).as("precondition: one joint directive write").hasSize(1);
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.advance(180_000L);

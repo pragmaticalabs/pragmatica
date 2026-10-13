@@ -84,7 +84,11 @@ public sealed interface Schemas {
         var owner = value.owningBlueprint();
         var slices = slicesOwnedBy(m, owner);
 
-        ctx.route(new RoutedEvent.ActivationBlocked(value.datasourceName(), owner.asString(), slices));
+        ctx.route(new RoutedEvent.ActivationBlocked(value.datasourceName(),
+                                                    owner,
+                                                    slices,
+                                                    value.artifactCoords(),
+                                                    value.attemptCount()));
         ctx.emit(new ClusterEffect.Audit("schema-activation-blocked",
                                          value.datasourceName() + " owner=" + owner.asString()));
 

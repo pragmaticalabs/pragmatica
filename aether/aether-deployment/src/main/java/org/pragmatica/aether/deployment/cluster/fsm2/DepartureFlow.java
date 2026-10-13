@@ -37,19 +37,34 @@ import org.pragmatica.lang.Option;
 /// - **C17s** (the backstop's inference, step 7): the Put alone, with cause STALE, fenced the same way. It removes nothing.
 /// - **C17b** (after a current DEPARTED commits): the removal of the node's observed rows, each at its exact value, and of
 ///   any desired and route keys still present, guarded on that exact record. Never the directive or the placement key.
-/// - A DEPARTED record that names an older incarnation than the current admission is **ignored on read** (R-4.3.0); the
-///   ADMITTED rewrite replaces it.
+/// - A DEPARTED record of a node that is **joined** (R-2.11) with the same process is **superseded on read** (R-4.3.0): the node
+///   counts, no C17b is built for it, and the ADMITTED rewrite (`ADMITTED(e_d + 1)`, expecting the DEPARTED value) replaces it. The
+///   `Rebuild` seed never supersedes (D-4 (ii)).
+/// - The epoch is leader-assigned (MQ-4): a departure keeps `epochOf(n)`, an admission writes `epochOf(n) + 1`.
 public sealed interface DepartureFlow {
     // -- C17 / C17s: the fenced record -----------------------------------------------------------------------------
     /// C17: a membership departure input for `node`.
+    /// The removal clears `joined[n]` whether or not a departure is recorded (R-2.11), which can turn a superseded record back into a
+    /// departure: C17b then follows from the reconcile.
     static ClusterModel onDeparture(ClusterModel m, Ctx ctx, NodeId node, DepartureCause cause) {
-        return m.departed.contains(node) || m.departing.containsKey(node)
-               ? m
-               : depart(m, ctx, node, cause, false);
+        var wasDeparted = m.departed.contains(node);
+        var recorded = wasDeparted || m.departing.containsKey(node);
+
+        Joins.clearJoined(m, node);
+        if (!recorded) {
+            return depart(m, ctx, node, cause, false);
+        }
+
+        return ! wasDeparted && m.departed.contains(node)
+               ? Reconcile.request(m, ctx)
+               : m;
     }
 
-    /// C17s: the backstop records the departure its class's own signals imply.
+    /// C17s: the backstop records the departure its class's own signals imply. The submission stands in for the lost removal input, so
+    /// it clears `joined[n]` as that input would (R-2.11): the record is not superseded on commit.
     static ClusterModel infer(ClusterModel m, Ctx ctx, NodeId node) {
+        Joins.clearJoined(m, node);
+
         return depart(m, ctx, node, DepartureCause.STALE, true);
     }
 
@@ -62,7 +77,8 @@ public sealed interface DepartureFlow {
                                                            expected,
                                                            Option.some(cause),
                                                            inferred,
-                                                           ctx.monoNs()));
+                                                           ctx.monoNs(),
+                                                           admissionEpochInFlight(m, node)));
         dropGoalsOf(m, node);
         m.pendingJoins = m.pendingJoins.remove(node);
         if (!inferred) {
@@ -114,7 +130,7 @@ public sealed interface DepartureFlow {
                                           int attempt) {
         var key = new NodeDepartureKey(node);
         var record = new NodeDepartureValue(DepartureState.DEPARTED,
-                                            admission.epoch(),
+                                            Departures.epochOf(expected),
                                             admission.process(),
                                             Option.some(cause),
                                             ctx.nowMs());
@@ -178,7 +194,7 @@ public sealed interface DepartureFlow {
             departed(m, ctx, node);
         } else if (value.state() == DepartureState.ADMITTED) {
             admitted(m, ctx, node, previous);
-        } else if (Departures.isIgnored(value, m.admissions.get(node))) {
+        } else if (Departures.isSuperseded(m, node, value)) {
             admittedRewrite(m, ctx, node);
         }
 
@@ -211,8 +227,7 @@ public sealed interface DepartureFlow {
 
     private static boolean admittedAtOrBelow(ClusterModel m, NodeId node, NodeDepartureValue record) {
         return record.state() == DepartureState.ADMITTED && m.departing.get(node)
-                                                                       .map(pending -> record.epoch() <= pending.admission()
-                                                                                                                .epoch())
+                                                                       .map(pending -> record.epoch() <= pending.epoch())
                                                                        .or(false);
     }
 
@@ -268,7 +283,7 @@ public sealed interface DepartureFlow {
     /// One transaction, guarded on the committed DEPARTED record: the node's observed rows at their exact values (current
     /// or stale alike), and any desired and route keys still present. Never the directive or the placement key.
     static ClusterModel cleanup(ClusterModel m, Ctx ctx, NodeId node, int attempt) {
-        if (!m.departed.contains(node) || cleanupInFlight(m, node)) {
+        if (!m.departed.contains(node) || cleanupInFlight(m, node) || Liveness.isPending(m, node)) {
             return m;
         }
 
@@ -373,17 +388,27 @@ public sealed interface DepartureFlow {
                                             .equals(m.records.get(node).map(v -> (Object) v)));
     }
 
-    // -- the ADMITTED rewrite of an ignored record (R-4.3.0, step 10) -----------------------------------------------
-    /// An ignored DEPARTED record leaves the node counted; it is replaced by ADMITTED(current), expecting the DEPARTED value.
+    // -- the ADMITTED rewrite of a superseded record (R-4.3.0, step 10) ---------------------------------------------
+    /// A superseded DEPARTED record leaves the node counted; it is replaced by `ADMITTED(e_d + 1)`, expecting the DEPARTED value. A
+    /// node whose admission carries no known token (a core promoted by liveness evidence alone, C8) keeps the process the record names:
+    /// the rewrite must not erase what the committed record knows `[guess: C8 fail-open applied to the rewrite]`.
     static ClusterModel admittedRewrite(ClusterModel m, Ctx ctx, NodeId node) {
         var record = m.records.get(node);
-        var admission = m.admissions.get(node);
 
-        if (record.isEmpty() || admission.isEmpty() || admissionInFlight(m, node)) {
+        if (record.isEmpty() || admissionInFlight(m, node)) {
             return m;
         }
 
-        return Joins.writeAdmission(m, ctx, node, admission.or(Admission.UNKNOWN), record);
+        return Joins.writeAdmission(m, ctx, node, rewriteAdmission(m, node, record), record);
+    }
+
+    private static Admission rewriteAdmission(ClusterModel m, NodeId node, Option<NodeDepartureValue> record) {
+        var current = m.admissions.get(node).or(Admission.UNKNOWN);
+
+        return current.tokenKnown()
+               ? current
+               : record.map(value -> current.withProcess(value.process()))
+                       .or(current);
     }
 
     /// Step 10, "the `departing` re-reads" (R-4.3.0): a departure that has stood for one consensus timeout without resolving
@@ -407,14 +432,28 @@ public sealed interface DepartureFlow {
     }
 
     static boolean admissionInFlight(ClusterModel m, NodeId node) {
-        return m.submitted.values()
-                          .stream()
-                          .flatMap(submitted -> submitted.drafts()
-                                                         .stream())
-                          .anyMatch(draft -> draft.kind() == SubmitKind.ADMISSION && draft.node()
-                                                                                          .equals(Option.some(node))) || m.outbox.stream()
-                                                                                                                                 .anyMatch(draft -> draft.kind() == SubmitKind.ADMISSION && draft.node()
-                                                                                                                                                                                                 .equals(Option.some(node)));
+        return admissionsInFlight(m, node).findAny()
+                                 .isPresent();
+    }
+
+    /// The epoch of the admission write in flight for `node`, 0 when there is none.
+    private static long admissionEpochInFlight(ClusterModel m, NodeId node) {
+        return admissionsInFlight(m, node).flatMap(draft -> draft.mutations()
+                                                                 .stream())
+                                 .flatMap(mutation -> mutation.replacement()
+                                                              .stream())
+                                 .filter(NodeDepartureValue.class::isInstance)
+                                 .mapToLong(value -> ((NodeDepartureValue) value).epoch())
+                                 .max()
+                                 .orElse(0L);
+    }
+
+    private static Stream<TxDraft> admissionsInFlight(ClusterModel m, NodeId node) {
+        return Stream.concat(m.submitted.values().stream().flatMap(submitted -> submitted.drafts()
+                                                                                         .stream()),
+                             m.outbox.stream())
+                     .filter(draft -> draft.kind() == SubmitKind.ADMISSION && draft.node()
+                                                                                   .equals(Option.some(node)));
     }
 
     // -- settlement of a departure write (R-4.3.0, 6.2) -------------------------------------------------------------
@@ -455,8 +494,7 @@ public sealed interface DepartureFlow {
 
     private static boolean obsolete(ClusterModel m, NodeId node, PendingDeparture pending) {
         return m.records.get(node)
-                        .map(record -> record.state() == DepartureState.ADMITTED && record.epoch() > pending.admission()
-                                                                                                            .epoch())
+                        .map(record -> record.state() == DepartureState.ADMITTED && record.epoch() > pending.epoch())
                         .or(false);
     }
 
@@ -490,7 +528,8 @@ public sealed interface DepartureFlow {
                                                            expected,
                                                            pending.cause(),
                                                            pending.inferred(),
-                                                           ctx.monoNs()));
+                                                           ctx.monoNs(),
+                                                           0L));
 
         return Outbox.direct(m,
                              departureDraft(m,
@@ -555,66 +594,20 @@ public sealed interface DepartureFlow {
     }
 
     // -- step 10: departed rows, records ---------------------------------------------------------------------------
-    /// C17b for every departed node that still has rows, desired keys or route keys (C1, the tick), and the ADMITTED
-    /// rewrite of ignored DEPARTED records.
+    /// C17b for every departed node that still has rows, desired keys or route keys (C1, the tick), except a liveness-pending core
+    /// (G-4), and the ADMITTED rewrite of superseded DEPARTED records. Records are never removed here (R-4.3.5 narrowed by MQ-4).
     static ClusterModel sweep(ClusterModel m, Ctx ctx) {
         m.departed.toList().stream().sorted().forEach(node -> cleanup(m, ctx, node, 0));
         m.records.entries()
                  .stream()
-                 .filter(entry -> Departures.isIgnored(entry.getValue(),
-                                                       m.admissions.get(entry.getKey())))
+                 .filter(entry -> Departures.isSuperseded(m,
+                                                          entry.getKey(),
+                                                          entry.getValue()))
                  .map(Map.Entry::getKey)
                  .sorted()
                  .forEach(node -> admittedRewrite(m, ctx, node));
 
         return m;
-    }
-
-    /// R-4.3.5 (b): a record is removed when its node has no directive, no observed key, no desired key, no `departing`
-    /// entry, and is not a current member (R-2.13).
-    static ClusterModel collectRecords(ClusterModel m, Ctx ctx) {
-        var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
-
-        m.records.entries()
-                 .stream()
-                 .sorted(Comparator.comparing(entry -> entry.getKey()
-                                                            .id()))
-                 .filter(entry -> collectable(m,
-                                              entry.getKey()))
-                 .forEach(entry -> mutations.add(removal(new NodeDepartureKey(entry.getKey()),
-                                                         entry.getValue())));
-        if (!mutations.isEmpty() && !recordGcInFlight(m)) {
-            Outbox.direct(m,
-                          TxDraft.draft(SubmitKind.GC,
-                                        mutations.getFirst().key(),
-                                        mutations));
-        }
-
-        return m;
-    }
-
-    private static boolean recordGcInFlight(ClusterModel m) {
-        return m.submitted.values()
-                          .stream()
-                          .flatMap(submitted -> submitted.drafts()
-                                                         .stream())
-                          .anyMatch(draft -> draft.kind() == SubmitKind.GC && draft.key() instanceof NodeDepartureKey) || m.outbox.stream()
-                                                                                                                                  .anyMatch(draft -> draft.kind() == SubmitKind.GC && draft.key() instanceof NodeDepartureKey);
-    }
-
-    private static boolean collectable(ClusterModel m, NodeId node) {
-        return ! m.directives.containsKey(node)
-               && !m.observedByNode.containsKey(node)
-               && !m.desiredByNode.containsKey(node)
-               && !m.departing.containsKey(node)
-               && !isCurrentMember(m, node);
-    }
-
-    /// R-2.13: n has an admission and is neither departed nor departing.
-    static boolean isCurrentMember(ClusterModel m, NodeId node) {
-        return m.admissions.containsKey(node)
-               && !m.departed.contains(node)
-               && !m.departing.containsKey(node);
     }
 
     record unused() implements DepartureFlow {}

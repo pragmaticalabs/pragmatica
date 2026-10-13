@@ -57,7 +57,7 @@ class GapCommunityTest {
     }
 
     private static void join(MbWorld w, NodeId node, long token) {
-        w.h.deliver(new ClusterInput.WorkerJoin(node, w.admit(node, 1L, token)));
+        w.h.deliver(new ClusterInput.WorkerJoin(node, w.admit(node, token)));
     }
 
     /// Red when: the choice is not the lowest fill ratio (assigned / targetSize), or ties are not broken by policy id, or a

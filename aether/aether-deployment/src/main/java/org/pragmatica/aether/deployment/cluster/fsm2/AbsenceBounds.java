@@ -7,16 +7,21 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import org.pragmatica.lang.io.TimeSpan;
 
 
-/// The three absence bounds of the departure backstop (spec R-2.14, R-2.14b, R-2.14c), in nanoseconds of the
-/// leader-local monotonic clock. They are derived from the live configuration, never hard-coded:
+/// The absence bounds of the departure backstop (spec R-2.14, R-2.14b, R-2.14c) and the core suspicion window (R-2.11 (b)), in
+/// nanoseconds of the leader-local monotonic clock. They are derived from the live configuration, never hard-coded:
 ///
 /// - `coreRemoval` (`B_rm`) = `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER + splitTimeout`;
 /// - `workerRemoval` (`B_w`) = `workerSuspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER
 ///   + reannounceInterval + communityAbsence`;
-/// - `announcementFreshness` (`S_ann`) = `2 x reannounceInterval`.
-public record AbsenceBounds(long coreRemoval, long workerRemoval, long announcementFreshness) {
-    public static AbsenceBounds absenceBounds(long coreRemovalNs, long workerRemovalNs, long announcementFreshnessNs) {
-        return new AbsenceBounds(coreRemovalNs, workerRemovalNs, announcementFreshnessNs);
+/// - `announcementFreshness` (`S_ann`) = `2 x reannounceInterval`;
+/// - `coreSuspicion` = `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER`, the upper bound of one SWIM suspicion
+///   window (R-2.14): how long a core must stay listed in this leader's core view to count as alive `[guess: one window, per the D-4 (ii) ruling]`.
+public record AbsenceBounds(long coreRemoval, long workerRemoval, long announcementFreshness, long coreSuspicion) {
+    public static AbsenceBounds absenceBounds(long coreRemovalNs,
+                                              long workerRemovalNs,
+                                              long announcementFreshnessNs,
+                                              long coreSuspicionNs) {
+        return new AbsenceBounds(coreRemovalNs, workerRemovalNs, announcementFreshnessNs, coreSuspicionNs);
     }
 
     /// R-2.14 / R-2.14b / R-2.14c from the configured terms.
@@ -28,9 +33,10 @@ public record AbsenceBounds(long coreRemoval, long workerRemoval, long announcem
                                        TimeSpan reannounceInterval,
                                        TimeSpan communityAbsence) {
         var window = lhmMaxScore * clusterSizeWindowMultiplier;
-        var coreRemoval = (long)(suspectTimeout.nanos() * window) + splitTimeout.nanos();
+        var coreSuspicion = (long)(suspectTimeout.nanos() * window);
+        var coreRemoval = coreSuspicion + splitTimeout.nanos();
         var workerRemoval = (long)(workerSuspectTimeout.nanos() * window) + reannounceInterval.nanos() + communityAbsence.nanos();
 
-        return new AbsenceBounds(coreRemoval, workerRemoval, 2 * reannounceInterval.nanos());
+        return new AbsenceBounds(coreRemoval, workerRemoval, 2 * reannounceInterval.nanos(), coreSuspicion);
     }
 }

@@ -36,7 +36,8 @@ public sealed interface Joins {
     String DEFAULT_SOURCE = "default";
 
     // -- C15 / C16 -------------------------------------------------------------------------------------------------
-    /// A join input: update `admissions[n]`, re-classify n's rows (R-3.3.1), clear `absentSince[n]`, then evaluate the table.
+    /// A join input: update `admissions[n]`, re-classify n's rows (R-3.3.1), clear `absentSince[n]`, then evaluate the table. A row that
+    /// admits n marks it joined (R-2.11 (a)).
     static ClusterModel onJoin(ClusterModel m, Ctx ctx, NodeId node, Admission admission, boolean worker) {
         var before = staleRows(m, node);
 
@@ -48,6 +49,36 @@ public sealed interface Joins {
         noteStale(m, ctx, node, before);
 
         return evaluate(m, ctx, node, new PendingJoin(worker, admission));
+    }
+
+    /// R-2.11 (a): `node` is joined. A join input processed after `Rebuild` joins the node in every row that admits it: J0, J2, J3, the J8
+    /// core arm (`write`) and J5/J6. J1 and the J8 worker arm refuse it, and J7 defers it, so none of them joins it `[guess: C16 says "add n
+    /// to joined"; a refused or deferred join is not an admission, and counting such a worker would contradict J1 and J7 ("no write")]`.
+    /// Record it, end the veto of an earlier removal (`Liveness`), recompute `departed`, and reconcile when the node is counted from now on
+    /// (its DEPARTED record was superseded).
+    static ClusterModel markJoined(ClusterModel m, Ctx ctx, NodeId node) {
+        var wasDeparted = m.departed.contains(node);
+
+        m.joined = m.joined.add(node);
+        Liveness.restored(m, node);
+        Indexer.refreshDeparted(m, node);
+
+        return wasDeparted && !m.departed.contains(node)
+               ? Reconcile.request(m, ctx)
+               : m;
+    }
+
+    /// R-2.11: a removal input, or a C17s submission that stands in for a lost one, ends the join evidence.
+    static ClusterModel clearJoined(ClusterModel m, NodeId node) {
+        m.joined = m.joined.remove(node);
+        Liveness.broken(m, node);
+
+        return Indexer.refreshDeparted(m, node);
+    }
+
+    private static boolean refusedAsSuperseded(ClusterModel m, NodeId node, boolean worker) {
+        return worker && m.seams.superseded()
+                                .contains(node);
     }
 
     /// C11d / CI-15b: the seam reports a token for `node` that it reported as unknown before. Re-classify its rows; nothing
@@ -116,7 +147,11 @@ public sealed interface Joins {
         var admission = join.admission();
         var record = m.records.get(node);
 
-        if (m.seams.superseded().contains(node) && join.worker()) {
+        if (m.unforeseenJoins.contains(node)) {
+            return unmatched(m, ctx, node, join, record);
+        }
+
+        if (refusedAsSuperseded(m, node, join.worker())) {
             return refuse(m,
                           ctx,
                           node,
@@ -137,15 +172,18 @@ public sealed interface Joins {
                          List.of());
         }
 
-        if (record.map(value -> value.state() == DepartureState.DEPARTED && stale(value)).or(false)) {
+        if (record.map(value -> Departures.isDeparted(value) && stale(value)).or(false)) {
             return write(m, ctx, node, join, record, List.of());
         }
 
-        if (record.map(value -> value.state() == DepartureState.DEPARTED && admission.epoch() > value.epoch()).or(false)) {
-            return readmit(m, ctx, node, join, record);
+        if (record.map(Departures::isDeparted).or(false) && join.worker() && m.directives.get(node).isEmpty()) {
+            return track(m, node, join);
         }
 
-        return afterTable(m, ctx, node, join, record);
+        return record.map(Departures::isDeparted)
+                     .or(false)
+               ? readmit(m, ctx, node, join, record)
+               : afterTable(m, ctx, node, join, record);
     }
 
     private static boolean stale(NodeDepartureValue record) {
@@ -189,19 +227,15 @@ public sealed interface Joins {
         return m;
     }
 
-    /// J3: the same process, a higher epoch. A worker needs its WORKER directive (else J7 defers); a racing C17b is
-    /// refused because the witness on the directive moves.
+    /// J3: the same process, any other cause. There is no epoch comparison (MQ-4): this join input is membership's admission after the
+    /// removal the record ends, and the mailbox order orders the two within one leader incarnation. A worker needs its WORKER directive
+    /// (else J7 defers, in `evaluate`); a racing C17b is refused because the witness on the directive moves.
     private static ClusterModel readmit(ClusterModel m,
                                         Ctx ctx,
                                         NodeId node,
                                         PendingJoin join,
                                         Option<NodeDepartureValue> record) {
         var directive = m.directives.get(node);
-
-        if (join.worker() && directive.isEmpty()) {
-            return track(m, node, join);
-        }
-
         var guards = directive.isPresent()
                      ? List.of(new KVCommand.ReadWitness<AetherKey>(new ActivationDirectiveKey(node),
                                                                     directive.map(v -> (Object) v)))
@@ -210,22 +244,17 @@ public sealed interface Joins {
         return write(m, ctx, node, join, record, guards);
     }
 
-    /// J7 (a worker whose departed record blocks it and which has no directive is deferred), J5/J6 (not departed: assign the
-    /// directive of its role, or nothing if it has one), J9 (anything else is visible and retried).
+    /// J5/J6 (not departed: assign the directive of its role, or nothing if it has one), J9 (anything else is visible and retried).
+    /// Under MQ-4 every DEPARTED record takes J2, J3 or J7 before this row, so J9 is reached only by an unforeseen combination.
     private static ClusterModel afterTable(ClusterModel m,
                                            Ctx ctx,
                                            NodeId node,
                                            PendingJoin join,
                                            Option<NodeDepartureValue> record) {
-        var recordDeparted = record.map(Departures::isDeparted).or(false);
-
-        if (recordDeparted && join.worker() && m.directives.get(node).isEmpty()) {
-            return track(m, node, join);
-        }
-
-        return recordDeparted
+        return record.map(Departures::isDeparted)
+                     .or(false)
                ? unmatched(m, ctx, node, join, record)
-               : directive(m, ctx, node, join, record);
+               : directive(markJoined(m, ctx, node), ctx, node, join, record);
     }
 
     private static ClusterModel directive(ClusterModel m,
@@ -265,11 +294,11 @@ public sealed interface Joins {
 
     /// J9: no row matched. It is visible and retried, never silently left uncounted. The WARN is emitted once per unmatched episode:
     /// every reconcile pass evaluates the join again (step 10), and a WARN per pass would grow with write load; the tick re-arms it.
-    private static ClusterModel unmatched(ClusterModel m,
-                                          Ctx ctx,
-                                          NodeId node,
-                                          PendingJoin join,
-                                          Option<NodeDepartureValue> record) {
+    static ClusterModel unmatched(ClusterModel m,
+                                  Ctx ctx,
+                                  NodeId node,
+                                  PendingJoin join,
+                                  Option<NodeDepartureValue> record) {
         if (!join.warned()) {
             ctx.warn("join-unmatched",
                      node.id(),
@@ -291,14 +320,16 @@ public sealed interface Joins {
     }
 
     // -- the admission write (J0, J2, J3, J8 core) -----------------------------------------------------------------
-    /// `Put(ADMITTED(epoch, process))` expecting `expected`, the value the departure write expected or the record observed.
-    /// The join is remembered so a refusal re-runs the table (6.2).
+    /// `Put(ADMITTED(e⁺, process))` expecting `expected`, the value the departure write expected or the record observed, with
+    /// `e⁺ = epochOf(expected) + 1`: the epoch is leader-assigned and read from the committed record, never from membership (MQ-4,
+    /// R-4.3.0). The join is remembered so a refusal re-runs the table (6.2).
     private static ClusterModel write(ClusterModel m,
                                       Ctx ctx,
                                       NodeId node,
                                       PendingJoin join,
                                       Option<NodeDepartureValue> expected,
                                       List<KVCommand.ReadWitness<AetherKey>> guards) {
+        markJoined(m, ctx, node);
         track(m, node, join);
         // Design-out: one admission write per node at a time. A second would expect the same record and be refused; the pending join above
         // is re-evaluated when the first one lands (C11c), so no input is lost by not writing again.
@@ -322,7 +353,7 @@ public sealed interface Joins {
                                           List<KVCommand.ReadWitness<AetherKey>> guards) {
         var key = new NodeDepartureKey(node);
         var value = new NodeDepartureValue(DepartureState.ADMITTED,
-                                           admission.epoch(),
+                                           Departures.epochOf(expected) + 1L,
                                            admission.process(),
                                            Option.none(),
                                            ctx.nowMs());
@@ -368,20 +399,39 @@ public sealed interface Joins {
         return m;
     }
 
-    /// C11f: a worker recorded DEPARTED(STALE) reappeared in its community's fresh roster or in the local alive view: it is
-    /// re-admitted through J2. A different known process is refused by J8 as usual.
+    /// C11f: a worker with a DEPARTED record reappeared in its community's fresh roster or in the local alive view, **observed by this
+    /// leader after `Rebuild`**, and is re-admitted through the join table as a `WorkerJoin` (R-2.11, G-3 narrowed by H-1).
+    /// - A `STALE` record, whoever recorded it, takes J2.
+    /// - Any other cause takes J3, but only when the record is `inherited` (committed before this leader's `Rebuild`). A departure this
+    ///   leader decided needs a `WorkerJoin`, so a governor announcement built before the governor saw the worker leave cannot re-admit it.
+    /// A different known process is refused by J8 as usual.
     static ClusterModel reappeared(ClusterModel m, Ctx ctx, NodeId node) {
-        var record = m.records.get(node);
-        var recordedStale = record.map(value -> value.state() == DepartureState.DEPARTED && stale(value)).or(false);
+        return m.records.get(node)
+                        .filter(record -> evidenceApplies(m, node, record))
+                        .filter(_ -> Rows.recordedWorker(m, node) && listedOrAlive(m, ctx, node))
+                        .filter(_ -> !DepartureFlow.admissionInFlight(m, node))
+                        .fold(() -> m,
+                              record -> readmitOnEvidence(m, ctx, node, record));
+    }
 
-        return recordedStale && Rows.recordedWorker(m, node) && listedOrAlive(m, ctx, node) && !DepartureFlow.admissionInFlight(m,
-                                                                                                                                node)
-               ? evaluate(m,
-                          ctx,
-                          node,
-                          new PendingJoin(true,
-                                          m.admissions.get(node).or(Admission.UNKNOWN)))
-               : m;
+    private static boolean evidenceApplies(ClusterModel m, NodeId node, NodeDepartureValue record) {
+        return Departures.isDeparted(record) && (stale(record) || m.inherited.contains(node));
+    }
+
+    private static ClusterModel readmitOnEvidence(ClusterModel m, Ctx ctx, NodeId node, NodeDepartureValue record) {
+        if (!stale(record)) {
+            ctx.warn("worker-readmitted-on-evidence",
+                     node.id(),
+                     "Worker " + node.id()
+                    + " departed (" + record.cause()
+                    + ") before this leader's rebuild and is listed again: re-admitted");
+        }
+
+        return evaluate(m,
+                        ctx,
+                        node,
+                        new PendingJoin(true,
+                                        m.admissions.get(node).or(Admission.UNKNOWN)));
     }
 
     private static boolean listedOrAlive(ClusterModel m, Ctx ctx, NodeId node) {
@@ -391,9 +441,9 @@ public sealed interface Joins {
                                                                                          .contains(node))
                                                                     .or(false);
 
-        return listed || m.seams.localAlive()
-                                .map(alive -> alive.contains(node))
-                                .or(false);
+        return listed || m.sampledAfterRebuild && m.seams.localAlive()
+                                                         .map(alive -> alive.contains(node))
+                                                         .or(false);
     }
 
     /// J5 retry: when nothing is allocatable right after a core joined, reconcile again in 2 s.

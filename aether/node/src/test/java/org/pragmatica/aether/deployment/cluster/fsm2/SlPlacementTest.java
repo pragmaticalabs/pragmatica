@@ -133,7 +133,7 @@ class SlPlacementTest {
         void place_isNotBlockedByAStaleRow() {
             var h = twoCores();
 
-            h.admissions.put(CORE_1, admission(2L, 7L));
+            h.admissions.put(CORE_1, admission(7L));
             seedGoal(h, CORE_1, ORDERS, SliceGoal.UNLOADED, G1);
             seedRow(h, CORE_1, ORDERS, SliceObservedState.UNLOADING, G1, 8L);
             stalePrefersFirst(h);

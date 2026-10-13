@@ -51,8 +51,8 @@ class IncarnationTest {
     void restart_isANewIdentity_theOldOneDeparts_andTheSliceIsReplaced() {
         var w = MbWorld.worldWithFloor(1, CORE_1);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(W1, 1L, P1);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(W1, P1);
         w.community(C, 10, CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1);
         w.h.seedQuietly(new GovernorAnnouncementKey(C), roster(GOV, false, W1));
@@ -66,7 +66,7 @@ class IncarnationTest {
         assertThat(w.present(new SliceObservedKey(W1, ORDERS))).as("C17b removed w1's rows").isFalse();
         assertThat(Rows.activeCount(w.h.model(), ORDERS)).as("no w1 row counts after DEPARTED").isZero();
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).as("not adopted").isFalse();
-        w.h.deliver(new ClusterInput.WorkerJoin(W2, w.admit(W2, 1L, P2)));
+        w.h.deliver(new ClusterInput.WorkerJoin(W2, w.admit(W2, P2)));
         assertThat(w.stored(new ActivationDirectiveKey(W2)).isPresent()).as("w2 is minted (J5)").isTrue();
         w.announce(C, GOV, W2);
         w.refreshSeams(s -> s.withLocalAlive(Option.some(Set.of(W2))));
@@ -81,8 +81,8 @@ class IncarnationTest {
     void differentProcess_workerRejoin_leavesNoTrace() {
         var w = MbWorld.world(CORE_1);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(W1, 1L, P1);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(W1, P1);
         w.community(C, 10, CommunityState.ACTIVE)
          .directive(W1,
                     Fixtures.worker(C))
@@ -90,7 +90,7 @@ class IncarnationTest {
          .activate();
         w.h.clearLog();
         w.tokens.admit(W1, P2);
-        w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(2L, process(P2))));
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, new Admission(process(P2))));
         assertThat(w.h.submits()).isEmpty();
         assertThat(w.counts(W1)).isFalse();
     }
@@ -101,13 +101,13 @@ class IncarnationTest {
     void differentProcess_coreRejoin_isAdmitted_andTheOldRowsDoNotCount() {
         var w = MbWorld.world(CORE_1, CORE_2);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, P1);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, P1);
         w.directive(CORE_2, ActivationDirectiveValue.core()).target(ORDERS, 1, "CORE_ONLY");
         w.h.seedQuietly(new SliceObservedKey(CORE_2, ORDERS), row(SliceObservedState.ACTIVE, 1L, gen(7), process(P1)));
         w.activate();
         w.tokens.admit(CORE_2, P2);
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, new Admission(2L, process(P2))));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, new Admission(process(P2))));
         var pair = MbWorld.pair(CORE_2, ORDERS);
 
         assertThat(Rows.current(w.h.model(), pair).isEmpty()).as("a stale row reads as absent").isTrue();
@@ -124,8 +124,8 @@ class IncarnationTest {
     void unknownToken_rowsCount_andNothingIsWritten() {
         var w = MbWorld.world(CORE_1);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(W1, 1L, 0L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(W1, 0L);
         w.community(C, 10, CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1).activate();
         w.h.advance(100_000L);
@@ -142,8 +142,8 @@ class IncarnationTest {
     void partitionHeal_sameProcess_keepsRowsCurrent_andTheLeaderAdoptsThem() {
         var w = MbWorld.worldWithFloor(1, CORE_1);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(W1, 1L, P1);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(W1, P1);
         w.community(C, 10, CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1);
         w.activate();
@@ -154,7 +154,7 @@ class IncarnationTest {
         var cleanup = w.h.submits(SubmitKind.CLEANUP).getFirst();
 
         assertThat(w.present(new SliceDesiredKey(W1, ORDERS))).as("C17 removed the desired key").isFalse();
-        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 2L, P1)));
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, P1)));
         w.h.applyHeld(w.h.submits(SubmitKind.ADMISSION).getLast().correlationId());
         w.h.drain();
         w.h.applyHeld(cleanup.correlationId());
@@ -198,7 +198,7 @@ class IncarnationTest {
         w.h.seedQuietly(new GovernorAnnouncementKey(C), roster(GOV, false, W1, W2, W3));
         if (seamPresent) {
             for (var node : List.of(W1, W2, W3, CORE_1, CORE_2)) {
-                w.admit(node, 1L, 0L);
+                w.admit(node, 0L);
             }
         }
 

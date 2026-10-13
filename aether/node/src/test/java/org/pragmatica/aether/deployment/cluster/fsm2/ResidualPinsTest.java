@@ -42,9 +42,9 @@ class ResidualPinsTest {
     private static MbWorld coreWorld() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.admit(CORE_3, 0x3333L);
 
         return w.directive(CORE_2,
                            ActivationDirectiveValue.core())
@@ -117,8 +117,8 @@ class ResidualPinsTest {
                                             .withMemberSource(Map.of(w1, "east", w2, "east")))
                        .activate();
 
-        w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 1L, 21L)),
-                            new ClusterInput.WorkerJoin(w2, w.admit(w2, 1L, 22L)));
+        w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 21L)),
+                            new ClusterInput.WorkerJoin(w2, w.admit(w2, 22L)));
         w.h.advance(60_000L);
         assertThat(w.present(new ActivationDirectiveKey(w2))).isTrue();
         assertThat(w.h.metricTotal("aether_deployment_fsm_submissions_total",

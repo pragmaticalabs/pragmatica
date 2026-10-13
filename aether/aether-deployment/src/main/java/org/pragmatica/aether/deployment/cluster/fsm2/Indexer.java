@@ -459,19 +459,30 @@ public sealed interface Indexer {
 
     // -- departure records (R-4.3.0) -------------------------------------------------------------------------------
     static ClusterModel indexRecord(ClusterModel m, NodeId node, NodeDepartureValue value) {
+        forgetInherited(m, node, Option.some(value));
         m.records = m.records.put(node, value);
 
         return refreshDeparted(m, node);
     }
 
     static ClusterModel removeRecord(ClusterModel m, NodeId node) {
+        forgetInherited(m, node, Option.none());
         m.records = m.records.remove(node);
 
         return refreshDeparted(m, node);
     }
 
-    /// `departed` = {n : records[n] is DEPARTED and not ignored on read} (R-4.3.0). Recomputed for one node whenever its
-    /// record or its admission changes, together with that node's assignment accounting and row classification.
+    /// R-2.11 (H-1): an id leaves `inherited` when its record changes.
+    private static ClusterModel forgetInherited(ClusterModel m, NodeId node, Option<NodeDepartureValue> next) {
+        if (!m.records.get(node).equals(next)) {
+            m.inherited = m.inherited.remove(node);
+        }
+
+        return m;
+    }
+
+    /// `departed` = {n : records[n] is DEPARTED and not superseded on read} (R-4.3.0). Recomputed for one node whenever its
+    /// record, its admission or its `joined` membership changes, together with that node's assignment accounting and row classification.
     private static PMap<String, PSet<NodeId>> assignment(ClusterModel m,
                                                          String community,
                                                          NodeId node,
@@ -483,8 +494,9 @@ public sealed interface Indexer {
 
     static ClusterModel refreshDeparted(ClusterModel m, NodeId node) {
         var departed = m.records.get(node)
-                                .map(record -> record.state() == DepartureState.DEPARTED && !Departures.isIgnored(record,
-                                                                                                                  m.admissions.get(node)))
+                                .map(record -> record.state() == DepartureState.DEPARTED && !Departures.isSuperseded(m,
+                                                                                                                     node,
+                                                                                                                     record))
                                 .or(false);
 
         m.departed = departed

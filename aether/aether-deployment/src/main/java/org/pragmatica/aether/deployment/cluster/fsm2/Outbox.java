@@ -242,7 +242,7 @@ public sealed interface Outbox {
     }
 
     private static ClusterModel submitOne(ClusterModel m, Ctx ctx, TxDraft draft, LeaderValue leader) {
-        var correlation = "c" + m.incarnation + "-" + (++m.txSeq);
+        var correlation = correlationId(m, ctx);
 
         m.submitted = m.submitted.put(correlation,
                                       new Submitted(correlation,
@@ -264,6 +264,14 @@ public sealed interface Outbox {
                           "submitted"));
 
         return m;
+    }
+
+    /// `c<bootIncarnation>.<bootToken>-<incarnation>-<seq>` (P3-Q16): the incarnation and the sequence are unique within one process only,
+    /// so the process identity qualifies the id; two leader processes never mint the same transaction id.
+    private static String correlationId(ClusterModel m, Ctx ctx) {
+        var process = ctx.settings().process();
+
+        return "c" + process.bootIncarnation() + "." + process.bootToken() + "-" + m.incarnation + "-" + (++m.txSeq);
     }
 
     private static KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction(String correlation,
@@ -455,13 +463,14 @@ public sealed interface Outbox {
         return new KVCommand.ReadWitness<>(pair.observedKey(), guard.map(v -> (Object) v));
     }
 
-    /// A submission that was never settled is lost (#2143): after one consensus timeout it no longer counts as in flight, its
-    /// pending goals are released (M-3), and the next reconcile re-derives it.
+    /// A submission that was never settled is lost (#2143): after `Settings#submissionExpiry` (the consensus `applyTimeout` plus a margin,
+    /// MQ-7) it no longer counts as in flight, its pending goals are released (M-3), and the next reconcile re-derives it. The bound
+    /// exceeds `applyTimeout`, so a batch the consensus engine still owns is never released.
     // BER-free absorption, design-out: a submission that never settled is dropped from `submitted` and its pending goals are released.
     // Guarantee: the loss is re-derived, never silent. Mechanism: the `lost` metric here, and the next reconcile derives the same
     // intent again from the mirror (level-triggered), so nothing depends on the lost write having landed.
     static ClusterModel expire(ClusterModel m, Ctx ctx) {
-        var bound = ctx.settings().timing().departingReread() * 1_000_000L;
+        var bound = ctx.settings().submissionExpiry() * 1_000_000L;
 
         m.submitted.entries()
                    .stream()
@@ -662,6 +671,7 @@ public sealed interface Outbox {
         return switch (draft.kind()) {
             case DEPARTURE, INFERRED_DEPARTURE, ADMISSION -> DepartureFlow.refused(m, ctx, draft);
             case CLEANUP -> DepartureFlow.cleanupRefused(m, ctx, draft);
+            case DIRECTIVE_REMOVAL -> rederiveDirectiveRemoval(m, ctx, draft);
             case BLUEPRINT_REMOVAL -> rederiveRemoval(m, ctx, draft);
             // 6.2: a refused target batch is not resubmitted at once; the awaited-target sweep (reconcile step 1) re-sends it after its bound.
             case TARGETS -> m;
@@ -680,6 +690,14 @@ public sealed interface Outbox {
 
     /// A removal is sent again at the mirror's current values: a key that is gone needs no removal, one whose value moved is removed at
     /// its new value. Nothing else derives it, because the blueprint is already unindexed.
+    /// A parked removal is derived again from the mirror: a blueprint removal at the current values of its keys, a directive removal (R-4.3.3)
+    /// only while the node stays departed with no directive.
+    private static Option<TxDraft> refreshed(ClusterModel m, TxDraft draft) {
+        return draft.kind() == SubmitKind.DIRECTIVE_REMOVAL
+               ? Directory.refreshedRemoval(m, draft)
+               : refreshedRemoval(m, draft);
+    }
+
     private static Option<TxDraft> refreshedRemoval(ClusterModel m, TxDraft draft) {
         var current = draft.mutations()
                            .stream()
@@ -705,7 +723,7 @@ public sealed interface Outbox {
     /// An intent no sweep derives again (a blueprint removal, the event-only judgment operations) is kept when its write is lost,
     /// failed or refused, and sent again by the next reconcile (`replayAwaiting`).
     private static ClusterModel awaitEvents(ClusterModel m, TxDraft draft) {
-        if (draft.kind() == SubmitKind.BLUEPRINT_REMOVAL) {
+        if (draft.kind() == SubmitKind.BLUEPRINT_REMOVAL || draft.kind() == SubmitKind.DIRECTIVE_REMOVAL) {
             m.parked = Stream.concat(m.parked.stream(), Stream.of(draft)).toList();
         }
 
@@ -734,7 +752,7 @@ public sealed interface Outbox {
 
     /// Step 1 of the reconcile: what was kept (`awaitEvents`, `park`) goes into this drain's intents.
     static ClusterModel replayAwaiting(ClusterModel m) {
-        m.parked.forEach(draft -> refreshedRemoval(m, draft).onPresent(refreshed -> Outbox.direct(m, refreshed)));
+        m.parked.forEach(draft -> refreshed(m, draft).onPresent(refreshed -> Outbox.direct(m, refreshed)));
         m.parked = List.of();
         m.parkedOps.forEach(entry -> Outbox.artifact(m,
                                                      entry.getKey(),
@@ -807,6 +825,18 @@ public sealed interface Outbox {
                                                                                .equals(mirrored(m,
                                                                                                 g.key()).map(v -> (Object) v)))
                                                                    .or(false);
+    }
+
+    /// R-4.3.3 refused: derived again from the mirror at once, at most [#GOAL_RESUBMISSIONS] times, then parked for the next reconcile (6.2:
+    /// "re-read; stop if the record moved; 5, then the tick").
+    private static ClusterModel rederiveDirectiveRemoval(ClusterModel m, Ctx ctx, TxDraft draft) {
+        if (draft.attempt() >= GOAL_RESUBMISSIONS) {
+            return awaitEvents(m, draft);
+        }
+
+        return Reconcile.request(Directory.refreshedRemoval(m, draft).fold(() -> m,
+                                                                           refreshed -> Outbox.direct(m, refreshed)),
+                                 ctx);
     }
 
     private static ClusterModel rederiveSplit(ClusterModel m, Ctx ctx, TxDraft draft, PairSplit split, int limit) {

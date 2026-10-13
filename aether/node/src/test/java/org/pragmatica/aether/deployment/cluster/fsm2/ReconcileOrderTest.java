@@ -55,7 +55,7 @@ class ReconcileOrderTest {
                   .isSorted();
     }
 
-    /// Red when: step 10's parts run in another order than R-3.3.8 lists (desired keys, departed rows and records, the ADMITTED rewrite,
+    /// Red when: step 10's parts run in another order than R-3.3.8 lists (desired keys, departed rows, the ADMITTED rewrite,
     /// the `departing` re-reads, pending joins).
     @Test
     void collect_callsTheGcPartsInTheSpecsOrder() throws IOException {
@@ -64,7 +64,6 @@ class ReconcileOrderTest {
         var parts = List.of("Gc.removeDesired(m, pair)",
                             "DepartureFlow.sweep(m, ctx)",
                             "DepartureFlow.rereadOverdue(m, ctx)",
-                            "DepartureFlow.collectRecords(m, ctx)",
                             "Joins.retryPending(m, ctx)");
         var at = parts.stream().map(collect::indexOf).toList();
 

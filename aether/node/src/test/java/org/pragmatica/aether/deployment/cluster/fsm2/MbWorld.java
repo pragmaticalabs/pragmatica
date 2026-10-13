@@ -101,9 +101,9 @@ final class MbWorld {
     // -- the registry ----------------------------------------------------------------------------------------------
     /// Membership admits `node` at `epoch`: the registry records `token` (nothing when 0, the unknown path), and the
     /// admission is built from what the registry says.
-    Admission admit(NodeId node, long epoch, long token) {
+    Admission admit(NodeId node, long token) {
         tokens.admit(node, token);
-        var admission = admissionOf(node, epoch);
+        var admission = admissionOf(node);
 
         h.admissions.put(node, admission);
 
@@ -111,8 +111,8 @@ final class MbWorld {
     }
 
     /// The admission as the registry sees the node now.
-    Admission admissionOf(NodeId node, long epoch) {
-        return new Admission(epoch, process(tokens.tokenOf(node)));
+    Admission admissionOf(NodeId node) {
+        return new Admission(process(tokens.tokenOf(node)));
     }
 
     // -- fixtures written before activation ------------------------------------------------------------------------
@@ -172,6 +172,15 @@ final class MbWorld {
                                              ? Option.none()
                                              : Option.some(cause),
                                              FsmHarness.START_WALL));
+
+        return this;
+    }
+
+    /// NT-88 J9 hook: the join of `node` matches no row of the table (under MQ-4 no enumerated combination reaches J9).
+    MbWorld unforeseen(NodeId node) {
+        var model = h.model();
+
+        model.unforeseenJoins = model.unforeseenJoins.add(node);
 
         return this;
     }
@@ -262,7 +271,7 @@ final class MbWorld {
     /// (cores only, N6-1), the local alive view (`alive`) and mark every worker ready.
     MbWorld workers(String community, int targetSize, Set<NodeId> alive, NodeId... members) {
         for (var member : members) {
-            admit(member, 1L, tokenOf(member));
+            admit(member, tokenOf(member));
         }
 
         return workersUnadmitted(community, targetSize, alive, members);

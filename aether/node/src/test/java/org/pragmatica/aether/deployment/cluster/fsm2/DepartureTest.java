@@ -42,9 +42,9 @@ class DepartureTest {
     private MbWorld world() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.admit(CORE_3, 0x3333L);
 
         return w.target(ORDERS, 1, "CORE_ONLY")
                 .directive(CORE_2,
@@ -113,7 +113,7 @@ class DepartureTest {
         var w = MbWorld.world(CORE_1);
         var worker = node("worker-1");
 
-        w.admit(worker, 3L, 0x4444L);
+        w.admit(worker, 0x4444L);
         w.community("c1", 5, CommunityState.ACTIVE).directive(worker, Fixtures.worker("c1")).activate();
         w.h.clearLog();
         w.h.deliver(new ClusterInput.WorkerLeave(worker));
@@ -124,8 +124,8 @@ class DepartureTest {
         assertThat(submits.getFirst().kind()).isEqualTo(SubmitKind.DEPARTURE);
         assertThat(w.present(new ActivationDirectiveKey(worker))).isTrue();
         assertThat(w.recordOf(worker).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.DEPARTED));
-        assertThat(w.recordOf(worker).map(NodeDepartureValue::epoch)).as("names the admission epoch that departed")
-                  .isEqualTo(Option.some(3L));
+        assertThat(w.recordOf(worker).map(NodeDepartureValue::epoch)).as("names epochOf(n): no record yet, so 0 (the epoch is leader-assigned, MQ-4)")
+                  .isEqualTo(Option.some(0L));
     }
 
     // NT-92 (a, b)
@@ -176,16 +176,16 @@ class DepartureTest {
     }
 
     // NT-92 (c)
-    // Red when: C17b is built for an ignored (older-epoch, same-process) record.
+    // Red when: C17b is built for a superseded (joined, same-process) record.
     @Test
-    void cleanup_isNotBuilt_forAnIgnoredRecord_andTheRecordIsRewrittenAsAdmitted() {
+    void cleanup_isNotBuilt_forASupersededRecord_andTheRecordIsRewrittenAsAdmitted() {
         var w = world().record(CORE_2, DepartureState.DEPARTED, 1L, TOKEN_2, DepartureCause.NODE_REMOVED);
+        var joined = new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, TOKEN_2));
 
-        w.admit(CORE_2, 2L, TOKEN_2);
-        w.activate();
+        w.h.deliverTogether(new ClusterInput.Activate(), joined);
         assertThat(w.h.submits(SubmitKind.CLEANUP)).isEmpty();
-        assertThat(w.counts(CORE_2)).as("an ignored DEPARTED leaves the node counted").isTrue();
-        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("replaced by ADMITTED(current)")
+        assertThat(w.counts(CORE_2)).as("a superseded DEPARTED leaves the node counted").isTrue();
+        assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("replaced by ADMITTED(e_d + 1)")
                   .isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::epoch)).isEqualTo(Option.some(2L));
         assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).isTrue();
@@ -205,8 +205,8 @@ class DepartureTest {
         var departed = w.recordOf(CORE_2).orElse(() -> Option.none()).or((NodeDepartureValue) null);
         var admitted = new NodeDepartureValue(DepartureState.ADMITTED, 2L, process(TOKEN_2), Option.none(), w.h.wallMs);
 
-        w.admit(CORE_2, 2L, TOKEN_2);
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 2L)));
+        w.admit(CORE_2, TOKEN_2);
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         var before = w.h.submits(SubmitKind.ADMISSION);
 
         assertThat(before).as("the departed record is replaced through a fenced ADMITTED write").isNotEmpty();
@@ -248,8 +248,8 @@ class DepartureTest {
     void departed_desiredKeyWithNoObservation_doesNotSurvive() {
         var w = MbWorld.world(CORE_1, CORE_2);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
         w.target(ORDERS, 1, "CORE_ONLY");
         w.h.seedQuietly(new SliceDesiredKey(CORE_2, ORDERS), desired(SliceGoal.LOADED, gen(1)));
         w.activate();
@@ -264,8 +264,8 @@ class DepartureTest {
     void inferredDeparture_desiredKeyIsRemovedByC17b() {
         var w = MbWorld.world(CORE_1, CORE_2);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
         w.target(ORDERS, 1, "CORE_ONLY");
         w.h.seedQuietly(new SliceDesiredKey(CORE_2, ORDERS), desired(SliceGoal.LOADED, gen(1)));
         w.directive(CORE_2, ActivationDirectiveValue.core());
@@ -319,16 +319,18 @@ class DepartureTest {
                   .isFalse();
     }
 
-    // NT-106 (b)
-    // Red when: a STALE record with no residue is not collected.
+    // NT-106 (b) (MQ-4: R-4.3.5 (b) is withdrawn)
+    // Red when: a STALE record with no residue is garbage-collected by the reconcile: a record leaves only through R-4.3.3.
     @Test
-    void staleRecord_withNoResidue_isCollected() {
+    void staleRecord_withNoResidue_isKept() {
         var w = MbWorld.world(CORE_1);
         var worker = node("worker-9");
 
         w.record(worker, DepartureState.DEPARTED, 1L, 0x9999L, DepartureCause.STALE).activate();
         w.h.deliver(new ClusterInput.Reconcile());
-        assertThat(w.recordOf(worker).isEmpty()).isTrue();
+        w.h.advance(w.h.settings.timing().tick() * 3);
+        assertThat(w.recordOf(worker).isPresent()).isTrue();
+        assertThat(w.h.submits(SubmitKind.GC)).as("nothing is collected").isEmpty();
     }
 
     // NT-106 (c)
@@ -337,7 +339,7 @@ class DepartureTest {
     void admittedRecord_ofACurrentMember_isKept() {
         var w = MbWorld.world(CORE_1);
 
-        w.admit(CORE_1, 2L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.record(CORE_1, DepartureState.ADMITTED, 2L, 0x1111L, null).activate();
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.recordOf(CORE_1).isPresent()).isTrue();
@@ -374,14 +376,14 @@ class DepartureTest {
     void staleCore_readmittedByMembership_isReplacedByAdmitted_andCounts() {
         var w = MbWorld.world(CORE_1, CORE_2);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
         w.record(CORE_2, DepartureState.DEPARTED, 1L, TOKEN_2, DepartureCause.STALE)
          .directive(CORE_2,
                     ActivationDirectiveValue.core())
          .activate();
         assertThat(w.counts(CORE_2)).as("departed: not counted").isFalse();
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, TOKEN_2)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, TOKEN_2)));
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.counts(CORE_2)).isTrue();
     }
