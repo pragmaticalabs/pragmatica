@@ -10,8 +10,12 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.RepetitionInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
@@ -65,6 +69,10 @@ class EmberSameIdentityRelaunchTest {
     /// Longer than the ~65 s the verifier measured between the SWIM refusal and the QUIC re-admission.
     private static final long READMIT_WINDOW_MS = 90_000L;
     private static final long HEAL_BOUND_MS = 180_000L;
+    private static final long DEMOTION_BOUND_MS = 30_000L;
+    private static final long REFUSAL_BOUND_MS = 20_000L;
+    /// Repetitions of the demotion test that reached #2173's scenario. Static: each repetition runs on its own instance.
+    private static final AtomicInteger DEMOTION_SCENARIO_REACHED = new AtomicInteger();
 
     private EmberCluster cluster;
 
@@ -85,6 +93,49 @@ class EmberSameIdentityRelaunchTest {
     @Timeout(480)
     void relaunchedSameIdentityProcess_atSameAddress_neverRestoresQuorum() {
         relaunchedProcessNeverRestoresQuorum(true);
+    }
+
+    /// #2173: the survivor must register the death of a core that was killed while the cluster was still forming and whose
+    /// NodeId a new process then took over. A core killed that early leaves the survivors' QUIC link to it unclosed; the takeover
+    /// is then retired by a boot-token conflict, a death-path removal that feeds the membership FSM nothing, and the SWIM FAULTY
+    /// was turned into UNKNOWN by the cold-boot rule and dropped when the member was swept, so the survivor's record for the
+    /// NodeId stayed MEMBER for good. The kill has to win a race against the link establishment, so one run does not always
+    /// hit it (about half of the runs did before the fix). Two repetitions is all the port pool of this class allows (four
+    /// blocks, TIME_WAIT between clusters); the deterministic regression is `SwimRetiredIdentityDeathTest`.
+    @RepeatedTest(2)
+    @Timeout(300)
+    void coreKilledWhileFormingAndSupersededByTheSameNodeId_isDemotedOnTheSurvivor(RepetitionInfo repetition) {
+        var basePort = EmberTestPorts.freeBase(PORTS);
+        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
+        cluster.start();
+        awaitCondition("the forming cluster's nodes exist", () -> cluster.getNode("btk-1").isPresent() && cluster.getNode("btk-3").isPresent());
+        var survivor = cluster.getNode("btk-1").unwrap();
+        var killedId = cluster.getNode("btk-3").unwrap().self();
+
+        assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
+        cluster.relaunchNode("btk-3", false);
+        requireTheScenario(refusedWithin(REFUSAL_BOUND_MS), repetition);
+
+        awaitDemoted(survivor, killedId, DEMOTION_BOUND_MS);
+    }
+
+    /// A kill that lands before the survivors learned the original's boot token leaves nothing to supersede: the relaunch is
+    /// then the first process they see for btk-3 and joins as a live member. A kill that lands while the forming cluster's
+    /// start is still running aborts that start and stops the whole cluster. Only a refused relaunch is #2173's scenario, so
+    /// any other repetition is skipped, except the last when none reached it: a regression whose every repetition missed its
+    /// scenario has tested nothing, and must not pass as skipped.
+    private static void requireTheScenario(boolean refused, RepetitionInfo repetition) {
+        if (refused) {
+            DEMOTION_SCENARIO_REACHED.incrementAndGet();
+
+            return;
+        }
+
+        assertThat(repetition.getCurrentRepetition() == repetition.getTotalRepetitions() && DEMOTION_SCENARIO_REACHED.get() == 0)
+            .as("none of the %d repetitions reached #2173's scenario: no relaunch was refused, so the regression never ran",
+                repetition.getTotalRepetitions())
+            .isFalse();
+        Assumptions.abort("the relaunch was not refused: the original was killed before its token was seen, or the forming cluster's start aborted");
     }
 
     /// The positive arm on the same transport: a partitioned-but-LIVE process keeps its boot token, so
@@ -118,6 +169,22 @@ class EmberSameIdentityRelaunchTest {
             .isZero();
     }
 
+    /// Refused means the relaunched process exited with the identity-refused code. Its absence from the cluster is not
+    /// evidence: a start aborted by the early kill clears the cluster too, and the survivor, then stopped, keeps its seeded
+    /// MEMBER record (CI run 38336812709, "Cluster startup aborted on first node failure").
+    private boolean refusedWithin(long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
+
+        while (!cluster.exitCodeOf("btk-3").equals(Option.some(AetherNode.EXIT_IDENTITY_REFUSED))) {
+            if (System.currentTimeMillis() > deadline) {
+                return false;
+            }
+            sleep(250);
+        }
+
+        return true;
+    }
+
     private static void awaitCondition(String what, java.util.function.BooleanSupplier condition) {
         var deadline = System.currentTimeMillis() + HEAL_BOUND_MS;
 
@@ -137,7 +204,14 @@ class EmberSameIdentityRelaunchTest {
 
         assertThat(write(survivor, "control-before").isSuccess()).as("control: a three-core cluster commits").isTrue();
 
+        var killedId = cluster.getNode("btk-3").unwrap().self();
+
         assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
+        // The survivor must have registered the original's death before the same NodeId reappears. Its record is demoted by the
+        // organic close of the original's QUIC link; a relaunch that connects first supersedes that link, and the retirement that
+        // follows is a death-path removal, which by design feeds the membership FSM nothing (AetherNode.connectivityWiring), so
+        // the record can stay MEMBER for good. That race is a separate product defect, not this test's subject.
+        awaitDemoted(survivor, killedId, HEAL_BOUND_MS);
         if (sameAddress) {
             awaitSlotFree(basePort, 2);
         }
@@ -146,7 +220,10 @@ class EmberSameIdentityRelaunchTest {
         // The node is registered before its start runs; the refused process may exit within seconds.
         var relaunched = cluster.getNode("btk-3").unwrap();
 
-        assertThat(launch.await(START_BOUND).fold(Cause::message, _ -> "launched"))
+        // The start promise of a refused process never resolves (the node stops during its start), so awaiting it is a
+        // pure START_BOUND timeout of 120 s, after which the window below used to open. The signal is the exit.
+        awaitCondition("the refused process exits", () -> cluster.getNode("btk-3").isEmpty());
+        assertThat(launch.await(TimeSpan.timeSpan(1).seconds()).fold(Cause::message, _ -> "launched"))
             .as("the refused process never completes a start")
             .isNotEqualTo("launched");
 
@@ -170,8 +247,24 @@ class EmberSameIdentityRelaunchTest {
                                                                                 .doesNotContain("btk-3");
     }
 
-    /// For the whole readmission window, the survivor never counts the refused identity as a member again and the
-    /// refused process never becomes consensus-active. Sampled, so a process admitted at any moment of the window
+    /// Waits for the survivor to stop counting `id` as MEMBER. A bound reached with the record still MEMBER fails naming that
+    /// state, so a stuck record is reported as itself and not as a generic timeout.
+    private static void awaitDemoted(AetherNode survivor, org.pragmatica.consensus.NodeId id, long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
+        var state = survivor.membershipFsm().memberStates().get(id);
+
+        while ("Member".equals(state)) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("the survivor still counts the killed original " + id.id() + " as MEMBER " + boundMs
+                                         + " ms after it was killed (stuck state: " + state + "): its death was never registered");
+            }
+            sleep(250);
+            state = survivor.membershipFsm().memberStates().get(id);
+        }
+    }
+
+    /// From the moment the killed original was demoted, and for the whole readmission window, the survivor never
+    /// counts the refused identity as a member again and the refused process never becomes consensus-active. Sampled, so a process admitted at any moment of the window
     /// fails the test, not only one still admitted at its end.
     private static void awaitRefusedNeverParticipates(AetherNode survivor, AetherNode relaunched, org.pragmatica.consensus.NodeId relaunchedId) {
         var deadline = System.currentTimeMillis() + READMIT_WINDOW_MS;
