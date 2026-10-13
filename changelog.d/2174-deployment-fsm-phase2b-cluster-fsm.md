@@ -4,10 +4,10 @@
 - Every leader write is a `LeaderTransaction` with the committed `LeaderValue` and the exact expected values of the mirror (R-5.7.1); refusals are re-derived per pair (R-5.7.2), a deposed leader suspends instead of resubmitting.
   [verified: `aether/node/src/test/java/org/pragmatica/aether/deployment/cluster/fsm2/WritePathTest.java`, `GapEngineTest.java`]
 - The old `ClusterDeploymentState`, `NodeArtifactKey` and its readers are untouched and nothing is wired to the new FSM: this phase changes no behaviour. [mechanism: no production caller of `fsm2`]
-- 275 tests on the real `KVStore` applier (no running cluster), every NT row that belongs to the cluster FSM and can be asserted without wiring; the rest are listed in the phase report as phase 3.
+- 286 tests on the real `KVStore` applier (no running cluster), every NT row that belongs to the cluster FSM and can be asserted without wiring; the rest are listed in the phase report as phase 3.
   [verified: `aether/node/src/test/java/org/pragmatica/aether/deployment/cluster/fsm2/`]
 
-- Writes the FSM cannot re-derive from rows and clocks (a blueprint removal, the judgment operations that answer an event, a worker's directive, a stalled schema migration) are kept when their transaction is lost, failed, refused or dropped while the leader is suspended, and sent again by the next reconcile. `DeploymentFailed` leaves only from an accepted transaction. A departure is final at `ADMITTED` epoch strictly above the departing one.
+- Writes the FSM cannot re-derive from rows and clocks (a blueprint removal, the judgment operations that answer an event, a worker's directive, a stalled schema migration) are kept when their transaction is lost, failed, refused or dropped while the leader is suspended, and sent again by the next reconcile. `DeploymentFailed` and `ReconciliationAdjustment` leave only from an accepted transaction; `ActivationBlocked` only from an acting (not suspended) leader. A departure is final at `ADMITTED` epoch strictly above the departing one.
   [verified: `aether/node/src/test/java/org/pragmatica/aether/deployment/cluster/fsm2/AdversarialRound2Test.java`, `V2174AdversarialTest.java`]
 
 ### Changed (2026-10-12 — #2174: `ArtifactJudgmentValue.retries` is per node)
