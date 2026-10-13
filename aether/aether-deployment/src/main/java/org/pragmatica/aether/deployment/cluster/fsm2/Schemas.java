@@ -93,12 +93,13 @@ public sealed interface Schemas {
         m.schemas.entries()
                  .stream()
                  .sorted(Comparator.comparing(entry -> entry.getKey()))
-                 .forEach(entry -> recoverOne(m,
-                                              ctx,
-                                              entry.getKey(),
-                                              entry.getValue()));
+                 .filter(entry -> entry.getValue()
+                                       .status() == SchemaStatus.PENDING)
+                 .forEach(entry -> dispatch(m,
+                                            ctx,
+                                            entry.getKey()));
 
-        return m;
+        return resetStalledMigrations(m, ctx);
     }
 
     /// The reset half of the recovery alone: it is a write, so a leader that was suspended when it ran at Rebuild runs it again on the
@@ -115,16 +116,6 @@ public sealed interface Schemas {
                                                 entry.getKey(),
                                                 entry.getValue(),
                                                 ctx));
-
-        return m;
-    }
-
-    private static ClusterModel recoverOne(ClusterModel m, Ctx ctx, String datasource, SchemaVersionValue value) {
-        if (value.status() == SchemaStatus.PENDING) {
-            dispatch(m, ctx, datasource);
-        } else if (value.status() == SchemaStatus.MIGRATING && lockExpired(m, ctx, datasource)) {
-            resetStalled(m, datasource, value, ctx);
-        }
 
         return m;
     }
