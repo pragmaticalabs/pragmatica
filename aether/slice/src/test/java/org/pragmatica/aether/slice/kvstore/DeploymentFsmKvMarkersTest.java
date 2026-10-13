@@ -115,7 +115,7 @@ class DeploymentFsmKvMarkersTest {
     class Declarations {
         @Test
         void leaderAuthorizedValues_areExactlyDesiredJudgmentAndDeparture() {
-            var judgment = new ArtifactJudgmentValue(false, 0, Map.of());
+            var judgment = new ArtifactJudgmentValue(false, Map.of(), Map.of());
             var departure = new NodeDepartureValue(DepartureState.ADMITTED, 1L, PROCESS, Option.none(), 1L);
 
             assertThat(desired(SliceGoal.LOADED, 1L)).isInstanceOf(LeaderAuthorized.class);
@@ -168,9 +168,9 @@ class DeploymentFsmKvMarkersTest {
         @Test
         void artifactJudgment_enforcedByTheApplier() {
             assertLeaderOnly(ArtifactJudgmentKey.artifactJudgmentKey(ARTIFACT),
-                             new ArtifactJudgmentValue(false, 1, Map.of()),
+                             new ArtifactJudgmentValue(false, Map.of(NODE, 1), Map.of()),
                              new ArtifactJudgmentValue(true,
-                                                       3,
+                                                       Map.of(NODE, 3),
                                                        Map.of(OTHER_NODE, new UnresponsiveEntry(new Generation(5L, 2L), SliceGoal.ACTIVE, 1L))));
         }
 
