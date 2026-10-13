@@ -208,11 +208,11 @@ class DeploymentFsmKvRecordsCodecTest {
                                       OTHER_NODE,
                                       new UnresponsiveEntry(OTHER_GENERATION, SliceGoal.LOADED, 1_760_000_666_000L));
 
-            var judgment = new ArtifactJudgmentValue(true, 4, unresponsive);
+            var judgment = new ArtifactJudgmentValue(true, Map.of(NODE, 4, OTHER_NODE, 2), unresponsive);
 
             assertThat(judgment.unresponsive()).as("the constructor keeps what it is given").isEqualTo(unresponsive);
             roundTrip(key, judgment);
-            roundTrip(key, new ArtifactJudgmentValue(false, 0, Map.of()));
+            roundTrip(key, new ArtifactJudgmentValue(false, Map.of(), Map.of()));
         }
 
         @Test
@@ -366,7 +366,7 @@ class DeploymentFsmKvRecordsCodecTest {
 
             source.put(NODE, new UnresponsiveEntry(GENERATION, SliceGoal.ACTIVE, 1L));
 
-            var value = new ArtifactJudgmentValue(false, 0, source);
+            var value = new ArtifactJudgmentValue(false, Map.of(), source);
 
             source.put(OTHER_NODE, new UnresponsiveEntry(OTHER_GENERATION, SliceGoal.LOADED, 2L));
 
