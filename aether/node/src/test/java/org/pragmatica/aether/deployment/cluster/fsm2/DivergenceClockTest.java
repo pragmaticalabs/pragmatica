@@ -4,18 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.lang.Option;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
@@ -283,24 +286,33 @@ class DivergenceClockTest {
     }
 
     // C10d, R-6.1.2
-    // Red when: the divergence age ignores `transitionedAt_g`: a row of the goal's generation that moved at wall time t restarts the clock at t,
-    // so a node that is still making progress is not re-issued to 120 s after the ISSUE of the goal.
+    // Red when: the divergence age ignores `transitionedAt_g`: a row of the goal's generation whose node stamped it 100 s ahead of the leader's
+    // wall clock delays the re-issue by those 100 s (every term only delays; no skew assumption is needed for safety).
     @Test
-    void divergenceAge_countsFromTheRowsTransition_notOnlyFromTheIssue() {
+    void divergenceAge_isDelayedByARowTransitionStampedAhead() {
         var h = withTarget(1);
-        var node = node(h, N1, 11);
+        var pair = SlicePair.slicePair(N1, ORDERS);
+        var generation = h.model().desired(pair).map(SliceDesiredValue::generation).or(gen(0));
+        var ahead = new SliceObservedValue(SliceObservedState.LOADING,
+                                           1L,
+                                           generation,
+                                           process(11L),
+                                           Option.none(),
+                                           false,
+                                           1,
+                                           List.of(),
+                                           h.wallMs + 100_000L);
 
-        h.advance(60_000L);
-        node.writes(ORDERS, SliceObservedState.LOADING);
-        h.drain();
+        h.deliver(new ClusterInput.KvPut(new SliceObservedKey(N1, ORDERS), ahead));
         var before = reissues(h);
 
-        h.advance(61_000L);
+        h.advance(T_LOAD_MS + 1_000L);
         h.deliver(new ClusterInput.Reconcile());
-        assertThat(reissues(h)).as("121 s after the issue, 61 s after the transition: no re-issue").isEqualTo(before);
-        h.advance(60_000L);
+        assertThat(reissues(h)).as("121 s after the issue, 21 s after the stamped transition: no re-issue")
+                  .isEqualTo(before);
+        h.advance(100_000L);
         h.deliver(new ClusterInput.Reconcile());
-        assertThat(reissues(h)).as("121 s after the transition: re-issued").isGreaterThan(before);
+        assertThat(reissues(h)).as("more than T after the stamped transition: re-issued").isGreaterThan(before);
     }
 
     // NT-102
