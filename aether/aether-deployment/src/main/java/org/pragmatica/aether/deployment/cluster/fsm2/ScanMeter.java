@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
-/// Counts the iterations of the maps of ONE model lineage (spec R-7.3.1, NT-78). It is owned by the model that created it and shared
-/// by that model's copies, never by the process: two FSM instances, or two tests in one JVM, cannot see each other's scans. `step`
-/// reads it before and after a handler and reports the difference as the `aether_deployment_fsm_scans_total` metric effect, so the
-/// count leaves the FSM as data.
+/// Counts the iterations of the maps of ONE model (spec R-7.3.1, NT-78). It is owned by the model whose maps are bound to it and by
+/// nothing else: `ClusterModel#copy` creates a fresh one for the copy a step mutates, so the step counts on its own meter and the
+/// model it was given is never touched; two FSM instances, or two tests in one JVM, cannot see each other's scans. `step` reports the
+/// copy's count as the `aether_deployment_fsm_scans_total` metric effect, so the count leaves the FSM as data.
 public final class ScanMeter {
     /// The meter of maps that belong to no model: it records nothing.
     public static final ScanMeter NONE = new ScanMeter(false);

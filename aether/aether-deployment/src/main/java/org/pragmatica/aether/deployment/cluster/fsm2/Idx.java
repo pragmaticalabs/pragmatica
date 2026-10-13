@@ -21,6 +21,7 @@ public sealed interface Idx {
 
     static <K, V> PSet<V> members(PMap<K, PSet<V>> index, K key) {
         return index.get(key)
+                    .map(bucket -> bucket.rebound(index.meter()))
                     .or(PSet.<V> empty(index.meter()));
     }
 

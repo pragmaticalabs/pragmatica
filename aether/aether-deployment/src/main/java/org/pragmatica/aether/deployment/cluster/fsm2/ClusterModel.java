@@ -53,7 +53,8 @@ import org.pragmatica.lang.Option;
 /// The fields are package-private and written only by the handlers of this package; the public readers are for tests
 /// and for the interpreter.
 public final class ClusterModel {
-    /// Counts the iterations of this model lineage's maps (NT-78); shared by copies, owned by no one else.
+    /// Counts the iterations of this model's maps (NT-78). `copy` gives the copy a meter of its own and rebinds its maps to it, so a
+    /// step counts on the copy and never touches the meter the input model reads.
     ScanMeter scans = ScanMeter.scanMeter();
     // -- identity and clocks (R-3.1.3, R-3.1.4) --------------------------------------------------------------------
     long incarnation;
@@ -62,6 +63,7 @@ public final class ClusterModel {
     boolean reconcileQueued;
     boolean flushQueued;
     boolean auditDue;
+    boolean joinWarningsDue;
     long txSeq;
     long genCounter;
     long tickCount;
@@ -130,6 +132,8 @@ public final class ClusterModel {
     PMap<NodeId, Long> absentSince = PMap.empty(scans);
     PSet<String> unjudgeableWarned = PSet.empty(scans);
     PSet<String> suppressedWarned = PSet.empty(scans);
+    /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
+    PSet<String> withheldBlocked = PSet.empty(scans);
     // -- the write side (5.7) --------------------------------------------------------------------------------------
     PMap<String, Submitted> submitted = PMap.empty(scans);
     List<TxDraft> outbox = List.of();
@@ -138,9 +142,11 @@ public final class ClusterModel {
 
     ClusterModel() {}
 
-    /// A shallow copy: every field is an immutable value, so the copy shares everything with the original.
+    /// A shallow copy: every field is an immutable value, so the copy shares everything with the original; the maps are rebound to the
+    /// copy's own scan meter (O(1) each, structure is shared).
     ClusterModel copy() {
         var c = new ClusterModel();
+        var meter = c.scans;
 
         c.incarnation = incarnation;
         c.incarnationStart = incarnationStart;
@@ -148,73 +154,74 @@ public final class ClusterModel {
         c.reconcileQueued = reconcileQueued;
         c.flushQueued = flushQueued;
         c.auditDue = auditDue;
-        c.scans = scans;
+        c.joinWarningsDue = joinWarningsDue;
         c.txSeq = txSeq;
         c.genCounter = genCounter;
         c.tickCount = tickCount;
         c.seams = seams;
-        c.timers = timers;
-        c.blueprints = blueprints;
-        c.blueprintsByArtifact = blueprintsByArtifact;
-        c.ownerByBase = ownerByBase;
-        c.targets = targets;
-        c.routings = routings;
-        c.pendingTargetPuts = pendingTargetPuts;
-        c.awaitedTargets = awaitedTargets;
-        c.redriveAt = redriveAt;
-        c.dependencies = dependencies;
-        c.dependents = dependents;
-        c.schemas = schemas;
-        c.schemaLocks = schemaLocks;
-        c.blockingSchemasByOwner = blockingSchemasByOwner;
-        c.holdSignatures = holdSignatures;
-        c.applies = applies;
-        c.outcomes = outcomes;
-        c.judgments = judgments;
-        c.desired = desired;
-        c.desiredByNode = desiredByNode;
-        c.desiredByArtifact = desiredByArtifact;
-        c.versionsByBase = versionsByBase;
-        c.observed = observed;
-        c.observedByNode = observedByNode;
-        c.observedByArtifact = observedByArtifact;
-        c.stray = stray;
-        c.divergent = divergent;
-        c.failedPairs = failedPairs;
-        c.unloadedDesired = unloadedDesired;
-        c.goalIntents = goalIntents;
-        c.artifactIntents = artifactIntents;
-        c.pendingGoals = pendingGoals;
-        c.pendingByArtifact = pendingByArtifact;
-        c.pendingByNode = pendingByNode;
-        c.seenAt = seenAt;
-        c.transitionedAt = transitionedAt;
-        c.reissues = reissues;
-        c.retryAt = retryAt;
-        c.imbalancedTicks = imbalancedTicks;
-        c.drainLoops = drainLoops;
-        c.directives = directives;
-        c.routes = routes;
-        c.routesByNode = routesByNode;
-        c.nodePlacements = nodePlacements;
-        c.placementOps = placementOps;
+        c.timers = timers.rebound(meter);
+        c.blueprints = blueprints.rebound(meter);
+        c.blueprintsByArtifact = blueprintsByArtifact.rebound(meter);
+        c.ownerByBase = ownerByBase.rebound(meter);
+        c.targets = targets.rebound(meter);
+        c.routings = routings.rebound(meter);
+        c.pendingTargetPuts = pendingTargetPuts.rebound(meter);
+        c.awaitedTargets = awaitedTargets.rebound(meter);
+        c.redriveAt = redriveAt.rebound(meter);
+        c.dependencies = dependencies.rebound(meter);
+        c.dependents = dependents.rebound(meter);
+        c.schemas = schemas.rebound(meter);
+        c.schemaLocks = schemaLocks.rebound(meter);
+        c.blockingSchemasByOwner = blockingSchemasByOwner.rebound(meter);
+        c.holdSignatures = holdSignatures.rebound(meter);
+        c.applies = applies.rebound(meter);
+        c.outcomes = outcomes.rebound(meter);
+        c.judgments = judgments.rebound(meter);
+        c.desired = desired.rebound(meter);
+        c.desiredByNode = desiredByNode.rebound(meter);
+        c.desiredByArtifact = desiredByArtifact.rebound(meter);
+        c.versionsByBase = versionsByBase.rebound(meter);
+        c.observed = observed.rebound(meter);
+        c.observedByNode = observedByNode.rebound(meter);
+        c.observedByArtifact = observedByArtifact.rebound(meter);
+        c.stray = stray.rebound(meter);
+        c.divergent = divergent.rebound(meter);
+        c.failedPairs = failedPairs.rebound(meter);
+        c.unloadedDesired = unloadedDesired.rebound(meter);
+        c.goalIntents = goalIntents.rebound(meter);
+        c.artifactIntents = artifactIntents.rebound(meter);
+        c.pendingGoals = pendingGoals.rebound(meter);
+        c.pendingByArtifact = pendingByArtifact.rebound(meter);
+        c.pendingByNode = pendingByNode.rebound(meter);
+        c.seenAt = seenAt.rebound(meter);
+        c.transitionedAt = transitionedAt.rebound(meter);
+        c.reissues = reissues.rebound(meter);
+        c.retryAt = retryAt.rebound(meter);
+        c.imbalancedTicks = imbalancedTicks.rebound(meter);
+        c.drainLoops = drainLoops.rebound(meter);
+        c.directives = directives.rebound(meter);
+        c.routes = routes.rebound(meter);
+        c.routesByNode = routesByNode.rebound(meter);
+        c.nodePlacements = nodePlacements.rebound(meter);
+        c.placementOps = placementOps.rebound(meter);
         c.clusterConfig = clusterConfig;
-        c.admittedAt = admittedAt;
-        c.assignedByCommunity = assignedByCommunity;
-        c.communities = communities;
-        c.rosters = rosters;
-        c.rosterCount = rosterCount;
-        c.announcementSeenAt = announcementSeenAt;
-        c.admissions = admissions;
-        c.records = records;
-        c.departed = departed;
-        c.departing = departing;
-        c.pendingJoins = pendingJoins;
-        c.unresponsiveByNode = unresponsiveByNode;
-        c.absentSince = absentSince;
-        c.unjudgeableWarned = unjudgeableWarned;
-        c.suppressedWarned = suppressedWarned;
-        c.submitted = submitted;
+        c.admittedAt = admittedAt.rebound(meter);
+        c.assignedByCommunity = assignedByCommunity.rebound(meter);
+        c.communities = communities.rebound(meter);
+        c.rosters = rosters.rebound(meter);
+        c.rosterCount = rosterCount.rebound(meter);
+        c.announcementSeenAt = announcementSeenAt.rebound(meter);
+        c.admissions = admissions.rebound(meter);
+        c.records = records.rebound(meter);
+        c.departed = departed.rebound(meter);
+        c.departing = departing.rebound(meter);
+        c.pendingJoins = pendingJoins.rebound(meter);
+        c.unresponsiveByNode = unresponsiveByNode.rebound(meter);
+        c.absentSince = absentSince.rebound(meter);
+        c.unjudgeableWarned = unjudgeableWarned.rebound(meter);
+        c.suppressedWarned = suppressedWarned.rebound(meter);
+        c.withheldBlocked = withheldBlocked.rebound(meter);
+        c.submitted = submitted.rebound(meter);
         c.outbox = outbox;
         c.parked = parked;
         c.parkedOps = parkedOps;
@@ -402,7 +409,22 @@ public final class ClusterModel {
 
     /// A join the join table could not place (J7, J9): re-evaluated on the next membership input for the node, on a
     /// record change, and on every tick.
-    public record PendingJoin(boolean worker, Admission admission) {}
+    ///
+    /// `warned`: the `join-unmatched` WARN (J9) of the current unmatched episode was emitted. The episode ends with the pending entry
+    /// (a match, a departure, a new join input); the tick re-arms it (`Joins.retryPending`).
+    public record PendingJoin(boolean worker, Admission admission, boolean warned) {
+        public PendingJoin(boolean worker, Admission admission) {
+            this(worker, admission, false);
+        }
+
+        PendingJoin unwarned() {
+            return new PendingJoin(worker, admission, false);
+        }
+
+        PendingJoin asWarned() {
+            return new PendingJoin(worker, admission, true);
+        }
+    }
 
     /// The state of the awaited-target watch of one slice (#1109, B-036).
     public record AwaitedTarget(long sinceMs, boolean warned, long lastResubmitMs) {}

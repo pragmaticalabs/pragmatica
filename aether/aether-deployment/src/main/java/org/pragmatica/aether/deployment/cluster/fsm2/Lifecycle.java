@@ -56,6 +56,7 @@ public sealed interface Lifecycle {
         m.leader = Option.some(value);
         if (wasSuspended && !isSuspended(m, ctx)) {
             Schemas.resetStalledMigrations(m, ctx);
+            Schemas.announceWithheld(m, ctx);
             Reconcile.request(m, ctx);
         }
 
@@ -123,6 +124,7 @@ public sealed interface Lifecycle {
     /// The 30 s tick: sample-driven work (completion repair, record GC, pending joins) rides the reconcile it queues.
     private static ClusterModel tick(ClusterModel m, Ctx ctx) {
         m.tickCount = m.tickCount + 1;
+        m.joinWarningsDue = true;
         m.auditDue = m.auditDue || m.tickCount % Orphans.AUDIT_EVERY_TICKS == 0;
         schedule(m,
                  ctx,

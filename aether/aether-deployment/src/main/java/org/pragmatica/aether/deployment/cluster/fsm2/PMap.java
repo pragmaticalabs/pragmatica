@@ -49,6 +49,11 @@ public final class PMap<K, V> {
         return meter;
     }
 
+    /// The same entries, counted on `other`: structure is shared, so this is O(1).
+    public PMap<K, V> rebound(ScanMeter other) {
+        return new PMap<>(root, size, other);
+    }
+
     public int size() {
         return size;
     }

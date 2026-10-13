@@ -22,6 +22,11 @@ public record PSet<T>(PMap<T, Unit> members) {
         return new PSet<>(PMap.empty(meter));
     }
 
+    /// The same members, counted on `meter`.
+    public PSet<T> rebound(ScanMeter meter) {
+        return new PSet<>(members.rebound(meter));
+    }
+
     public int size() {
         return members.size();
     }

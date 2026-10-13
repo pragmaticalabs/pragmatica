@@ -158,13 +158,24 @@ public sealed interface Directory {
         return m;
     }
 
-    /// A DIRECTIVE transaction for `node` is waiting to be sent or to be settled: a second one would expect the same absent key.
+    /// A DIRECTIVE transaction that writes `node`'s directive is waiting to be sent or to be settled: a second one would expect the
+    /// same absent key. A draft is matched by the directive key it mutates, not by its `node`: a joint mint (`joinMint`) carries a
+    /// second worker's directive under the first worker's `node`. Complete because every DIRECTIVE draft is built by `putDirective`
+    /// or `commit`, and both put the target's `ActivationDirectiveKey` among its mutations.
     static boolean directiveInFlight(ClusterModel m, NodeId node) {
+        var key = new ActivationDirectiveKey(node);
+
         return Stream.concat(m.submitted.values().stream().flatMap(submitted -> submitted.drafts()
                                                                                          .stream()),
                              m.outbox.stream())
-                     .anyMatch(draft -> draft.kind() == SubmitKind.DIRECTIVE && draft.node()
-                                                                                     .equals(Option.some(node)));
+                     .anyMatch(draft -> draft.kind() == SubmitKind.DIRECTIVE && writes(draft, key));
+    }
+
+    private static boolean writes(TxDraft draft, AetherKey key) {
+        return draft.mutations()
+                    .stream()
+                    .anyMatch(mutation -> mutation.key()
+                                                  .equals(key));
     }
 
     // -- J5: a worker (B-069, B-070) -------------------------------------------------------------------------------
@@ -264,70 +275,92 @@ public sealed interface Directory {
                                        String communityId,
                                        String source,
                                        int targetSize) {
-        if (m.directives.containsKey(node)) {
-            return m;
-        }
-
-        var communityKey = new CommunityKey(communityId);
         var community = m.communities.get(communityId);
 
-        if (community.map(value -> value.state() == CommunityState.DISSOLVING || value.state() == CommunityState.DISSOLVED)
-                     .or(false)) {
+        if (m.directives.containsKey(node) || dissolving(community)) {
             return m;
         }
 
-        var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
-        var minting = m.outbox.stream()
-                              .filter(draft -> draft.kind() == SubmitKind.DIRECTIVE && draft.mutations()
-                                                                                            .stream()
-                                                                                            .anyMatch(mutation -> mutation.key()
-                                                                                                                          .equals(communityKey)))
-                              .findFirst();
+        return community.isEmpty()
+               ? mintOrJoin(m, ctx, node, communityId, source, targetSize)
+               : writeDirective(m, node, communityId, community, List.of());
+    }
 
-        if (community.isEmpty() && minting.isPresent()) {
-            var draft = minting.get();
-            var joined = new ArrayList<>(draft.mutations());
+    private static boolean dissolving(Option<CommunityValue> community) {
+        return community.map(value -> value.state() == CommunityState.DISSOLVING || value.state() == CommunityState.DISSOLVED)
+                        .or(false);
+    }
 
-            joined.add(new KVCommand.Mutation<>(new ActivationDirectiveKey(node),
-                                                Option.none(),
-                                                Option.some((AetherValue) ActivationDirectiveValue.worker(communityId,
-                                                                                                          ""))));
-            var next = new ArrayList<>(m.outbox);
+    /// The community is absent: a worker of the same drain joins the draft that mints it (one write, no refusal round), else this
+    /// worker's draft mints it.
+    private static ClusterModel mintOrJoin(ClusterModel m,
+                                           Ctx ctx,
+                                           NodeId node,
+                                           String communityId,
+                                           String source,
+                                           int targetSize) {
+        var communityKey = new CommunityKey(communityId);
+        var minted = new CommunityValue(source,
+                                        ActivationDirectiveValue.WORKER,
+                                        targetSize,
+                                        CommunityState.FORMING,
+                                        ctx.nowMs(),
+                                        Option.none());
+        var mint = new KVCommand.Mutation<AetherKey, AetherValue>(communityKey,
+                                                                  Option.none(),
+                                                                  Option.some((AetherValue) minted));
 
-            next.set(next.indexOf(draft),
-                     new TxDraft(draft.kind(),
-                                 draft.key(),
-                                 joined,
-                                 draft.guards(),
-                                 draft.pairs(),
-                                 draft.node(),
-                                 draft.attempt(),
-                                 draft.onAccepted()));
-            m.outbox = next;
+        return minting(m, communityKey).fold(() -> writeDirective(m, node, communityId, Option.none(), List.of(mint)),
+                                             draft -> joinMint(m, draft, node, communityId));
+    }
 
-            return m;
-        }
+    private static Option<TxDraft> minting(ClusterModel m, CommunityKey communityKey) {
+        return Option.from(m.outbox.stream()
+                                 .filter(draft -> draft.kind() == SubmitKind.DIRECTIVE && writes(draft, communityKey))
+                                 .findFirst());
+    }
 
-        if (community.isEmpty()) {
-            var minted = new CommunityValue(source,
-                                            ActivationDirectiveValue.WORKER,
-                                            targetSize,
-                                            CommunityState.FORMING,
-                                            ctx.nowMs(),
-                                            Option.none());
+    /// Appends `node`'s directive to the minting draft; the draft keeps its first worker as `node` (see `directiveInFlight`).
+    private static ClusterModel joinMint(ClusterModel m, TxDraft draft, NodeId node, String communityId) {
+        var joined = new ArrayList<>(draft.mutations());
+        var next = new ArrayList<>(m.outbox);
 
-            mutations.add(new KVCommand.Mutation<>(communityKey, Option.none(), Option.some((AetherValue) minted)));
-        }
+        joined.add(directiveMutation(node, communityId));
+        next.set(next.indexOf(draft),
+                 new TxDraft(draft.kind(),
+                             draft.key(),
+                             joined,
+                             draft.guards(),
+                             draft.pairs(),
+                             draft.node(),
+                             draft.attempt(),
+                             draft.onAccepted()));
+        m.outbox = next;
 
+        return m;
+    }
+
+    private static KVCommand.Mutation<AetherKey, AetherValue> directiveMutation(NodeId node, String communityId) {
+        return new KVCommand.Mutation<>(new ActivationDirectiveKey(node),
+                                        Option.none(),
+                                        Option.some((AetherValue) ActivationDirectiveValue.worker(communityId, "")));
+    }
+
+    /// The WORKER directive, after `before` (the community mint, when this write mints it), guarded by the cluster config and by the
+    /// community value this decision read.
+    private static ClusterModel writeDirective(ClusterModel m,
+                                               NodeId node,
+                                               String communityId,
+                                               Option<CommunityValue> community,
+                                               List<KVCommand.Mutation<AetherKey, AetherValue>> before) {
+        var mutations = new ArrayList<>(before);
         var directiveKey = new ActivationDirectiveKey(node);
-
-        mutations.add(new KVCommand.Mutation<>(directiveKey,
-                                               Option.none(),
-                                               Option.some((AetherValue) ActivationDirectiveValue.worker(communityId, ""))));
         var guards = List.<KVCommand.ReadWitness<AetherKey>> of(new KVCommand.ReadWitness<>(ClusterConfigKey.CURRENT,
                                                                                             m.clusterConfig.map(v -> (Object) v)),
-                                                                new KVCommand.ReadWitness<>(communityKey,
+                                                                new KVCommand.ReadWitness<>(new CommunityKey(communityId),
                                                                                             community.map(v -> (Object) v)));
+
+        mutations.add(directiveMutation(node, communityId));
 
         return Outbox.direct(m,
                              TxDraft.draft(SubmitKind.DIRECTIVE, directiveKey, mutations)

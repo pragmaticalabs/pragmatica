@@ -199,9 +199,7 @@ public sealed interface Joins {
         var directive = m.directives.get(node);
 
         if (join.worker() && directive.isEmpty()) {
-            m.pendingJoins = m.pendingJoins.put(node, join);
-
-            return m;
+            return track(m, node, join);
         }
 
         var guards = directive.isPresent()
@@ -222,9 +220,7 @@ public sealed interface Joins {
         var recordDeparted = record.map(Departures::isDeparted).or(false);
 
         if (recordDeparted && join.worker() && m.directives.get(node).isEmpty()) {
-            m.pendingJoins = m.pendingJoins.put(node, join);
-
-            return m;
+            return track(m, node, join);
         }
 
         return recordDeparted
@@ -254,8 +250,9 @@ public sealed interface Joins {
                : Directory.assignCore(m, ctx, node);
     }
 
+    /// The join stays pending, and whatever unmatched episode it was in is over.
     private static ClusterModel track(ClusterModel m, NodeId node, PendingJoin join) {
-        m.pendingJoins = m.pendingJoins.put(node, join);
+        m.pendingJoins = m.pendingJoins.put(node, join.unwarned());
 
         return m;
     }
@@ -266,19 +263,23 @@ public sealed interface Joins {
                : m;
     }
 
-    /// J9: no row matched. It is visible and retried, never silently left uncounted.
+    /// J9: no row matched. It is visible and retried, never silently left uncounted. The WARN is emitted once per unmatched episode:
+    /// every reconcile pass evaluates the join again (step 10), and a WARN per pass would grow with write load; the tick re-arms it.
     private static ClusterModel unmatched(ClusterModel m,
                                           Ctx ctx,
                                           NodeId node,
                                           PendingJoin join,
                                           Option<NodeDepartureValue> record) {
-        ctx.warn("join-unmatched",
-                 node.id(),
-                 "No join row matched " + node.id()
-                + ": record=" + record
-                + " admission=" + join.admission()
-                + " worker=" + join.worker());
-        m.pendingJoins = m.pendingJoins.put(node, join);
+        if (!join.warned()) {
+            ctx.warn("join-unmatched",
+                     node.id(),
+                     "No join row matched " + node.id()
+                    + ": record=" + record
+                    + " admission=" + join.admission()
+                    + " worker=" + join.worker());
+        }
+
+        m.pendingJoins = m.pendingJoins.put(node, join.asWarned());
 
         return m;
     }
@@ -298,7 +299,7 @@ public sealed interface Joins {
                                       PendingJoin join,
                                       Option<NodeDepartureValue> expected,
                                       List<KVCommand.ReadWitness<AetherKey>> guards) {
-        m.pendingJoins = m.pendingJoins.put(node, join);
+        track(m, node, join);
         // Design-out: one admission write per node at a time. A second would expect the same record and be refused; the pending join above
         // is re-evaluated when the first one lands (C11c), so no input is lost by not writing again.
         return DepartureFlow.admissionInFlight(m, node)
@@ -348,9 +349,21 @@ public sealed interface Joins {
         return reevaluate(m, ctx, node);
     }
 
-    /// The 30 s tick: every deferred join is evaluated again until a row matches or the node departs.
+    /// Every reconcile pass evaluates the deferred joins again until a row matches or the node departs. The pass the 30 s tick queued
+    /// first re-arms the `join-unmatched` WARN of the joins that are still unmatched.
     static ClusterModel retryPending(ClusterModel m, Ctx ctx) {
+        if (m.joinWarningsDue) {
+            rearmWarnings(m);
+        }
+
         m.pendingJoins.keys().stream().sorted().forEach(node -> reevaluate(m, ctx, node));
+
+        return m;
+    }
+
+    private static ClusterModel rearmWarnings(ClusterModel m) {
+        m.joinWarningsDue = false;
+        m.pendingJoins.entries().forEach(entry -> track(m, entry.getKey(), entry.getValue()));
 
         return m;
     }

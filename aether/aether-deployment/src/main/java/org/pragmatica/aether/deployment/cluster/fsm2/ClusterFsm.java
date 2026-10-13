@@ -195,11 +195,10 @@ public final class ClusterFsm {
     /// One input against a copy of the model, then the end-of-step bookkeeping: a flush is queued if the handlers left
     /// intents (R-5.7.4).
     private ClusterModel apply(ClusterModel model, ClusterInput input, Ctx ctx) {
-        var scansBefore = model.scans.count();
         var next = Outbox.requestFlush(Handlers.handle(model.copy(), ctx, input),
                                        ctx);
 
-        return reportScans(next, ctx, next.scans.count() - scansBefore);
+        return reportScans(next, ctx, next.scans.count());
     }
 
     /// The map iterations a step took leave the FSM as data (NT-78: an ordinary input reports none).

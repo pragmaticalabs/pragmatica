@@ -155,11 +155,10 @@ public sealed interface Slices {
 
     /// Every dependency has at least one ACTIVE instance (the active count, R-2.6).
     static boolean dependenciesActive(ClusterModel m, Artifact artifact) {
-        return m.dependencies.get(artifact)
-                             .map(dependencies -> dependencies.toList()
-                                                              .stream()
-                                                              .allMatch(dependency -> Rows.activeCount(m, dependency) > 0))
-                             .or(true);
+        return Idx.members(m.dependencies, artifact)
+                  .toList()
+                  .stream()
+                  .allMatch(dependency -> Rows.activeCount(m, dependency) > 0);
     }
 
     /// C12 COMPLETED and the dependency edge: every LOADED instance of every committed slice is re-evaluated.

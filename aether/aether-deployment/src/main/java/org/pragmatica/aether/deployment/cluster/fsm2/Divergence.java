@@ -141,19 +141,17 @@ public sealed interface Divergence {
 
     /// R-4.2.5: an exclusion expires when both the wall term and the monotonic term have reached `10 x T`.
     private static ClusterModel expire(ClusterModel m, Ctx ctx) {
-        var limit = EXPIRY_FACTOR * LOAD_T;
-
         m.unresponsiveByNode.keys()
                             .stream()
                             .sorted()
                             .forEach(node -> Idx.members(m.unresponsiveByNode, node)
                                                 .toList()
-                                                .forEach(artifact -> expireOne(m, ctx, node, artifact, limit)));
+                                                .forEach(artifact -> expireOne(m, ctx, node, artifact)));
 
         return m;
     }
 
-    private static ClusterModel expireOne(ClusterModel m, Ctx ctx, NodeId node, Artifact artifact, long limit) {
+    private static ClusterModel expireOne(ClusterModel m, Ctx ctx, NodeId node, Artifact artifact) {
         m.judgments.get(artifact)
                    .flatMap(judgment -> Option.option(judgment.unresponsive().get(node)))
                    .filter(entry -> Math.min(ctx.nowMs() - entry.at(),

@@ -52,12 +52,35 @@ public sealed interface Schemas {
     /// #542: a FAILED record holds every slice of its owning blueprint, so the leader reports the consequence: which slices
     /// are held, and by whose migration.
     // Design-out: no transaction backs this event. It reports a FAILED record that is already committed (a fact in the mirror), so there is no
-    // write to wait for. It is announced by the leader that is acting only: a suspended or deposed FSM indexes the record and announces
-    // nothing, as it announces no decision of its own (R-5.7.1 (a)).
+    // write to wait for. It is announced by the leader that is acting only: a suspended FSM indexes the record and announces nothing, as it
+    // announces no decision of its own (R-5.7.1 (a)), but it remembers the datasource and announces it once on the resume (CI-16), when it
+    // is still FAILED. Guarantee: a FAILED record committed in a witness-stale window is reported by the leader that is still this node;
+    // mechanism: `withheldBlocked`, drained by `announceWithheld`. A deposed FSM (Deactivate) discards the set with the model.
     private static ClusterModel blocked(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
         return Lifecycle.isSuspended(m, ctx)
-               ? m
+               ? withhold(m, value.datasourceName())
                : announceBlocked(m, ctx, value);
+    }
+
+    private static ClusterModel withhold(ClusterModel m, String datasource) {
+        m.withheldBlocked = m.withheldBlocked.add(datasource);
+
+        return m;
+    }
+
+    /// CI-16 resume: the FAILED records committed while suspended are announced, once each, in datasource order.
+    static ClusterModel announceWithheld(ClusterModel m, Ctx ctx) {
+        var withheld = m.withheldBlocked.toList()
+                                        .stream()
+                                        .sorted()
+                                        .toList();
+
+        m.withheldBlocked = PSet.empty(m.scans);
+        withheld.forEach(datasource -> m.schemas.get(datasource)
+                                                .filter(value -> value.status() == SchemaStatus.FAILED)
+                                                .onPresent(value -> announceBlocked(m, ctx, value)));
+
+        return m;
     }
 
     private static ClusterModel announceBlocked(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
