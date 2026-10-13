@@ -21,6 +21,6 @@ import org.pragmatica.postgres.SqlError;
  */
 public record ErrorResponse(String level, String code, String message) implements LogResponse {
     public SqlError.ServerResponse asServerResponse() {
-        return new SqlError.ServerResponse(level, code, message);
+        return new SqlError.ServerResponse(code, level, message);
     }
 }
