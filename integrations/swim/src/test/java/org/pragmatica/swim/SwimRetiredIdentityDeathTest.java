@@ -73,6 +73,8 @@ class SwimRetiredIdentityDeathTest {
     private static final Duration PAST_RESIDENCY = Duration.ofMillis(900);
     /// Many ticks (20 ms each) after the gate closed: a replay would have run by then.
     private static final Duration AFTER_GATE_CLOSE = Duration.ofMillis(400);
+    /// A non-zero incarnation for a deferred edge, so a replay at 0 or one past it is distinguishable.
+    private static final long DEFERRED_INCARNATION = 7L;
 
     private static SwimConfig tightConfig() {
         return swimConfig(timeSpan(50).millis(),
@@ -300,6 +302,39 @@ class SwimRetiredIdentityDeathTest {
             await().atMost(Duration.ofSeconds(3)).until(() -> !departures(observations, PHANTOM).isEmpty());
             assertThat(faulties(observations, PHANTOM)).hasSize(1);
             assertThat(protocol.tombstonedForTest(PHANTOM)).as("the replayed edge sets the FAULTY-edge tombstone, as for a resident member").isTrue();
+        } finally {
+            protocol.stop();
+        }
+    }
+
+    /// The replay carries the incarnation of the swept member's deferred edge: a phantom that went FAULTY at a non-zero
+    /// incarnation is departed at that incarnation, not at 0 or one past it.
+    @Test
+    void deferredDeath_replayedAfterTheSweep_carriesTheSweptMembersIncarnation() throws InterruptedException {
+        var booting = new AtomicBoolean(true);
+        var observations = new RecordingObservationSink();
+        var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
+
+        protocol.start();
+        try {
+            protocol.onMessage(GOSSIPER_ADDR,
+                               new Ping(GOSSIPER,
+                                        1L,
+                                        List.of(MembershipUpdate.membershipUpdate(PHANTOM, MemberState.FAULTY, DEFERRED_INCARNATION, PHANTOM_ADDR))));
+            assertThat(hasUnknown(observations, PHANTOM)).as("precondition: the cold-boot rule deferred the FAULTY edge").isTrue();
+            assertThat(protocol.members().get(PHANTOM).incarnation()).as("precondition: FAULTY at a non-zero incarnation")
+                                                                      .isEqualTo(DEFERRED_INCARNATION);
+            Thread.sleep(PAST_RESIDENCY.toMillis());
+            assertThat(protocol.members()).as("positive control: the residency sweep removed the member").doesNotContainKey(PHANTOM);
+
+            booting.set(false);
+
+            await().atMost(Duration.ofSeconds(3)).until(() -> !departures(observations, PHANTOM).isEmpty());
+            assertThat(departures(observations, PHANTOM)).extracting(SwimObservation.DepartedObserved::incarnation)
+                                                         .as("the replayed DEPARTED carries the swept member's incarnation")
+                                                         .containsExactly(DEFERRED_INCARNATION);
+            assertThat(faulties(observations, PHANTOM)).extracting(SwimObservation.FaultyObserved::incarnation)
+                                                       .containsExactly(DEFERRED_INCARNATION);
         } finally {
             protocol.stop();
         }
