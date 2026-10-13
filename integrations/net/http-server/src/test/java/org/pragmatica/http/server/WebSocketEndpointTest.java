@@ -63,6 +63,8 @@ class WebSocketEndpointTest {
     private static final List<String> PATHS = List.of("/ws/a", "/ws/b", "/ws/c");
     private static final long WAIT_SECONDS = 5;
     private static final long QUIET_MILLIS = 300;
+    /// The server's configured content length, the bound on an aggregated message.
+    private static final int CONTENT_LENGTH = HttpServerConfig.httpServerConfig("ws-test", 0).maxContentLength();
     private static final String UPGRADE_TO_UNKNOWN = upgrade("/ws/unknown", "websocket", "13");
 
     private final Map<String, BlockingQueue<String>> seen = new ConcurrentHashMap<>();
@@ -194,16 +196,33 @@ class WebSocketEndpointTest {
         assertThat(next("/ws/b")).isEqualTo("binary:5");
     }
 
-    /// A fragmented message is bounded by the server's content length (65536 by default): one that grows past
-    /// it closes the connection and is never delivered.
+    /// The aggregate bound is the server's content length (65536 by default), pinned from both sides: a
+    /// fragmented message of exactly that length is delivered whole, so a smaller bound goes red here.
     @Test
-    void fragmentedMessageOverTheContentLength_closesTheConnection_undelivered() throws Exception {
-        var ws = connect("/ws/c", new ClientListener());
+    void fragmentedMessageAtTheContentLength_isDeliveredWhole() throws Exception {
+        var listener = new ClientListener();
+        var ws = connect("/ws/b", listener);
+
+        assertThat(next("/ws/b")).isEqualTo("open");
+        ws.sendText("x".repeat(CONTENT_LENGTH / 2), false).get(WAIT_SECONDS, TimeUnit.SECONDS);
+        ws.sendText("x".repeat(CONTENT_LENGTH / 2), true).get(WAIT_SECONDS, TimeUnit.SECONDS);
+        assertThat(next("/ws/b")).isEqualTo("text:" + CONTENT_LENGTH + " chars");
+        assertThat(listener.texts.poll(WAIT_SECONDS, TimeUnit.SECONDS)).hasSize("/ws/b:".length() + CONTENT_LENGTH);
+    }
+
+    /// ...and one byte more is never delivered: the handler gets only `Close` and the connection ends, so a
+    /// larger or missing bound goes red here.
+    @Test
+    void fragmentedMessageOneOverTheContentLength_isNeverDelivered_andClosesTheConnection() throws Exception {
+        var listener = new ClientListener();
+        var ws = connect("/ws/c", listener);
 
         assertThat(next("/ws/c")).isEqualTo("open");
-        ws.sendText("x".repeat(40_000), false);
-        ws.sendText("x".repeat(40_000), true);
-        assertThat(next("/ws/c")).isEqualTo("close");
+        ws.sendText("x".repeat(CONTENT_LENGTH / 2), false);
+        ws.sendText("x".repeat(CONTENT_LENGTH / 2 + 1), true);
+        assertThat(next("/ws/c")).as("no message, only Close").isEqualTo("close");
+        assertThat(listener.ended.get(WAIT_SECONDS, TimeUnit.SECONDS)).as("the client sees the connection end")
+                                                                     .isNotNull();
     }
 
     /// Two connections to one endpoint each keep their own session: every message goes to the session that
@@ -394,6 +413,8 @@ class WebSocketEndpointTest {
     private static final class ClientListener implements WebSocket.Listener {
         private final BlockingQueue<String> texts = new LinkedBlockingQueue<>();
         private final CompletableFuture<Integer> closed = new CompletableFuture<>();
+        /// How the connection ended, by close frame or by error.
+        private final CompletableFuture<String> ended = new CompletableFuture<>();
         private final List<CharSequence> parts = new CopyOnWriteArrayList<>();
 
         @Override
@@ -411,8 +432,14 @@ class WebSocketEndpointTest {
         @Override
         public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
             closed.complete(statusCode);
+            ended.complete("close:" + statusCode);
 
             return null;
+        }
+
+        @Override
+        public void onError(WebSocket webSocket, Throwable error) {
+            ended.complete("error:" + error.getClass().getSimpleName());
         }
     }
 }
