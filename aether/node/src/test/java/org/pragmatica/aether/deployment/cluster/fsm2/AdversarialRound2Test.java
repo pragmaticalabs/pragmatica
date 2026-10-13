@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.deployment.cluster.fsm2;
+
+import java.util.Map;
+
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
+
+import org.junit.jupiter.api.Test;
+
+import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
+
+/// The author's own adversarial pass over the classes the verifier found (lost and suspended writes, refusals that leave an event-only
+/// intent behind). Each test is a scenario that was tried before the fix it names was made.
+class AdversarialRound2Test {
+    private static MbWorld workerWorld(NodeId worker) {
+        return MbWorld.world(CORE_1, CORE_2, CORE_3)
+                      .seams(seams -> seams.withCommunityPolicies(Map.of())
+                                           .withMemberSource(Map.of(worker, "east")))
+                      .activate();
+    }
+
+    /// Red when: a worker's DIRECTIVE transaction that failed (lost) is never written again: J5 runs on the join input only, and nothing
+    /// else derives the directive, so the worker stays undirected until it rejoins.
+    @Test
+    void failedDirectiveWrite_isWrittenAgain() {
+        var worker = node("worker-1");
+        var w = workerWorld(worker);
+
+        w.h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 1L, 21L)));
+        assertThat(w.h.submits(SubmitKind.DIRECTIVE)).isNotEmpty();
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.advance(120_000L);
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("directed after the lost write").isTrue();
+    }
+
+    /// Red when: a worker's DIRECTIVE transaction refused because the community it mints appeared meanwhile is dropped: the worker stays
+    /// undirected.
+    @Test
+    void refusedDirectiveWrite_afterTheCommunityAppeared_isWrittenAgain() {
+        var worker = node("worker-1");
+        var w = workerWorld(worker);
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 1L, 21L)));
+        var first = w.h.submits(SubmitKind.DIRECTIVE).getFirst();
+        var community = first.transaction()
+                             .mutations()
+                             .stream()
+                             .filter(mutation -> mutation.key() instanceof CommunityKey)
+                             .findFirst();
+
+        assertThat(community).as("the first write mints the community").isPresent();
+        w.h.held.clear();
+        community.get().replacement().onPresent(value -> w.h.seed(community.get().key(),
+                                                                  value));
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.settleHeld(first, w.h.refused(first));
+        w.h.advance(120_000L);
+        assertThat(w.present(new ActivationDirectiveKey(worker))).as("directed after the refusal").isTrue();
+    }
+
+    /// Red when: a transient failure decided while the leader is suspended is counted twice after the resume: the parked operation
+    /// and the failure sweep's own decision (only the operations that answer an event are parked).
+    @Test
+    void transientFailure_decidedWhileSuspended_isCountedOnce() {
+        var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
+
+        SlFixtures.seedTarget(h, ORDERS, 1, 1);
+        SlFixtures.seedGoal(h, CORE_1, ORDERS, SliceGoal.LOADED, SlFixtures.G1);
+        SlFixtures.seedRow(h, CORE_1, ORDERS, SliceObservedState.LOADING, SlFixtures.G1, 11L);
+        h.activate();
+        h.deliver(new ClusterInput.WitnessStale());
+        new NodeSim(h, CORE_1, process(11L)).fails(ORDERS, false);
+        h.drain();
+        h.commitLeader(FsmHarness.SELF, 2L);
+        h.drain();
+        h.advance(60_000L);
+        assertThat(h.store.get(new ArtifactJudgmentKey(ORDERS))
+                          .map(value -> ((ArtifactJudgmentValue) value).retries()
+                                                                       .get(CORE_1))).isEqualTo(Option.some(1));
+    }
+}

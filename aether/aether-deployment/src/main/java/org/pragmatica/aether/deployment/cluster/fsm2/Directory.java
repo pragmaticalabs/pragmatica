@@ -158,6 +158,15 @@ public sealed interface Directory {
         return m;
     }
 
+    /// A DIRECTIVE transaction for `node` is waiting to be sent or to be settled: a second one would expect the same absent key.
+    static boolean directiveInFlight(ClusterModel m, NodeId node) {
+        return Stream.concat(m.submitted.values().stream().flatMap(submitted -> submitted.drafts()
+                                                                                         .stream()),
+                             m.outbox.stream())
+                     .anyMatch(draft -> draft.kind() == SubmitKind.DIRECTIVE && draft.node()
+                                                                                     .equals(Option.some(node)));
+    }
+
     // -- J5: a worker (B-069, B-070) -------------------------------------------------------------------------------
     /// J5 (worker): resolve the source (default when blank), choose the community, and commit the community (when absent)
     /// and the WORKER directive in one transaction.

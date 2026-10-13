@@ -240,10 +240,30 @@ public sealed interface Joins {
         if (m.directives.containsKey(node)) {
             return m;
         }
+        // A directive write stays tracked until its directive is observed: one that failed, was lost or was refused is derived again by
+        // the reconcile (step 10) instead of waiting for the node to join again. Nodes that get no directive by design (a seed core, a
+        // superseded core) queue no write and are not tracked.
+        return Directory.directiveInFlight(m, node)
+               ? track(m, node, join)
+               : trackIfQueued(assign(m, ctx, node, join), node, join);
+    }
 
+    private static ClusterModel assign(ClusterModel m, Ctx ctx, NodeId node, PendingJoin join) {
         return join.worker()
                ? Directory.assignWorker(m, ctx, node)
                : Directory.assignCore(m, ctx, node);
+    }
+
+    private static ClusterModel track(ClusterModel m, NodeId node, PendingJoin join) {
+        m.pendingJoins = m.pendingJoins.put(node, join);
+
+        return m;
+    }
+
+    private static ClusterModel trackIfQueued(ClusterModel m, NodeId node, PendingJoin join) {
+        return Directory.directiveInFlight(m, node)
+               ? track(m, node, join)
+               : m;
     }
 
     /// J9: no row matched. It is visible and retried, never silently left uncounted.

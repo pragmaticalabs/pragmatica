@@ -39,6 +39,12 @@ public sealed interface JudgmentOp {
     /// A republish or removal: the whole judgment goes (R-4.2.2).
     record ClearAll() implements JudgmentOp {}
 
+    /// Whether no reconcile step derives this operation again once the intent that carried it is lost: it answers an event (a node
+    /// answered or left, a slice became ACTIVE), where the others follow from rows and clocks the sweeps read.
+    default boolean eventOnly() {
+        return this instanceof ClearUnresponsive || this instanceof ResetRetries;
+    }
+
     /// Fold `ops` over the committed judgment. The result is none when nothing is left to record (no permanent mark, no
     /// counts, no exclusions): the key is then removed (4.4, "empty after clears").
     static Option<ArtifactJudgmentValue> fold(Option<ArtifactJudgmentValue> committed, List<JudgmentOp> ops) {

@@ -176,7 +176,8 @@ public sealed interface Outbox {
                : m.leader.fold(() -> m, leader -> submit(m, ctx, drafts, leader));
     }
 
-    /// Event-only intents (a blueprint removal, a directive, judgment operations) survive a suspension: nothing re-derives them.
+    /// Event-only intents (a blueprint removal, a directive, the judgment operations that answer an event) survive a suspension: nothing
+    /// re-derives them. A failure's operations are not parked: the failure sweep decides them again, and parking them would count twice.
     private static ClusterModel park(ClusterModel m) {
         m.parked = Stream.concat(m.parked.stream(),
                                  m.outbox.stream()
@@ -188,6 +189,7 @@ public sealed interface Outbox {
                                                      .flatMap(entry -> entry.getValue()
                                                                             .ops()
                                                                             .stream()
+                                                                            .filter(JudgmentOp::eventOnly)
                                                                             .map(op -> Map.entry(entry.getKey(),
                                                                                                  op))))
                             .toList();

@@ -3793,7 +3793,9 @@ public sealed interface AetherValue {
     /// `retries` is the transient-failure count **per node** (R-3.3.7: "the counter for (artifact, node)"). It replaces
     /// phase 1's single `int`: one count per artifact would let transient failures on different nodes add up to a
     /// cluster-wide condemnation of a slice healthy elsewhere, which is the wrongful condemnation #922 removed.
-    record ArtifactJudgmentValue(boolean permanentFailure, Map<NodeId, Integer> retries, Map<NodeId, UnresponsiveEntry> unresponsive) implements AetherValue, LeaderAuthorized {
+    record ArtifactJudgmentValue(boolean permanentFailure,
+                                 Map<NodeId, Integer> retries,
+                                 Map<NodeId, UnresponsiveEntry> unresponsive) implements AetherValue, LeaderAuthorized {
         public ArtifactJudgmentValue {
             retries = Map.copyOf(retries);
             unresponsive = Map.copyOf(unresponsive);
