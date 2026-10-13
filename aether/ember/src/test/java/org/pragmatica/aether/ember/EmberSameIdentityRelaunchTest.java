@@ -10,9 +10,12 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.RepetitionInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.node.AetherNode;
@@ -67,6 +70,9 @@ class EmberSameIdentityRelaunchTest {
     private static final long READMIT_WINDOW_MS = 90_000L;
     private static final long HEAL_BOUND_MS = 180_000L;
     private static final long DEMOTION_BOUND_MS = 30_000L;
+    private static final long REFUSAL_BOUND_MS = 20_000L;
+    /// Repetitions of the demotion test that reached #2173's scenario. Static: each repetition runs on its own instance.
+    private static final AtomicInteger DEMOTION_SCENARIO_REACHED = new AtomicInteger();
 
     private EmberCluster cluster;
 
@@ -98,7 +104,7 @@ class EmberSameIdentityRelaunchTest {
     /// blocks, TIME_WAIT between clusters); the deterministic regression is `SwimRetiredIdentityDeathTest`.
     @RepeatedTest(2)
     @Timeout(300)
-    void coreKilledWhileFormingAndSupersededByTheSameNodeId_isDemotedOnTheSurvivor() {
+    void coreKilledWhileFormingAndSupersededByTheSameNodeId_isDemotedOnTheSurvivor(RepetitionInfo repetition) {
         var basePort = EmberTestPorts.freeBase(PORTS);
         cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
         cluster.start();
@@ -108,8 +114,27 @@ class EmberSameIdentityRelaunchTest {
 
         assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
         cluster.relaunchNode("btk-3", false);
+        requireTheScenario(refusedWithin(REFUSAL_BOUND_MS), repetition);
 
         awaitDemoted(survivor, killedId, DEMOTION_BOUND_MS);
+    }
+
+    /// A kill that lands before the survivors learned the original's boot token leaves nothing to supersede: the relaunch is
+    /// then the first process they see for btk-3 and joins as a live member. Only a refused relaunch is #2173's scenario, so
+    /// any other repetition is skipped, except the last when none reached it: a regression whose every repetition missed its
+    /// scenario has tested nothing, and must not pass as skipped.
+    private static void requireTheScenario(boolean refused, RepetitionInfo repetition) {
+        if (refused) {
+            DEMOTION_SCENARIO_REACHED.incrementAndGet();
+
+            return;
+        }
+
+        assertThat(repetition.getCurrentRepetition() == repetition.getTotalRepetitions() && DEMOTION_SCENARIO_REACHED.get() == 0)
+            .as("none of the %d repetitions reached #2173's scenario: every relaunch was admitted as the first btk-3 process, so the regression never ran",
+                repetition.getTotalRepetitions())
+            .isFalse();
+        Assumptions.abort("the relaunch was admitted as the first btk-3 process: the original was killed before its token was seen");
     }
 
     /// The positive arm on the same transport: a partitioned-but-LIVE process keeps its boot token, so
@@ -141,6 +166,19 @@ class EmberSameIdentityRelaunchTest {
         assertThat(survivor.transportMetrics().get("boot_token_refusals_total").longValue())
             .as("a same-token heal is never refused")
             .isZero();
+    }
+
+    private boolean refusedWithin(long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
+
+        while (cluster.getNode("btk-3").isPresent()) {
+            if (System.currentTimeMillis() > deadline) {
+                return false;
+            }
+            sleep(250);
+        }
+
+        return true;
     }
 
     private static void awaitCondition(String what, java.util.function.BooleanSupplier condition) {

@@ -401,7 +401,13 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// 3 x suspectTimeout after the FAULTY edge, which can be before the convergence window ends; it clears the deferral
     /// with the rest of the death memory, and the verdict would be lost. It is kept here instead, and replayed when the gate
     /// closes unless the peer has come back meanwhile (#2173). The member itself is still swept: a slow seed stays re-addable.
-    private final Map<NodeId, SweptDeath> sweptSuppressedDeaths = new ConcurrentHashMap<>();
+    /// Mapped to the incarnation of the swept member.
+    private final Map<NodeId, Long> sweptSuppressedDeaths = new ConcurrentHashMap<>();
+    /// Retired identities whose death [#emitFaultyOrUnknown] has emitted (#2173). The pair is one-shot per identity, not
+    /// per edge: the residency sweep clears [#lastEmittedHealth], the per-edge dedup, and a sweep racing a retirement on
+    /// another thread can put back a swept deferral the retirement had just dropped. Never pruned, like the registry's
+    /// retired set, of which it is a subset.
+    private final Set<NodeId> retiredDeathEmitted = ConcurrentHashMap.newKeySet();
     /// Never-HEALTHY peers whose FAULTY edge the live-transport veto turned into `UnknownObserved` (#2077), mapped to
     /// that edge's first-hand flag. The veto defers a verdict; it must not drop it. A member already FAULTY gets no
     /// further FAULTY edge, so [#reevaluateTransportVetoedFaulty] replays the edge on the tick once the link that
@@ -477,9 +483,6 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// is the incarnation at which the id was tombstoned; a strictly-higher incoming
     /// incarnation supersedes it. `createdAtMs` bounds map growth via the TTL sweep.
     private record Tombstone(long incarnation, long createdAtMs) {}
-
-    /// The incarnation and first-hand flag of a cold-boot-deferred death whose member was swept (see [#sweptSuppressedDeaths]).
-    private record SweptDeath(long incarnation, boolean firstHand) {}
 
     /// An ANNOUNCE held until its source address answers a probe.
     private record AddressCandidate(Announce announce, InetSocketAddress source, long issuedAt) {
@@ -1050,11 +1053,13 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     /// A swept member's cold-boot-deferred death outlives the sweep ([#sweptSuppressedDeaths]). MUST run BEFORE
-    /// [#clearDeathMemory], which erases the live deferral.
+    /// [#clearDeathMemory], which erases the live deferral and `everSeenHealthy`. A peer that proved itself HEALTHY
+    /// after its edge was deferred has nothing kept, as [#replayIfStillSuppressed] has nothing replayed for it.
     private void keepDeferredDeath(NodeId peer, long incarnation) {
-        option(coldBootSuppressedFaulty.get(peer)).onPresent(firstHand -> sweptSuppressedDeaths.put(peer,
-                                                                                                    new SweptDeath(incarnation,
-                                                                                                                   firstHand)));
+        // The latest sweep decides: a deferral kept by an earlier sweep is stale once the peer came back (#2171 verifier).
+        sweptSuppressedDeaths.remove(peer);
+        option(coldBootSuppressedFaulty.get(peer)).filter(_ -> !everSeenHealthy.contains(peer))
+              .onPresent(_ -> sweptSuppressedDeaths.put(peer, incarnation));
     }
 
     /// Wave-6 H8 journal line (residency decision logging, per the Wave-1 diagnostic
@@ -3165,8 +3170,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             coldBootSuppressedFaulty.remove(peer);
             sweptSuppressedDeaths.remove(peer);
             transportVetoedFaulty.remove(peer);
-            emitFaultyAndDeparted(peer, incarnation);
-            emitClusterFaulty(peer);
+            emitRetiredDeathOnce(peer, incarnation);
 
             return;
         }
@@ -3202,6 +3206,16 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (!booting && !everSeenHealthy.contains(peer)) {
             LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (no live transport connection, cold-boot suppression bypassed)",
                      peer.id());
+        }
+
+        emitFaultyAndDeparted(peer, incarnation);
+        emitClusterFaulty(peer);
+    }
+
+    /// See [#retiredDeathEmitted]: whichever path reaches a retired identity first emits its death, and no path emits it twice.
+    private void emitRetiredDeathOnce(NodeId peer, long incarnation) {
+        if (!retiredDeathEmitted.add(peer)) {
+            return;
         }
 
         emitFaultyAndDeparted(peer, incarnation);
@@ -3314,14 +3328,16 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// (it came back) is judged anew by the normal edges and has nothing to replay.
     private void replaySweptDeath(NodeId peer) {
         option(sweptSuppressedDeaths.remove(peer)).filter(_ -> !members.containsKey(peer))
-              .onPresent(death -> replaySweptEdge(peer, death));
+              .onPresent(incarnation -> replaySweptEdge(peer, incarnation));
     }
 
-    private void replaySweptEdge(NodeId peer, SweptDeath death) {
+    /// The first-hand flag is never read here: its only reader is the co-confirmation gate, which needs `everSeenHealthy`,
+    /// and a swept peer has none ([#clearDeathMemory]; [#keepDeferredDeath] keeps only a never-HEALTHY peer's deferral).
+    private void replaySweptEdge(NodeId peer, long incarnation) {
         LOG.info("SWIM cold-boot suppression lifted (#2173): replaying the deferred FAULTY edge for swept never-HEALTHY peer {}",
                  peer.id());
-        tombstoneOnFaultyEdge(peer, death.incarnation());
-        emitFaultyOrUnknown(peer, death.incarnation(), death.firstHand());
+        tombstoneOnFaultyEdge(peer, incarnation);
+        emitFaultyOrUnknown(peer, incarnation, true);
     }
 
     /// One-shot: whoever removes the deferral (the tick or a refutation) replays it, whatever the
