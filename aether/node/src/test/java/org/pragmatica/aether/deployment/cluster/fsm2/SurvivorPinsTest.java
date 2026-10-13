@@ -113,6 +113,8 @@ class SurvivorPinsTest {
         h.drain();
         h.advance(3 * T_LOAD_MS + 1_000L);
         h.deliver(new ClusterInput.Reconcile());
+        h.advance(3 * T_LOAD_MS + 1_000L);
+        h.deliver(new ClusterInput.Reconcile());
         h.deliver(new ClusterInput.Reconcile());
         var settled = judgmentWrites(h);
 
@@ -150,9 +152,10 @@ class SurvivorPinsTest {
     /// departed half of "a departing or departed node gets no new goals".
     @Test
     void departedNode_getsNoReissuedGoal() {
-        var w = coreWorld().activate();
+        var w = coreWorld();
 
         w.h.seedQuietly(new SliceDesiredKey(CORE_2, ORDERS), new SliceDesiredValue(SliceGoal.LOADED, gen(7), w.h.wallMs));
+        w.activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         w.h.applyHeld(w.h.submits(SubmitKind.DEPARTURE).getFirst().correlationId());
