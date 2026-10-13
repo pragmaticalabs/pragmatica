@@ -671,7 +671,7 @@ public sealed interface Outbox {
         return switch (draft.kind()) {
             case DEPARTURE, INFERRED_DEPARTURE, ADMISSION -> DepartureFlow.refused(m, ctx, draft);
             case CLEANUP -> DepartureFlow.cleanupRefused(m, ctx, draft);
-            case DIRECTIVE_REMOVAL -> rederiveDirectiveRemoval(m, ctx, draft);
+            case DIRECTIVE_REMOVAL -> rederiveDirectiveRemoval(m, draft);
             case BLUEPRINT_REMOVAL -> rederiveRemoval(m, ctx, draft);
             // 6.2: a refused target batch is not resubmitted at once; the awaited-target sweep (reconcile step 1) re-sends it after its bound.
             case TARGETS -> m;
@@ -829,14 +829,12 @@ public sealed interface Outbox {
 
     /// R-4.3.3 refused: derived again from the mirror at once, at most [#GOAL_RESUBMISSIONS] times, then parked for the next reconcile (6.2:
     /// "re-read; stop if the record moved; 5, then the tick").
-    private static ClusterModel rederiveDirectiveRemoval(ClusterModel m, Ctx ctx, TxDraft draft) {
+    private static ClusterModel rederiveDirectiveRemoval(ClusterModel m, TxDraft draft) {
         if (draft.attempt() >= GOAL_RESUBMISSIONS) {
             return awaitEvents(m, draft);
         }
 
-        return Reconcile.request(Directory.refreshedRemoval(m, draft).fold(() -> m,
-                                                                           refreshed -> Outbox.direct(m, refreshed)),
-                                 ctx);
+        return Directory.refreshedRemoval(m, draft).fold(() -> m, refreshed -> Outbox.direct(m, refreshed));
     }
 
     private static ClusterModel rederiveSplit(ClusterModel m, Ctx ctx, TxDraft draft, PairSplit split, int limit) {

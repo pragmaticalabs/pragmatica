@@ -8,6 +8,7 @@ import java.util.Set;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.KvPut;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -709,5 +710,60 @@ class JoinedEvidenceTest {
         assertThat(w.h.model().isDeparted(CORE_2)).isTrue();
         assertThat(w.h.submits(SubmitKind.CLEANUP)).as("C17b removes the rows").isNotEmpty();
         assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).isFalse();
+    }
+
+    // Red when: a core promoted by a seam refresh between two ticks waits for the next tick to be rewritten (the promotion does not request a reconcile).
+    @Test
+    void nt129c_promotedByASeamRefreshBetweenTicks_isRewrittenAtOnce() {
+        var w = deadCoreSeenBy(OTHER_CORES).activate();
+
+        w.h.advance(10_000L);
+        w.refreshSeams(s -> s.withCoreView(Option.some(ALL_CORES)));
+        w.h.advance(SUSPICION_MS - 9_000L);
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).as("nine seconds short of the window").isEmpty();
+        w.h.advance(10_000L);
+        w.refreshSeams(s -> s.withCoreView(Option.some(ALL_CORES)));
+
+        assertThat(admitsAt(w, N, E + 1)).as("the sample that completes the window rewrites the record at once, between ticks").isTrue();
+    }
+
+    // Red when: the leader writes a second WARN or a second ADMITTED for a worker whose C11f write is still in flight (every fresh announcement would).
+    @Test
+    void nt130a_freshRosters_whileTheReadmissionIsInFlight_writeAndWarnOnce() {
+        var w = lostReadmission(DepartureCause.WORKER_LEAVE, COMMUNITY_WITHOUT_W1);
+
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        for (var i = 0; i < 3; i++) {
+            w.announce(C, GOV, W1, M1, M2, M3, M4);
+        }
+
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).hasSize(1);
+        assertThat(w.h.warns("worker-readmitted-on-evidence")).hasSize(1);
+    }
+
+    // Red when: a core view that goes unwired keeps the veto of an earlier removal: the core, listed again, never accrues liveness.
+    @Test
+    void unwiredView_dropsTheVetoToo() {
+        var w = deadCoreSeenBy(ALL_CORES).activate();
+
+        w.h.deliver(new ClusterInput.NodeRemoved(N));
+        w.refreshSeams(s -> s.withCoreView(Option.none()));
+        w.refreshSeams(s -> s.withCoreView(Option.some(ALL_CORES)));
+        run(w, SUSPICION_MS + 2 * TICK_MS);
+
+        assertThat(epochOf(w, N)).isEqualTo(Option.some(E + 1));
+    }
+
+    // Red when: an id stays in `inherited` after its record was removed (R-4.3.3).
+    @Test
+    void inherited_leavesTheSetWhenTheRecordIsRemoved() {
+        var w = lostReadmission(DepartureCause.WORKER_LEAVE, COMMUNITY_WITHOUT_W1);
+
+        assertThat(w.h.model().inherited.contains(W1)).isTrue();
+        w.h.seedRemove(new ActivationDirectiveKey(W1));
+        w.h.drain();
+
+        assertThat(w.recordOf(W1).isEmpty()).isTrue();
+        assertThat(w.h.model().inherited.contains(W1)).isFalse();
     }
 }

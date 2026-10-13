@@ -393,4 +393,16 @@ class AdmissionEpochTest {
         w.h.advance(w.h.settings.timing().tick() + 1);
         assertThat(w.recordOf(W1).isEmpty()).as("the next reconcile derives it again").isTrue();
     }
+
+    // Red when: J2 (a STALE record) needs a directive: a worker wrongly recorded departed whose directive is gone is deferred instead of replaced.
+    @Test
+    void j2_staleRecordWithoutADirective_isStillReplaced() {
+        var w = world();
+
+        w.admit(W1, 0xBBBBL);
+        w.record(W1, DepartureState.DEPARTED, 2L, 0xBBBBL, DepartureCause.STALE).activate();
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admissionOf(W1)));
+
+        assertThat(epochOf(w, W1)).isEqualTo(Option.some(3L));
+    }
 }

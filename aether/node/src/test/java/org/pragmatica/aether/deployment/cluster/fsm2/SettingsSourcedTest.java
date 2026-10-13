@@ -237,4 +237,44 @@ class SettingsSourcedTest {
         assertThat(settings.seedNodes()).containsExactly(CORE_1);
         assertThat(settings.bounds()).isEqualTo(bounds());
     }
+
+    // Red when: the derived bounds move: the suspicion window (R-2.14: suspectTimeout x lhmMaxScore x 3), the removal bound on top of it (255 s), the
+    // worker removal bound (170 s) and the announcement freshness (60 s) at the real defaults; or the factory scrambles its arguments.
+    @Test
+    void absenceBounds_deriveTheSuspicionWindow_andTheBoundsOnTopOfIt() {
+        var bounds = bounds();
+
+        assertThat(ms(bounds.coreSuspicion())).as("10 s x 8 x 3").isEqualTo(240_000L);
+        assertThat(ms(bounds.coreRemoval())).as("B_rm = the window + splitTimeout").isEqualTo(255_000L);
+        assertThat(ms(bounds.workerRemoval())).as("B_w").isEqualTo(170_000L);
+        assertThat(ms(bounds.announcementFreshness())).as("S_ann").isEqualTo(60_000L);
+        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L)).isEqualTo(new AbsenceBounds(1L, 2L, 3L, 4L));
+        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).coreSuspicion()).isEqualTo(4L);
+    }
+
+    // Red when: an admission does not carry the process it was built with, or `withProcess` keeps the old one.
+    @Test
+    void admission_carriesTheProcess() {
+        var admission = Admission.admission(process(0x77L));
+
+        assertThat(admission.process()).isEqualTo(process(0x77L));
+        assertThat(admission.token()).isEqualTo(0x77L);
+        assertThat(admission.withProcess(process(0x88L)).process()).isEqualTo(process(0x88L));
+        assertThat(Admission.UNKNOWN.tokenKnown()).isFalse();
+    }
+
+    // Red when: the expiry of an `unresponsive` exclusion is timed with the compiled-in 10 x 120 s instead of 10 x the configured bound.
+    @Test
+    void unresponsiveExclusion_expiresAtTenTimesTheConfiguredBound() {
+        var h = harness(s -> s.withDivergence(DivergenceBounds.divergenceBounds(12_000L, 90_000L, 30_000L, 120_000L)));
+
+        seedTarget(h, ORDERS, 1, 1);
+        h.activate();
+        h.advance(3 * 12_000L + 31_000L);
+        assertThat(h.store.get(new ArtifactJudgmentKey(ORDERS)).isPresent()).as("precondition: retracted after 3T of the configured bound").isTrue();
+        h.advance(10 * 12_000L - 60_000L);
+        assertThat(h.warns("slice-unresponsive-expired")).as("not before 10T").isEmpty();
+        h.advance(2 * 60_000L);
+        assertThat(h.warns("slice-unresponsive-expired")).as("10 x the configured bound, long before 10 x 120 s").isNotEmpty();
+    }
 }

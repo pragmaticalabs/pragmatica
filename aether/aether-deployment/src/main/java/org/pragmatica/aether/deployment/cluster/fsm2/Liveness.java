@@ -61,7 +61,6 @@ public sealed interface Liveness {
                                                                               .bounds()
                                                                               .coreSuspicion())
                        .map(Map.Entry::getKey)
-                       .filter(node -> !m.joined.contains(node))
                        .forEach(node -> Joins.markJoined(m, ctx, node));
 
         return m;
@@ -78,13 +77,12 @@ public sealed interface Liveness {
         return m;
     }
 
-    /// G-4: `node` is departed and this leader's view lists it, with its window unresolved. Only the removal of its rows waits.
+    /// G-4: a departed `node` that this leader's view lists is liveness-pending, with its window unresolved, unless a removal input broke the
+    /// listing. Only the removal of its rows waits.
     static boolean isPending(ClusterModel m, NodeId node) {
-        return m.departed.contains(node)
-               && !m.livenessVetoed.contains(node)
-               && m.seams.coreView()
-                         .map(view -> view.contains(node))
-                         .or(false);
+        return ! m.livenessVetoed.contains(node) && m.seams.coreView()
+                                                           .map(view -> view.contains(node))
+                                                           .or(false);
     }
 
     record unused() implements Liveness {}
