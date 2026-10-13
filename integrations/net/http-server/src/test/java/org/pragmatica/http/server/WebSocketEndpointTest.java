@@ -37,6 +37,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
@@ -53,6 +54,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// path). The plain-HTTP control shows the same server answering ordinary requests, so a red WebSocket
 /// assertion is not a dead server. The port is assigned by the OS at bind (port 0), so nothing collides when
 /// modules run in parallel (#939).
+@Timeout(60)
 class WebSocketEndpointTest {
     private static final List<String> PATHS = List.of("/ws/a", "/ws/b", "/ws/c");
     private static final long WAIT_SECONDS = 5;
@@ -175,7 +177,10 @@ class WebSocketEndpointTest {
     @Test
     void plainHttp_onTheSameServer_reachesTheHttpHandler() throws Exception {
         for (var path : List.of("/plain", "/ws/b")) {
-            var response = client.send(HttpRequest.newBuilder(uri("http", path)).build(),
+            var request = HttpRequest.newBuilder(uri("http", path))
+                                     .timeout(Duration.ofSeconds(WAIT_SECONDS))
+                                     .build();
+            var response = client.send(request,
                                        HttpResponse.BodyHandlers.ofString());
 
             assertThat(response.statusCode()).as(path).isEqualTo(200);
