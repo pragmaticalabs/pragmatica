@@ -23,17 +23,22 @@ public sealed interface Rebalance {
     static ClusterModel consider(ClusterModel m, Ctx ctx, Artifact artifact, List<NodeId> allocatable) {
         var hosts = Rows.allInstances(m, artifact).stream().map(SlicePair::node).collect(Collectors.toSet());
 
-        if (hosts.isEmpty() || allocatable.size() < 2) {
-            return level(m, artifact);
-        }
+        return hosts.isEmpty() || allocatable.size() < 2 || loadSpread(m, allocatable) <= 1
+               ? level(m, artifact)
+               : moveOne(m, ctx, artifact, allocatable, hosts);
+    }
 
-        var maxLoad = allocatable.stream().mapToInt(node -> Placement.load(m, node)).max().orElse(0);
-        var minLoad = allocatable.stream().mapToInt(node -> Placement.load(m, node)).min().orElse(0);
+    private static int loadSpread(ClusterModel m, List<NodeId> allocatable) {
+        var loads = allocatable.stream().mapToInt(node -> Placement.load(m, node)).summaryStatistics();
 
-        if (maxLoad - minLoad <= 1) {
-            return level(m, artifact);
-        }
+        return loads.getMax() - loads.getMin();
+    }
 
+    private static ClusterModel moveOne(ClusterModel m,
+                                        Ctx ctx,
+                                        Artifact artifact,
+                                        List<NodeId> allocatable,
+                                        Set<NodeId> hosts) {
         var donor = Option.from(allocatable.stream()
                                            .filter(hosts::contains)
                                            .max(Comparator.<NodeId, Integer> comparing(node -> Placement.load(m, node)).thenComparing(Comparator.<NodeId> naturalOrder().reversed())));

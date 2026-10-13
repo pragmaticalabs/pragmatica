@@ -42,29 +42,56 @@ public sealed interface JudgmentOp {
     /// Fold `ops` over the committed judgment. The result is none when nothing is left to record (no permanent mark, no
     /// counts, no exclusions): the key is then removed (4.4, "empty after clears").
     static Option<ArtifactJudgmentValue> fold(Option<ArtifactJudgmentValue> committed, List<JudgmentOp> ops) {
-        var permanent = committed.map(ArtifactJudgmentValue::permanentFailure).or(false);
-        var retries = new HashMap<NodeId, Integer>(committed.map(ArtifactJudgmentValue::retries).or(Map.of()));
-        var unresponsive = new HashMap<NodeId, UnresponsiveEntry>(committed.map(ArtifactJudgmentValue::unresponsive)
-                                                                           .or(Map.of()));
+        var start = new Judged(committed.map(ArtifactJudgmentValue::permanentFailure).or(false),
+                               committed.map(ArtifactJudgmentValue::retries).or(Map.of()),
+                               committed.map(ArtifactJudgmentValue::unresponsive).or(Map.of()));
+        var end = ops.stream().reduce(start, Judged::apply, (_, later) -> later);
 
-        for (var op : ops) {
-            switch (op) {
-                case Fatal _ -> permanent = true;
-                case Transient t -> retries.merge(t.node(), 1, Integer::sum);
-                case ResetRetries r -> retries.remove(r.node());
-                case Exhausted e -> retries.remove(e.node());
-                case Retract r -> unresponsive.put(r.node(), r.entry());
-                case ClearUnresponsive c -> unresponsive.remove(c.node());
-                case ClearAll _ -> {
-                    permanent = false;
-                    retries.clear();
-                    unresponsive.clear();
-                }
-            }
+        return end.isEmpty()
+               ? Option.none()
+               : Option.some(new ArtifactJudgmentValue(end.permanent(), end.retries(), end.unresponsive()));
+    }
+
+    /// The judgment while operations are folded over it; each operation returns the next value.
+    record Judged(boolean permanent, Map<NodeId, Integer> retries, Map<NodeId, UnresponsiveEntry> unresponsive) {
+        Judged apply(JudgmentOp op) {
+            return switch (op) {
+                case Fatal _ -> new Judged(true, retries, unresponsive);
+                case Transient t -> new Judged(permanent,
+                                               with(retries,
+                                                    t.node(),
+                                                    retries.getOrDefault(t.node(), 0) + 1),
+                                               unresponsive);
+                case ResetRetries r -> new Judged(permanent, without(retries, r.node()), unresponsive);
+                case Exhausted e -> new Judged(permanent, without(retries, e.node()), unresponsive);
+                case Retract r -> new Judged(permanent,
+                                             retries,
+                                             with(unresponsive, r.node(), r.entry()));
+                case ClearUnresponsive c -> new Judged(permanent, retries, without(unresponsive, c.node()));
+                case ClearAll _ -> new Judged(false, Map.of(), Map.of());
+            };
         }
 
-        return permanent || !retries.isEmpty() || !unresponsive.isEmpty()
-               ? Option.some(new ArtifactJudgmentValue(permanent, retries, unresponsive))
-               : Option.none();
+        boolean isEmpty() {
+            return ! permanent
+                   && retries.isEmpty()
+                   && unresponsive.isEmpty();
+        }
+
+        private static <V> Map<NodeId, V> with(Map<NodeId, V> map, NodeId node, V value) {
+            var next = new HashMap<>(map);
+
+            next.put(node, value);
+
+            return next;
+        }
+
+        private static <V> Map<NodeId, V> without(Map<NodeId, V> map, NodeId node) {
+            var next = new HashMap<>(map);
+
+            next.remove(node);
+
+            return next;
+        }
     }
 }

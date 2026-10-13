@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -80,35 +81,78 @@ public sealed interface Placement {
                                                     PlacementPolicy policy) {
         var audience = audience(m, policy);
 
-        if (audience.isEmpty()) {
+        return audience.isEmpty()
+               ? m
+               : reconcileAudience(m, ctx, artifact, target, policy, audience);
+    }
+
+    private static ClusterModel reconcileAudience(ClusterModel m,
+                                                  Ctx ctx,
+                                                  Artifact artifact,
+                                                  SliceTargetValue target,
+                                                  PlacementPolicy policy,
+                                                  List<NodeId> audience) {
+        var eligible = Set.copyOf(audience);
+        var desired = target.targetInstances();
+        var placed = placedOn(m, artifact, eligible);
+
+        scaleToDesired(m, ctx, artifact, target, audience, placed);
+
+        return balance(m,
+                       ctx,
+                       artifact,
+                       policy,
+                       audience,
+                       placed.size(),
+                       desired,
+                       retireDisplaced(m, artifact, eligible, desired));
+    }
+
+    private static List<SlicePair> placedOn(ClusterModel m, Artifact artifact, Set<NodeId> eligible) {
+        return Rows.allInstances(m, artifact)
+                   .stream()
+                   .filter(pair -> eligible.contains(pair.node()) && Rows.countsForPlacement(m,
+                                                                                             pair.node(),
+                                                                                             artifact))
+                   .toList();
+    }
+
+    private static ClusterModel scaleToDesired(ClusterModel m,
+                                               Ctx ctx,
+                                               Artifact artifact,
+                                               SliceTargetValue target,
+                                               List<NodeId> audience,
+                                               List<SlicePair> placed) {
+        var desired = target.targetInstances();
+
+        if (placed.size() < desired) {
+            return scaleUp(m, ctx, artifact, audience, desired - placed.size());
+        }
+
+        return placed.size() > desired
+               ? scaleDown(m, placed, placed.size() - desired, target.effectiveMinInstances())
+               : m;
+    }
+
+    /// A count that differs from the target is reported and resets the imbalance clock; a matching one may be levelled.
+    private static ClusterModel balance(ClusterModel m,
+                                        Ctx ctx,
+                                        Artifact artifact,
+                                        PlacementPolicy policy,
+                                        List<NodeId> audience,
+                                        int placed,
+                                        int desired,
+                                        boolean displaced) {
+        if (placed != desired) {
+            adjusted(m, ctx, artifact, placed, desired);
+            m.imbalancedTicks = m.imbalancedTicks.remove(artifact);
+
             return m;
         }
 
-        var eligible = Set.copyOf(audience);
-        var desired = target.targetInstances();
-        var placed = Rows.allInstances(m, artifact)
-                         .stream()
-                         .filter(pair -> eligible.contains(pair.node()) && Rows.countsForPlacement(m,
-                                                                                                   pair.node(),
-                                                                                                   artifact))
-                         .toList();
-
-        if (placed.size() < desired) {
-            scaleUp(m, ctx, artifact, audience, desired - placed.size());
-        } else if (placed.size() > desired) {
-            scaleDown(m, placed, placed.size() - desired, target.effectiveMinInstances());
-        }
-
-        var displaced = retireDisplaced(m, artifact, eligible, desired);
-
-        if (placed.size() != desired) {
-            adjusted(m, ctx, artifact, placed.size(), desired);
-            m.imbalancedTicks = m.imbalancedTicks.remove(artifact);
-        } else if (policy == PlacementPolicy.CORE_ONLY && !displaced) {
-            Rebalance.consider(m, ctx, artifact, audience);
-        }
-
-        return m;
+        return policy == PlacementPolicy.CORE_ONLY && !displaced
+               ? Rebalance.consider(m, ctx, artifact, audience)
+               : m;
     }
 
     private static ClusterModel adjusted(ClusterModel m, Ctx ctx, Artifact artifact, int current, int desired) {
@@ -161,12 +205,17 @@ public sealed interface Placement {
         return Map.copyOf(out);
     }
 
+    /// A roster without members is its governor alone.
+    private static List<NodeId> rosterNodes(GovernorAnnouncementValue roster) {
+        return roster.members()
+                     .isEmpty()
+               ? List.of(roster.governorId())
+               : roster.members();
+    }
+
     private static Option<List<NodeId>> placeable(ClusterModel m, String community) {
         return m.rosters.get(community)
-                        .map(roster -> roster.members()
-                                             .isEmpty()
-                                       ? List.of(roster.governorId())
-                                       : roster.members())
+                        .map(Placement::rosterNodes)
                         .map(members -> members.stream()
                                                .filter(node -> Rows.recordedWorker(m, node) && Rows.counts(m, node))
                                                .distinct()
@@ -262,17 +311,25 @@ public sealed interface Placement {
                                                                                                 pair.node()))
                                  .toList();
 
-        if (displaced.isEmpty()) {
-            return false;
-        }
+        retireOnceReplaced(m, displaced, activeOn(m, instances, eligible), desired);
 
-        var active = instances.stream()
-                              .filter(pair -> eligible.contains(pair.node()))
-                              .filter(pair -> Rows.current(m, pair)
-                                                  .map(row -> row.state() == SliceObservedState.ACTIVE)
-                                                  .or(false))
-                              .count();
+        return ! displaced.isEmpty();
+    }
 
+    private static long activeOn(ClusterModel m, List<SlicePair> instances, Set<NodeId> eligible) {
+        return instances.stream()
+                        .filter(pair -> eligible.contains(pair.node()))
+                        .filter(pair -> Rows.current(m, pair)
+                                            .map(row -> row.state() == SliceObservedState.ACTIVE)
+                                            .or(false))
+                        .count();
+    }
+
+    /// A displaced instance is retired only once the replacements on the allowed nodes are ACTIVE.
+    private static ClusterModel retireOnceReplaced(ClusterModel m,
+                                                   List<SlicePair> displaced,
+                                                   long active,
+                                                   int desired) {
         if (active >= desired) {
             displaced.forEach(pair -> Outbox.goal(m,
                                                   pair,
@@ -282,7 +339,7 @@ public sealed interface Placement {
                                                   "displaced"));
         }
 
-        return true;
+        return m;
     }
 
     /// Whether the community is allowed to take placements (R-3.3.4).

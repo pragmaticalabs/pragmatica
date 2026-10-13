@@ -11,7 +11,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
@@ -271,38 +274,62 @@ public sealed interface Outbox {
                                                  Artifact artifact,
                                                  ArtifactIntent intent,
                                                  Set<SlicePair> covered) {
-        var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
-        var guards = new ArrayList<KVCommand.ReadWitness<AetherKey>>();
-        var pairs = new HashSet<SlicePair>();
-        var key = new ArtifactJudgmentKey(artifact);
-        var committed = m.judgments.get(artifact);
-        var folded = JudgmentOp.fold(committed, intent.ops());
+        var live = liveWrites(m, intent.goals());
+        var mutations = Stream.of(judgmentMutation(m, artifact, intent).stream(),
+                                  live.stream()
+                                      .map(write -> desiredMutation(m,
+                                                                    ctx,
+                                                                    write.pair(),
+                                                                    write.goal(),
+                                                                    write.generation())),
+                                  intent.extras().stream())
+                              .flatMap(Function.identity())
+                              .toList();
 
-        if (!intent.ops().isEmpty() && !folded.equals(committed)) {
-            mutations.add(new KVCommand.Mutation<>(key,
-                                                   committed.map(v -> (AetherValue) v),
-                                                   folded.map(v -> (AetherValue) v)));
-        }
-
-        for (var write : intent.goals()) {
-            if (stillCurrent(m, write.pair(), write.guard())) {
-                mutations.add(desiredMutation(m, ctx, write.pair(), write.goal(), write.generation()));
-                guards.add(observedGuard(write.pair(), write.guard()));
-                pairs.add(write.pair());
-                covered.add(write.pair());
-            } else {
-                Indexer.clearPending(m, write.pair());
-            }
-        }
-
-        mutations.addAll(intent.extras());
+        live.forEach(write -> covered.add(write.pair()));
 
         return mutations.isEmpty()
                ? Option.none()
-               : Option.some(TxDraft.draft(SubmitKind.FAILURE, key, mutations)
-                                    .withGuards(guards)
-                                    .withPairs(pairs)
+               : Option.some(TxDraft.draft(SubmitKind.FAILURE,
+                                           new ArtifactJudgmentKey(artifact),
+                                           mutations)
+                                    .withGuards(live.stream()
+                                                    .map(write -> observedGuard(write.pair(),
+                                                                                write.guard()))
+                                                    .toList())
+                                    .withPairs(live.stream().map(GoalWrite::pair).collect(Collectors.toSet()))
                                     .withOnAccepted(intent.routed()));
+    }
+
+    /// The goal writes whose decision still stands; the others release their pending entry.
+    private static List<GoalWrite> liveWrites(ClusterModel m, List<GoalWrite> writes) {
+        writes.stream()
+              .filter(write -> !stillCurrent(m,
+                                             write.pair(),
+                                             write.guard()))
+              .forEach(write -> Indexer.clearPending(m,
+                                                     write.pair()));
+
+        return writes.stream()
+                     .filter(write -> stillCurrent(m,
+                                                   write.pair(),
+                                                   write.guard()))
+                     .toList();
+    }
+
+    /// The artifact's judgment as one mutation, only when the folded operations change it.
+    private static Option<KVCommand.Mutation<AetherKey, AetherValue>> judgmentMutation(ClusterModel m,
+                                                                                       Artifact artifact,
+                                                                                       ArtifactIntent intent) {
+        var committed = m.judgments.get(artifact);
+        var folded = JudgmentOp.fold(committed, intent.ops());
+
+        return intent.ops()
+                     .isEmpty() || folded.equals(committed)
+               ? Option.none()
+               : Option.some(new KVCommand.Mutation<>(new ArtifactJudgmentKey(artifact),
+                                                      committed.map(v -> (AetherValue) v),
+                                                      folded.map(v -> (AetherValue) v)));
     }
 
     private static List<TxDraft> goalDrafts(ClusterModel m, Ctx ctx, Set<SlicePair> covered) {
@@ -330,37 +357,47 @@ public sealed interface Outbox {
                                              Ctx ctx,
                                              NodeId node,
                                              List<Map.Entry<SlicePair, GoalIntent>> entries) {
-        var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
-        var guards = new ArrayList<KVCommand.ReadWitness<AetherKey>>();
-        var pairs = new HashSet<SlicePair>();
-        var routed = new ArrayList<RoutedEvent>();
-
-        for (var entry : entries) {
-            var pair = entry.getKey();
-            var intent = entry.getValue();
-
-            if (!stillCurrent(m, pair, intent.guard())) {
-                Indexer.clearPending(m, pair);
-                continue;
-            }
-
-            mutations.add(desiredMutation(m, ctx, pair, intent.goal(), intent.generation()));
-            guards.add(observedGuard(pair, intent.guard()));
-            pairs.add(pair);
-            if (intent.mode() == GoalMode.FRESH && intent.goal() == SliceGoal.LOADED) {
-                routed.add(new RoutedEvent.DeploymentStarted(pair.artifact(), node, ctx.nowMs()));
-            }
-        }
+        entries.stream()
+               .filter(entry -> !stillCurrent(m,
+                                              entry.getKey(),
+                                              entry.getValue().guard()))
+               .forEach(entry -> Indexer.clearPending(m,
+                                                      entry.getKey()));
+        var live = entries.stream().filter(entry -> stillCurrent(m,
+                                                                 entry.getKey(),
+                                                                 entry.getValue().guard())).toList();
+        var mutations = live.stream()
+                            .map(entry -> desiredMutation(m,
+                                                          ctx,
+                                                          entry.getKey(),
+                                                          entry.getValue().goal(),
+                                                          entry.getValue().generation()))
+                            .toList();
 
         return mutations.isEmpty()
                ? Option.none()
                : Option.some(TxDraft.draft(SubmitKind.GOALS,
                                            mutations.getFirst().key(),
                                            mutations)
-                                    .withGuards(guards)
-                                    .withPairs(pairs)
+                                    .withGuards(live.stream()
+                                                    .map(entry -> observedGuard(entry.getKey(),
+                                                                                entry.getValue().guard()))
+                                                    .toList())
+                                    .withPairs(live.stream().map(Map.Entry::getKey).collect(Collectors.toSet()))
                                     .withNode(node)
-                                    .withOnAccepted(routed));
+                                    .withOnAccepted(started(ctx, node, live)));
+    }
+
+    /// A fresh LOADED goal announces `DeploymentStarted` when its transaction is accepted.
+    private static List<RoutedEvent> started(Ctx ctx, NodeId node, List<Map.Entry<SlicePair, GoalIntent>> live) {
+        return live.stream()
+                   .filter(entry -> entry.getValue()
+                                         .mode() == GoalMode.FRESH && entry.getValue()
+                                                                           .goal() == SliceGoal.LOADED)
+                   .<RoutedEvent> map(entry -> new RoutedEvent.DeploymentStarted(entry.getKey().artifact(),
+                                                                                 node,
+                                                                                 ctx.nowMs()))
+                   .toList();
     }
 
     /// A decision stands only while the observed value it was derived from is still the one in the mirror.
@@ -398,13 +435,22 @@ public sealed interface Outbox {
     static ClusterModel expire(ClusterModel m, Ctx ctx) {
         var bound = ctx.settings().timing().departingReread() * 1_000_000L;
 
-        for (var entry : m.submitted.entries()) {
-            if (ctx.monoNs() - entry.getValue().atMono() >= bound) {
-                m.submitted = m.submitted.remove(entry.getKey());
-                entry.getValue().drafts().forEach(draft -> dropPending(m, draft));
-                metric(ctx, entry.getValue(), "lost");
-            }
-        }
+        m.submitted.entries()
+                   .stream()
+                   .filter(entry -> ctx.monoNs() - entry.getValue()
+                                                        .atMono() >= bound)
+                   .forEach(entry -> release(m,
+                                             ctx,
+                                             entry.getKey(),
+                                             entry.getValue()));
+
+        return m;
+    }
+
+    private static ClusterModel release(ClusterModel m, Ctx ctx, String correlation, Submitted submission) {
+        m.submitted = m.submitted.remove(correlation);
+        submission.drafts().forEach(draft -> dropPending(m, draft));
+        metric(ctx, submission, "lost");
 
         return m;
     }

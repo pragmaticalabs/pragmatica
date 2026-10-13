@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.stream.Stream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -58,48 +59,30 @@ public sealed interface Directory {
     /// R-4.3.3: `Remove(NodeDepartureKey)` expecting the DEPARTED value, plus the observed rows at their exact values and any
     /// remaining desired and route keys.
     private static ClusterModel removeDeparted(ClusterModel m, Ctx ctx, NodeId node) {
-        var record = m.records.get(node);
-        var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+        var mutations = Stream.of(m.records.get(node)
+                                           .map(value -> DepartureFlow.removal(new NodeDepartureKey(node),
+                                                                               value))
+                                           .stream()
+                                           .toList(),
+                                  DepartureFlow.observedRemovals(m, node),
+                                  DepartureFlow.desiredRemovals(m, node),
+                                  DepartureFlow.routeRemovals(m, node))
+                              .flatMap(List::stream)
+                              .toList();
 
-        record.onPresent(value -> mutations.add(new KVCommand.Mutation<>(new NodeDepartureKey(node),
-                                                                         Option.some((AetherValue) value),
-                                                                         Option.none())));
-        Idx.members(m.observedByNode, node)
-           .toList()
-           .stream()
-           .sorted(Comparator.comparing(artifact -> artifact.asString()))
-           .forEach(artifact -> m.observed.get(SlicePair.slicePair(node, artifact))
-                                          .onPresent(row -> mutations.add(new KVCommand.Mutation<>(SlicePair.slicePair(node,
-                                                                                                                       artifact).observedKey(),
-                                                                                                   Option.some((AetherValue) row),
-                                                                                                   Option.none()))));
-        Idx.members(m.desiredByNode, node)
-           .toList()
-           .stream()
-           .sorted(Comparator.comparing(artifact -> artifact.asString()))
-           .forEach(artifact -> m.desired.get(SlicePair.slicePair(node, artifact))
-                                         .onPresent(value -> mutations.add(new KVCommand.Mutation<>(SlicePair.slicePair(node,
-                                                                                                                        artifact).desiredKey(),
-                                                                                                    Option.some((AetherValue) value),
-                                                                                                    Option.none()))));
-        Idx.members(m.routesByNode, node)
-           .toList()
-           .stream()
-           .sorted(Comparator.comparing(artifact -> artifact.asString()))
-           .forEach(artifact -> m.routes.get(SlicePair.slicePair(node, artifact))
-                                        .onPresent(value -> mutations.add(new KVCommand.Mutation<>(new AetherKey.NodeRoutesKey(node,
-                                                                                                                               artifact),
-                                                                                                   Option.some((AetherValue) value),
-                                                                                                   Option.none()))));
-        if (!mutations.isEmpty()) {
-            Outbox.direct(m,
-                          TxDraft.draft(SubmitKind.DIRECTIVE_REMOVAL,
-                                        mutations.getFirst().key(),
-                                        mutations)
-                                 .withNode(node));
-        }
+        return Reconcile.request(submitRemovals(m, node, mutations), ctx);
+    }
 
-        return Reconcile.request(m, ctx);
+    private static ClusterModel submitRemovals(ClusterModel m,
+                                               NodeId node,
+                                               List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+        return mutations.isEmpty()
+               ? m
+               : Outbox.direct(m,
+                               TxDraft.draft(SubmitKind.DIRECTIVE_REMOVAL,
+                                             mutations.getFirst().key(),
+                                             mutations)
+                                      .withNode(node));
     }
 
     // -- C14, C11e: announcements and communities ------------------------------------------------------------------

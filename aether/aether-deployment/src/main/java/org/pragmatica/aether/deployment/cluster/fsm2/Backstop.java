@@ -87,12 +87,18 @@ public sealed interface Backstop {
     }
 
     private static ClusterModel announceBreaker(ClusterModel m, Ctx ctx, String community) {
-        if (!breakerHolds(m, community)) {
-            m.suppressedWarned = m.suppressedWarned.remove(community);
+        return breakerHolds(m, community)
+               ? warnOnce(countHeldBack(m, ctx, community), ctx, community)
+               : clearWarned(m, community);
+    }
 
-            return m;
-        }
+    private static ClusterModel clearWarned(ClusterModel m, String community) {
+        m.suppressedWarned = m.suppressedWarned.remove(community);
 
+        return m;
+    }
+
+    private static ClusterModel countHeldBack(ClusterModel m, Ctx ctx, String community) {
         var held = members(m, community).stream().filter(node -> warrantsIgnoringBreaker(m, ctx, node)).count();
 
         if (held > 0) {
@@ -101,17 +107,22 @@ public sealed interface Backstop {
                        Map.of("fsm", "cluster", "community", community));
         }
 
-        if (!m.suppressedWarned.contains(community)) {
-            m.suppressedWarned = m.suppressedWarned.add(community);
-            var absent = members(m, community).stream().filter(m.absentSince::containsKey).count();
+        return m;
+    }
 
-            ctx.warn("departure-inferred-suppressed",
-                     community,
-                     "Community " + community
-                    + ": " + absent
-                    + " of " + members(m, community).size()
-                    + " members are absent at once; no departure is recorded for it");
+    /// Once per community until the breaker clears (R-2.17).
+    private static ClusterModel warnOnce(ClusterModel m, Ctx ctx, String community) {
+        if (m.suppressedWarned.contains(community)) {
+            return m;
         }
+
+        m.suppressedWarned = m.suppressedWarned.add(community);
+        ctx.warn("departure-inferred-suppressed",
+                 community,
+                 "Community " + community
+                + ": " + members(m, community).stream().filter(m.absentSince::containsKey).count()
+                + " of " + members(m, community).size()
+                + " members are absent at once; no departure is recorded for it");
 
         return m;
     }

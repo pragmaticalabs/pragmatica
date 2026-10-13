@@ -113,25 +113,37 @@ public sealed interface Blueprints {
                                         boolean republish) {
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
-        for (var slice : expanded.loadOrder()) {
-            var target = declaredTarget(m, ctx, id, slice);
-            var base = slice.artifact().base();
+        expanded.loadOrder().forEach(slice -> mutations.add(declareSlice(m, ctx, id, slice, republish)));
 
-            m.pendingTargetPuts = m.pendingTargetPuts.put(base, target);
-            mutations.add(targetPut(m, base, target));
-            if (republish) {
-                clearJudgment(m, slice.artifact());
-            }
+        return submitAll(m, SubmitKind.TARGETS, mutations);
+    }
+
+    /// One declared slice: its target is recorded as in flight and put; a republish drops the artifact's judgment.
+    private static KVCommand.Mutation<AetherKey, AetherValue> declareSlice(ClusterModel m,
+                                                                           Ctx ctx,
+                                                                           BlueprintId id,
+                                                                           ResolvedSlice slice,
+                                                                           boolean republish) {
+        var target = declaredTarget(m, ctx, id, slice);
+        var base = slice.artifact().base();
+
+        m.pendingTargetPuts = m.pendingTargetPuts.put(base, target);
+        if (republish) {
+            clearJudgment(m, slice.artifact());
         }
 
-        if (!mutations.isEmpty()) {
-            Outbox.direct(m,
-                          TxDraft.draft(SubmitKind.TARGETS,
-                                        mutations.getFirst().key(),
-                                        mutations));
-        }
+        return targetPut(m, base, target);
+    }
 
-        return m;
+    private static ClusterModel submitAll(ClusterModel m,
+                                          SubmitKind kind,
+                                          List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+        return mutations.isEmpty()
+               ? m
+               : Outbox.direct(m,
+                               TxDraft.draft(kind,
+                                             mutations.getFirst().key(),
+                                             mutations));
     }
 
     private static ClusterModel clearJudgment(ClusterModel m, Artifact artifact) {
@@ -231,33 +243,35 @@ public sealed interface Blueprints {
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
         Indexer.removeBlueprint(m, id);
-        for (var slice : owned) {
-            var base = slice.artifact().base();
-
-            m.pendingTargetPuts = m.pendingTargetPuts.remove(base);
-            deallocateAll(m, ctx, base, "blueprint-removed");
-            clearJudgment(m, slice.artifact());
-            m.targets.get(base)
-                     .onPresent(target -> mutations.add(new KVCommand.Mutation<>(new SliceTargetKey(base),
-                                                                                 Option.some((AetherValue) target),
-                                                                                 Option.none())));
-        }
-
+        owned.forEach(slice -> removeSlice(m, ctx, slice, mutations));
         m.applies.get(id)
                  .onPresent(apply -> mutations.add(new KVCommand.Mutation<>(new DeploymentApplyKey(id),
                                                                             Option.some((AetherValue) apply),
                                                                             Option.none())));
-        if (!mutations.isEmpty()) {
-            Outbox.direct(m,
-                          TxDraft.draft(SubmitKind.BLUEPRINT_REMOVAL,
-                                        mutations.getFirst().key(),
-                                        mutations));
-        }
+        submitAll(m, SubmitKind.BLUEPRINT_REMOVAL, mutations);
 
         return Lifecycle.schedule(m,
                                   ctx,
                                   TimerId.timerId(Kind.RECONCILE, "blueprint-removed:" + id.asString()),
                                   5_000L);
+    }
+
+    /// One slice of a removed blueprint: its in-flight target, its instances and its judgment go; its committed target is removed.
+    private static ClusterModel removeSlice(ClusterModel m,
+                                            Ctx ctx,
+                                            ResolvedSlice slice,
+                                            List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+        var base = slice.artifact().base();
+
+        m.pendingTargetPuts = m.pendingTargetPuts.remove(base);
+        deallocateAll(m, ctx, base, "blueprint-removed");
+        clearJudgment(m, slice.artifact());
+        m.targets.get(base)
+                 .onPresent(target -> mutations.add(new KVCommand.Mutation<>(new SliceTargetKey(base),
+                                                                             Option.some((AetherValue) target),
+                                                                             Option.none())));
+
+        return m;
     }
 
     // -- C5, C6: SliceTarget ---------------------------------------------------------------------------------------

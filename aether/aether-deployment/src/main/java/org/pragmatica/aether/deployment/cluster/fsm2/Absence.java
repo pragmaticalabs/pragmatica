@@ -89,9 +89,13 @@ public sealed interface Absence {
     private static Verdict coreVerdict(ClusterModel m, NodeId node) {
         return m.seams.coreView()
                       .fold(() -> Verdict.UNJUDGEABLE,
-                            view -> view.contains(node)
-                                    ? Verdict.PRESENT
-                                    : Verdict.ABSENT);
+                            view -> viewVerdict(view, node));
+    }
+
+    private static Verdict viewVerdict(Set<NodeId> view, NodeId node) {
+        return view.contains(node)
+               ? Verdict.PRESENT
+               : Verdict.ABSENT;
     }
 
     private static Verdict assignedVerdict(ClusterModel m, Ctx ctx, NodeId node) {

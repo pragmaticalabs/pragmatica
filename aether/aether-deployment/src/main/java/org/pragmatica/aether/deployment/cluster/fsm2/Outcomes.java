@@ -363,30 +363,38 @@ public sealed interface Outcomes {
 
     /// The failing slices already merged into this drain's outcome mutation (removed here, re-added merged).
     private static List<String> drainFailures(ClusterModel m, AetherKey key) {
-        var merged = new ArrayList<String>();
+        return m.artifactIntents.entries()
+                                .stream()
+                                .flatMap(entry -> takeFailures(m,
+                                                               entry.getKey(),
+                                                               entry.getValue(),
+                                                               key).stream())
+                                .toList();
+    }
 
-        for (var entry : m.artifactIntents.entries()) {
-            var kept = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+    /// The failing slices of the outcome extras of `key` that one artifact's intent holds; the intent keeps its other extras.
+    private static List<String> takeFailures(ClusterModel m, Artifact artifact, ArtifactIntent intent, AetherKey key) {
+        var kept = intent.extras().stream().filter(extra -> !extra.key()
+                                                                  .equals(key)).toList();
+        var taken = intent.extras()
+                          .stream()
+                          .filter(extra -> extra.key()
+                                                .equals(key))
+                          .flatMap(extra -> extra.replacement()
+                                                 .stream())
+                          .flatMap(value -> ((DeploymentOutcomeValue) value).failingSlices()
+                                                                            .stream())
+                          .toList();
 
-            for (var extra : entry.getValue().extras()) {
-                if (extra.key().equals(key)) {
-                    extra.replacement()
-                         .onPresent(value -> merged.addAll(((DeploymentOutcomeValue) value).failingSlices()));
-                } else {
-                    kept.add(extra);
-                }
-            }
-
-            if (kept.size() != entry.getValue().extras().size()) {
-                m.artifactIntents = m.artifactIntents.put(entry.getKey(),
-                                                          new ArtifactIntent(entry.getValue().ops(),
-                                                                             entry.getValue().goals(),
-                                                                             kept,
-                                                                             entry.getValue().routed()));
-            }
+        if (kept.size() != intent.extras().size()) {
+            m.artifactIntents = m.artifactIntents.put(artifact,
+                                                      new ArtifactIntent(intent.ops(),
+                                                                         intent.goals(),
+                                                                         kept,
+                                                                         intent.routed()));
         }
 
-        return merged;
+        return taken;
     }
 
     record unused() implements Outcomes {}

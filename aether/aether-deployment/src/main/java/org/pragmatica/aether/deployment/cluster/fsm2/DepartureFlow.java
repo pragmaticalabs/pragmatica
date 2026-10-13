@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.PendingDeparture;
@@ -139,7 +140,7 @@ public sealed interface DepartureFlow {
                            List.of());
     }
 
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> desiredRemovals(ClusterModel m, NodeId node) {
+    static List<KVCommand.Mutation<AetherKey, AetherValue>> desiredRemovals(ClusterModel m, NodeId node) {
         return sorted(Idx.members(m.desiredByNode, node).toList()).stream()
                      .flatMap(artifact -> m.desired.get(SlicePair.slicePair(node, artifact))
                                                    .map(value -> removal(SlicePair.slicePair(node, artifact).desiredKey(),
@@ -148,7 +149,7 @@ public sealed interface DepartureFlow {
                      .toList();
     }
 
-    private static List<KVCommand.Mutation<AetherKey, AetherValue>> routeRemovals(ClusterModel m, NodeId node) {
+    static List<KVCommand.Mutation<AetherKey, AetherValue>> routeRemovals(ClusterModel m, NodeId node) {
         return sorted(Idx.members(m.routesByNode, node).toList()).stream()
                      .flatMap(artifact -> m.routes.get(SlicePair.slicePair(node, artifact))
                                                   .map(value -> removal(new NodeRoutesKey(node, artifact),
@@ -163,7 +164,7 @@ public sealed interface DepartureFlow {
                         .toList();
     }
 
-    private static KVCommand.Mutation<AetherKey, AetherValue> removal(AetherKey key, AetherValue value) {
+    static KVCommand.Mutation<AetherKey, AetherValue> removal(AetherKey key, AetherValue value) {
         return new KVCommand.Mutation<>(key, Option.some(value), Option.none());
     }
 
@@ -280,17 +281,21 @@ public sealed interface DepartureFlow {
     }
 
     private static List<KVCommand.Mutation<AetherKey, AetherValue>> cleanupMutations(ClusterModel m, NodeId node) {
-        var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+        return Stream.of(observedRemovals(m, node),
+                         desiredRemovals(m, node),
+                         routeRemovals(m, node))
+                     .flatMap(List::stream)
+                     .toList();
+    }
 
-        sorted(Idx.members(m.observedByNode, node).toList()).forEach(artifact -> m.observed.get(SlicePair.slicePair(node,
-                                                                                                                    artifact))
-                                                                                           .onPresent(value -> mutations.add(removal(SlicePair.slicePair(node,
-                                                                                                                                                         artifact).observedKey(),
-                                                                                                                                     value))));
-        mutations.addAll(desiredRemovals(m, node));
-        mutations.addAll(routeRemovals(m, node));
-
-        return mutations;
+    /// The node's observed rows at their exact values, current or stale alike.
+    static List<KVCommand.Mutation<AetherKey, AetherValue>> observedRemovals(ClusterModel m, NodeId node) {
+        return sorted(Idx.members(m.observedByNode, node).toList()).stream()
+                     .flatMap(artifact -> m.observed.get(SlicePair.slicePair(node, artifact))
+                                                    .map(value -> removal(SlicePair.slicePair(node, artifact).observedKey(),
+                                                                          value))
+                                                    .stream())
+                     .toList();
     }
 
     private static TxDraft cleanupDraft(NodeId node,
