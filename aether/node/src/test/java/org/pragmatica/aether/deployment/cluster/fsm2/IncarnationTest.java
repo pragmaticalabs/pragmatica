@@ -137,7 +137,7 @@ class IncarnationTest {
     }
 
     // NT-123 (d)
-    // Red when: the same process p1 with a higher epoch does not keep its rows current, or the leader fails to adopt them.
+    // Red when: the same process p1, joined again after its departure, does not keep its rows current, or the leader fails to adopt them.
     @Test
     void partitionHeal_sameProcess_keepsRowsCurrent_andTheLeaderAdoptsThem() {
         var w = MbWorld.worldWithFloor(1, CORE_1);
