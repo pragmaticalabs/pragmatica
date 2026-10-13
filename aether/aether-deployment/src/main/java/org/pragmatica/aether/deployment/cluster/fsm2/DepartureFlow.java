@@ -196,12 +196,23 @@ public sealed interface DepartureFlow {
 
     /// R-4.3.0, "resolving an in-flight departure": a committed DEPARTED means it landed; an ADMITTED means it is obsolete.
     private static ClusterModel resolveInFlight(ClusterModel m, Ctx ctx, NodeId node) {
-        if (m.departing.containsKey(node) && m.records.get(node).map(record -> !isUnchanged(m, node, record)).or(true)) {
+        if (m.departing.containsKey(node) && m.records.get(node)
+                                                      .map(record -> !isUnchanged(m, node, record) && !admittedAtOrBelow(m,
+                                                                                                                         node,
+                                                                                                                         record))
+                                                      .or(true)) {
             m.departing = m.departing.remove(node);
             Lifecycle.cancel(m, ctx, rereadTimer(node));
         }
 
         return m;
+    }
+
+    private static boolean admittedAtOrBelow(ClusterModel m, NodeId node, NodeDepartureValue record) {
+        return record.state() == DepartureState.ADMITTED && m.departing.get(node)
+                                                                       .map(pending -> record.epoch() <= pending.admission()
+                                                                                                                .epoch())
+                                                                       .or(false);
     }
 
     private static boolean isUnchanged(ClusterModel m, NodeId node, NodeDepartureValue record) {
@@ -433,8 +444,8 @@ public sealed interface DepartureFlow {
 
     private static boolean obsolete(ClusterModel m, NodeId node, PendingDeparture pending) {
         return m.records.get(node)
-                        .map(record -> record.state() == DepartureState.ADMITTED && record.epoch() >= pending.admission()
-                                                                                                             .epoch())
+                        .map(record -> record.state() == DepartureState.ADMITTED && record.epoch() > pending.admission()
+                                                                                                            .epoch())
                         .or(false);
     }
 
@@ -515,7 +526,9 @@ public sealed interface DepartureFlow {
             return resolveObsolete(m, ctx, node);
         }
 
-        if (m.records.get(node).map(record -> !isUnchanged(m, node, record)).or(false)) {
+        if (m.records.get(node)
+                     .map(record -> !isUnchanged(m, node, record) && !admittedAtOrBelow(m, node, record))
+                     .or(false)) {
             m.departing = m.departing.remove(node);
 
             return m;

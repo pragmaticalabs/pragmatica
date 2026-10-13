@@ -77,7 +77,8 @@ class GapEngineTest {
         assertThat(h.model().targets.containsKey(ORDERS.base())).isFalse();
         h.deliver(new ClusterInput.Rebuild(h.snapshot()));
         assertThat(h.model().targets.containsKey(ORDERS.base())).isTrue();
-        assertThat(h.model().incarnation()).as("the incarnation is kept").isEqualTo(1L);
+        assertThat(h.model().incarnation()).as("a Rebuild while Active is a fresh incarnation (timers of the old one are dropped)")
+                  .isEqualTo(2L);
     }
 
     /// Red when: the interpreter's `WitnessStale` does not suspend submissions, or the committed leader value naming this node

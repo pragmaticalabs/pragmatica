@@ -49,7 +49,7 @@ import org.pragmatica.lang.Option;
 /// transactions of one flush ride one `Submit` (one `apply(List)`).
 public sealed interface Outbox {
     int GOAL_RESUBMISSIONS = 5;
-    int ROLLBACK_RESUBMISSIONS = 6;
+    int ROLLBACK_RESUBMISSIONS = 5;
 
     // -- intents ---------------------------------------------------------------------------------------------------
     /// A fresh generation (R-1.6.1): the issuing leader's committed `viewSequence` and the next counter value.
@@ -155,6 +155,19 @@ public sealed interface Outbox {
     static ClusterModel flush(ClusterModel m, Ctx ctx, boolean suspended) {
         m.flushQueued = false;
         if (suspended || m.leader.isEmpty()) {
+            m.parked = java.util.stream.Stream.concat(m.parked.stream(),
+                                                      m.outbox.stream()
+                                                              .filter(draft -> draft.kind() == SubmitKind.BLUEPRINT_REMOVAL || draft.kind() == SubmitKind.DIRECTIVE))
+                                              .toList();
+            m.parkedOps = java.util.stream.Stream.concat(m.parkedOps.stream(),
+                                                         m.artifactIntents.entries()
+                                                                          .stream()
+                                                                          .flatMap(entry -> entry.getValue()
+                                                                                                 .ops()
+                                                                                                 .stream()
+                                                                                                 .map(op -> java.util.Map.entry(entry.getKey(),
+                                                                                                                                op))))
+                                                 .toList();
             dropIntents(m, ctx);
             clearIntents(m);
 
@@ -171,8 +184,8 @@ public sealed interface Outbox {
     }
 
     private static ClusterModel clearIntents(ClusterModel m) {
-        m.goalIntents = PMap.empty();
-        m.artifactIntents = PMap.empty();
+        m.goalIntents = PMap.empty(m.scans);
+        m.artifactIntents = PMap.empty(m.scans);
         m.outbox = List.of();
 
         return m;
@@ -286,7 +299,10 @@ public sealed interface Outbox {
 
         return mutations.isEmpty()
                ? Option.none()
-               : Option.some(TxDraft.draft(SubmitKind.FAILURE, key, mutations).withGuards(guards).withPairs(pairs));
+               : Option.some(TxDraft.draft(SubmitKind.FAILURE, key, mutations)
+                                    .withGuards(guards)
+                                    .withPairs(pairs)
+                                    .withOnAccepted(intent.routed()));
     }
 
     private static List<TxDraft> goalDrafts(ClusterModel m, Ctx ctx, Set<SlicePair> covered) {
@@ -414,9 +430,26 @@ public sealed interface Outbox {
         };
     }
 
+    /// An accepted transaction's event goes out now. A `DeploymentFailed` also marks its FAILED row as announced, so a lost write is
+    /// announced when its re-derived transaction lands, and only once.
+    private static ClusterModel announce(ClusterModel m, Ctx ctx, RoutedEvent event) {
+        ctx.route(event);
+
+        return event instanceof RoutedEvent.DeploymentFailed failed
+               ? markAnnounced(m,
+                               SlicePair.slicePair(failed.node(), failed.artifact()))
+               : m;
+    }
+
+    private static ClusterModel markAnnounced(ClusterModel m, SlicePair pair) {
+        m.observed.get(pair).onPresent(row -> m.failureRouted = m.failureRouted.put(pair, row.forGeneration()));
+
+        return m;
+    }
+
     private static ClusterModel accepted(ClusterModel m, Ctx ctx, Submitted submission) {
         for (var draft : submission.drafts()) {
-            draft.onAccepted().forEach(event -> ctx.route(event));
+            draft.onAccepted().forEach(event -> announce(m, ctx, event));
             ctx.metric("aether_deployment_fsm_submissions_total",
                        Map.of("fsm",
                               "cluster",
@@ -575,7 +608,7 @@ public sealed interface Outbox {
         return draft.pairs()
                     .isEmpty()
                ? rederiveWhole(m, ctx, draft, limit)
-               : rederiveSplit(m, ctx, draft, splitByMovement(m, draft, limit));
+               : rederiveSplit(m, ctx, draft, splitByMovement(m, draft, limit), limit);
     }
 
     /// The mutations of a refused transaction sorted by whether their pair's keys moved: the ones that did not (`stay`, with their
@@ -632,20 +665,42 @@ public sealed interface Outbox {
                                                                    .or(false);
     }
 
-    private static ClusterModel rederiveSplit(ClusterModel m, Ctx ctx, TxDraft draft, PairSplit split) {
+    private static ClusterModel rederiveSplit(ClusterModel m, Ctx ctx, TxDraft draft, PairSplit split, int limit) {
         if (split.shared().stream().anyMatch(mutation -> mutatedElsewhere(m, mutation))) {
             split.stayPairs().forEach(pair -> Indexer.clearPending(m, pair));
 
             return Reconcile.request(m, ctx);
         }
 
-        if (!split.stayPairs().isEmpty()) {
-            resubmitStaying(m, draft, split);
-        }
+        resubmitRemainder(m, draft, split, limit);
 
         return split.movedAny()
                ? Reconcile.request(m, ctx)
                : m;
+    }
+
+    private static ClusterModel resubmitRemainder(ClusterModel m, TxDraft draft, PairSplit split, int limit) {
+        return split.stayPairs()
+                    .isEmpty()
+               ? resubmitSharedOnly(m, draft, split, limit)
+               : resubmitStaying(m, draft, split);
+    }
+
+    /// Every pair of the transaction moved but its shared mutations (the artifact's judgment) did not. No reconcile step derives an
+    /// event-only operation again (a cleared exclusion, a reset retry count), so they are resubmitted on their own.
+    private static ClusterModel resubmitSharedOnly(ClusterModel m, TxDraft draft, PairSplit split, int limit) {
+        return split.shared()
+                    .isEmpty() || draft.attempt() >= limit
+               ? m
+               : Outbox.direct(m,
+                               new TxDraft(draft.kind(),
+                                           split.shared().getFirst().key(),
+                                           split.shared(),
+                                           List.of(),
+                                           Set.of(),
+                                           draft.node(),
+                                           draft.attempt() + 1,
+                                           List.of()));
     }
 
     private static ClusterModel resubmitStaying(ClusterModel m, TxDraft draft, PairSplit split) {

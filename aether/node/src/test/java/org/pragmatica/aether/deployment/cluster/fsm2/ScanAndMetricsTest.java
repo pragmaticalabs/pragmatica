@@ -85,14 +85,17 @@ class ScanAndMetricsTest {
         }
     }
 
+    private static long scans(FsmHarness h) {
+        return h.metricTotal("aether_deployment_fsm_scans_total", t -> true);
+    }
+
     // NT-78
     // Red when: an ordinary input does a forEach over a store-wide index.
     @Test
     void ordinaryInputs_scanNothing_whileRebuildAndReconcileDo() {
-        var scansBefore = PMap.scans();
         var h = big();
 
-        assertThat(PMap.scans()).as("control: Rebuild and the first reconcile do scan").isGreaterThan(scansBefore);
+        assertThat(scans(h)).as("control: Rebuild and the first reconcile do scan").isGreaterThan(0L);
         assertThat(h.model().observed.size()).isEqualTo(PAIRS);
         var pair = pair(nodeOf(5), artifactOf(5));
         var next = row(SliceObservedState.ACTIVE, 2L, gen(1), process(7));
@@ -120,16 +123,16 @@ class ScanAndMetricsTest {
                                                                                                                                                                                                                                                                                                                                              pair.artifact()))};
 
         for (var input : inputs) {
-            var before = PMap.scans();
+            var before = scans(h);
 
             h.step(input);
-            assertThat(PMap.scans()).as(input.toString().substring(0, 40)).isEqualTo(before);
+            assertThat(scans(h)).as(input.toString().substring(0, 40)).isEqualTo(before);
         }
 
-        var before = PMap.scans();
+        var before = scans(h);
 
         h.step(new ClusterInput.Reconcile());
-        assertThat(PMap.scans()).as("control: a reconcile pass scans").isGreaterThan(before);
+        assertThat(scans(h)).as("control: a reconcile pass scans").isGreaterThan(before);
     }
 
     // NT-78 (the audit)

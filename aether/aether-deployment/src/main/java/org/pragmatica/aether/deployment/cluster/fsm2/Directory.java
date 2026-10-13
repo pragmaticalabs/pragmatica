@@ -274,6 +274,36 @@ public sealed interface Directory {
         }
 
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+        var minting = m.outbox.stream()
+                              .filter(draft -> draft.kind() == SubmitKind.DIRECTIVE && draft.mutations()
+                                                                                            .stream()
+                                                                                            .anyMatch(mutation -> mutation.key()
+                                                                                                                          .equals(communityKey)))
+                              .findFirst();
+
+        if (community.isEmpty() && minting.isPresent()) {
+            var draft = minting.get();
+            var joined = new ArrayList<>(draft.mutations());
+
+            joined.add(new KVCommand.Mutation<>(new ActivationDirectiveKey(node),
+                                                Option.none(),
+                                                Option.some((AetherValue) ActivationDirectiveValue.worker(communityId,
+                                                                                                          ""))));
+            var next = new ArrayList<>(m.outbox);
+
+            next.set(next.indexOf(draft),
+                     new TxDraft(draft.kind(),
+                                 draft.key(),
+                                 joined,
+                                 draft.guards(),
+                                 draft.pairs(),
+                                 draft.node(),
+                                 draft.attempt(),
+                                 draft.onAccepted()));
+            m.outbox = next;
+
+            return m;
+        }
 
         if (community.isEmpty()) {
             var minted = new CommunityValue(source,

@@ -27,8 +27,8 @@ public sealed interface Lifecycle {
         m.seams = snapshot.seams();
         snapshot.admissions().forEach((node, admission) -> m.admissions = m.admissions.put(node, admission));
         snapshot.entries().forEach(entry -> Indexer.indexPut(m, ctx, entry.key(), entry.value()));
-        m.announcementSeenAt = PMap.empty();
-        m.absentSince = PMap.empty();
+        m.announcementSeenAt = PMap.empty(m.scans);
+        m.absentSince = PMap.empty(m.scans);
         m.auditDue = true;
         schedule(m,
                  ctx,
@@ -53,6 +53,12 @@ public sealed interface Lifecycle {
 
         m.leader = Option.some(value);
         if (wasSuspended && !isSuspended(m, ctx)) {
+            m.parked.forEach(draft -> Outbox.direct(m, draft));
+            m.parked = java.util.List.of();
+            m.parkedOps.forEach(entry -> Outbox.artifact(m,
+                                                         entry.getKey(),
+                                                         intent -> intent.withOp(entry.getValue())));
+            m.parkedOps = java.util.List.of();
             Reconcile.request(m, ctx);
         }
 

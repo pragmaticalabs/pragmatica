@@ -381,7 +381,8 @@ public sealed interface Outcomes {
                 m.artifactIntents = m.artifactIntents.put(entry.getKey(),
                                                           new ArtifactIntent(entry.getValue().ops(),
                                                                              entry.getValue().goals(),
-                                                                             kept));
+                                                                             kept,
+                                                                             entry.getValue().routed()));
             }
         }
 

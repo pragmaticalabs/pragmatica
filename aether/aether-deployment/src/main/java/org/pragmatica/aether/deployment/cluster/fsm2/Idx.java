@@ -8,11 +8,11 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 public sealed interface Idx {
     static <K, V> PMap<K, PSet<V>> add(PMap<K, PSet<V>> index, K key, V value) {
         return index.put(key,
-                         index.get(key).or(PSet.<V> empty()).add(value));
+                         index.get(key).or(PSet.<V> empty(index.meter())).add(value));
     }
 
     static <K, V> PMap<K, PSet<V>> remove(PMap<K, PSet<V>> index, K key, V value) {
-        var shrunk = index.get(key).or(PSet.<V> empty()).remove(value);
+        var shrunk = index.get(key).or(PSet.<V> empty(index.meter())).remove(value);
 
         return shrunk.isEmpty()
                ? index.remove(key)
@@ -21,7 +21,7 @@ public sealed interface Idx {
 
     static <K, V> PSet<V> members(PMap<K, PSet<V>> index, K key) {
         return index.get(key)
-                    .or(PSet.<V> empty());
+                    .or(PSet.<V> empty(index.meter()));
     }
 
     record unused() implements Idx {}

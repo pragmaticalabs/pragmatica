@@ -119,7 +119,8 @@ public final class ClusterFsm {
     /// C1: build the indexes from the snapshot, then replay what arrived while rebuilding, in order.
     private ClusterState rebuilt(Rebuilding rebuilding, Rebuild rebuild, Ctx ctx) {
         counted(ctx, rebuild, "applied");
-        var model = Lifecycle.rebuild(ctx, rebuilding.incarnation(), rebuild.snapshot());
+        var model = freshlyBuilt(Lifecycle.rebuild(ctx, rebuilding.incarnation(), rebuild.snapshot()),
+                                 ctx);
 
         for (var held : rebuilding.held()) {
             model = apply(model, held, ctx);
@@ -167,14 +168,16 @@ public final class ClusterFsm {
         return new Dormant(model.incarnation());
     }
 
-    /// A `Rebuild` while Active replaces the model within the same incarnation: the old model's timers are cancelled (the
-    /// rebuild arms its own, so a second tick chain would otherwise run) and the correlation sequence continues, so a late
-    /// settlement of an earlier submission cannot match a new one.
+    /// A `Rebuild` while Active starts a fresh incarnation: the old model's timers are cancelled and a tick that already fired is
+    /// dropped by the incarnation check, so one tick chain runs. The correlation sequence and the generation counter continue
+    /// (R-1.6.1: monotone), so a generation allocated but not yet committed is never issued again.
     private static ClusterModel rebuiltAgain(ClusterModel model, Rebuild rebuild, Ctx ctx) {
         cancelTimers(model, ctx);
-        var fresh = Lifecycle.rebuild(ctx, model.incarnation(), rebuild.snapshot());
+        var fresh = freshlyBuilt(Lifecycle.rebuild(ctx, model.incarnation() + 1, rebuild.snapshot()),
+                                 ctx);
 
         fresh.txSeq = model.txSeq;
+        fresh.genCounter = Math.max(fresh.genCounter, model.genCounter);
 
         return fresh;
     }
@@ -192,8 +195,24 @@ public final class ClusterFsm {
     /// One input against a copy of the model, then the end-of-step bookkeeping: a flush is queued if the handlers left
     /// intents (R-5.7.4).
     private ClusterModel apply(ClusterModel model, ClusterInput input, Ctx ctx) {
-        return Outbox.requestFlush(Handlers.handle(model.copy(), ctx, input),
-                                   ctx);
+        var scansBefore = model.scans.count();
+        var next = Outbox.requestFlush(Handlers.handle(model.copy(), ctx, input),
+                                       ctx);
+
+        return reportScans(next, ctx, next.scans.count() - scansBefore);
+    }
+
+    /// The map iterations a step took leave the FSM as data (NT-78: an ordinary input reports none).
+    private static ClusterModel freshlyBuilt(ClusterModel model, Ctx ctx) {
+        return reportScans(model, ctx, model.scans.count());
+    }
+
+    private static ClusterModel reportScans(ClusterModel model, Ctx ctx, long scans) {
+        if (scans > 0) {
+            ctx.metric("aether_deployment_fsm_scans_total", scans, Map.of("fsm", "cluster"));
+        }
+
+        return model;
     }
 
     private static Ctx counted(Ctx ctx, ClusterInput input, String result) {

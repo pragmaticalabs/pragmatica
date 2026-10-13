@@ -52,6 +52,8 @@ import org.pragmatica.lang.Option;
 /// The fields are package-private and written only by the handlers of this package; the public readers are for tests
 /// and for the interpreter.
 public final class ClusterModel {
+    /// Counts the iterations of this model lineage's maps (NT-78); shared by copies, owned by no one else.
+    ScanMeter scans = ScanMeter.scanMeter();
     // -- identity and clocks (R-3.1.3, R-3.1.4) --------------------------------------------------------------------
     long incarnation;
     long incarnationStart;
@@ -63,76 +65,78 @@ public final class ClusterModel {
     long genCounter;
     long tickCount;
     Seams seams = Seams.UNWIRED;
-    PSet<TimerId> timers = PSet.empty();
+    PSet<TimerId> timers = PSet.empty(scans);
     // -- blueprint-side fact indexes (CI-2) ------------------------------------------------------------------------
-    PMap<BlueprintId, AppBlueprintValue> blueprints = PMap.empty();
-    PMap<Artifact, PSet<BlueprintId>> blueprintsByArtifact = PMap.empty();
-    PMap<ArtifactBase, BlueprintId> ownerByBase = PMap.empty();
-    PMap<ArtifactBase, SliceTargetValue> targets = PMap.empty();
-    PMap<ArtifactBase, VersionRoutingValue> routings = PMap.empty();
-    PMap<ArtifactBase, SliceTargetValue> pendingTargetPuts = PMap.empty();
-    PMap<Artifact, AwaitedTarget> awaitedTargets = PMap.empty();
-    PMap<BlueprintId, Long> redriveAt = PMap.empty();
-    PMap<Artifact, PSet<Artifact>> dependencies = PMap.empty();
-    PMap<Artifact, PSet<Artifact>> dependents = PMap.empty();
-    PMap<String, SchemaVersionValue> schemas = PMap.empty();
-    PMap<String, SchemaMigrationLockValue> schemaLocks = PMap.empty();
-    PMap<String, PSet<BlueprintId>> blockingSchemasByOwner = PMap.empty();
-    PMap<SlicePair, String> holdSignatures = PMap.empty();
+    PMap<BlueprintId, AppBlueprintValue> blueprints = PMap.empty(scans);
+    PMap<Artifact, PSet<BlueprintId>> blueprintsByArtifact = PMap.empty(scans);
+    PMap<ArtifactBase, BlueprintId> ownerByBase = PMap.empty(scans);
+    PMap<ArtifactBase, SliceTargetValue> targets = PMap.empty(scans);
+    PMap<ArtifactBase, VersionRoutingValue> routings = PMap.empty(scans);
+    PMap<ArtifactBase, SliceTargetValue> pendingTargetPuts = PMap.empty(scans);
+    PMap<Artifact, AwaitedTarget> awaitedTargets = PMap.empty(scans);
+    PMap<BlueprintId, Long> redriveAt = PMap.empty(scans);
+    PMap<Artifact, PSet<Artifact>> dependencies = PMap.empty(scans);
+    PMap<Artifact, PSet<Artifact>> dependents = PMap.empty(scans);
+    PMap<String, SchemaVersionValue> schemas = PMap.empty(scans);
+    PMap<String, SchemaMigrationLockValue> schemaLocks = PMap.empty(scans);
+    PMap<String, PSet<BlueprintId>> blockingSchemasByOwner = PMap.empty(scans);
+    PMap<SlicePair, String> holdSignatures = PMap.empty(scans);
     /// The generation of the FAILED row whose `DeploymentFailed` was already routed, so a failure handled again (its
     /// transaction was refused) is not announced twice.
-    PMap<SlicePair, Generation> failureRouted = PMap.empty();
-    PMap<BlueprintId, DeploymentApplyValue> applies = PMap.empty();
-    PMap<BlueprintId, DeploymentOutcomeValue> outcomes = PMap.empty();
-    PMap<Artifact, ArtifactJudgmentValue> judgments = PMap.empty();
+    PMap<SlicePair, Generation> failureRouted = PMap.empty(scans);
+    PMap<BlueprintId, DeploymentApplyValue> applies = PMap.empty(scans);
+    PMap<BlueprintId, DeploymentOutcomeValue> outcomes = PMap.empty(scans);
+    PMap<Artifact, ArtifactJudgmentValue> judgments = PMap.empty(scans);
     // -- slice-side fact and derived indexes (CI-3) ----------------------------------------------------------------
-    PMap<SlicePair, SliceDesiredValue> desired = PMap.empty();
-    PMap<NodeId, PSet<Artifact>> desiredByNode = PMap.empty();
-    PMap<Artifact, PSet<NodeId>> desiredByArtifact = PMap.empty();
-    PMap<ArtifactBase, PSet<Artifact>> versionsByBase = PMap.empty();
-    PMap<SlicePair, SliceObservedValue> observed = PMap.empty();
-    PMap<NodeId, PSet<Artifact>> observedByNode = PMap.empty();
-    PMap<Artifact, PSet<NodeId>> observedByArtifact = PMap.empty();
-    PSet<SlicePair> stray = PSet.empty();
-    PSet<SlicePair> divergent = PSet.empty();
-    PSet<SlicePair> failedPairs = PSet.empty();
-    PSet<SlicePair> unloadedDesired = PSet.empty();
-    PMap<SlicePair, GoalIntent> goalIntents = PMap.empty();
-    PMap<Artifact, ArtifactIntent> artifactIntents = PMap.empty();
-    PMap<SlicePair, PendingGoal> pendingGoals = PMap.empty();
-    PMap<Artifact, PSet<NodeId>> pendingByArtifact = PMap.empty();
-    PMap<NodeId, PSet<Artifact>> pendingByNode = PMap.empty();
-    PMap<SlicePair, Long> seenAt = PMap.empty();
-    PMap<SlicePair, Long> transitionedAt = PMap.empty();
-    PMap<SlicePair, ReissueMark> reissues = PMap.empty();
-    PMap<SlicePair, Long> retryAt = PMap.empty();
-    PMap<Artifact, Integer> imbalancedTicks = PMap.empty();
-    PSet<NodeId> drainLoops = PSet.empty();
+    PMap<SlicePair, SliceDesiredValue> desired = PMap.empty(scans);
+    PMap<NodeId, PSet<Artifact>> desiredByNode = PMap.empty(scans);
+    PMap<Artifact, PSet<NodeId>> desiredByArtifact = PMap.empty(scans);
+    PMap<ArtifactBase, PSet<Artifact>> versionsByBase = PMap.empty(scans);
+    PMap<SlicePair, SliceObservedValue> observed = PMap.empty(scans);
+    PMap<NodeId, PSet<Artifact>> observedByNode = PMap.empty(scans);
+    PMap<Artifact, PSet<NodeId>> observedByArtifact = PMap.empty(scans);
+    PSet<SlicePair> stray = PSet.empty(scans);
+    PSet<SlicePair> divergent = PSet.empty(scans);
+    PSet<SlicePair> failedPairs = PSet.empty(scans);
+    PSet<SlicePair> unloadedDesired = PSet.empty(scans);
+    PMap<SlicePair, GoalIntent> goalIntents = PMap.empty(scans);
+    PMap<Artifact, ArtifactIntent> artifactIntents = PMap.empty(scans);
+    PMap<SlicePair, PendingGoal> pendingGoals = PMap.empty(scans);
+    PMap<Artifact, PSet<NodeId>> pendingByArtifact = PMap.empty(scans);
+    PMap<NodeId, PSet<Artifact>> pendingByNode = PMap.empty(scans);
+    PMap<SlicePair, Long> seenAt = PMap.empty(scans);
+    PMap<SlicePair, Long> transitionedAt = PMap.empty(scans);
+    PMap<SlicePair, ReissueMark> reissues = PMap.empty(scans);
+    PMap<SlicePair, Long> retryAt = PMap.empty(scans);
+    PMap<Artifact, Integer> imbalancedTicks = PMap.empty(scans);
+    PSet<NodeId> drainLoops = PSet.empty(scans);
     // -- membership-side state (CI-4..CI-9, CI-15) -----------------------------------------------------------------
-    PMap<NodeId, ActivationDirectiveValue> directives = PMap.empty();
-    PMap<SlicePair, NodeRoutesValue> routes = PMap.empty();
-    PMap<NodeId, PSet<Artifact>> routesByNode = PMap.empty();
-    PMap<NodeId, NodePlacementValue> nodePlacements = PMap.empty();
-    PMap<String, CommunityPlacementOperationValue> placementOps = PMap.empty();
+    PMap<NodeId, ActivationDirectiveValue> directives = PMap.empty(scans);
+    PMap<SlicePair, NodeRoutesValue> routes = PMap.empty(scans);
+    PMap<NodeId, PSet<Artifact>> routesByNode = PMap.empty(scans);
+    PMap<NodeId, NodePlacementValue> nodePlacements = PMap.empty(scans);
+    PMap<String, CommunityPlacementOperationValue> placementOps = PMap.empty(scans);
     Option<ClusterConfigValue> clusterConfig = Option.none();
-    PMap<NodeId, Long> admittedAt = PMap.empty();
-    PMap<String, PSet<NodeId>> assignedByCommunity = PMap.empty();
-    PMap<String, CommunityValue> communities = PMap.empty();
-    PMap<String, GovernorAnnouncementValue> rosters = PMap.empty();
-    PMap<NodeId, Integer> rosterCount = PMap.empty();
-    PMap<String, Long> announcementSeenAt = PMap.empty();
-    PMap<NodeId, Admission> admissions = PMap.empty();
-    PMap<NodeId, NodeDepartureValue> records = PMap.empty();
-    PSet<NodeId> departed = PSet.empty();
-    PMap<NodeId, PendingDeparture> departing = PMap.empty();
-    PMap<NodeId, PendingJoin> pendingJoins = PMap.empty();
-    PMap<NodeId, PSet<Artifact>> unresponsiveByNode = PMap.empty();
-    PMap<NodeId, Long> absentSince = PMap.empty();
-    PSet<String> unjudgeableWarned = PSet.empty();
-    PSet<String> suppressedWarned = PSet.empty();
+    PMap<NodeId, Long> admittedAt = PMap.empty(scans);
+    PMap<String, PSet<NodeId>> assignedByCommunity = PMap.empty(scans);
+    PMap<String, CommunityValue> communities = PMap.empty(scans);
+    PMap<String, GovernorAnnouncementValue> rosters = PMap.empty(scans);
+    PMap<NodeId, Integer> rosterCount = PMap.empty(scans);
+    PMap<String, Long> announcementSeenAt = PMap.empty(scans);
+    PMap<NodeId, Admission> admissions = PMap.empty(scans);
+    PMap<NodeId, NodeDepartureValue> records = PMap.empty(scans);
+    PSet<NodeId> departed = PSet.empty(scans);
+    PMap<NodeId, PendingDeparture> departing = PMap.empty(scans);
+    PMap<NodeId, PendingJoin> pendingJoins = PMap.empty(scans);
+    PMap<NodeId, PSet<Artifact>> unresponsiveByNode = PMap.empty(scans);
+    PMap<NodeId, Long> absentSince = PMap.empty(scans);
+    PSet<String> unjudgeableWarned = PSet.empty(scans);
+    PSet<String> suppressedWarned = PSet.empty(scans);
     // -- the write side (5.7) --------------------------------------------------------------------------------------
-    PMap<String, Submitted> submitted = PMap.empty();
+    PMap<String, Submitted> submitted = PMap.empty(scans);
     List<TxDraft> outbox = List.of();
+    List<TxDraft> parked = List.of();
+    List<java.util.Map.Entry<Artifact, JudgmentOp>> parkedOps = List.of();
 
     ClusterModel() {}
 
@@ -146,6 +150,7 @@ public final class ClusterModel {
         c.reconcileQueued = reconcileQueued;
         c.flushQueued = flushQueued;
         c.auditDue = auditDue;
+        c.scans = scans;
         c.txSeq = txSeq;
         c.genCounter = genCounter;
         c.tickCount = tickCount;
@@ -214,6 +219,8 @@ public final class ClusterModel {
         c.suppressedWarned = suppressedWarned;
         c.submitted = submitted;
         c.outbox = outbox;
+        c.parked = parked;
+        c.parkedOps = parkedOps;
 
         return c;
     }
@@ -318,15 +325,31 @@ public final class ClusterModel {
     /// outcome merge, 4.4) built from the mirror when decided.
     public record ArtifactIntent(List<JudgmentOp> ops,
                                  List<GoalWrite> goals,
-                                 List<KVCommand.Mutation<AetherKey, AetherValue>> extras) {
+                                 List<KVCommand.Mutation<AetherKey, AetherValue>> extras,
+                                 List<RoutedEvent> routed) {
         public ArtifactIntent {
             ops = List.copyOf(ops);
             goals = List.copyOf(goals);
             extras = List.copyOf(extras);
+            routed = List.copyOf(routed);
+        }
+
+        public ArtifactIntent(List<JudgmentOp> ops,
+                              List<GoalWrite> goals,
+                              List<KVCommand.Mutation<AetherKey, AetherValue>> extras) {
+            this(ops, goals, extras, List.of());
         }
 
         public static ArtifactIntent none() {
             return new ArtifactIntent(List.of(), List.of(), List.of());
+        }
+
+        public ArtifactIntent withRouted(RoutedEvent event) {
+            var next = new ArrayList<>(routed);
+
+            next.add(event);
+
+            return new ArtifactIntent(ops, goals, extras, next);
         }
 
         public ArtifactIntent withOp(JudgmentOp op) {
@@ -334,7 +357,7 @@ public final class ClusterModel {
 
             next.add(op);
 
-            return new ArtifactIntent(next, goals, extras);
+            return new ArtifactIntent(next, goals, extras, routed);
         }
 
         public ArtifactIntent withGoal(GoalWrite goal) {
@@ -342,7 +365,7 @@ public final class ClusterModel {
 
             next.add(goal);
 
-            return new ArtifactIntent(ops, next, extras);
+            return new ArtifactIntent(ops, next, extras, routed);
         }
 
         public ArtifactIntent withoutGoalsOf(NodeId node) {
@@ -350,7 +373,8 @@ public final class ClusterModel {
                                       goals.stream().filter(goal -> !goal.pair()
                                                                          .node()
                                                                          .equals(node)).toList(),
-                                      extras);
+                                      extras,
+                                      routed);
         }
 
         public ArtifactIntent withExtra(KVCommand.Mutation<AetherKey, AetherValue> extra) {
@@ -358,7 +382,7 @@ public final class ClusterModel {
 
             next.add(extra);
 
-            return new ArtifactIntent(ops, goals, next);
+            return new ArtifactIntent(ops, goals, next, routed);
         }
     }
 

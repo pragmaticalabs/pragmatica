@@ -18,6 +18,10 @@ public record PSet<T>(PMap<T, Unit> members) {
         return (PSet<T>) EMPTY;
     }
 
+    public static <T> PSet<T> empty(ScanMeter meter) {
+        return new PSet<>(PMap.empty(meter));
+    }
+
     public int size() {
         return members.size();
     }

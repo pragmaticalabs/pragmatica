@@ -32,7 +32,6 @@ public sealed interface Failures {
 
         Outbox.artifactGoal(m, pair, SliceGoal.UNLOADED);
         m.holdSignatures = m.holdSignatures.remove(pair);
-        m.failureRouted = m.failureRouted.put(pair, row.forGeneration());
 
         return row.fatal()
                ? settle(m, ctx, pair, reason, first)
@@ -144,7 +143,12 @@ public sealed interface Failures {
 
     private static ClusterModel routeFailed(ClusterModel m, Ctx ctx, SlicePair pair, String reason, boolean first) {
         if (first) {
-            ctx.route(new RoutedEvent.DeploymentFailed(pair.artifact(), pair.node(), reason, ctx.nowMs()));
+            Outbox.artifact(m,
+                            pair.artifact(),
+                            intent -> intent.withRouted(new RoutedEvent.DeploymentFailed(pair.artifact(),
+                                                                                         pair.node(),
+                                                                                         reason,
+                                                                                         ctx.nowMs())));
         }
 
         return m;

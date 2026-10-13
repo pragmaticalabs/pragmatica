@@ -95,6 +95,13 @@ class ReviewDefectsTest {
         assertThat(w.h.model().pendingJoins.containsKey(CORE_2)).isFalse();
     }
 
+    private static long routedFailures(FsmHarness h) {
+        return h.effects(ClusterEffect.Route.class)
+                .stream()
+                .filter(route -> route.event() instanceof RoutedEvent.DeploymentFailed)
+                .count();
+    }
+
     /// Red when: a failure whose transaction was lost and is handled again by the sweep routes `DeploymentFailed` a second time.
     @Test
     void failureHandledAgainAfterALostWrite_isAnnouncedOnce() {
@@ -109,9 +116,12 @@ class ReviewDefectsTest {
         h.drain();
         var lost = List.copyOf(h.held.values());
 
+        lost.forEach(submit -> h.held.remove(submit.correlationId()));
         lost.forEach(submit -> h.settleHeld(submit, new ClusterInput.Settlement.Failed("lost")));
+        assertThat(routedFailures(h)).as("nothing is announced while no transaction was accepted").isZero();
         h.advance(Timing.DEFAULT.retryBase());
         h.advance(30_000L);
+        List.copyOf(h.held.values()).forEach(submit -> h.settleHeld(submit, h.applyTransaction(submit)));
         assertThat(h.effects(ClusterEffect.Route.class)
                     .stream()
                     .filter(route -> route.event() instanceof RoutedEvent.DeploymentFailed)

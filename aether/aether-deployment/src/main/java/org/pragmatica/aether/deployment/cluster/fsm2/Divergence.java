@@ -157,7 +157,10 @@ public sealed interface Divergence {
         m.judgments.get(artifact)
                    .flatMap(judgment -> Option.option(judgment.unresponsive().get(node)))
                    .filter(entry -> Math.min(ctx.nowMs() - entry.at(),
-                                             (ctx.monoNs() - m.incarnationStart) / 1_000_000L) >= limit)
+                                             (ctx.monoNs() - m.incarnationStart) / 1_000_000L) >= EXPIRY_FACTOR * timeoutOf(entry.goal(),
+                                                                                                                            Rows.current(m,
+                                                                                                                                         SlicePair.slicePair(node,
+                                                                                                                                                             artifact))))
                    .onPresent(_ -> expired(m, ctx, node, artifact));
 
         return m;

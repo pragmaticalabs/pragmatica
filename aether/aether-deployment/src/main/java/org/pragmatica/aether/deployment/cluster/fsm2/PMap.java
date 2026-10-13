@@ -7,7 +7,6 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
@@ -18,21 +17,22 @@ import org.pragmatica.lang.Option;
 /// (spec R-7.3.1: no single-input handler scans the store).
 ///
 /// The trie is binary over the key's hash bits; keys with an equal hash share a collision bucket. Iteration
-/// ([#entries], [#keys], [#values]) of a map larger than [#SCAN_THRESHOLD] is a scan and is counted in [#scans], which
+/// ([#entries], [#keys], [#values]) of a map larger than [#SCAN_THRESHOLD] is a scan and is counted on the map's [ScanMeter], which
 /// is how a test proves an ordinary input iterates nothing (NT-78). The few members of one index bucket (the instances of
 /// one artifact, the artifacts of one node) are below the threshold: reading a bucket is the O(instances) work 7.3 allows.
 public final class PMap<K, V> {
-    private static final PMap<?, ?> EMPTY = new PMap<>(Node.EMPTY, 0);
-    private static final AtomicLong SCANS = new AtomicLong();
+    private static final PMap<?, ?> EMPTY = new PMap<>(Node.EMPTY, 0, ScanMeter.NONE);
     /// Iterating a map of at most this many entries is not counted as a scan.
     public static final int SCAN_THRESHOLD = 64;
 
     private final Node root;
     private final int size;
+    private final ScanMeter meter;
 
-    private PMap(Node root, int size) {
+    private PMap(Node root, int size, ScanMeter meter) {
         this.root = root;
         this.size = size;
+        this.meter = meter;
     }
 
     @SuppressWarnings("unchecked")
@@ -40,9 +40,13 @@ public final class PMap<K, V> {
         return (PMap<K, V>) EMPTY;
     }
 
-    /// The number of iterations ([#entries], [#keys], [#values]) taken so far by any map in this process.
-    public static long scans() {
-        return SCANS.get();
+    /// An empty map whose iterations are counted on `meter`; maps derived from it count on the same meter.
+    public static <K, V> PMap<K, V> empty(ScanMeter meter) {
+        return new PMap<>(Node.EMPTY, 0, meter);
+    }
+
+    public ScanMeter meter() {
+        return meter;
     }
 
     public int size() {
@@ -70,7 +74,8 @@ public final class PMap<K, V> {
         return new PMap<>(updated,
                           grown[0]
                           ? size + 1
-                          : size);
+                          : size,
+                          meter);
     }
 
     public PMap<K, V> remove(K key) {
@@ -78,13 +83,13 @@ public final class PMap<K, V> {
         var updated = delete(root, 0, hash(key), key, shrunk);
 
         return shrunk[0]
-               ? new PMap<>(updated, size - 1)
+               ? new PMap<>(updated, size - 1, meter)
                : this;
     }
 
     public List<Map.Entry<K, V>> entries() {
         if (size > SCAN_THRESHOLD) {
-            SCANS.incrementAndGet();
+            meter.record();
         }
 
         return flatten(root).toList();

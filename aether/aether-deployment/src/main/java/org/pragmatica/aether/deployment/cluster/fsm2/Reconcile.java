@@ -55,6 +55,7 @@ public sealed interface Reconcile {
                          .stream()
                          .sorted(Rows.PAIR_ORDER)
                          .filter(pair -> !m.observed.containsKey(pair))
+                         .filter(pair -> !m.pendingGoals.containsKey(pair))
                          .forEach(pair -> Gc.removeDesired(m, pair));
         DepartureFlow.sweep(m, ctx);
         DepartureFlow.rereadOverdue(m, ctx);
