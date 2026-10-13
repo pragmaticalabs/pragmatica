@@ -22,9 +22,13 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.net.http.WebSocketHandshakeException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -58,12 +62,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class WebSocketEndpointTest {
     private static final List<String> PATHS = List.of("/ws/a", "/ws/b", "/ws/c");
     private static final long WAIT_SECONDS = 5;
-    private static final String UPGRADE_TO_UNKNOWN = "GET /ws/unknown HTTP/1.1\r\n" + "Host: 127.0.0.1\r\n"
-                                                     + "Upgrade: websocket\r\n" + "Connection: Upgrade\r\n"
-                                                     + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-                                                     + "Sec-WebSocket-Version: 13\r\n\r\n";
+    private static final long QUIET_MILLIS = 300;
+    private static final String UPGRADE_TO_UNKNOWN = upgrade("/ws/unknown", "websocket", "13");
 
     private final Map<String, BlockingQueue<String>> seen = new ConcurrentHashMap<>();
+    /// The session id of every message, per endpoint, in delivery order; added before the message is recorded.
+    private final Map<String, BlockingQueue<String>> sessionIds = new ConcurrentHashMap<>();
     private HttpServer server;
     private HttpClient client;
 
@@ -73,6 +77,7 @@ class WebSocketEndpointTest {
 
         for (var path : PATHS) {
             seen.put(path, new LinkedBlockingQueue<>());
+            sessionIds.put(path, new LinkedBlockingQueue<>());
             config = config.withWebSocket(webSocketEndpoint(path, () -> recording(path)));
         }
 
@@ -160,8 +165,7 @@ class WebSocketEndpointTest {
     /// `readAllBytes` returns only at end of stream, so a connection left open fails on the read timeout.
     @Test
     void unknownPath_rawUpgrade_gets404_andTheConnectionIsClosed() throws Exception {
-        try (var socket = new Socket("127.0.0.1", server.port())) {
-            socket.setSoTimeout((int) TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        try (var socket = rawSocket()) {
             socket.getOutputStream()
                   .write(UPGRADE_TO_UNKNOWN.getBytes(US_ASCII));
 
@@ -171,6 +175,110 @@ class WebSocketEndpointTest {
                                 .containsIgnoringCase("connection: close")
                                 .containsIgnoringCase("content-length: 0");
         }
+    }
+
+    /// RFC 6455 4.1: a message may arrive in fragments; the handler receives it whole, text and binary alike.
+    @Test
+    void fragmentedMessages_reachTheHandlerWhole() throws Exception {
+        var listener = new ClientListener();
+        var ws = connect("/ws/b", listener);
+
+        assertThat(next("/ws/b")).isEqualTo("open");
+        ws.sendText("hel", false).get(WAIT_SECONDS, TimeUnit.SECONDS);
+        ws.sendText("lo", true).get(WAIT_SECONDS, TimeUnit.SECONDS);
+        assertThat(next("/ws/b")).isEqualTo("text:hello");
+        assertThat(listener.texts.poll(WAIT_SECONDS, TimeUnit.SECONDS)).isEqualTo("/ws/b:hello");
+
+        ws.sendBinary(ByteBuffer.wrap(new byte[3]), false).get(WAIT_SECONDS, TimeUnit.SECONDS);
+        ws.sendBinary(ByteBuffer.wrap(new byte[2]), true).get(WAIT_SECONDS, TimeUnit.SECONDS);
+        assertThat(next("/ws/b")).isEqualTo("binary:5");
+    }
+
+    /// A fragmented message is bounded by the server's content length (65536 by default): one that grows past
+    /// it closes the connection and is never delivered.
+    @Test
+    void fragmentedMessageOverTheContentLength_closesTheConnection_undelivered() throws Exception {
+        var ws = connect("/ws/c", new ClientListener());
+
+        assertThat(next("/ws/c")).isEqualTo("open");
+        ws.sendText("x".repeat(40_000), false);
+        ws.sendText("x".repeat(40_000), true);
+        assertThat(next("/ws/c")).isEqualTo("close");
+    }
+
+    /// Two connections to one endpoint each keep their own session: every message goes to the session that
+    /// opened on that connection, and the echo goes back on it.
+    @Test
+    void concurrentConnections_onOneEndpoint_eachKeepTheirOwnSession() throws Exception {
+        var firstListener = new ClientListener();
+        var secondListener = new ClientListener();
+        var first = connect("/ws/a", firstListener);
+
+        assertThat(next("/ws/a")).isEqualTo("open");
+
+        var second = connect("/ws/a", secondListener);
+
+        assertThat(next("/ws/a")).isEqualTo("open");
+        first.sendText("one", true);
+        assertThat(next("/ws/a")).isEqualTo("text:one");
+        second.sendText("two", true);
+        assertThat(next("/ws/a")).isEqualTo("text:two");
+        assertThat(firstListener.texts.poll(WAIT_SECONDS, TimeUnit.SECONDS)).as("echo on the first connection")
+                                                                           .isEqualTo("/ws/a:one");
+        assertThat(secondListener.texts.poll(WAIT_SECONDS, TimeUnit.SECONDS)).as("echo on the second connection")
+                                                                            .isEqualTo("/ws/a:two");
+
+        var ids = List.copyOf(sessionIds.get("/ws/a"));
+
+        assertThat(ids).hasSize(4);
+        assertThat(ids.get(0)).as("two connections, two sessions").isNotEqualTo(ids.get(1));
+        assertThat(ids.get(2)).as("the first connection's text").isEqualTo(ids.get(0));
+        assertThat(ids.get(3)).as("the second connection's text").isEqualTo(ids.get(1));
+    }
+
+    /// RFC 6455 4.2.1: the `Upgrade` value is matched case-insensitively.
+    @Test
+    void upgradeHeaderValue_isMatchedCaseInsensitively() throws Exception {
+        try (var socket = rawSocket()) {
+            socket.getOutputStream()
+                  .write(upgrade("/ws/a", "WebSocket", "13").getBytes(US_ASCII));
+
+            assertThat(readHead(socket.getInputStream())).startsWith("HTTP/1.1 101");
+            assertThat(next("/ws/a")).isEqualTo("open");
+        }
+    }
+
+    /// Endpoints match the raw path, as Netty's handshake does: a percent-encoded spelling of a registered
+    /// path is a different path, refused with 404, never handed to the plain HTTP handler.
+    @Test
+    void percentEncodedEndpointPath_isRefusedWith404() throws Exception {
+        try (var socket = rawSocket()) {
+            socket.getOutputStream()
+                  .write(upgrade("/ws/%61", "websocket", "13").getBytes(US_ASCII));
+
+            assertThat(new String(socket.getInputStream().readAllBytes(), US_ASCII)).startsWith("HTTP/1.1 404");
+        }
+        assertThat(seen.get("/ws/a")).isEmpty();
+    }
+
+    /// RFC 6455 4.4: an unsupported version gets 426 with the connection kept, and the client may retry on
+    /// it, here to a different endpoint.
+    @Test
+    void unsupportedVersion_gets426_andARetryOnTheSameConnectionHandshakes() throws Exception {
+        try (var socket = rawSocket()) {
+            socket.getOutputStream()
+                  .write(upgrade("/ws/a", "websocket", "99").getBytes(US_ASCII));
+
+            assertThat(readHead(socket.getInputStream())).startsWith("HTTP/1.1 426")
+                                                         .containsIgnoringCase("sec-websocket-version: 13");
+
+            socket.getOutputStream()
+                  .write(upgrade("/ws/b", "websocket", "13").getBytes(US_ASCII));
+
+            assertThat(readHead(socket.getInputStream())).startsWith("HTTP/1.1 101");
+            assertThat(next("/ws/b")).isEqualTo("open");
+        }
+        assertThat(seen.get("/ws/a")).isEmpty();
     }
 
     /// Control: the same server answers plain HTTP, including a plain GET on an endpoint path.
@@ -202,6 +310,10 @@ class WebSocketEndpointTest {
         assertThat(next(path)).as("Close delivered on %s", path).isEqualTo("close");
         assertThat(listener.closed.get(WAIT_SECONDS, TimeUnit.SECONDS)).as("close acknowledged on %s", path)
                                                                        .isEqualTo(WebSocket.NORMAL_CLOSURE);
+        assertThat(seen.get(path).poll(QUIET_MILLIS, TimeUnit.MILLISECONDS)).as("Close delivered exactly once on %s", path)
+                                                                           .isNull();
+        assertThat(Set.copyOf(sessionIds.get(path))).as("Open, Text and Close share one session on %s", path)
+                                                     .hasSize(1);
         PATHS.stream()
              .filter(other -> !other.equals(path))
              .forEach(other -> assertThat(seen.get(other)).as("handler of %s", other).isEmpty());
@@ -218,26 +330,60 @@ class WebSocketEndpointTest {
                    .poll(WAIT_SECONDS, TimeUnit.SECONDS);
     }
 
+    private Socket rawSocket() throws IOException {
+        var socket = new Socket("127.0.0.1", server.port());
+
+        socket.setSoTimeout((int) TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+
+        return socket;
+    }
+
+    private static String upgrade(String path, String upgradeValue, String version) {
+        return "GET " + path + " HTTP/1.1\r\n" + "Host: 127.0.0.1\r\n" + "Upgrade: " + upgradeValue + "\r\n"
+               + "Connection: Upgrade\r\n" + "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+               + "Sec-WebSocket-Version: " + version + "\r\n\r\n";
+    }
+
+    /// Reads one response head, up to the blank line, leaving the connection open.
+    private static String readHead(InputStream in) throws IOException {
+        var head = new StringBuilder();
+
+        while (!head.toString().endsWith("\r\n\r\n")) {
+            var next = in.read();
+
+            if (next < 0) {
+                break;
+            }
+            head.append((char) next);
+        }
+
+        return head.toString();
+    }
+
     private URI uri(String scheme, String path) {
         return URI.create(scheme + "://127.0.0.1:" + server.port() + path);
     }
 
     /// Records every message by kind, echoes text prefixed with the endpoint path, closes on "bye".
     private WebSocketHandler recording(String path) {
-        return (session, message) -> record(path, seen.get(path), session, message);
+        return (session, message) -> record(path, session, message);
     }
 
-    private static void record(String path, BlockingQueue<String> log, WebSocketSession session, WebSocketMessage message) {
+    private void record(String path, WebSocketSession session, WebSocketMessage message) {
+        var log = seen.get(path);
+
+        sessionIds.get(path).add(session.id());
         switch (message) {
             case WebSocketMessage.Open _ -> log.add("open");
             case WebSocketMessage.Text text -> onText(path, log, session, text.content());
-            case WebSocketMessage.Binary _ -> log.add("binary");
+            case WebSocketMessage.Binary binary -> log.add("binary:" + binary.content().length);
             case WebSocketMessage.Close _ -> log.add("close");
         }
     }
 
+    /// Long texts are recorded by length, so a failure message stays readable.
     private static void onText(String path, BlockingQueue<String> log, WebSocketSession session, String text) {
-        log.add("text:" + text);
+        log.add("text:" + (text.length() > 100 ? text.length() + " chars" : text));
         if ("bye".equals(text)) {
             session.close();
         } else {

@@ -13,6 +13,16 @@
 - `Close` is delivered exactly once, when an opened connection goes inactive. That covers a client close
   frame, a server-side `WebSocketSession.close()`, and a connection dropped without a close frame.
   [verified: `integrations/net/http-server/src/test/java/org/pragmatica/http/server/WebSocketEndpointTest.java`]
+- A fragmented message reaches the handler whole, text and binary alike, bounded by the server's content
+  length; one that grows past it closes the connection undelivered. Delivering frames at all is new, so
+  without aggregation the handler would have taken the first fragment for the whole message.
+  [verified: `integrations/net/http-server/src/test/java/org/pragmatica/http/server/WebSocketEndpointTest.java`]
+- Endpoints match the raw request path, the form Netty's handshake checks, so `/ws/%61` is refused rather
+  than handed to the plain HTTP handler. An unsupported `Sec-WebSocket-Version` is answered with `426`
+  before anything is installed, so a client may retry on the same connection, to any endpoint.
+  [verified: `integrations/net/http-server/src/test/java/org/pragmatica/http/server/WebSocketEndpointTest.java`]
+- Requests the upgrade router consumes are released; a PARANOID leak-detector test pins it.
+  [verified: `integrations/net/http-server/src/test/java/org/pragmatica/http/server/WebSocketBufferLeakTest.java`]
 - An upgrade to a path with no registered endpoint is refused with `404` and the connection is closed. It
   previously reached the plain HTTP handler.
   [verified: `integrations/net/http-server/src/test/java/org/pragmatica/http/server/WebSocketEndpointTest.java`]

@@ -281,7 +281,7 @@ final class NettyHttpServer implements HttpServer {
                 pipeline.addLast(new ChunkedWriteHandler());
             }
             // #2184: one router per channel installs the protocol handler for the requested endpoint only
-            pipeline.addLast(new WebSocketUpgradeRouter(wsEndpoints));
+            pipeline.addLast(new WebSocketUpgradeRouter(wsEndpoints, config.maxContentLength()));
             // Create a new handler instance per channel (not @Sharable)
             pipeline.addLast(new HttpRequestHandler(handler, wsEndpoints));
         }
@@ -293,13 +293,19 @@ final class NettyHttpServer implements HttpServer {
     /// handler for the endpoint the request names and passes the request into its handshake. An upgrade to a
     /// path with no endpoint is refused with 404 and the connection is closed. Any other message passes through
     /// untouched.
+    ///
+    /// Once handed over, the handshake either completes or fails with the connection closed: the endpoint is
+    /// matched on the raw path, as Netty's handshake path check is, and a version Netty cannot handshake is
+    /// answered with 426 here, before anything is installed, so a client may retry on the same connection.
     private static class WebSocketUpgradeRouter extends ChannelInboundHandlerAdapter {
         private static final Logger log = LoggerFactory.getLogger(WebSocketUpgradeRouter.class);
 
         private final Map<String, WebSocketEndpoint> wsEndpoints;
+        private final int maxMessageLength;
 
-        WebSocketUpgradeRouter(Map<String, WebSocketEndpoint> wsEndpoints) {
+        WebSocketUpgradeRouter(Map<String, WebSocketEndpoint> wsEndpoints, int maxMessageLength) {
             this.wsEndpoints = wsEndpoints;
+            this.maxMessageLength = maxMessageLength;
         }
 
         @Contract
@@ -313,20 +319,41 @@ final class NettyHttpServer implements HttpServer {
         }
 
         private void route(ChannelHandlerContext ctx, FullHttpRequest request) {
-            var path = new QueryStringDecoder(request.uri()).path();
+            var path = rawPath(request.uri());
 
-            option(wsEndpoints.get(path)).onPresent(endpoint -> handOver(ctx, request, endpoint))
+            option(wsEndpoints.get(path)).onPresent(endpoint -> accept(ctx, request, endpoint))
                   .onEmpty(() -> refuse(ctx, request, path));
         }
 
+        private void accept(ChannelHandlerContext ctx, FullHttpRequest request, WebSocketEndpoint endpoint) {
+            if (isSupportedVersion(request)) {
+                handOver(ctx, request, endpoint);
+            } else {
+                refuseVersion(ctx, request);
+            }
+        }
+
         /// The handshake handler releases the request and fires `HandshakeComplete`, which
-        /// [HttpRequestHandler] turns into the endpoint's session and `Open`.
+        /// [HttpRequestHandler] turns into the endpoint's session and `Open`. The frame aggregator sits after the
+        /// protocol handler, so a fragmented message reaches the handler whole; one longer than the configured
+        /// content length closes the connection.
         private void handOver(ChannelHandlerContext ctx, FullHttpRequest request, WebSocketEndpoint endpoint) {
+            ctx.pipeline().addAfter(ctx.name(), "ws-frame-aggregator", new WebSocketFrameAggregator(maxMessageLength));
             ctx.pipeline()
                .addAfter(ctx.name(),
-                         null,
+                         "ws-protocol",
                          new WebSocketServerProtocolHandler(protocolConfig(endpoint.path())));
             ctx.fireChannelRead(request);
+        }
+
+        private static boolean isSupportedVersion(FullHttpRequest request) {
+            return option(new WebSocketServerHandshakerFactory(request.uri(), null, false).newHandshaker(request)).isPresent();
+        }
+
+        /// RFC 6455 4.4: 426 names the supported version and keeps the connection, so the client may retry.
+        private static void refuseVersion(ChannelHandlerContext ctx, FullHttpRequest request) {
+            request.release();
+            WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel());
         }
 
         /// `checkStartsWith` lets a query string (`/ws/events?token=...`) through the handshake handler's own
@@ -423,7 +450,7 @@ final class NettyHttpServer implements HttpServer {
         /// #2184: the endpoint is resolved from the handshake itself, so the session exists only once the
         /// handshake has completed, and `Open` is always the first message the handler sees.
         private Option<WebSocketEndpoint> endpointOf(WebSocketServerProtocolHandler.HandshakeComplete handshake) {
-            return option(wsEndpoints.get(new QueryStringDecoder(handshake.requestUri()).path()));
+            return option(wsEndpoints.get(rawPath(handshake.requestUri())));
         }
 
         private static void open(ChannelHandlerContext ctx, WebSocketEndpoint endpoint) {
@@ -477,6 +504,16 @@ final class NettyHttpServer implements HttpServer {
 
             return new NettyRequestContext(requestId, method, path, headers, queryParams, body);
         }
+    }
+
+    /// #2184: the request path exactly as sent, without the query. Netty's handshake compares the raw URI, so
+    /// endpoints are matched in the same form: `/ws/%61` is not `/ws/a`.
+    private static String rawPath(String uri) {
+        var query = uri.indexOf('?');
+
+        return query < 0
+               ? uri
+               : uri.substring(0, query);
     }
 
     /// WebSocket state stored per channel.
