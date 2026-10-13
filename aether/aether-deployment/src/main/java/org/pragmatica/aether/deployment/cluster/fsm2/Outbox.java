@@ -688,8 +688,6 @@ public sealed interface Outbox {
         return Reconcile.request(awaitEvents(m, draft), ctx);
     }
 
-    /// A removal is sent again at the mirror's current values: a key that is gone needs no removal, one whose value moved is removed at
-    /// its new value. Nothing else derives it, because the blueprint is already unindexed.
     /// A parked removal is derived again from the mirror: a blueprint removal at the current values of its keys, a directive removal (R-4.3.3)
     /// only while the node stays departed with no directive.
     private static Option<TxDraft> refreshed(ClusterModel m, TxDraft draft) {
@@ -698,6 +696,8 @@ public sealed interface Outbox {
                : refreshedRemoval(m, draft);
     }
 
+    /// A removal is sent again at the mirror's current values: a key that is gone needs no removal, one whose value moved is removed at
+    /// its new value. Nothing else derives it, because the blueprint is already unindexed.
     private static Option<TxDraft> refreshedRemoval(ClusterModel m, TxDraft draft) {
         var current = draft.mutations()
                            .stream()
@@ -829,6 +829,8 @@ public sealed interface Outbox {
 
     /// R-4.3.3 refused: derived again from the mirror at once, at most [#GOAL_RESUBMISSIONS] times, then parked for the next reconcile (6.2:
     /// "re-read; stop if the record moved; 5, then the tick").
+    // FER: past the bound the removal is parked, not dropped. Guarantee: the record of a terminated id is removed as soon as the applier accepts
+    // a removal built from the then-current rows; mechanism: `awaitEvents` keeps it and `replayAwaiting` derives it again at the next reconcile.
     private static ClusterModel rederiveDirectiveRemoval(ClusterModel m, TxDraft draft) {
         if (draft.attempt() >= GOAL_RESUBMISSIONS) {
             return awaitEvents(m, draft);
