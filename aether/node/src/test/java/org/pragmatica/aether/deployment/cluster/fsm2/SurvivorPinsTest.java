@@ -121,8 +121,8 @@ class SurvivorPinsTest {
         h.deliver(new ClusterInput.Reconcile());
         var settled = judgmentWrites(h);
 
-        h.deliver(new ClusterInput.Reconcile());
-        h.deliver(new ClusterInput.Reconcile());
+        h.advance(31_000L);
+        h.advance(31_000L);
         assertThat(judgmentWrites(h)).as("no further judgment write once the exclusion is recorded").isEqualTo(settled);
     }
 
