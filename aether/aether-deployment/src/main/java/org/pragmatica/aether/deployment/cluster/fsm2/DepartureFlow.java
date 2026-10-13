@@ -43,13 +43,15 @@ import org.pragmatica.lang.Option;
 /// - The epoch is leader-assigned (MQ-4): a departure keeps `epochOf(n)`, an admission writes `epochOf(n) + 1`.
 public sealed interface DepartureFlow {
     // -- C17 / C17s: the fenced record -----------------------------------------------------------------------------
-    /// C17: a membership departure input for `node`. The removal clears `joined[n]` whether or not a departure is recorded (R-2.11). The guard
-    /// reads the state before the clearing: a node whose record is superseded (joined, same process) is not departed, so its removal is
+    /// C17: a membership departure input for `node`. The removal clears `joined[n]` whether or not a departure is recorded (R-2.11), and takes the
+    /// node out of `inherited` (H-1, round 1 W4): from here on the departure is this leader's own decision, and only a `WorkerJoin` supersedes it.
+    /// The guard reads the state before the clearing: a node whose record is superseded (joined, same process) is not departed, so its removal is
     /// recorded like any other.
     static ClusterModel onDeparture(ClusterModel m, Ctx ctx, NodeId node, DepartureCause cause) {
         var recorded = m.departed.contains(node) || m.departing.containsKey(node);
 
         Joins.clearJoined(m, node);
+        m.inherited = m.inherited.remove(node);
 
         return recorded
                ? m

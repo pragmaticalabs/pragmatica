@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
+import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.KvPut;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -849,5 +850,75 @@ class JoinedEvidenceTest {
         assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
         assertThat(w.h.warns("identity-process-mismatch")).isNotEmpty();
         assertThat(w.counts(W1)).isFalse();
+    }
+
+    // Red when: a Rebuild snapshot alone promotes a listed core at C1 (a legal window of one nanosecond is already complete at the first tick, never
+    // at Rebuild itself).
+    @Test
+    void rebuild_neverPromotesAListedCore_evenWithTheSmallestLegalWindow() {
+        var settings = Settings.settings(FsmHarness.SELF,
+                                         DeploymentAtomicity.ALL_OR_NOTHING,
+                                         Set.of(),
+                                         AbsenceBounds.absenceBounds(255_000_000_000L, 170_000_000_000L, 60_000_000_000L, 1L).unwrap());
+        var w = new MbWorld(settings);
+
+        ALL_CORES.forEach(core -> w.cores.add(core));
+        w.seams(s -> s.withCountedCores(ALL_CORES).withReady(ALL_CORES).withCoreView(Option.some(ALL_CORES)));
+        w.admit(N, TOKEN_2);
+        w.directive(N, ActivationDirectiveValue.core())
+         .record(N, DepartureState.DEPARTED, E, TOKEN_2, DepartureCause.NODE_REMOVED)
+         .activate();
+
+        assertThat(w.h.model().joined.isEmpty()).as("not at Rebuild").isTrue();
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        assertThat(stateOf(w, N)).isEqualTo(Option.some(DepartureState.DEPARTED));
+        w.h.advance(TICK_MS + 1);
+        assertThat(epochOf(w, N)).as("at the first tick, once the window has elapsed").isEqualTo(Option.some(E + 1));
+    }
+
+    // W3. Red when: C17b stays deferred for ever for a core that remains in the view although its DEPARTED record names another process than the one
+    // membership admitted (DEPARTED(e, p1), admission p2 known): the window resolves, the record is not superseded (J8), and the rows of p1 must go.
+    @Test
+    void nt131_c17b_proceeds_whenTheWindowResolvesWithoutSupersession() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, 0x7777L);
+        w.admit(CORE_3, 0x3333L);
+        w.target(ORDERS, 1, "CORE_ONLY")
+         .directive(CORE_2, ActivationDirectiveValue.core())
+         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), TOKEN_2)
+         .record(CORE_2, DepartureState.DEPARTED, E, TOKEN_2, DepartureCause.NODE_REMOVED)
+         .seams(s -> s.withCoreView(Option.some(ALL_CORES)))
+         .activate();
+
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("deferred while the window is open").isEmpty();
+        run(w, SUSPICION_MS - 2 * TICK_MS);
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).isEmpty();
+        run(w, 4 * TICK_MS);
+
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("once the window has resolved without supersession").isNotEmpty();
+        assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).as("the rows of the departed process go").isFalse();
+        assertThat(stateOf(w, CORE_2)).as("another process: not superseded (J8)").isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+    }
+
+    // W4. Red when: a removal input processed after Rebuild leaves the worker in `inherited`: a stale fresh announcement then re-admits a worker whose
+    // departure the leader has just confirmed (the flicker).
+    @Test
+    void nt133_aRemovalInput_takesTheWorkerOutOfInherited() {
+        var w = lostReadmission(DepartureCause.WORKER_LEAVE, COMMUNITY_WITHOUT_W1);
+
+        assertThat(w.h.model().inherited.contains(W1)).isTrue();
+        w.h.deliver(new ClusterInput.WorkerLeave(W1));
+        assertThat(w.h.model().inherited.contains(W1)).as("the departure is now this leader's own decision").isFalse();
+        w.announce(C, GOV, W1, M1, M2, M3, M4);
+        w.refreshSeams(s -> s.withLocalAlive(Option.some(COMMUNITY)));
+
+        assertThat(stateOf(w, W1)).isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        assertThat(w.counts(W1)).isFalse();
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admissionOf(W1)));
+        assertThat(epochOf(w, W1)).as("only a WorkerJoin supersedes it").isEqualTo(Option.some(E + 1));
     }
 }

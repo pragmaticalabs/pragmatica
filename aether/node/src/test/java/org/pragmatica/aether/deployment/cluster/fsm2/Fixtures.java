@@ -67,7 +67,8 @@ final class Fixtures {
                                     SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
                                     MembershipConfig.membershipConfig().splitTimeout(),
                                     GovernorAnnouncer.DEFAULT_REANNOUNCE_INTERVAL,
-                                    ClusterTimeouts.clusterTimeouts().communityAbsence());
+                                    ClusterTimeouts.clusterTimeouts().communityAbsence())
+                            .unwrap();
     }
 
     static long ms(long nanos) {

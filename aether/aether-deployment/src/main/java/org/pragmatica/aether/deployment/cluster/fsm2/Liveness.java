@@ -87,10 +87,13 @@ public sealed interface Liveness {
         return m;
     }
 
-    /// G-4: a departed `node` that this leader's view lists is liveness-pending, with its window unresolved, unless a removal input broke the
-    /// listing. Only the removal of its rows waits.
+    /// G-4: a departed `node` that this leader's view lists is liveness-pending, with its window unresolved: until the window completes (the node
+    /// becomes joined, and the record is superseded unless it names another process) or a removal input broke the listing. Only the removal of its
+    /// rows waits; once the window has resolved either way, C17b proceeds.
     static boolean isPending(ClusterModel m, NodeId node) {
-        return ! m.livenessVetoed.contains(node) && isListed(m, node);
+        return ! m.livenessVetoed.contains(node)
+               && !m.joined.contains(node)
+               && isListed(m, node);
     }
 
     private static boolean isListed(ClusterModel m, NodeId node) {

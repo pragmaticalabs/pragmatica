@@ -52,8 +52,8 @@ public sealed interface Joins {
     }
 
     /// R-2.11 (a): `node` is joined. A join input processed after `Rebuild` joins the node in every row that admits it: J0, J2, J3, the J8
-    /// core arm (`write`) and J5/J6. J1 and the J8 worker arm refuse it, and J7 defers it, so none of them joins it `[guess: C16 says "add n
-    /// to joined"; a refused or deferred join is not an admission, and counting such a worker would contradict J1 and J7 ("no write")]`.
+    /// core arm (`write`) and J5/J6. J1 and the J8 worker arm refuse it, and J7 defers it, so none of them joins it: a refused or deferred join
+    /// is not an admission (CTO ruling, f-mq4 round 1, item 5; C15/C16 "add n to joined" applies to admitting rows only).
     /// Record it, recompute `departed`, and reconcile when the node is counted from now on (its DEPARTED record was superseded).
     static ClusterModel markJoined(ClusterModel m, Ctx ctx, NodeId node) {
         var wasDeparted = m.departed.contains(node);

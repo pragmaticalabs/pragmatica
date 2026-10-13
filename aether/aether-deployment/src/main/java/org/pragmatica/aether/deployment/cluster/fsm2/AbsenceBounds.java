@@ -4,7 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// The absence bounds of the departure backstop (spec R-2.14, R-2.14b, R-2.14c) and the core suspicion window (R-2.11 (b)), in
@@ -17,26 +22,33 @@ import org.pragmatica.lang.io.TimeSpan;
 /// - `coreSuspicion` = `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER`, the upper bound of one SWIM suspicion
 ///   window (R-2.14): how long a core must stay listed in this leader's core view to count as alive `[guess: one window, per the D-4 (ii) ruling]`.
 public record AbsenceBounds(long coreRemoval, long workerRemoval, long announcementFreshness, long coreSuspicion) {
-    public static AbsenceBounds absenceBounds(long coreRemovalNs,
-                                              long workerRemovalNs,
-                                              long announcementFreshnessNs,
-                                              long coreSuspicionNs) {
-        return new AbsenceBounds(coreRemovalNs, workerRemovalNs, announcementFreshnessNs, coreSuspicionNs);
+    private static final Fn1<Cause, Long> NON_POSITIVE_WINDOW = Causes.forOneValue("The core suspicion window must be positive, was %s ns");
+
+    /// A bounds record is valid only with a positive suspicion window: with a window of 0 a core counted as alive the moment it is first listed,
+    /// so a `Rebuild` snapshot alone would promote it at C1 (R-2.11, D-4 (ii)).
+    public static Result<AbsenceBounds> absenceBounds(long coreRemovalNs,
+                                                      long workerRemovalNs,
+                                                      long announcementFreshnessNs,
+                                                      long coreSuspicionNs) {
+        return Verify.ensure(coreSuspicionNs, Verify.Is::positive, NON_POSITIVE_WINDOW).map(window -> new AbsenceBounds(coreRemovalNs,
+                                                                                                                        workerRemovalNs,
+                                                                                                                        announcementFreshnessNs,
+                                                                                                                        window));
     }
 
     /// R-2.14 / R-2.14b / R-2.14c from the configured terms.
-    public static AbsenceBounds derive(TimeSpan suspectTimeout,
-                                       TimeSpan workerSuspectTimeout,
-                                       int lhmMaxScore,
-                                       double clusterSizeWindowMultiplier,
-                                       TimeSpan splitTimeout,
-                                       TimeSpan reannounceInterval,
-                                       TimeSpan communityAbsence) {
+    public static Result<AbsenceBounds> derive(TimeSpan suspectTimeout,
+                                               TimeSpan workerSuspectTimeout,
+                                               int lhmMaxScore,
+                                               double clusterSizeWindowMultiplier,
+                                               TimeSpan splitTimeout,
+                                               TimeSpan reannounceInterval,
+                                               TimeSpan communityAbsence) {
         var window = lhmMaxScore * clusterSizeWindowMultiplier;
         var coreSuspicion = (long)(suspectTimeout.nanos() * window);
         var coreRemoval = coreSuspicion + splitTimeout.nanos();
         var workerRemoval = (long)(workerSuspectTimeout.nanos() * window) + reannounceInterval.nanos() + communityAbsence.nanos();
 
-        return new AbsenceBounds(coreRemoval, workerRemoval, 2 * reannounceInterval.nanos(), coreSuspicion);
+        return absenceBounds(coreRemoval, workerRemoval, 2 * reannounceInterval.nanos(), coreSuspicion);
     }
 }

@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 
 import org.junit.jupiter.api.Test;
 
@@ -250,8 +251,8 @@ class SettingsSourcedTest {
         assertThat(ms(bounds.coreRemoval())).as("B_rm = the window + splitTimeout").isEqualTo(255_000L);
         assertThat(ms(bounds.workerRemoval())).as("B_w").isEqualTo(170_000L);
         assertThat(ms(bounds.announcementFreshness())).as("S_ann").isEqualTo(60_000L);
-        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L)).isEqualTo(new AbsenceBounds(1L, 2L, 3L, 4L));
-        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).coreSuspicion()).isEqualTo(4L);
+        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap()).isEqualTo(new AbsenceBounds(1L, 2L, 3L, 4L));
+        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap().coreSuspicion()).isEqualTo(4L);
     }
 
     // Red when: an admission does not carry the process it was built with, or `withProcess` keeps the old one.
@@ -311,5 +312,22 @@ class SettingsSourcedTest {
             assertThat(settings.process()).as("process, last=" + last).isEqualTo(process);
             assertThat(settings.jitter().applyAsDouble("x")).as("jitter, last=" + last).isEqualTo(0.25d);
         }
+    }
+
+    // Red when: an absence bounds record can be built with a suspicion window that is not positive (W5): a window of 0 counts a core as alive the moment
+    // it is first listed, so a Rebuild snapshot alone would promote it at C1.
+    @Test
+    void absenceBounds_refuseAWindowThatIsNotPositive() {
+        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 0L).isFailure()).as("zero").isTrue();
+        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, -1L).isFailure()).as("negative").isTrue();
+        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 1L).isSuccess()).as("the smallest legal window").isTrue();
+        assertThat(AbsenceBounds.derive(TimeSpan.timeSpan(0).seconds(),
+                                        TimeSpan.timeSpan(5).seconds(),
+                                        8,
+                                        3.0,
+                                        TimeSpan.timeSpan(15).seconds(),
+                                        TimeSpan.timeSpan(30).seconds(),
+                                        TimeSpan.timeSpan(60).seconds())
+                                .isFailure()).as("a zero suspect timeout derives a zero window").isTrue();
     }
 }

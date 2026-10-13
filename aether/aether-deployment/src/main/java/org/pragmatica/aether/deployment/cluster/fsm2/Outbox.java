@@ -190,12 +190,13 @@ public sealed interface Outbox {
                : m.leader.fold(() -> m, leader -> submit(m, ctx, drafts, leader));
     }
 
-    /// Event-only intents (a blueprint removal, the judgment operations that answer an event) survive a suspension: nothing
-    /// re-derives them. A failure's operations are not parked: the failure sweep decides them again, and parking them would count twice.
+    /// Event-only intents (a blueprint removal, the removal of a terminated node's departure record, R-4.3.3, and the judgment operations that
+    /// answer an event) survive a suspension: nothing re-derives them. A failure's operations are not parked: the failure sweep decides them
+    /// again, and parking them would count twice. A deposition or a `Rebuild` still discards them (a named limit of R-4.3.3: the record of that
+    /// one terminated id is kept).
     private static ClusterModel park(ClusterModel m) {
         m.parked = Stream.concat(m.parked.stream(),
-                                 m.outbox.stream().filter(draft -> draft.kind() == SubmitKind.BLUEPRINT_REMOVAL))
-                         .toList();
+                                 m.outbox.stream().filter(Outbox::isParkedRemoval)).toList();
         m.parkedOps = Stream.concat(m.parkedOps.stream(),
                                     m.artifactIntents.entries()
                                                      .stream()
@@ -208,6 +209,10 @@ public sealed interface Outbox {
                             .toList();
 
         return m;
+    }
+
+    private static boolean isParkedRemoval(TxDraft draft) {
+        return draft.kind() == SubmitKind.BLUEPRINT_REMOVAL || draft.kind() == SubmitKind.DIRECTIVE_REMOVAL;
     }
 
     private static ClusterModel clearIntents(ClusterModel m) {
@@ -723,7 +728,7 @@ public sealed interface Outbox {
     /// An intent no sweep derives again (a blueprint removal, the event-only judgment operations) is kept when its write is lost,
     /// failed or refused, and sent again by the next reconcile (`replayAwaiting`).
     private static ClusterModel awaitEvents(ClusterModel m, TxDraft draft) {
-        if (draft.kind() == SubmitKind.BLUEPRINT_REMOVAL || draft.kind() == SubmitKind.DIRECTIVE_REMOVAL) {
+        if (isParkedRemoval(draft)) {
             m.parked = Stream.concat(m.parked.stream(), Stream.of(draft)).toList();
         }
 

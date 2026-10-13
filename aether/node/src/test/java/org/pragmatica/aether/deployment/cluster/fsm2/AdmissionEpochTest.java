@@ -405,4 +405,39 @@ class AdmissionEpochTest {
 
         assertThat(epochOf(w, W1)).isEqualTo(Option.some(3L));
     }
+
+    // Red when: an R-4.3.3 decided while the FSM is suspended (the committed leader names another node) is dropped with the rest of the suspended
+    // flush instead of parked, so the record of the terminated id is kept after the resume.
+    @Test
+    void spotExit_whileSuspended_isParkedAndReplayedOnTheResume() {
+        var w = spotWorker();
+
+        w.h.commitLeader(CORE_3, 50L);
+        w.h.drain();
+        w.h.seedRemove(new ActivationDirectiveKey(W1));
+        w.h.drain();
+        assertThat(w.recordOf(W1).isPresent()).as("nothing is submitted while suspended").isTrue();
+        w.h.commitLeader(FsmHarness.SELF, 51L);
+        w.h.drain();
+
+        assertThat(w.recordOf(W1).isEmpty()).as("replayed by the reconcile the resume queues").isTrue();
+        assertThat(w.present(new SliceObservedKey(W1, ORDERS))).isFalse();
+    }
+
+    // Red when: a parked R-4.3.3 is replayed without its guard: a node that was re-admitted (its directive back) during the suspension loses its record.
+    @Test
+    void spotExit_parkedAcrossASuspension_leavesAReadmittedNodeAlone() {
+        var w = spotWorker();
+
+        w.h.commitLeader(CORE_3, 50L);
+        w.h.drain();
+        w.h.seedRemove(new ActivationDirectiveKey(W1));
+        w.h.drain();
+        w.h.seed(new ActivationDirectiveKey(W1), Fixtures.worker("east-w-0"));
+        w.h.drain();
+        w.h.commitLeader(FsmHarness.SELF, 51L);
+        w.h.drain();
+
+        assertThat(stateOf(w, W1)).as("the directive is back: the record stays").isEqualTo(Option.some(DepartureState.DEPARTED));
+    }
 }
