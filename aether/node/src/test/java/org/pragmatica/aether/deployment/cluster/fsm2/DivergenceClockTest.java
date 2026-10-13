@@ -282,6 +282,27 @@ class DivergenceClockTest {
                 .count();
     }
 
+    // C10d, R-6.1.2
+    // Red when: the divergence age ignores `transitionedAt_g`: a row of the goal's generation that moved at wall time t restarts the clock at t,
+    // so a node that is still making progress is not re-issued to 120 s after the ISSUE of the goal.
+    @Test
+    void divergenceAge_countsFromTheRowsTransition_notOnlyFromTheIssue() {
+        var h = withTarget(1);
+        var node = node(h, N1, 11);
+
+        h.advance(60_000L);
+        node.writes(ORDERS, SliceObservedState.LOADING);
+        h.drain();
+        var before = reissues(h);
+
+        h.advance(61_000L);
+        h.deliver(new ClusterInput.Reconcile());
+        assertThat(reissues(h)).as("121 s after the issue, 61 s after the transition: no re-issue").isEqualTo(before);
+        h.advance(60_000L);
+        h.deliver(new ClusterInput.Reconcile());
+        assertThat(reissues(h)).as("121 s after the transition: re-issued").isGreaterThan(before);
+    }
+
     // NT-102
     // Red when: a late ACTIVE for g triggers a goal or counts; control: UNLOADED for g clears unresponsive.
     @Test

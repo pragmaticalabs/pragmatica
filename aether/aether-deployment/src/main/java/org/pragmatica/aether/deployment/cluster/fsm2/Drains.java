@@ -153,13 +153,13 @@ public sealed interface Drains {
     private static ClusterModel deployReplacement(ClusterModel m, Ctx ctx, Artifact artifact, NodeId node) {
         var current = Rows.allInstances(m, artifact).size();
 
-        Outbox.goal(m,
-                    SlicePair.slicePair(node, artifact),
-                    SliceGoal.LOADED,
-                    GoalMode.FRESH,
-                    Option.none(),
-                    "drain-replacement");
-        ctx.route(new RoutedEvent.ReconciliationAdjustment(artifact, current, current + 1));
+        Outbox.goalAnnouncing(m,
+                              SlicePair.slicePair(node, artifact),
+                              SliceGoal.LOADED,
+                              GoalMode.FRESH,
+                              Option.none(),
+                              "drain-replacement",
+                              List.of(new RoutedEvent.ReconciliationAdjustment(artifact, current, current + 1)));
 
         return m;
     }

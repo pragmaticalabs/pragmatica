@@ -73,9 +73,21 @@ public sealed interface Outbox {
                              GoalMode mode,
                              Option<Generation> given,
                              String why) {
+        return goalAnnouncing(m, pair, goal, mode, given, why, List.of());
+    }
+
+    /// As [#goal], and `routed` goes out when the transaction that carries this goal is accepted: an event that describes a decision
+    /// is announced only once the decision is durable (a suspended, deposed or refused leader announces nothing).
+    static ClusterModel goalAnnouncing(ClusterModel m,
+                                       SlicePair pair,
+                                       SliceGoal goal,
+                                       GoalMode mode,
+                                       Option<Generation> given,
+                                       String why,
+                                       List<RoutedEvent> routed) {
         return leaving(m, pair.node())
                ? m
-               : record(m, pair, goal, mode, given, why);
+               : record(m, pair, goal, mode, given, why, routed);
     }
 
     /// A node that is departing or departed gets no new goals: its rows are removed with its departure (R-4.3.0, R-4.3.5).
@@ -88,14 +100,16 @@ public sealed interface Outbox {
                                        SliceGoal goal,
                                        GoalMode mode,
                                        Option<Generation> given,
-                                       String why) {
+                                       String why,
+                                       List<RoutedEvent> routed) {
         var generation = switch (mode) {
             case FRESH -> freshGeneration(m);
             case ADOPT -> given.or(() -> freshGeneration(m));
             case REISSUE -> m.desired.get(pair).map(SliceDesiredValue::generation).or(() -> freshGeneration(m));
         };
 
-        m.goalIntents = m.goalIntents.put(pair, new GoalIntent(goal, mode, generation, m.observed.get(pair), why));
+        m.goalIntents = m.goalIntents.put(pair,
+                                          new GoalIntent(goal, mode, generation, m.observed.get(pair), why, routed));
         Indexer.putPending(m, pair, new PendingGoal(goal, generation));
 
         return m;
@@ -399,16 +413,19 @@ public sealed interface Outbox {
                                     .withOnAccepted(started(ctx, node, live)));
     }
 
-    /// A fresh LOADED goal announces `DeploymentStarted` when its transaction is accepted.
+    /// A fresh LOADED goal announces `DeploymentStarted` when its transaction is accepted, and so does any event its intent carries.
     private static List<RoutedEvent> started(Ctx ctx, NodeId node, List<Map.Entry<SlicePair, GoalIntent>> live) {
-        return live.stream()
-                   .filter(entry -> entry.getValue()
-                                         .mode() == GoalMode.FRESH && entry.getValue()
-                                                                           .goal() == SliceGoal.LOADED)
-                   .<RoutedEvent> map(entry -> new RoutedEvent.DeploymentStarted(entry.getKey().artifact(),
-                                                                                 node,
-                                                                                 ctx.nowMs()))
-                   .toList();
+        return Stream.concat(live.stream()
+                                 .filter(entry -> entry.getValue()
+                                                       .mode() == GoalMode.FRESH && entry.getValue()
+                                                                                         .goal() == SliceGoal.LOADED)
+                                 .<RoutedEvent> map(entry -> new RoutedEvent.DeploymentStarted(entry.getKey().artifact(),
+                                                                                               node,
+                                                                                               ctx.nowMs())),
+                             live.stream().flatMap(entry -> entry.getValue()
+                                                                 .routed()
+                                                                 .stream()))
+                     .toList();
     }
 
     /// A decision stands only while the observed value it was derived from is still the one in the mirror.

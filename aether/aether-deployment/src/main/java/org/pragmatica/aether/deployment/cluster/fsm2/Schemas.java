@@ -51,7 +51,16 @@ public sealed interface Schemas {
 
     /// #542: a FAILED record holds every slice of its owning blueprint, so the leader reports the consequence: which slices
     /// are held, and by whose migration.
+    // Design-out: no transaction backs this event. It reports a FAILED record that is already committed (a fact in the mirror), so there is no
+    // write to wait for. It is announced by the leader that is acting only: a suspended or deposed FSM indexes the record and announces
+    // nothing, as it announces no decision of its own (R-5.7.1 (a)).
     private static ClusterModel blocked(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
+        return Lifecycle.isSuspended(m, ctx)
+               ? m
+               : announceBlocked(m, ctx, value);
+    }
+
+    private static ClusterModel announceBlocked(ClusterModel m, Ctx ctx, SchemaVersionValue value) {
         var owner = value.owningBlueprint();
         var slices = slicesOwnedBy(m, owner);
 

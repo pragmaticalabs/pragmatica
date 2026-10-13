@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -126,11 +127,20 @@ public sealed interface Placement {
         var desired = target.targetInstances();
 
         if (placed.size() < desired) {
-            return scaleUp(m, ctx, artifact, audience, desired - placed.size());
+            return scaleUp(m,
+                           ctx,
+                           artifact,
+                           audience,
+                           desired - placed.size(),
+                           adjustment(artifact, placed.size(), desired));
         }
 
         return placed.size() > desired
-               ? scaleDown(m, placed, placed.size() - desired, target.effectiveMinInstances())
+               ? scaleDown(m,
+                           placed,
+                           placed.size() - desired,
+                           target.effectiveMinInstances(),
+                           adjustment(artifact, placed.size(), desired))
                : m;
     }
 
@@ -156,7 +166,6 @@ public sealed interface Placement {
     }
 
     private static ClusterModel adjusted(ClusterModel m, Ctx ctx, Artifact artifact, int current, int desired) {
-        ctx.route(new RoutedEvent.ReconciliationAdjustment(artifact, current, desired));
         ctx.emit(new ClusterEffect.Audit(desired > current
                                          ? "reconciliation-scale-up"
                                          : "reconciliation-scale-down",
@@ -258,48 +267,76 @@ public sealed interface Placement {
                         .or(false);
     }
 
-    private static ClusterModel scaleUp(ClusterModel m, Ctx ctx, Artifact artifact, List<NodeId> audience, int toAdd) {
-        audience.stream()
-                .filter(node -> !Rows.occupies(m,
-                                               SlicePair.slicePair(node, artifact)))
-                .filter(node -> Rows.countsForPlacement(m, node, artifact))
-                .filter(node -> !backedOff(m,
-                                           ctx,
-                                           SlicePair.slicePair(node, artifact)))
-                .sorted(Comparator.<NodeId, Integer> comparing(node -> load(m, node)).thenComparing(Comparator.naturalOrder()))
-                .limit(toAdd)
-                .toList()
-                .forEach(node -> Outbox.goal(m,
-                                             SlicePair.slicePair(node, artifact),
-                                             SliceGoal.LOADED,
-                                             GoalMode.FRESH,
-                                             Option.none(),
-                                             "place"));
+    private static ClusterModel scaleUp(ClusterModel m,
+                                        Ctx ctx,
+                                        Artifact artifact,
+                                        List<NodeId> audience,
+                                        int toAdd,
+                                        List<RoutedEvent> adjustment) {
+        var chosen = audience.stream()
+                             .filter(node -> !Rows.occupies(m,
+                                                            SlicePair.slicePair(node, artifact)))
+                             .filter(node -> Rows.countsForPlacement(m, node, artifact))
+                             .filter(node -> !backedOff(m,
+                                                        ctx,
+                                                        SlicePair.slicePair(node, artifact)))
+                             .sorted(Comparator.<NodeId, Integer> comparing(node -> load(m, node)).thenComparing(Comparator.naturalOrder()))
+                             .limit(toAdd)
+                             .toList();
+
+        IntStream.range(0,
+                        chosen.size())
+                 .forEach(index -> Outbox.goalAnnouncing(m,
+                                                         SlicePair.slicePair(chosen.get(index),
+                                                                             artifact),
+                                                         SliceGoal.LOADED,
+                                                         GoalMode.FRESH,
+                                                         Option.none(),
+                                                         "place",
+                                                         onFirst(index, adjustment)));
 
         return m;
     }
 
-    /// Victims come from the most-loaded node first, ties by NodeId, and never below `minInstances` (B-032).
-    private static ClusterModel scaleDown(ClusterModel m, List<SlicePair> placed, int toRemove, int minInstances) {
+    private static ClusterModel scaleDown(ClusterModel m,
+                                          List<SlicePair> placed,
+                                          int toRemove,
+                                          int minInstances,
+                                          List<RoutedEvent> adjustment) {
         var count = Math.min(toRemove,
                              Math.max(0, placed.size() - minInstances));
+        var chosen = placed.stream()
+                           .sorted(Comparator.<SlicePair, Integer> comparing(pair -> load(m,
+                                                                                          pair.node()))
+                                             .reversed()
+                                             .thenComparing(pair -> pair.node()
+                                                                        .id()))
+                           .limit(count)
+                           .toList();
 
-        placed.stream()
-              .sorted(Comparator.<SlicePair, Integer> comparing(pair -> load(m,
-                                                                             pair.node()))
-                                .reversed()
-                                .thenComparing(pair -> pair.node()
-                                                           .id()))
-              .limit(count)
-              .toList()
-              .forEach(pair -> Outbox.goal(m,
-                                           pair,
-                                           SliceGoal.UNLOADED,
-                                           GoalMode.FRESH,
-                                           Option.none(),
-                                           "scale-down"));
+        IntStream.range(0,
+                        chosen.size())
+                 .forEach(index -> Outbox.goalAnnouncing(m,
+                                                         chosen.get(index),
+                                                         SliceGoal.UNLOADED,
+                                                         GoalMode.FRESH,
+                                                         Option.none(),
+                                                         "scale-down",
+                                                         onFirst(index, adjustment)));
 
         return m;
+    }
+
+    /// One announcement per scale operation: the first goal carries it.
+    private static List<RoutedEvent> onFirst(int index, List<RoutedEvent> events) {
+        return index == 0
+               ? events
+               : List.of();
+    }
+
+    /// The leader's count against the target, announced when the goals that change it are accepted.
+    private static List<RoutedEvent> adjustment(Artifact artifact, int current, int desired) {
+        return List.of(new RoutedEvent.ReconciliationAdjustment(artifact, current, desired));
     }
 
     /// B-033: instances on counting nodes outside the audience are retired only once the instances inside it are ACTIVE.

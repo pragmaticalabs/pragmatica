@@ -312,7 +312,12 @@ public final class ClusterModel {
                              GoalMode mode,
                              Generation generation,
                              Option<SliceObservedValue> guard,
-                             String why) {}
+                             String why,
+                             List<RoutedEvent> routed) {
+        public GoalIntent {
+            routed = List.copyOf(routed);
+        }
+    }
 
     /// A goal write that rides an artifact's transaction (a retraction or a failure's UNLOADED, R-5.7.4).
     public record GoalWrite(SlicePair pair, SliceGoal goal, Generation generation, Option<SliceObservedValue> guard) {}
