@@ -10,9 +10,12 @@ import java.util.Map;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
@@ -126,5 +129,63 @@ class AdversarialRound2Test {
         h.deliver(new ClusterInput.WriteSettled("c1-999", 1L, new ClusterInput.Settlement.Accepted()));
         assertThat(h.metricTotal("aether_deployment_fsm_submissions_total",
                                  tags -> "settled_unknown".equals(tags.get("outcome")))).isEqualTo(1L);
+    }
+
+    /// Red when: the removal of a blueprint whose write failed is never written again: the blueprint is already unindexed, so no
+    /// reconcile step derives its target, apply and judgment removals.
+    @Test
+    void blueprintRemoval_whoseWriteFailed_isWrittenAgain() {
+        var h = LcSupport.deployed(1);
+
+        h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
+        h.seedRemove(new AppBlueprintKey(blueprintId("org.example:app:1.0.0")));
+        h.drain();
+        assertThat(h.store.get(new SliceTargetKey(ORDERS.base())).isPresent()).as("the first write failed").isTrue();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.advance(120_000L);
+        assertThat(h.store.get(new SliceTargetKey(ORDERS.base())).isPresent()).as("removed by the retry").isFalse();
+    }
+
+    /// Red when: the removal of a blueprint whose write was lost (never settled) is never written again.
+    @Test
+    void blueprintRemoval_whoseWriteWasLost_isWrittenAgain() {
+        var h = LcSupport.deployed(1);
+
+        h.policy = FsmHarness.SettlePolicy.LOSE;
+        h.seedRemove(new AppBlueprintKey(blueprintId("org.example:app:1.0.0")));
+        h.drain();
+        assertThat(h.store.get(new SliceTargetKey(ORDERS.base())).isPresent()).as("the first write was lost").isTrue();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.advance(120_000L);
+        assertThat(h.store.get(new SliceTargetKey(ORDERS.base())).isPresent()).as("removed by the retry").isFalse();
+    }
+
+    /// Red when: an exclusion whose clearing (the node answered UNLOADED) was in a transaction that failed stays recorded: the clearing
+    /// is decided from an event, and no sweep decides it again.
+    @Test
+    void clearedExclusion_whoseWriteFailed_isWrittenAgain() {
+        var h = LcSupport.active();
+
+        h.seed(new SliceTargetKey(ORDERS.base()),
+               SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+        h.drain();
+        var retracted = h.model()
+                         .desired(SlicePair.slicePair(CORE_1, ORDERS))
+                         .map(value -> value.generation())
+                         .or(gen(0));
+        var node = new NodeSim(h, CORE_1, process(11L));
+
+        node.writes(ORDERS, SliceObservedState.LOADING);
+        h.drain();
+        h.advance(3 * 120_000L + 2_000L);
+        h.deliver(new ClusterInput.Reconcile());
+        assertThat(h.store.get(new ArtifactJudgmentKey(ORDERS)).isPresent()).as("the node is excluded").isTrue();
+        h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
+        node.writes(ORDERS, SliceObservedState.UNLOADED, retracted);
+        h.drain();
+        assertThat(h.store.get(new ArtifactJudgmentKey(ORDERS)).isPresent()).as("the clearing write failed").isTrue();
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.advance(120_000L);
+        assertThat(h.store.get(new ArtifactJudgmentKey(ORDERS)).isPresent()).as("cleared by the retry").isFalse();
     }
 }

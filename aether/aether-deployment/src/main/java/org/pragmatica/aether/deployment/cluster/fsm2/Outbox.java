@@ -176,12 +176,11 @@ public sealed interface Outbox {
                : m.leader.fold(() -> m, leader -> submit(m, ctx, drafts, leader));
     }
 
-    /// Event-only intents (a blueprint removal, a directive, the judgment operations that answer an event) survive a suspension: nothing
+    /// Event-only intents (a blueprint removal, the judgment operations that answer an event) survive a suspension: nothing
     /// re-derives them. A failure's operations are not parked: the failure sweep decides them again, and parking them would count twice.
     private static ClusterModel park(ClusterModel m) {
         m.parked = Stream.concat(m.parked.stream(),
-                                 m.outbox.stream()
-                                         .filter(draft -> draft.kind() == SubmitKind.BLUEPRINT_REMOVAL || draft.kind() == SubmitKind.DIRECTIVE))
+                                 m.outbox.stream().filter(draft -> draft.kind() == SubmitKind.BLUEPRINT_REMOVAL))
                          .toList();
         m.parkedOps = Stream.concat(m.parkedOps.stream(),
                                     m.artifactIntents.entries()
@@ -309,7 +308,8 @@ public sealed interface Outbox {
                                                                                 write.guard()))
                                                     .toList())
                                     .withPairs(live.stream().map(GoalWrite::pair).collect(Collectors.toSet()))
-                                    .withOnAccepted(intent.routed()));
+                                    .withOnAccepted(intent.routed())
+                                    .withEventOps(intent.ops().stream().filter(JudgmentOp::eventOnly).toList()));
     }
 
     /// The goal writes whose decision still stands; the others release their pending entry.
@@ -461,6 +461,7 @@ public sealed interface Outbox {
     private static ClusterModel release(ClusterModel m, Ctx ctx, String correlation, Submitted submission) {
         m.submitted = m.submitted.remove(correlation);
         submission.drafts().forEach(draft -> dropPending(m, draft));
+        submission.drafts().forEach(draft -> awaitEvents(m, draft));
         metric(ctx, submission, "lost");
 
         return m;
@@ -661,7 +662,7 @@ public sealed interface Outbox {
         return switch (draft.kind()) {
             case DEPARTURE, INFERRED_DEPARTURE, ADMISSION -> DepartureFlow.refused(m, ctx, draft);
             case CLEANUP -> DepartureFlow.cleanupRefused(m, ctx, draft);
-            case BLUEPRINT_REMOVAL -> rederiveRemoval(m, draft);
+            case BLUEPRINT_REMOVAL -> rederiveRemoval(m, ctx, draft);
             // 6.2: a refused target batch is not resubmitted at once; the awaited-target sweep (reconcile step 1) re-sends it after its bound.
             case TARGETS -> m;
             default -> rederiveByPair(m, ctx, draft);
@@ -673,7 +674,13 @@ public sealed interface Outbox {
     /// next reconcile. A single-purpose draft is resubmitted if nothing it expects moved, else dropped.
     /// A refused blueprint removal is re-derived against the mirror's current values: no reconcile step derives it again, because the
     /// blueprint is already unindexed. A key that is gone needs no removal; a key whose value moved is removed at its new value.
-    private static ClusterModel rederiveRemoval(ClusterModel m, TxDraft draft) {
+    private static ClusterModel rederiveRemoval(ClusterModel m, Ctx ctx, TxDraft draft) {
+        return Reconcile.request(awaitEvents(m, draft), ctx);
+    }
+
+    /// A removal is sent again at the mirror's current values: a key that is gone needs no removal, one whose value moved is removed at
+    /// its new value. Nothing else derives it, because the blueprint is already unindexed.
+    private static Option<TxDraft> refreshedRemoval(ClusterModel m, TxDraft draft) {
         var current = draft.mutations()
                            .stream()
                            .flatMap(mutation -> mirrored(m,
@@ -683,17 +690,45 @@ public sealed interface Outbox {
                                                         .stream())
                            .toList();
 
-        return current.isEmpty() || draft.attempt() >= GOAL_RESUBMISSIONS
-               ? m
-               : Outbox.direct(m,
-                               new TxDraft(draft.kind(),
-                                           current.getFirst().key(),
-                                           current,
-                                           List.of(),
-                                           Set.of(),
-                                           draft.node(),
-                                           draft.attempt() + 1,
-                                           List.of()));
+        return current.isEmpty()
+               ? Option.none()
+               : Option.some(new TxDraft(draft.kind(),
+                                         current.getFirst().key(),
+                                         current,
+                                         List.of(),
+                                         Set.of(),
+                                         draft.node(),
+                                         draft.attempt() + 1,
+                                         List.of()));
+    }
+
+    /// An intent no sweep derives again (a blueprint removal, the event-only judgment operations) is kept when its write is lost,
+    /// failed or refused, and sent again by the next reconcile (`replayAwaiting`).
+    private static ClusterModel awaitEvents(ClusterModel m, TxDraft draft) {
+        if (draft.kind() == SubmitKind.BLUEPRINT_REMOVAL) {
+            m.parked = Stream.concat(m.parked.stream(), Stream.of(draft)).toList();
+        }
+
+        if (draft.key() instanceof ArtifactJudgmentKey judgment) {
+            m.parkedOps = Stream.concat(m.parkedOps.stream(),
+                                        draft.eventOps().stream().map(op -> Map.entry(judgment.artifact(),
+                                                                                      op)))
+                                .toList();
+        }
+
+        return m;
+    }
+
+    /// Step 1 of the reconcile: what was kept (`awaitEvents`, `park`) goes into this drain's intents.
+    static ClusterModel replayAwaiting(ClusterModel m) {
+        m.parked.forEach(draft -> refreshedRemoval(m, draft).onPresent(refreshed -> Outbox.direct(m, refreshed)));
+        m.parked = List.of();
+        m.parkedOps.forEach(entry -> Outbox.artifact(m,
+                                                     entry.getKey(),
+                                                     intent -> intent.withOp(entry.getValue())));
+        m.parkedOps = List.of();
+
+        return m;
     }
 
     private static ClusterModel rederiveByPair(ClusterModel m, Ctx ctx, TxDraft draft) {
@@ -765,7 +800,7 @@ public sealed interface Outbox {
         if (split.shared().stream().anyMatch(mutation -> mutatedElsewhere(m, mutation))) {
             split.stayPairs().forEach(pair -> Indexer.clearPending(m, pair));
 
-            return Reconcile.request(m, ctx);
+            return Reconcile.request(awaitEvents(m, draft), ctx);
         }
 
         resubmitRemainder(m, draft, split, limit);
@@ -785,9 +820,12 @@ public sealed interface Outbox {
     /// Every pair of the transaction moved but its shared mutations (the artifact's judgment) did not. No reconcile step derives an
     /// event-only operation again (a cleared exclusion, a reset retry count), so they are resubmitted on their own.
     private static ClusterModel resubmitSharedOnly(ClusterModel m, TxDraft draft, PairSplit split, int limit) {
-        return split.shared()
-                    .isEmpty() || draft.attempt() >= limit
-               ? m
+        if (split.shared().isEmpty()) {
+            return m;
+        }
+
+        return draft.attempt() >= limit
+               ? awaitEvents(m, draft)
                : Outbox.direct(m,
                                new TxDraft(draft.kind(),
                                            split.shared().getFirst().key(),
@@ -796,7 +834,8 @@ public sealed interface Outbox {
                                            Set.of(),
                                            draft.node(),
                                            draft.attempt() + 1,
-                                           List.of()));
+                                           List.of(),
+                                           draft.eventOps()));
     }
 
     private static ClusterModel resubmitStaying(ClusterModel m, TxDraft draft, PairSplit split) {
@@ -812,7 +851,8 @@ public sealed interface Outbox {
                                          split.stayPairs(),
                                          draft.node(),
                                          draft.attempt() + 1,
-                                         stillStarted(draft, split.stayPairs())));
+                                         stillStarted(draft, split.stayPairs()),
+                                         draft.eventOps()));
     }
 
     /// The events to route on acceptance that still concern a pair of the resubmitted transaction.
@@ -850,6 +890,7 @@ public sealed interface Outbox {
         for (var draft : submission.drafts()) {
             dropPending(m, draft);
             DepartureFlow.failed(m, ctx, draft);
+            awaitEvents(m, draft);
         }
 
         return retryLater(m, ctx);

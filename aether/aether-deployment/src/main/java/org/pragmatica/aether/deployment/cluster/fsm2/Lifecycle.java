@@ -55,12 +55,6 @@ public sealed interface Lifecycle {
 
         m.leader = Option.some(value);
         if (wasSuspended && !isSuspended(m, ctx)) {
-            m.parked.forEach(draft -> Outbox.direct(m, draft));
-            m.parked = List.of();
-            m.parkedOps.forEach(entry -> Outbox.artifact(m,
-                                                         entry.getKey(),
-                                                         intent -> intent.withOp(entry.getValue())));
-            m.parkedOps = List.of();
             Reconcile.request(m, ctx);
         }
 

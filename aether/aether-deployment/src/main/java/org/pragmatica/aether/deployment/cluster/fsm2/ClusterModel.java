@@ -439,12 +439,25 @@ public final class ClusterModel {
                           Set<SlicePair> pairs,
                           Option<NodeId> node,
                           int attempt,
-                          List<RoutedEvent> onAccepted) {
+                          List<RoutedEvent> onAccepted,
+                          List<JudgmentOp> eventOps) {
         public TxDraft {
             mutations = List.copyOf(mutations);
             guards = List.copyOf(guards);
             pairs = Set.copyOf(pairs);
             onAccepted = List.copyOf(onAccepted);
+            eventOps = List.copyOf(eventOps);
+        }
+
+        public TxDraft(SubmitKind kind,
+                       AetherKey key,
+                       List<KVCommand.Mutation<AetherKey, AetherValue>> mutations,
+                       List<KVCommand.ReadWitness<AetherKey>> guards,
+                       Set<SlicePair> pairs,
+                       Option<NodeId> node,
+                       int attempt,
+                       List<RoutedEvent> onAccepted) {
+            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, List.of());
         }
 
         public static TxDraft draft(SubmitKind kind,
@@ -454,23 +467,29 @@ public final class ClusterModel {
         }
 
         public TxDraft withGuards(List<KVCommand.ReadWitness<AetherKey>> value) {
-            return new TxDraft(kind, key, mutations, value, pairs, node, attempt, onAccepted);
+            return new TxDraft(kind, key, mutations, value, pairs, node, attempt, onAccepted, eventOps);
         }
 
         public TxDraft withPairs(Set<SlicePair> value) {
-            return new TxDraft(kind, key, mutations, guards, value, node, attempt, onAccepted);
+            return new TxDraft(kind, key, mutations, guards, value, node, attempt, onAccepted, eventOps);
         }
 
         public TxDraft withNode(NodeId value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, Option.some(value), attempt, onAccepted);
+            return new TxDraft(kind, key, mutations, guards, pairs, Option.some(value), attempt, onAccepted, eventOps);
         }
 
         public TxDraft withOnAccepted(List<RoutedEvent> value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, value);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, value, eventOps);
+        }
+
+        /// The judgment operations this transaction carries that answer an event (see [JudgmentOp#eventOnly]): if the write is lost,
+        /// failed or its judgment moved, they are decided again from here, since no sweep derives them.
+        public TxDraft withEventOps(List<JudgmentOp> value) {
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, value);
         }
 
         public TxDraft nextAttempt() {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt + 1, onAccepted);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt + 1, onAccepted, eventOps);
         }
     }
 
