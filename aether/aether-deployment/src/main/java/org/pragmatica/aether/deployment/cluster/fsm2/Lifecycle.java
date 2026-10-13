@@ -125,7 +125,6 @@ public sealed interface Lifecycle {
                  ctx,
                  TimerId.timerId(Kind.TICK),
                  ctx.settings().timing().tick());
-        Joins.retryPending(m, ctx);
 
         return Reconcile.request(m, ctx);
     }

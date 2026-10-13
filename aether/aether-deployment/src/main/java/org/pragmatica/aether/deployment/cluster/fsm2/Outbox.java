@@ -376,6 +376,9 @@ public sealed interface Outbox {
 
     /// A submission that was never settled is lost (#2143): after one consensus timeout it no longer counts as in flight, its
     /// pending goals are released (M-3), and the next reconcile re-derives it.
+    // BER-free absorption, design-out: a submission that never settled is dropped from `submitted` and its pending goals are released.
+    // Guarantee: the loss is re-derived, never silent. Mechanism: the `lost` metric here, and the next reconcile derives the same
+    // intent again from the mirror (level-triggered), so nothing depends on the lost write having landed.
     static ClusterModel expire(ClusterModel m, Ctx ctx) {
         var bound = ctx.settings().timing().departingReread() * 1_000_000L;
 
@@ -433,6 +436,14 @@ public sealed interface Outbox {
     private static ClusterModel refused(ClusterModel m, Ctx ctx, Submitted submission, Settlement.Refused refused) {
         var mirrorBefore = mirrorFingerprint(m, refused);
 
+        reindex(m, ctx, refused);
+        m.leader = refused.leader();
+
+        return routeRefusal(m, ctx, submission, refused, !mirrorBefore.equals(mirrorFingerprint(m, refused)));
+    }
+
+    /// The refusal carries the values the applier saw: the ones the mirror lags behind are indexed again.
+    private static ClusterModel reindex(ClusterModel m, Ctx ctx, Settlement.Refused refused) {
         refused.values()
                .entrySet()
                .stream()
@@ -446,9 +457,16 @@ public sealed interface Outbox {
                                                                         ctx,
                                                                         entry.getKey(),
                                                                         present)));
-        var corrected = !mirrorBefore.equals(mirrorFingerprint(m, refused));
 
-        m.leader = refused.leader();
+        return m;
+    }
+
+    /// R-5.7.2: deposed, own witness stale, or the values moved.
+    private static ClusterModel routeRefusal(ClusterModel m,
+                                             Ctx ctx,
+                                             Submitted submission,
+                                             Settlement.Refused refused,
+                                             boolean corrected) {
         if (!namesSelf(ctx, refused.leader())) {
             metric(ctx, submission, "refused_deposed");
             submission.drafts().forEach(draft -> dropPending(m, draft));
@@ -554,10 +572,21 @@ public sealed interface Outbox {
                     ? ROLLBACK_RESUBMISSIONS
                     : GOAL_RESUBMISSIONS;
 
-        if (draft.pairs().isEmpty()) {
-            return rederiveWhole(m, ctx, draft, limit);
-        }
+        return draft.pairs()
+                    .isEmpty()
+               ? rederiveWhole(m, ctx, draft, limit)
+               : rederiveSplit(m, ctx, draft, splitByMovement(m, draft, limit));
+    }
 
+    /// The mutations of a refused transaction sorted by whether their pair's keys moved: the ones that did not (`stay`, with their
+    /// guards and pairs) are resubmitted, the shared ones ride along, the moved ones are left to the next reconcile.
+    record PairSplit(List<KVCommand.Mutation<AetherKey, AetherValue>> stay,
+                     List<KVCommand.ReadWitness<AetherKey>> stayGuards,
+                     Set<SlicePair> stayPairs,
+                     List<KVCommand.Mutation<AetherKey, AetherValue>> shared,
+                     boolean movedAny) {}
+
+    private static PairSplit splitByMovement(ClusterModel m, TxDraft draft, int limit) {
         var stay = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
         var stayGuards = new ArrayList<KVCommand.ReadWitness<AetherKey>>();
         var stayPairs = new HashSet<SlicePair>();
@@ -574,12 +603,9 @@ public sealed interface Outbox {
             }
 
             var pair = pairs.getFirst();
-            var guard = draft.guards().stream().filter(g -> g.key()
-                                                             .equals(pair.observedKey())).findFirst();
-            var pairMoved = !mutation.expected().equals(mirrored(m, mutation.key())) || guard.map(g -> !g.expected()
-                                                                                                         .equals(mirrored(m,
-                                                                                                                          g.key()).map(v -> (Object) v)))
-                                                                                             .orElse(false);
+            var guard = Option.from(draft.guards().stream().filter(g -> g.key()
+                                                                         .equals(pair.observedKey())).findFirst());
+            var pairMoved = pairMoved(m, mutation, guard);
 
             if (pairMoved || draft.attempt() >= limit) {
                 Indexer.clearPending(m, pair);
@@ -589,35 +615,53 @@ public sealed interface Outbox {
 
             stay.add(mutation);
             stayPairs.add(pair);
-            guard.ifPresent(stayGuards::add);
+            guard.onPresent(stayGuards::add);
         }
 
-        var sharedMoved = shared.stream().anyMatch(mutation -> mutatedElsewhere(m, mutation));
+        return new PairSplit(stay, stayGuards, stayPairs, shared, movedAny);
+    }
 
-        if (sharedMoved) {
-            stayPairs.forEach(pair -> Indexer.clearPending(m, pair));
+    private static boolean pairMoved(ClusterModel m,
+                                     KVCommand.Mutation<AetherKey, AetherValue> mutation,
+                                     Option<KVCommand.ReadWitness<AetherKey>> guard) {
+        return ! mutation.expected()
+                         .equals(mirrored(m,
+                                          mutation.key())) || guard.map(g -> !g.expected()
+                                                                               .equals(mirrored(m,
+                                                                                                g.key()).map(v -> (Object) v)))
+                                                                   .or(false);
+    }
+
+    private static ClusterModel rederiveSplit(ClusterModel m, Ctx ctx, TxDraft draft, PairSplit split) {
+        if (split.shared().stream().anyMatch(mutation -> mutatedElsewhere(m, mutation))) {
+            split.stayPairs().forEach(pair -> Indexer.clearPending(m, pair));
 
             return Reconcile.request(m, ctx);
         }
 
-        if (!stayPairs.isEmpty()) {
-            var rest = new ArrayList<>(stay);
-
-            rest.addAll(shared);
-            Outbox.direct(m,
-                          new TxDraft(draft.kind(),
-                                      rest.getFirst().key(),
-                                      rest,
-                                      stayGuards,
-                                      stayPairs,
-                                      draft.node(),
-                                      draft.attempt() + 1,
-                                      stillStarted(draft, stayPairs)));
+        if (!split.stayPairs().isEmpty()) {
+            resubmitStaying(m, draft, split);
         }
 
-        return movedAny
+        return split.movedAny()
                ? Reconcile.request(m, ctx)
                : m;
+    }
+
+    private static ClusterModel resubmitStaying(ClusterModel m, TxDraft draft, PairSplit split) {
+        var rest = new ArrayList<>(split.stay());
+
+        rest.addAll(split.shared());
+
+        return Outbox.direct(m,
+                             new TxDraft(draft.kind(),
+                                         rest.getFirst().key(),
+                                         rest,
+                                         split.stayGuards(),
+                                         split.stayPairs(),
+                                         draft.node(),
+                                         draft.attempt() + 1,
+                                         stillStarted(draft, split.stayPairs())));
     }
 
     /// The events to route on acceptance that still concern a pair of the resubmitted transaction.

@@ -280,8 +280,13 @@ class JoinTableTest {
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, A)));
         assertThat(w.h.submits()).isEmpty();
         assertThat(w.h.warns("join-unmatched")).hasSize(1);
+        var warnsBefore = w.h.warns("join-unmatched").size();
+        var passesBefore = w.h.metricTotal("aether_deployment_fsm_reconcile_passes_total", t -> true);
+
         w.h.advance(w.h.settings.timing().tick() + 1);
-        assertThat(w.h.warns("join-unmatched").size()).as("evaluated again on the tick").isGreaterThan(1);
+        assertThat(w.h.warns("join-unmatched").size() - warnsBefore).as("evaluated again on the tick, once per reconcile pass (step 10)")
+                  .isGreaterThan(0)
+                  .isEqualTo(w.h.metricTotal("aether_deployment_fsm_reconcile_passes_total", t -> true) - passesBefore);
     }
 
     // NT-121 (i)

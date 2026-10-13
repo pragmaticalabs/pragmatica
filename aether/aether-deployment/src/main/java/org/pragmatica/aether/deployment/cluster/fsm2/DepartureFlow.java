@@ -261,6 +261,14 @@ public sealed interface DepartureFlow {
         }
 
         var record = m.records.get(node);
+        var mutations = cleanupMutations(m, node);
+
+        return mutations.isEmpty() || record.isEmpty()
+               ? m
+               : Outbox.direct(m, cleanupDraft(node, mutations, record, attempt));
+    }
+
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> cleanupMutations(ClusterModel m, NodeId node) {
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
 
         sorted(Idx.members(m.observedByNode, node).toList()).forEach(artifact -> m.observed.get(SlicePair.slicePair(node,
@@ -270,21 +278,24 @@ public sealed interface DepartureFlow {
                                                                                                                                      value))));
         mutations.addAll(desiredRemovals(m, node));
         mutations.addAll(routeRemovals(m, node));
-        if (mutations.isEmpty() || record.isEmpty()) {
-            return m;
-        }
 
+        return mutations;
+    }
+
+    private static TxDraft cleanupDraft(NodeId node,
+                                        List<KVCommand.Mutation<AetherKey, AetherValue>> mutations,
+                                        Option<NodeDepartureValue> record,
+                                        int attempt) {
         var guard = new KVCommand.ReadWitness<AetherKey>(new NodeDepartureKey(node), record.map(v -> (Object) v));
 
-        return Outbox.direct(m,
-                             new TxDraft(SubmitKind.CLEANUP,
-                                         mutations.getFirst().key(),
-                                         mutations,
-                                         List.of(guard),
-                                         Set.of(),
-                                         Option.some(node),
-                                         attempt,
-                                         List.of()));
+        return new TxDraft(SubmitKind.CLEANUP,
+                           mutations.getFirst().key(),
+                           mutations,
+                           List.of(guard),
+                           Set.of(),
+                           Option.some(node),
+                           attempt,
+                           List.of());
     }
 
     private static boolean cleanupInFlight(ClusterModel m, NodeId node) {
@@ -300,6 +311,9 @@ public sealed interface DepartureFlow {
 
     /// A refused C17b (R-5.7.2): stop for good if the record moved. Otherwise the mutations whose keys moved are split out (a
     /// node that wrote a row keeps it), and the rest are resubmitted at once, at most five times.
+    // FER (degrade forward): a refused C17b whose record moved is not resubmitted. Guarantee: nothing is removed against a record that
+    // is no longer the one the cleanup was derived from. Mechanism: the guard on the DEPARTED record; the departed node's rows are
+    // collected by the next reconcile's step 10, which derives a fresh C17b from the mirror.
     static ClusterModel cleanupRefused(ClusterModel m, Ctx ctx, TxDraft draft) {
         return draft.node()
                     .fold(() -> m,
@@ -424,6 +438,8 @@ public sealed interface DepartureFlow {
                         .or(false);
     }
 
+    // Design-out: the departure is dropped only when a committed ADMITTED record shows the node was re-admitted (R-4.3.0), so there is
+    // no failure to absorb. Mechanism: `obsolete` reads the committed record; the re-read timer is cancelled with it.
     private static ClusterModel resolveObsolete(ClusterModel m, Ctx ctx, NodeId node) {
         m.departing = m.departing.remove(node);
 
