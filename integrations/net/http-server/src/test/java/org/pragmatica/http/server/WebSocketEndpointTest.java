@@ -218,7 +218,8 @@ class WebSocketEndpointTest {
         var ws = connect("/ws/c", listener);
 
         assertThat(next("/ws/c")).isEqualTo("open");
-        ws.sendText("x".repeat(CONTENT_LENGTH / 2), false);
+        // The JDK client allows one send in flight and fails the next with "Send pending", so the first is awaited.
+        ws.sendText("x".repeat(CONTENT_LENGTH / 2), false).get(WAIT_SECONDS, TimeUnit.SECONDS);
         ws.sendText("x".repeat(CONTENT_LENGTH / 2 + 1), true);
         assertThat(next("/ws/c")).as("no message, only Close").isEqualTo("close");
         assertThat(listener.ended.get(WAIT_SECONDS, TimeUnit.SECONDS)).as("the client sees the connection end")
