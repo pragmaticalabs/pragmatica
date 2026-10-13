@@ -29,6 +29,7 @@ import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -50,6 +51,7 @@ import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Promise.resolved;
 
@@ -278,12 +280,77 @@ final class NettyHttpServer implements HttpServer {
             if (config.chunkedWriteEnabled()) {
                 pipeline.addLast(new ChunkedWriteHandler());
             }
-            // Add WebSocket handlers for each endpoint
-            for (var endpoint : config.webSocketEndpoints()) {
-                pipeline.addLast(new WebSocketServerProtocolHandler(endpoint.path(), null, true));
-            }
+            // #2184: one router per channel installs the protocol handler for the requested endpoint only
+            pipeline.addLast(new WebSocketUpgradeRouter(wsEndpoints));
             // Create a new handler instance per channel (not @Sharable)
             pipeline.addLast(new HttpRequestHandler(handler, wsEndpoints));
+        }
+    }
+
+    /// #2184: routes a WebSocket upgrade request by path. Netty installs a single handshake handler bound to the
+    /// path of the first `WebSocketServerProtocolHandler` in a pipeline, so one static handler per endpoint
+    /// never handshakes the second and later endpoints. This router, per channel, installs exactly one protocol
+    /// handler for the endpoint the request names and passes the request into its handshake. An upgrade to a
+    /// path with no endpoint is refused with 404 and the connection is closed. Any other message passes through
+    /// untouched.
+    private static class WebSocketUpgradeRouter extends ChannelInboundHandlerAdapter {
+        private static final Logger log = LoggerFactory.getLogger(WebSocketUpgradeRouter.class);
+
+        private final Map<String, WebSocketEndpoint> wsEndpoints;
+
+        WebSocketUpgradeRouter(Map<String, WebSocketEndpoint> wsEndpoints) {
+            this.wsEndpoints = wsEndpoints;
+        }
+
+        @Contract
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+            if (msg instanceof FullHttpRequest request && isWebSocketUpgrade(request)) {
+                route(ctx, request);
+            } else {
+                ctx.fireChannelRead(msg);
+            }
+        }
+
+        private void route(ChannelHandlerContext ctx, FullHttpRequest request) {
+            var path = new QueryStringDecoder(request.uri()).path();
+
+            option(wsEndpoints.get(path)).onPresent(endpoint -> handOver(ctx, request, endpoint))
+                  .onEmpty(() -> refuse(ctx, request, path));
+        }
+
+        /// The handshake handler releases the request and fires `HandshakeComplete`, which
+        /// [HttpRequestHandler] turns into the endpoint's session and `Open`.
+        private void handOver(ChannelHandlerContext ctx, FullHttpRequest request, WebSocketEndpoint endpoint) {
+            ctx.pipeline()
+               .addAfter(ctx.name(),
+                         null,
+                         new WebSocketServerProtocolHandler(protocolConfig(endpoint.path())));
+            ctx.fireChannelRead(request);
+        }
+
+        /// `checkStartsWith` lets a query string (`/ws/events?token=...`) through the handshake handler's own
+        /// path check; the endpoint itself was already selected by exact path.
+        private static WebSocketServerProtocolConfig protocolConfig(String path) {
+            return WebSocketServerProtocolConfig.newBuilder()
+                                                .websocketPath(path)
+                                                .checkStartsWith(true)
+                                                .build();
+        }
+
+        private static void refuse(ChannelHandlerContext ctx, FullHttpRequest request, String path) {
+            log.debug("Refusing WebSocket upgrade to {}: no endpoint registered", path);
+            request.release();
+            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_FOUND);
+
+            response.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
+            response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        }
+
+        private static boolean isWebSocketUpgrade(FullHttpRequest request) {
+            return request.headers()
+                          .contains(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET, true);
         }
     }
 
@@ -312,27 +379,7 @@ final class NettyHttpServer implements HttpServer {
         }
 
         private void handleHttpRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
-            // Check if this is a WebSocket upgrade
-            var path = new QueryStringDecoder(request.uri()).path();
-            var wsEndpoint = Option.option(wsEndpoints.get(path));
-
-            if (wsEndpoint.isPresent() && isWebSocketUpgrade(request)) {
-                // WebSocket upgrade will be handled by WebSocketServerProtocolHandler
-                // Store handler and session in channel attribute for later use
-                wsEndpoint.onPresent(endpoint -> {
-                    var wsHandler = endpoint.handler()
-                                            .get();
-                    var wsSession = new NettyWebSocketSession(ctx.channel());
-
-                    ctx.channel()
-                       .attr(WS_STATE)
-                       .set(Option.some(new WebSocketState(wsHandler, wsSession)));
-                    ctx.fireChannelRead(request.retain());
-                });
-
-                return;
-            }
-            // Regular HTTP request - generate request ID
+            // WebSocket upgrades never reach here: WebSocketUpgradeRouter consumes them
             var requestId = IdGenerator.generate("req");
             var requestContext = createRequestContext(requestId, request);
             var responseWriter = new NettyResponseWriter(ctx, requestId, HttpUtil.isKeepAlive(request));
@@ -343,11 +390,6 @@ final class NettyHttpServer implements HttpServer {
                 log.error("Error handling request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
-        }
-
-        private boolean isWebSocketUpgrade(FullHttpRequest request) {
-            return request.headers()
-                          .contains(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET, true);
         }
 
         private void handleWebSocketFrame(ChannelHandlerContext ctx, WebSocketFrame frame) {
@@ -365,26 +407,43 @@ final class NettyHttpServer implements HttpServer {
                                             .readBytes(bytes);
                                  state.handler.handle(state.session,
                                                       new WebSocketMessage.Binary(bytes));
-                             } else if (frame instanceof CloseWebSocketFrame) {
-                                 state.handler.handle(state.session,
-                                                      new WebSocketMessage.Close());
-                                 ctx.channel()
-                                    .attr(WS_STATE)
-                                    .set(Option.none());
                              }
                              });
         }
 
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-            if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete) {
-                Option.option(ctx.channel().attr(WS_STATE).get())
-                      .flatMap(opt -> opt)
-                      .onPresent(state -> state.handler.handle(state.session,
-                                                               new WebSocketMessage.Open()));
+            if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete handshake) {
+                endpointOf(handshake).onPresent(endpoint -> open(ctx, endpoint));
             }
 
             super.userEventTriggered(ctx, evt);
+        }
+
+        /// #2184: the endpoint is resolved from the handshake itself, so the session exists only once the
+        /// handshake has completed, and `Open` is always the first message the handler sees.
+        private Option<WebSocketEndpoint> endpointOf(WebSocketServerProtocolHandler.HandshakeComplete handshake) {
+            return option(wsEndpoints.get(new QueryStringDecoder(handshake.requestUri()).path()));
+        }
+
+        private static void open(ChannelHandlerContext ctx, WebSocketEndpoint endpoint) {
+            var state = new WebSocketState(endpoint.handler().get(),
+                                           new NettyWebSocketSession(ctx.channel()));
+
+            ctx.channel().attr(WS_STATE).set(Option.some(state));
+            state.handler.handle(state.session, new WebSocketMessage.Open());
+        }
+
+        /// #2184: `Close` is delivered exactly once, when an opened channel goes inactive (Netty fires that event
+        /// once per channel). That covers a client close frame (the protocol handler answers it and closes the
+        /// channel), a server-side [WebSocketSession#close()], and a connection dropped without any close frame.
+        @Contract
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+            option(ctx.channel().attr(WS_STATE).get()).flatMap(opt -> opt)
+                  .onPresent(state -> state.handler.handle(state.session,
+                                                           new WebSocketMessage.Close()));
+            ctx.fireChannelInactive();
         }
 
         @Override
