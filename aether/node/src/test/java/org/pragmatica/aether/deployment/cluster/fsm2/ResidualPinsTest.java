@@ -157,26 +157,26 @@ class ResidualPinsTest {
                     .toList()).containsExactly(Option.some(moved));
     }
 
-    /// Red when: the desired-key removals of finished unloads are batched into the transaction that removes departed nodes' records: a
-    /// refusal of one voids the other.
+    /// Red when: the removal of a finished unload's desired key is batched into the draft that removes a departed node's record: a
+    /// refusal of one would void the other. Both are queued in one drain here (a record collected by the reconcile, then an observed
+    /// remove), the order that can reach the merge.
     @Test
-    void desiredKeyRemovals_doNotShareATransactionWithRecordRemovals() {
-        var w = coreWorld();
+    void desiredKeyRemoval_doesNotJoinTheRecordRemovalDraft() {
+        var w = coreWorld().activate();
+        var model = w.h.model();
+        var record = new NodeDepartureValue(DepartureState.DEPARTED,
+                                            1L,
+                                            process(0x3333L),
+                                            Option.some(DepartureCause.NODE_REMOVED),
+                                            w.h.wallMs);
 
-        w.record(CORE_3, DepartureState.DEPARTED, 1L, 0x3333L, DepartureCause.NODE_REMOVED);
-        w.h.seedQuietly(new SliceDesiredKey(CORE_1, ORDERS),
-                        new SliceDesiredValue(SliceGoal.UNLOADED, gen(3), w.h.wallMs));
-        w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        w.activate();
-        var removals = w.h.submits(SubmitKind.GC);
-
-        assertThat(removals.stream().anyMatch(submit -> touches(submit, SliceDesiredKey.class))).as("the desired key goes")
-                  .isTrue();
-        assertThat(removals.stream().anyMatch(submit -> touches(submit, NodeDepartureKey.class))).as("the record goes")
-                  .isTrue();
-        assertThat(removals.stream()
-                           .noneMatch(submit -> touches(submit, SliceDesiredKey.class) && touches(submit,
-                                                                                                  NodeDepartureKey.class))).isTrue();
+        Outbox.direct(model,
+                      ClusterModel.TxDraft.draft(SubmitKind.GC,
+                                                 new NodeDepartureKey(CORE_3),
+                                                 List.of(DepartureFlow.removal(new NodeDepartureKey(CORE_3), record))));
+        Gc.removeDesired(model, SlicePair.slicePair(CORE_2, ORDERS));
+        assertThat(model.outbox.stream().filter(draft -> draft.kind() == SubmitKind.GC)).as("the record draft and the desired-key draft")
+                  .hasSize(2);
     }
 
     private static boolean touches(ClusterEffect.Submit submit, Class<?> keyType) {
