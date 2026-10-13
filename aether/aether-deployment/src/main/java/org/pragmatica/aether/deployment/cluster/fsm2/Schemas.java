@@ -101,6 +101,24 @@ public sealed interface Schemas {
         return m;
     }
 
+    /// The reset half of the recovery alone: it is a write, so a leader that was suspended when it ran at Rebuild runs it again on the
+    /// resume (CI-16). The dispatch half is an effect and cannot be lost to a suspension.
+    static ClusterModel resetStalledMigrations(ClusterModel m, Ctx ctx) {
+        m.schemas.entries()
+                 .stream()
+                 .sorted(Comparator.comparing(entry -> entry.getKey()))
+                 .filter(entry -> entry.getValue()
+                                       .status() == SchemaStatus.MIGRATING && lockExpired(m,
+                                                                                          ctx,
+                                                                                          entry.getKey()))
+                 .forEach(entry -> resetStalled(m,
+                                                entry.getKey(),
+                                                entry.getValue(),
+                                                ctx));
+
+        return m;
+    }
+
     private static ClusterModel recoverOne(ClusterModel m, Ctx ctx, String datasource, SchemaVersionValue value) {
         if (value.status() == SchemaStatus.PENDING) {
             dispatch(m, ctx, datasource);

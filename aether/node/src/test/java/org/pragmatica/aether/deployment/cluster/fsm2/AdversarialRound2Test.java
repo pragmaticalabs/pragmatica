@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -12,7 +13,10 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -187,5 +191,29 @@ class AdversarialRound2Test {
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.advance(120_000L);
         assertThat(h.store.get(new ArtifactJudgmentKey(ORDERS)).isPresent()).as("cleared by the retry").isFalse();
+    }
+
+    /// Red when: a stalled migration (MIGRATING, no lock) found at Rebuild while the leader value is not yet committed is reset only
+    /// by a later Rebuild: the reset is a write, dropped by the suspended flush, and nothing derives it on the resume.
+    @Test
+    void stalledMigration_foundWhileSuspended_isResetOnTheResume() {
+        var h = FsmHarness.harness();
+        var owner = blueprintId("org.example:app:1.0.0");
+
+        h.seams = Seams.UNWIRED.withCountedCores(Set.of(CORE_1)).withReady(Set.of(CORE_1));
+        h.seedQuietly(new SchemaVersionKey("ds"),
+                      new SchemaVersionValue("ds",
+                                             1,
+                                             "m1",
+                                             SchemaStatus.MIGRATING,
+                                             "g:a:1",
+                                             owner,
+                                             2,
+                                             FsmHarness.START_WALL));
+        h.activate();
+        assertThat(h.submits(SubmitKind.SCHEMA)).as("suspended: nothing is written").isEmpty();
+        h.commitLeader(FsmHarness.SELF, 1L);
+        h.drain();
+        assertThat(h.submits(SubmitKind.SCHEMA)).as("reset on the resume").hasSize(1);
     }
 }

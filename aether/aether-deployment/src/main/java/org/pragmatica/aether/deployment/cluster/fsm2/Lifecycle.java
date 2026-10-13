@@ -55,6 +55,7 @@ public sealed interface Lifecycle {
 
         m.leader = Option.some(value);
         if (wasSuspended && !isSuspended(m, ctx)) {
+            Schemas.resetStalledMigrations(m, ctx);
             Reconcile.request(m, ctx);
         }
 
