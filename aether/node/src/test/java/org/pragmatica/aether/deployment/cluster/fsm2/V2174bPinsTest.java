@@ -11,13 +11,16 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.PendingGoal;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
@@ -29,7 +32,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.UnresponsiveEntry;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.Test;
 
@@ -454,5 +459,88 @@ class V2174bPinsTest {
         h.drain();
         h.advance(30_000L);
         assertThat(blockedRoutes(h)).as("not again on the second").isEqualTo(1L);
+    }
+
+    /// Red when: `rearmWarnings` leaves `joinWarningsDue` set: every reconcile pass after the first tick re-arms the WARN again, and the
+    /// per-pass storm the ruling removed comes back.
+    @Test
+    void joinUnmatched_drainsAfterTheTick_addNoWarnBeyondTheTicksOwn() {
+        var w = unmatchedWorld();
+
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
+        w.h.advance(w.h.settings.timing().tick() + 1);
+        var afterTick = w.h.warns("join-unmatched").size();
+
+        assertThat(afterTick).as("precondition: the tick re-emitted").isEqualTo(2);
+        for (var i = 1; i <= 5; i++) {
+            w.h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), i, 1));
+            w.h.drain();
+        }
+
+        assertThat(w.h.warns("join-unmatched")).as("five drains after the tick: no further WARN").hasSize(afterTick);
+    }
+
+    // -- E3: the copy rebinds every collection field ------------------------------------------------------------------------------------
+    /// Red when: any `PMap`/`PSet` field of `ClusterModel` is copied without `rebound` (or a new one is added without it): a step would then
+    /// count scans on the meter of the model it was given.
+    @Test
+    void copy_rebindsEveryCollectionField_toTheCopysOwnMeter() throws IllegalAccessException {
+        var input = new ClusterModel();
+        var copy = input.copy();
+        var checked = 0;
+
+        for (var field : ClusterModel.class.getDeclaredFields()) {
+            if (field.getType() == PMap.class || field.getType() == PSet.class) {
+                field.setAccessible(true);
+                var meter = meterOf(field.get(copy));
+
+                assertThat(meter).as(field.getName() + " is bound to the copy's meter").isSameAs(copy.scans);
+                assertThat(meter).as(field.getName() + " is not bound to the input's meter").isNotSameAs(input.scans);
+                checked++;
+            }
+        }
+
+        assertThat(checked).as("the reflection saw the collection fields").isGreaterThan(50);
+    }
+
+    private static ScanMeter meterOf(Object collection) {
+        return collection instanceof PSet<?> set
+               ? set.members().meter()
+               : ((PMap<?, ?>) collection).meter();
+    }
+
+    /// Red when: `Slices.dependenciesActive` reads its dependency bucket directly (`m.dependencies.get`): a bucket above the scan threshold then
+    /// counts on the meter the bucket was built with, the input model's.
+    @Test
+    void dependenciesActive_readsItsBucketThroughTheIndexHelper() {
+        var input = new ClusterModel();
+
+        for (var i = 0; i < SCAN_THRESHOLD_PLUS; i++) {
+            input.dependencies = Idx.add(input.dependencies, ORDERS, artifact("org.example:d" + i + ":1.0.0"));
+        }
+
+        var copy = input.copy();
+        var before = input.scans.count();
+
+        assertThat(Slices.dependenciesActive(copy, ORDERS)).as("no dependency is active").isFalse();
+        assertThat(copy.scans.count()).as("the read is counted on the copy").isPositive();
+        assertThat(input.scans.count()).as("the input's meter is where it was").isEqualTo(before);
+    }
+
+    // -- E4: a removal draft is not a directive in flight ------------------------------------------------------------------------------------
+    /// Red when: `Directory.directiveInFlight` ignores the draft kind: a DIRECTIVE_REMOVAL that carries the node's directive key reads as a
+    /// directive in flight, and a rejoining node is assigned one reconcile later.
+    @Test
+    void directiveRemovalDraft_isNotADirectiveInFlight() {
+        var m = new ClusterModel();
+        var key = new ActivationDirectiveKey(CORE_2);
+        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                      Option.some((AetherValue) ActivationDirectiveValue.core()),
+                                                                      Option.none());
+
+        m.outbox = List.of(TxDraft.draft(SubmitKind.DIRECTIVE_REMOVAL, key, List.of(mutation)).withNode(CORE_2));
+        assertThat(Directory.directiveInFlight(m, CORE_2)).as("a removal is not a write of the directive").isFalse();
+        m.outbox = List.of(TxDraft.draft(SubmitKind.DIRECTIVE, key, List.of(mutation)).withNode(CORE_2));
+        assertThat(Directory.directiveInFlight(m, CORE_2)).as("control: a DIRECTIVE draft is").isTrue();
     }
 }
