@@ -120,7 +120,8 @@ class EmberSameIdentityRelaunchTest {
     }
 
     /// A kill that lands before the survivors learned the original's boot token leaves nothing to supersede: the relaunch is
-    /// then the first process they see for btk-3 and joins as a live member. Only a refused relaunch is #2173's scenario, so
+    /// then the first process they see for btk-3 and joins as a live member. A kill that lands while the forming cluster's
+    /// start is still running aborts that start and stops the whole cluster. Only a refused relaunch is #2173's scenario, so
     /// any other repetition is skipped, except the last when none reached it: a regression whose every repetition missed its
     /// scenario has tested nothing, and must not pass as skipped.
     private static void requireTheScenario(boolean refused, RepetitionInfo repetition) {
@@ -131,10 +132,10 @@ class EmberSameIdentityRelaunchTest {
         }
 
         assertThat(repetition.getCurrentRepetition() == repetition.getTotalRepetitions() && DEMOTION_SCENARIO_REACHED.get() == 0)
-            .as("none of the %d repetitions reached #2173's scenario: every relaunch was admitted as the first btk-3 process, so the regression never ran",
+            .as("none of the %d repetitions reached #2173's scenario: no relaunch was refused, so the regression never ran",
                 repetition.getTotalRepetitions())
             .isFalse();
-        Assumptions.abort("the relaunch was admitted as the first btk-3 process: the original was killed before its token was seen");
+        Assumptions.abort("the relaunch was not refused: the original was killed before its token was seen, or the forming cluster's start aborted");
     }
 
     /// The positive arm on the same transport: a partitioned-but-LIVE process keeps its boot token, so
@@ -168,10 +169,13 @@ class EmberSameIdentityRelaunchTest {
             .isZero();
     }
 
+    /// Refused means the relaunched process exited with the identity-refused code. Its absence from the cluster is not
+    /// evidence: a start aborted by the early kill clears the cluster too, and the survivor, then stopped, keeps its seeded
+    /// MEMBER record (CI run 38336812709, "Cluster startup aborted on first node failure").
     private boolean refusedWithin(long boundMs) {
         var deadline = System.currentTimeMillis() + boundMs;
 
-        while (cluster.getNode("btk-3").isPresent()) {
+        while (!cluster.exitCodeOf("btk-3").equals(Option.some(AetherNode.EXIT_IDENTITY_REFUSED))) {
             if (System.currentTimeMillis() > deadline) {
                 return false;
             }
