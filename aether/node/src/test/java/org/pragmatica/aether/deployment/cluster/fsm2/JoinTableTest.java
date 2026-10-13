@@ -281,12 +281,26 @@ class JoinTableTest {
         assertThat(w.h.submits()).isEmpty();
         assertThat(w.h.warns("join-unmatched")).hasSize(1);
         var warnsBefore = w.h.warns("join-unmatched").size();
-        var passesBefore = w.h.metricTotal("aether_deployment_fsm_reconcile_passes_total", t -> true);
 
         w.h.advance(w.h.settings.timing().tick() + 1);
-        assertThat(w.h.warns("join-unmatched").size() - warnsBefore).as("evaluated again on the tick, once per reconcile pass (step 10)")
-                  .isGreaterThan(0)
-                  .isEqualTo(w.h.metricTotal("aether_deployment_fsm_reconcile_passes_total", t -> true) - passesBefore);
+        assertThat(w.h.warns("join-unmatched").size() - warnsBefore).as("the tick re-emits the WARN of a join that is still unmatched, once")
+                  .isEqualTo(1);
+    }
+
+    // J9, evaluation cadence (CTO ruling, session 35: once per reconcile pass; only the WARN is rate-limited)
+    // Red when: the deferred joins are evaluated on the 30 s tick only. A worker deferred by J7 (departed record, no directive) is
+    // evaluated by the pass its directive's arrival queues; with the directive present no row matches, and J9 says so at once.
+    @Test
+    void j9_deferredJoin_isEvaluatedByTheReconcilePassThatFollowsAChange_notOnlyOnTheTick() {
+        var w = world();
+
+        w.record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.WORKER_LEAVE).activate();
+        w.h.clearLog();
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 1L, B)));
+        assertThat(w.h.warns("join-unmatched")).as("precondition: J7 defers silently").isEmpty();
+        w.h.seed(new ActivationDirectiveKey(W1), ActivationDirectiveValue.worker("east-w-0", ""));
+        w.h.drain();
+        assertThat(w.h.warns("join-unmatched")).as("evaluated by the pass the directive queued, no tick needed").hasSize(1);
     }
 
     // NT-121 (i)

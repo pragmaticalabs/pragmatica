@@ -709,14 +709,27 @@ public sealed interface Outbox {
             m.parked = Stream.concat(m.parked.stream(), Stream.of(draft)).toList();
         }
 
-        if (draft.key() instanceof ArtifactJudgmentKey judgment) {
-            m.parkedOps = Stream.concat(m.parkedOps.stream(),
-                                        draft.eventOps().stream().map(op -> Map.entry(judgment.artifact(),
-                                                                                      op)))
-                                .toList();
-        }
+        judgedArtifact(draft).onPresent(artifact -> parkOps(m, artifact, draft));
 
         return m;
+    }
+
+    private static ClusterModel parkOps(ClusterModel m, Artifact artifact, TxDraft draft) {
+        m.parkedOps = Stream.concat(m.parkedOps.stream(),
+                                    draft.eventOps().stream().map(op -> Map.entry(artifact, op)))
+                            .toList();
+
+        return m;
+    }
+
+    /// The artifact whose judgment the draft writes: named by the draft's key, or, for a resubmitted remainder whose key is its first pair's
+    /// desired key, by the judgment mutation it carries along.
+    private static Option<Artifact> judgedArtifact(TxDraft draft) {
+        return Option.from(Stream.concat(Stream.of(draft.key()),
+                                         draft.mutations().stream().map(mutation -> mutation.key()))
+                                 .filter(ArtifactJudgmentKey.class::isInstance)
+                                 .map(key -> ((ArtifactJudgmentKey) key).artifact())
+                                 .findFirst());
     }
 
     /// Step 1 of the reconcile: what was kept (`awaitEvents`, `park`) goes into this drain's intents.

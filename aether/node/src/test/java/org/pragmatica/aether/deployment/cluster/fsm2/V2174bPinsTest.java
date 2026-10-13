@@ -150,10 +150,8 @@ class V2174bPinsTest {
         return h;
     }
 
-    /// F5b. Red when: `Outbox.resubmitSharedOnly` resubmits at the bound (`>` for `>=`): a refusal at the last allowed attempt, which
-    /// releases every pair, is answered by a seventh submission instead of parking the clear for the next reconcile.
-    @Test
-    void sharedOnlyResubmission_stopsAtTheGoalBound_andTheClearIsNotLost() {
+    /// Refuses the latest FAILURE submission, with nothing moved, until a refusal is not answered by a new submission.
+    private static FsmHarness refusedToTheBound() {
         var h = heldFailureWithSharedClear();
         var current = h.submits(SubmitKind.FAILURE).getLast();
 
@@ -169,8 +167,25 @@ class V2174bPinsTest {
             current = h.submits(SubmitKind.FAILURE).getLast();
         }
 
+        return h;
+    }
+
+    /// F5b. Red when: `Outbox.resubmitSharedOnly` resubmits at the bound (`>` for `>=`): a refusal at the last allowed attempt, which
+    /// releases every pair, is answered by one more submission instead of parking the clear for the next reconcile.
+    @Test
+    void sharedOnlyResubmission_stopsAtTheGoalBound() {
+        var h = refusedToTheBound();
+
         assertThat(h.submits(SubmitKind.FAILURE)).as("the first submission and GOAL_RESUBMISSIONS resubmissions")
                   .hasSize(1 + Outbox.GOAL_RESUBMISSIONS);
+    }
+
+    /// Red when: the event-only operations of a resubmitted remainder are not parked at the bound (`Outbox.awaitEvents` named the artifact by
+    /// the draft's key only, and a remainder's key is its first pair's desired key): the clear of CORE_2's exclusion is lost.
+    @Test
+    void clearOfAResubmittedRemainder_survivesTheBound() {
+        var h = refusedToTheBound();
+
         h.held.clear();
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.advance(120_000L);
@@ -197,36 +212,34 @@ class V2174bPinsTest {
         assertThat(excluded(h, CORE_2)).as("CORE_2 answered UNLOADED: its exclusion is cleared, not left to the 10T expiry").isFalse();
     }
 
-    private static long adjustments(FsmHarness h) {
+    private static long adjustmentsOf(FsmHarness h, org.pragmatica.aether.artifact.Artifact artifact) {
         return h.effects(ClusterEffect.Route.class)
                 .stream()
-                .filter(route -> route.event() instanceof RoutedEvent.ReconciliationAdjustment)
+                .filter(route -> route.event() instanceof RoutedEvent.ReconciliationAdjustment adjustment && adjustment.artifact().equals(artifact))
                 .count();
     }
 
-    /// R4f. Red when: `Outbox.stillStarted` keeps only `DeploymentStarted` events: the `ReconciliationAdjustment` riding the first goal of
-    /// a scale operation is dropped when that transaction is refused because another pair moved and the rest is resubmitted.
+    /// R4f. Red when: `Outbox.stillStarted` keeps only `DeploymentStarted` events: the `ReconciliationAdjustment` of an artifact whose first goal
+    /// stays in a transaction that is refused because another pair moved is dropped when the rest is resubmitted.
     @Test
     void adjustmentRidingARefusedAndSplitTransaction_isAnnouncedWhenTheRestLands() {
-        var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1, CORE_2, CORE_3);
+        var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
 
-        SlFixtures.seedTarget(h, ORDERS, 2, 1);
+        SlFixtures.seedTarget(h, ORDERS, 1, 1);
+        SlFixtures.seedTarget(h, BILLING, 1, 1);
         h.policy = FsmHarness.SettlePolicy.HOLD;
         h.activate();
         var goals = h.submits(SubmitKind.GOALS).getFirst();
-        var keys = goals.transaction().mutations().stream().map(mutation -> mutation.key()).toList();
 
-        assertThat(keys).as("precondition: the operation's two goals travel together").hasSize(2);
-        var second = (SliceDesiredKey) keys.getLast();
-
-        h.seed(second, desired(SliceGoal.LOADED, G3));
+        assertThat(goals.transaction().mutations()).as("precondition: both goals of the node travel together").hasSize(2);
+        h.seed(new SliceDesiredKey(CORE_1, BILLING), desired(SliceGoal.LOADED, G3));
         h.held.clear();
         h.settleHeld(goals, h.refused(goals));
         assertThat(h.submits(SubmitKind.GOALS)).as("precondition: the unmoved goal is resubmitted").hasSizeGreaterThan(1);
-        assertThat(adjustments(h)).as("nothing is announced while the rest is in flight").isZero();
+        assertThat(adjustmentsOf(h, ORDERS)).as("nothing is announced while the rest is in flight").isZero();
         h.policy = FsmHarness.SettlePolicy.APPLY;
         h.submits(SubmitKind.GOALS).stream().skip(1).forEach(submit -> h.settleHeld(submit, h.applyTransaction(submit)));
-        assertThat(adjustments(h)).as("the adjustment survives the split and is announced once").isEqualTo(1L);
+        assertThat(adjustmentsOf(h, ORDERS)).as("the adjustment survives the split and is announced once").isEqualTo(1L);
     }
 
     // -- F6b, X1 and the ownership of the meter -----------------------------------------------------------------------------------
@@ -291,20 +304,33 @@ class V2174bPinsTest {
         assertThat(scanMetrics(rebuildStep.get())).as("the Rebuild step reports the scans it made").isPositive();
     }
 
+    private static FsmHarness withManyPairs() {
+        var h = LcSupport.leader();
+
+        for (var i = 0; i < SCAN_THRESHOLD_PLUS * 4; i++) {
+            var key = node("w-" + (i % 20));
+            var artifact = artifact("org.example:a" + i + ":1.0.0");
+
+            h.seedQuietly(new SliceDesiredKey(key, artifact), desired(SliceGoal.ACTIVE, gen(1)));
+            h.seedQuietly(new SliceObservedKey(key, artifact), row(SliceObservedState.ACTIVE, 1L, gen(1), process(7L)));
+        }
+
+        return h;
+    }
+
     /// Red when: `ClusterModel.copy` shares the scan meter (or the maps stay bound to the input model's): a step then counts on the meter
     /// the model it was given reads, so `step` mutates its input (the contract of `ClusterModel`).
     @Test
     void step_doesNotTouchTheScanMeterOfItsInputModel() {
-        var h = withManySchemas();
+        var h = withManyPairs();
 
         h.activate();
         var input = h.state;
         var inputMeter = h.model().scans.count();
         var stepped = h.fsm.step(input, new ClusterInput.Reconcile());
 
-        assertThat(stepped.state()).isNotSameAs(input);
+        assertThat(scanMetrics(stepped.effects())).as("control: a reconcile pass over many pairs scans").isPositive();
         assertThat(((ClusterState.Active) input).model().scans.count()).as("the input model's meter is where it was").isEqualTo(inputMeter);
-        assertThat(((ClusterState.Active) stepped.state()).model().scans.count()).as("the step counted on its own").isNotEqualTo(inputMeter);
     }
 
     /// Red when: an index bucket larger than the scan threshold keeps counting on the meter of the model it was built in
