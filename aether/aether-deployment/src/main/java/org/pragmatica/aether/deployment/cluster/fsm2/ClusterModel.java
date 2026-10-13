@@ -82,9 +82,6 @@ public final class ClusterModel {
     PMap<String, SchemaMigrationLockValue> schemaLocks = PMap.empty(scans);
     PMap<String, PSet<BlueprintId>> blockingSchemasByOwner = PMap.empty(scans);
     PMap<SlicePair, String> holdSignatures = PMap.empty(scans);
-    /// The generation of the FAILED row whose `DeploymentFailed` was already routed, so a failure handled again (its
-    /// transaction was refused) is not announced twice.
-    PMap<SlicePair, Generation> failureRouted = PMap.empty(scans);
     PMap<BlueprintId, DeploymentApplyValue> applies = PMap.empty(scans);
     PMap<BlueprintId, DeploymentOutcomeValue> outcomes = PMap.empty(scans);
     PMap<Artifact, ArtifactJudgmentValue> judgments = PMap.empty(scans);
@@ -171,7 +168,6 @@ public final class ClusterModel {
         c.schemaLocks = schemaLocks;
         c.blockingSchemasByOwner = blockingSchemasByOwner;
         c.holdSignatures = holdSignatures;
-        c.failureRouted = failureRouted;
         c.applies = applies;
         c.outcomes = outcomes;
         c.judgments = judgments;

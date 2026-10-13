@@ -36,9 +36,6 @@ public sealed interface JudgmentOp {
     /// `node` answered, left, or the exclusion expired (R-4.2.5).
     record ClearUnresponsive(NodeId node) implements JudgmentOp {}
 
-    /// A republish or removal: the whole judgment goes (R-4.2.2).
-    record ClearAll() implements JudgmentOp {}
-
     /// Whether no reconcile step derives this operation again once the intent that carried it is lost: it answers an event (a node
     /// answered or left, a slice became ACTIVE), where the others follow from rows and clocks the sweeps read.
     default boolean eventOnly() {
@@ -74,7 +71,6 @@ public sealed interface JudgmentOp {
                                              retries,
                                              with(unresponsive, r.node(), r.entry()));
                 case ClearUnresponsive c -> new Judged(permanent, retries, without(unresponsive, c.node()));
-                case ClearAll _ -> new Judged(false, Map.of(), Map.of());
             };
         }
 

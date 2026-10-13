@@ -23,15 +23,9 @@ public sealed interface Rebalance {
     static ClusterModel consider(ClusterModel m, Ctx ctx, Artifact artifact, List<NodeId> allocatable) {
         var hosts = Rows.allInstances(m, artifact).stream().map(SlicePair::node).collect(Collectors.toSet());
 
-        return hosts.isEmpty() || allocatable.size() < 2 || loadSpread(m, allocatable) <= 1
+        return hosts.isEmpty() || allocatable.size() < 2
                ? level(m, artifact)
                : moveOne(m, ctx, artifact, allocatable, hosts);
-    }
-
-    private static int loadSpread(ClusterModel m, List<NodeId> allocatable) {
-        var loads = allocatable.stream().mapToInt(node -> Placement.load(m, node)).summaryStatistics();
-
-        return loads.getMax() - loads.getMin();
     }
 
     private static ClusterModel moveOne(ClusterModel m,

@@ -498,26 +498,9 @@ public sealed interface Outbox {
         };
     }
 
-    /// An accepted transaction's event goes out now. A `DeploymentFailed` also marks its FAILED row as announced, so a lost write is
-    /// announced when its re-derived transaction lands, and only once.
-    private static ClusterModel announce(ClusterModel m, Ctx ctx, RoutedEvent event) {
-        ctx.route(event);
-
-        return event instanceof RoutedEvent.DeploymentFailed failed
-               ? markAnnounced(m,
-                               SlicePair.slicePair(failed.node(), failed.artifact()))
-               : m;
-    }
-
-    private static ClusterModel markAnnounced(ClusterModel m, SlicePair pair) {
-        m.observed.get(pair).onPresent(row -> m.failureRouted = m.failureRouted.put(pair, row.forGeneration()));
-
-        return m;
-    }
-
     private static ClusterModel accepted(ClusterModel m, Ctx ctx, Submitted submission) {
         for (var draft : submission.drafts()) {
-            draft.onAccepted().forEach(event -> announce(m, ctx, event));
+            draft.onAccepted().forEach(ctx::route);
             ctx.metric("aether_deployment_fsm_submissions_total",
                        Map.of("fsm",
                               "cluster",
