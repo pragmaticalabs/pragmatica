@@ -190,6 +190,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         lastEmittedHealth.keySet().removeIf(peer -> !inMembershipScope(peer));
         transportHints.keySet().removeIf(peer -> !inMembershipScope(peer));
         coldBootSuppressedFaulty.keySet().removeIf(peer -> !inMembershipScope(peer));
+        sweptSuppressedDeaths.keySet().removeIf(peer -> !inMembershipScope(peer));
         transportVetoedFaulty.keySet().removeIf(peer -> !inMembershipScope(peer));
         refutedIdentities.removeIf(peer -> !inMembershipScope(peer));
         tombstones.keySet().removeIf(peer -> !inMembershipScope(peer));
@@ -396,6 +397,17 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// FAULTY until the residency sweep, which (window now closed) tombstoned it, and the real
     /// FAULTY → Departed waited out the tombstone TTL and a fresh probe cycle — 3 min 40 s in run 7.
     private final Map<NodeId, Boolean> coldBootSuppressedFaulty = new ConcurrentHashMap<>();
+    /// Deferred cold-boot deaths whose member was swept before the gate closed. The sweep ([#cleanupFaultyMembers]) comes
+    /// 3 x suspectTimeout after the FAULTY edge, which can be before the convergence window ends; it clears the deferral
+    /// with the rest of the death memory, and the verdict would be lost. It is kept here instead, and replayed when the gate
+    /// closes unless the peer has come back meanwhile (#2173). The member itself is still swept: a slow seed stays re-addable.
+    /// Mapped to the incarnation of the swept member.
+    private final Map<NodeId, Long> sweptSuppressedDeaths = new ConcurrentHashMap<>();
+    /// Retired identities whose death [#emitFaultyOrUnknown] has emitted (#2173). The pair is one-shot per identity, not
+    /// per edge: the residency sweep clears [#lastEmittedHealth], the per-edge dedup, and a sweep racing a retirement on
+    /// another thread can put back a swept deferral the retirement had just dropped. Never pruned, like the registry's
+    /// retired set, of which it is a subset.
+    private final Set<NodeId> retiredDeathEmitted = ConcurrentHashMap.newKeySet();
     /// Never-HEALTHY peers whose FAULTY edge the live-transport veto turned into `UnknownObserved` (#2077), mapped to
     /// that edge's first-hand flag. The veto defers a verdict; it must not drop it. A member already FAULTY gets no
     /// further FAULTY edge, so [#reevaluateTransportVetoedFaulty] replays the edge on the tick once the link that
@@ -724,6 +736,7 @@ public final class SwimProtocol implements SwimMessageHandler {
                  claimant.id(),
                  peer.id());
         reevaluateSuppressedFaulty(peer);
+        replaySweptDeath(peer);
     }
 
     /// Retract a `LINK_LOST` hint for `peer` when the transport reports the link re-established
@@ -1030,11 +1043,23 @@ public final class SwimProtocol implements SwimMessageHandler {
                 tombstoneIfWasHealthy(entry.getKey(),
                                       entry.getValue().incarnation(),
                                       now);
+                keepDeferredDeath(entry.getKey(),
+                                  entry.getValue().incarnation());
                 clearDeathMemory(entry.getKey());
             }
         }
 
         sweepExpiredTombstones(now);
+    }
+
+    /// A swept member's cold-boot-deferred death outlives the sweep ([#sweptSuppressedDeaths]). MUST run BEFORE
+    /// [#clearDeathMemory], which erases the live deferral and `everSeenHealthy`. A peer that proved itself HEALTHY
+    /// after its edge was deferred has nothing kept, as [#replayIfStillSuppressed] has nothing replayed for it.
+    private void keepDeferredDeath(NodeId peer, long incarnation) {
+        // The latest sweep decides: a deferral kept by an earlier sweep is stale once the peer came back (#2171 verifier).
+        sweptSuppressedDeaths.remove(peer);
+        option(coldBootSuppressedFaulty.get(peer)).filter(_ -> !everSeenHealthy.contains(peer))
+              .onPresent(_ -> sweptSuppressedDeaths.put(peer, incarnation));
     }
 
     /// Wave-6 H8 journal line (residency decision logging, per the Wave-1 diagnostic
@@ -2384,8 +2409,22 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// the conflicting token, the resident process is treated as dead — FAULTY now, unless it already
     /// is — so a same-address new process answering probes can never keep the old member alive.
     private void onRetired(NodeId peer) {
-        option(members.get(peer)).filter(member -> member.state() != MemberState.FAULTY)
-              .onPresent(this::transitionToFaulty);
+        option(members.get(peer)).onPresent(this::declareRetiredDead);
+    }
+
+    /// A retirement is positive evidence of death: it follows only a boot-token conflict that the member's own answer to
+    /// a probe (or a verified handshake) proved, never a partition heal, which keeps the process's token. So the death is
+    /// emitted at once, past the cold-boot suppression, the transport veto and the co-confirmation gate (see
+    /// [#emitFaultyOrUnknown]). A member already FAULTY gets no new edge, but its earlier edge may have been deferred
+    /// before the retirement; the retirement replaces that deferral with the death.
+    private void declareRetiredDead(SwimMember member) {
+        if (member.state() != MemberState.FAULTY) {
+            transitionToFaulty(member);
+
+            return;
+        }
+
+        emitFaultyOrUnknown(member.nodeId(), member.incarnation(), true);
     }
 
     private boolean isRetired(NodeId peer) {
@@ -3127,6 +3166,15 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// or a current transport death hint (#1061) — so a single prober's transient SUSPECT cannot terminally
     /// depart an established peer.
     private void emitFaultyOrUnknown(NodeId peer, long incarnation, boolean firstHand) {
+        if (isRetired(peer)) {
+            coldBootSuppressedFaulty.remove(peer);
+            sweptSuppressedDeaths.remove(peer);
+            transportVetoedFaulty.remove(peer);
+            emitRetiredDeathOnce(peer, incarnation);
+
+            return;
+        }
+
         var booting = isBooting.getAsBoolean();
 
         if (booting && !everSeenHealthy.contains(peer) && !refutedIdentities.contains(peer)) {
@@ -3158,6 +3206,16 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (!booting && !everSeenHealthy.contains(peer)) {
             LOG.warn("SWIM phase=NORMAL_OR_RECOVERING: emitting FaultyObserved for never-HEALTHY peer {} (no live transport connection, cold-boot suppression bypassed)",
                      peer.id());
+        }
+
+        emitFaultyAndDeparted(peer, incarnation);
+        emitClusterFaulty(peer);
+    }
+
+    /// See [#retiredDeathEmitted]: whichever path reaches a retired identity first emits its death, and no path emits it twice.
+    private void emitRetiredDeathOnce(NodeId peer, long incarnation) {
+        if (!retiredDeathEmitted.add(peer)) {
+            return;
         }
 
         emitFaultyAndDeparted(peer, incarnation);
@@ -3258,11 +3316,28 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// kept: a peer that proved itself HEALTHY meanwhile has nothing replayed, and the replay goes
     /// through [#emitFaultyOrUnknown], so the live-transport veto still holds a connected peer.
     private void reevaluateColdBootSuppressedFaulty() {
-        if (coldBootSuppressedFaulty.isEmpty() || isBooting.getAsBoolean()) {
+        if ((coldBootSuppressedFaulty.isEmpty() && sweptSuppressedDeaths.isEmpty()) || isBooting.getAsBoolean()) {
             return;
         }
 
         coldBootSuppressedFaulty.keySet().forEach(this::reevaluateSuppressedFaulty);
+        sweptSuppressedDeaths.keySet().forEach(this::replaySweptDeath);
+    }
+
+    /// One-shot, like [#reevaluateSuppressedFaulty], for a deferral whose member was swept. A peer that is a member again
+    /// (it came back) is judged anew by the normal edges and has nothing to replay.
+    private void replaySweptDeath(NodeId peer) {
+        option(sweptSuppressedDeaths.remove(peer)).filter(_ -> !members.containsKey(peer))
+              .onPresent(incarnation -> replaySweptEdge(peer, incarnation));
+    }
+
+    /// The first-hand flag is never read here: its only reader is the co-confirmation gate, which needs `everSeenHealthy`,
+    /// and a swept peer has none ([#clearDeathMemory]; [#keepDeferredDeath] keeps only a never-HEALTHY peer's deferral).
+    private void replaySweptEdge(NodeId peer, long incarnation) {
+        LOG.info("SWIM cold-boot suppression lifted (#2173): replaying the deferred FAULTY edge for swept never-HEALTHY peer {}",
+                 peer.id());
+        tombstoneOnFaultyEdge(peer, incarnation);
+        emitFaultyOrUnknown(peer, incarnation, true);
     }
 
     /// One-shot: whoever removes the deferral (the tick or a refutation) replays it, whatever the
