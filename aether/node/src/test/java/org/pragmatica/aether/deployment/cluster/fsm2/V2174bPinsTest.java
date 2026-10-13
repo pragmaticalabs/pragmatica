@@ -394,15 +394,65 @@ class V2174bPinsTest {
         assertThat(w.h.warns("join-unmatched")).as("the tick re-emits it once").hasSize(2);
     }
 
-    /// Red when: a node that matched (its record was removed and it was admitted) and became unmatched again does not start a new
-    /// episode: its second condition is never reported.
+    /// Red when: a new join input for a node does not start a new episode: the condition it is in again is never reported.
     @Test
-    void joinUnmatched_matchedThenUnmatchedAgain_warnsAgain() {
+    void joinUnmatched_newJoinInput_startsANewEpisode() {
         var w = unmatchedWorld();
 
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
         assertThat(w.h.warns("join-unmatched")).hasSize(1);
         w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
         assertThat(w.h.warns("join-unmatched")).as("a new join input starts a new episode").hasSize(2);
+    }
+
+    // -- D2: ActivationBlocked withheld while suspended ------------------------------------------------------------------------------
+    private static SchemaVersionValue schema(SchemaStatus status) {
+        return new SchemaVersionValue("ds", 1, "m1", status, "g:a:1", blueprintId("org.example:app:1.0.0"), 2, FsmHarness.START_WALL);
+    }
+
+    private static long blockedRoutes(FsmHarness h) {
+        return h.effects(ClusterEffect.Route.class)
+                .stream()
+                .filter(route -> route.event() instanceof RoutedEvent.ActivationBlocked)
+                .count();
+    }
+
+    private static FsmHarness suspendedWithAFailedRecord() {
+        var h = LcSupport.leader(DeploymentAtomicity.ALL_OR_NOTHING, 0.5d, CORE_1);
+
+        h.activate();
+        h.deliver(new ClusterInput.WitnessStale());
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.FAILED));
+        h.drain();
+
+        return h;
+    }
+
+    /// Red when: the resume announces a record that is no longer FAILED (`Schemas.announceWithheld` does not read the record again).
+    @Test
+    void activationBlocked_withheldThenCompletedWhileSuspended_isNotAnnouncedOnTheResume() {
+        var h = suspendedWithAFailedRecord();
+
+        h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.COMPLETED));
+        h.drain();
+        h.commitLeader(FsmHarness.SELF, 2L);
+        h.drain();
+        h.advance(30_000L);
+        assertThat(blockedRoutes(h)).as("the hold it would report is gone").isZero();
+    }
+
+    /// Red when: the withheld set outlives the resume (`Schemas.announceWithheld` does not empty it): the next resume announces it again.
+    @Test
+    void activationBlocked_withheld_isAnnouncedOnceAcrossTwoResumes() {
+        var h = suspendedWithAFailedRecord();
+
+        h.commitLeader(FsmHarness.SELF, 2L);
+        h.drain();
+        assertThat(blockedRoutes(h)).as("announced on the first resume").isEqualTo(1L);
+        h.deliver(new ClusterInput.WitnessStale());
+        h.commitLeader(FsmHarness.SELF, 3L);
+        h.drain();
+        h.advance(30_000L);
+        assertThat(blockedRoutes(h)).as("not again on the second").isEqualTo(1L);
     }
 }
