@@ -103,13 +103,16 @@ class SurvivorPinsTest {
         assertThat(model.genCounter).isEqualTo(before + 1);
     }
 
-    /// Red when: a recorded exclusion at the goal's own generation is recorded again by every reconcile (`>= 0` instead of `> 0`).
+    /// Red when: a recorded exclusion at the goal's own generation is recorded again by every reconcile (`>= 0` instead of `> 0`). The
+    /// node never answers the retraction's UNLOAD, so the "goal already UNLOADED: record only" arm runs and must then stay quiet.
     @Test
     void retraction_isRecordedOnce_notOnEveryReconcile() {
         var h = LcSupport.active();
 
         h.seed(new SliceTargetKey(ORDERS.base()),
                SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+        h.drain();
+        new NodeSim(h, CORE_1, process(11L)).writes(ORDERS, SliceObservedState.LOADING);
         h.drain();
         h.advance(3 * T_LOAD_MS + 1_000L);
         h.deliver(new ClusterInput.Reconcile());
@@ -148,22 +151,28 @@ class SurvivorPinsTest {
         assertThat(w.h.submits(SubmitKind.CLEANUP)).as("still one: the first is in flight").hasSize(1);
     }
 
-    /// Red when: a departed node (DEPARTED record committed, its rows not yet collected) is given a goal by the divergence clock: the
-    /// departed half of "a departing or departed node gets no new goals".
+    /// Red when: a departed node (DEPARTED record committed by the backstop, its rows not yet collected) is given a goal by the divergence
+    /// clock: the departed half of "a departing or departed node gets no new goals". The departure is inferred (C17s), because a
+    /// membership departure removes the node's desired keys in its own transaction and leaves nothing to re-issue.
     @Test
     void departedNode_getsNoReissuedGoal() {
         var w = coreWorld();
 
+        w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1, CORE_3))));
         w.h.seedQuietly(new SliceDesiredKey(CORE_2, ORDERS), new SliceDesiredValue(SliceGoal.LOADED, gen(7), w.h.wallMs));
         w.activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
-        w.h.applyHeld(w.h.submits(SubmitKind.DEPARTURE).getFirst().correlationId());
+        w.h.advance(ms(bounds().coreRemoval()) + 31_000L);
+        assertThat(w.inferred()).as("the backstop recorded the departure").hasSize(1);
+        w.h.applyHeld(w.inferred().getFirst().correlationId());
         w.h.drain();
+        assertThat(w.h.model().departed.contains(CORE_2)).isTrue();
         var before = goalPuts(w.h);
 
         w.h.advance(T_LOAD_MS + 1_000L);
         w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.model().desired(SlicePair.slicePair(CORE_2, ORDERS))).as("the desired key is still there to be re-issued")
+                  .isNotEqualTo(Option.none());
         assertThat(goalPuts(w.h)).isEqualTo(before);
     }
 
