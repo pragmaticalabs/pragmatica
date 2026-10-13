@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Set;
 import java.util.function.UnaryOperator;
 
@@ -95,6 +96,7 @@ class SettingsSourcedTest {
         var active = Option.some(row(SliceObservedState.ACTIVE, 1L, gen(1), process(7)));
 
         assertThat(Divergence.timeoutOf(bounds, SliceGoal.ACTIVE, loading)).as("loading").isEqualTo(11_000L);
+        assertThat(Divergence.timeoutOf(bounds, SliceGoal.LOADED, loading)).as("loading towards LOADED").isEqualTo(11_000L);
         assertThat(Divergence.timeoutOf(bounds, SliceGoal.ACTIVE, loaded)).as("activating").isEqualTo(22_000L);
         assertThat(Divergence.timeoutOf(bounds, SliceGoal.LOADED, active)).as("deactivating").isEqualTo(33_000L);
         assertThat(Divergence.timeoutOf(bounds, SliceGoal.UNLOADED, loaded)).as("unloading").isEqualTo(44_000L);
@@ -276,5 +278,38 @@ class SettingsSourcedTest {
         assertThat(h.warns("slice-unresponsive-expired")).as("not before 10T").isEmpty();
         h.advance(2 * 60_000L);
         assertThat(h.warns("slice-unresponsive-expired")).as("10 x the configured bound, long before 10 x 120 s").isNotEmpty();
+    }
+
+    // Red when: any `with*` of Settings loses a field that an earlier call set: every wither is applied last, after all the others.
+    @Test
+    void withers_keepEveryOtherField_whicheverIsAppliedLast() {
+        var timing = Timing.DEFAULT.withTick(12_345L);
+        var divergence = DivergenceBounds.divergenceBounds(1L, 2L, 3L, 4L);
+        var process = new ProcessIncarnation(7L, 8L);
+        var all = List.<UnaryOperator<Settings>> of(s -> s.withTiming(timing),
+                                                     s -> s.withCommunitySizing(7, 2),
+                                                     s -> s.withDivergence(divergence),
+                                                     s -> s.withSubmissionExpiry(99_000L),
+                                                     s -> s.withProcess(process),
+                                                     s -> s.withJitter(_ -> 0.25d));
+
+        for (var last = 0; last < all.size(); last++) {
+            var settings = Settings.settings(FsmHarness.SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds());
+
+            for (var i = 0; i < all.size(); i++) {
+                if (i != last) {
+                    settings = all.get(i).apply(settings);
+                }
+            }
+
+            settings = all.get(last).apply(settings);
+            assertThat(settings.timing()).as("timing, last=" + last).isEqualTo(timing);
+            assertThat(settings.communityTargetSize()).as("target size, last=" + last).isEqualTo(7);
+            assertThat(settings.communityViabilityFloor()).as("floor, last=" + last).isEqualTo(2);
+            assertThat(settings.divergence()).as("divergence, last=" + last).isEqualTo(divergence);
+            assertThat(settings.submissionExpiry()).as("expiry, last=" + last).isEqualTo(99_000L);
+            assertThat(settings.process()).as("process, last=" + last).isEqualTo(process);
+            assertThat(settings.jitter().applyAsDouble("x")).as("jitter, last=" + last).isEqualTo(0.25d);
+        }
     }
 }

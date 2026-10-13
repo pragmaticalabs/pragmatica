@@ -412,8 +412,10 @@ public sealed interface Joins {
                               record -> readmitOnEvidence(m, ctx, node, record));
     }
 
+    /// A STALE record (only a DEPARTED record carries that cause), or one that `inherited` names: `inherited` holds DEPARTED records only, and
+    /// leaves the set whenever its record changes (`Indexer#forgetInherited`).
     private static boolean evidenceApplies(ClusterModel m, NodeId node, NodeDepartureValue record) {
-        return Departures.isDeparted(record) && (stale(record) || m.inherited.contains(node));
+        return stale(record) || m.inherited.contains(node);
     }
 
     private static ClusterModel readmitOnEvidence(ClusterModel m, Ctx ctx, NodeId node, NodeDepartureValue record) {

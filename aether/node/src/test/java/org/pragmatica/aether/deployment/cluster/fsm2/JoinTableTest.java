@@ -604,4 +604,22 @@ class JoinTableTest {
                   .isTrue();
         assertThat(w.recordOf(CORE_2).isEmpty()).as("R-4.3.3: the record goes with the directive").isTrue();
     }
+
+    // NT-88 J1 core (record handling)
+    // Red when: a superseded core's join is refused before the record handling of J2/J3 applies: its DEPARTED record is then not replaced.
+    @Test
+    void j1_supersededCore_withADepartedRecord_isStillReadmitted() {
+        var w = MbWorld.world(CORE_1, CORE_3);
+
+        w.record(CORE_3, DepartureState.DEPARTED, 4L, 0x3333L, DepartureCause.NODE_REMOVED)
+         .seams(s -> s.withSuperseded(Set.of(CORE_3)))
+         .activate();
+        w.h.clearLog();
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_3, w.admit(CORE_3, 0x3333L)));
+
+        assertThat(w.recordOf(CORE_3).map(NodeDepartureValue::epoch)).isEqualTo(Option.some(5L));
+        assertThat(w.recordOf(CORE_3).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
+        assertThat(w.h.submits().stream().anyMatch(s -> touches(s, ActivationDirectiveKey.class))).isFalse();
+        assertThat(w.counts(CORE_3)).isTrue();
+    }
 }

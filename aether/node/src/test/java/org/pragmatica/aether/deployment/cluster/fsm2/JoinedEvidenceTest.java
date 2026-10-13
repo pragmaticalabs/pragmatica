@@ -766,4 +766,88 @@ class JoinedEvidenceTest {
         assertThat(w.recordOf(W1).isEmpty()).isTrue();
         assertThat(w.h.model().inherited.contains(W1)).isFalse();
     }
+
+    // Red when: a second removal input for a node that is already recorded departed submits another C17 (a duplicate DEPARTED over the DEPARTED record).
+    @Test
+    void duplicateRemoval_ofAnAlreadyDepartedNode_submitsNothing() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.directive(CORE_2, ActivationDirectiveValue.core()).activate();
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+        assertThat(stateOf(w, CORE_2)).isEqualTo(Option.some(DepartureState.DEPARTED));
+        w.h.clearLog();
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+
+        assertThat(w.h.submits()).isEmpty();
+    }
+
+    // Red when: a DEPARTED record that arrives for a node that is already joined (the C11c arm of the supersession) does not queue the ADMITTED rewrite
+    // in the very step that indexes it, but only at a later reconcile.
+    @Test
+    void recordPut_ofASupersededDeparted_queuesTheRewriteInTheSameStep() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.directive(CORE_2, ActivationDirectiveValue.core()).activate();
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
+        var departed = new NodeDepartureValue(DepartureState.DEPARTED,
+                                              0L,
+                                              process(TOKEN_2),
+                                              Option.some(DepartureCause.NODE_REMOVED),
+                                              w.h.wallMs);
+        var stepped = w.h.fsm.step(w.h.state, new ClusterInput.KvPut(new NodeDepartureKey(CORE_2), departed));
+        var model = ((ClusterState.Active) stepped.state()).model();
+
+        assertThat(model.outbox.stream().anyMatch(draft -> draft.kind() == SubmitKind.ADMISSION)).isTrue();
+    }
+
+    // Red when: the flag that tells a localAlive sample from the Rebuild snapshot is reset by the next step (the model copy drops it), so the sample
+    // stops being evidence as soon as another input is handled.
+    @Test
+    void sampledAfterRebuild_isSetByTheFirstSample_andKept() {
+        var w = communityOfW1(COMMUNITY).activate();
+
+        assertThat(w.h.model().sampledAfterRebuild).as("the Rebuild snapshot's view is not a sample").isFalse();
+        w.refreshSeams(s -> s.withLocalAlive(Option.some(COMMUNITY)));
+        assertThat(w.h.model().sampledAfterRebuild).isTrue();
+        w.h.advance(2 * TICK_MS);
+        assertThat(w.h.model().sampledAfterRebuild).as("kept for the life of the incarnation").isTrue();
+    }
+
+    // Red when: a removal input for a node whose DEPARTED record was superseded by a join does not make the node departed again at once (the
+    // clearing of `joined` does not recompute `departed`).
+    @Test
+    void removalInput_ofASupersededNode_makesItDepartedAgainAtOnce() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.directive(CORE_2, ActivationDirectiveValue.core())
+         .record(CORE_2, DepartureState.DEPARTED, 1L, TOKEN_2, DepartureCause.NODE_REMOVED)
+         .activate();
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
+        assertThat(w.h.model().isDeparted(CORE_2)).as("superseded while its admission is in flight").isFalse();
+        w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
+
+        assertThat(w.h.model().isDeparted(CORE_2)).as("the removal ends the evidence: departed again").isTrue();
+        assertThat(w.counts(CORE_2)).isFalse();
+    }
+
+    // Red when: C11f hands the join table the unknown process instead of the worker's admission, so a worker of another known process is re-admitted
+    // instead of refused by J8.
+    @Test
+    void nt130a_aWorkerOfAnotherKnownProcess_isRefusedByJ8_notReadmitted() {
+        var w = communityOfW1(COMMUNITY_WITHOUT_W1);
+
+        w.record(W1, DepartureState.DEPARTED, E, 0xDEADL, DepartureCause.WORKER_LEAVE).activate();
+        w.announce(C, GOV, W1, M1, M2, M3, M4);
+
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        assertThat(w.h.warns("identity-process-mismatch")).isNotEmpty();
+        assertThat(w.counts(W1)).isFalse();
+    }
 }
