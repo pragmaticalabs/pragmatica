@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -15,6 +16,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.aether.config.cluster.CommunityPlacement;
+import org.pragmatica.aether.config.cluster.CommunityPlacement.Location;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 
 import org.junit.jupiter.api.Test;
@@ -93,5 +96,35 @@ class AdversarialRound2Test {
         assertThat(h.store.get(new ArtifactJudgmentKey(ORDERS))
                           .map(value -> ((ArtifactJudgmentValue) value).retries()
                                                                        .get(CORE_1))).isEqualTo(Option.some(1));
+    }
+
+    /// Red when: a worker whose source matches no configured community policy is dropped silently (no directive and no warning).
+    @Test
+    void workerMatchingNoPolicy_isReportedNotSilentlyDropped() {
+        var worker = node("worker-1");
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3)
+                       .seams(seams -> seams.withCommunityPolicies(Map.of("p",
+                                                                          new CommunityPlacement("p",
+                                                                                                 4,
+                                                                                                 List.of(new Location("other-source",
+                                                                                                                      Option.none(),
+                                                                                                                      0,
+                                                                                                                      1)))))
+                                            .withMemberSource(Map.of(worker, "east")))
+                       .activate();
+
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 1L, 21L)));
+        assertThat(w.h.warns("worker-no-community-policy")).hasSize(1);
+        assertThat(w.present(new ActivationDirectiveKey(worker))).isFalse();
+    }
+
+    /// Red when: a settlement for a submission the FSM no longer holds is dropped without a trace (it is counted as `settled_unknown`).
+    @Test
+    void settlementOfAnUnknownSubmission_isCounted() {
+        var h = LcSupport.active();
+
+        h.deliver(new ClusterInput.WriteSettled("c1-999", 1L, new ClusterInput.Settlement.Accepted()));
+        assertThat(h.metricTotal("aether_deployment_fsm_submissions_total",
+                                 tags -> "settled_unknown".equals(tags.get("outcome")))).isEqualTo(1L);
     }
 }
