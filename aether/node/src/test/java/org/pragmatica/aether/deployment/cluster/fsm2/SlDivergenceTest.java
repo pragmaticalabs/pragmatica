@@ -199,7 +199,7 @@ class SlDivergenceTest {
             var h = stuckLoading();
 
             at(h, T_LOAD - 10_000L);
-            h.deliver(new ClusterInput.NodeJoined(CORE_1, admission(2L, 11L)));
+            h.deliver(new ClusterInput.NodeJoined(CORE_1, admission(11L)));
             at(h, 20_000L);
             assertThat(reissues(h)).as("T has passed since the goal but not since the re-admission").isZero();
             at(h, 3 * T_LOAD - T_LOAD - 30_000L);
@@ -215,8 +215,8 @@ class SlDivergenceTest {
             var h = stuckLoading();
             var tokens = BootTokens.bootTokens(1L);
 
-            h.admissions.put(CORE_1, admission(1L, 0L));
-            h.deliver(new ClusterInput.NodeJoined(CORE_1, admission(1L, 0L)));
+            h.admissions.put(CORE_1, admission(0L));
+            h.deliver(new ClusterInput.NodeJoined(CORE_1, admission(0L)));
             at(h, 2 * T_LOAD);
             tokens.admit(CORE_1, 222L);
             var learnedAt = h.monoNs;

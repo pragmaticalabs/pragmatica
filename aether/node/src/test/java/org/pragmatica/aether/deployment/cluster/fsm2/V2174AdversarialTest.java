@@ -47,9 +47,9 @@ class V2174AdversarialTest {
     private static MbWorld world() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.admit(CORE_3, 0x3333L);
 
         return w.target(ORDERS, 1, "CORE_ONLY")
                 .directive(CORE_2,
@@ -124,7 +124,7 @@ class V2174AdversarialTest {
 
         w.record(CORE_2, DepartureState.DEPARTED, 1L, TOKEN_2, DepartureCause.NODE_REMOVED).activate();
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, TOKEN_2)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, TOKEN_2)));
         var j3 = w.h.submits(SubmitKind.ADMISSION).getLast();
 
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
@@ -152,14 +152,15 @@ class V2174AdversarialTest {
     void unmatchedJoin_isReevaluatedOncePerTick() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 5L, TOKEN_2);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.admit(CORE_3, 0x3333L);
         w.directive(CORE_2,
                     ActivationDirectiveValue.core())
          .record(CORE_2, DepartureState.DEPARTED, 5L, TOKEN_2, DepartureCause.NODE_REMOVED)
          .activate();
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
+        w.unforeseen(CORE_2);
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         assertThat(w.h.warns("join-unmatched")).as("J9 matched").isNotEmpty();
         w.h.advance(5_000L);
         w.h.clearLog();
@@ -291,7 +292,7 @@ class V2174AdversarialTest {
         var fresh = node("core-9");
 
         w.h.deliver(new ClusterInput.WitnessStale());
-        w.h.deliver(new ClusterInput.NodeJoined(fresh, w.admit(fresh, 1L, 0x9L)));
+        w.h.deliver(new ClusterInput.NodeJoined(fresh, w.admit(fresh, 0x9L)));
         w.h.commitLeader(FsmHarness.SELF, 2L);
         w.h.drain();
         w.h.advance(60_000L);
@@ -365,8 +366,8 @@ class V2174AdversarialTest {
                                             .withMemberSource(Map.of(w1, "east", w2, "east")))
                        .activate();
 
-        w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 1L, 21L)),
-                            new ClusterInput.WorkerJoin(w2, w.admit(w2, 1L, 22L)));
+        w.h.deliverTogether(new ClusterInput.WorkerJoin(w1, w.admit(w1, 21L)),
+                            new ClusterInput.WorkerJoin(w2, w.admit(w2, 22L)));
         w.h.advance(60_000L);
         assertThat(w.present(new ActivationDirectiveKey(w1))).isTrue();
         assertThat(w.present(new ActivationDirectiveKey(w2))).as("the second worker is directed too").isTrue();

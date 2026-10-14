@@ -30,11 +30,6 @@ import org.pragmatica.lang.Option;
 ///   generation bump.
 /// - **No row is ever removed from a live node** (C1, R-6.1.5): a stuck row is not counted and the slice is re-placed.
 public sealed interface Divergence {
-    long SECOND = 1_000L;
-    long LOAD_T = 120 * SECOND;
-    long ACTIVATE_T = 90 * SECOND;
-    long DEACTIVATE_T = 30 * SECOND;
-    long UNLOAD_T = 120 * SECOND;
     int EXPIRY_FACTOR = 10;
 
     /// Step 8.
@@ -50,7 +45,9 @@ public sealed interface Divergence {
 
     private static ClusterModel check(ClusterModel m, Ctx ctx, SlicePair pair, SliceDesiredValue goal) {
         var row = Rows.current(m, pair);
-        var timeout = timeoutOf(goal.goal(), row);
+        var timeout = timeoutOf(ctx.settings().divergence(),
+                                goal.goal(),
+                                row);
         var age = ageMs(m, ctx, pair, goal, row);
 
         if (age > 3 * timeout) {
@@ -68,14 +65,14 @@ public sealed interface Divergence {
                : m;
     }
 
-    /// The transition timeout T of the pair's expected next step (R-6.1.1, R-6.1.4).
-    static long timeoutOf(SliceGoal goal, Option<SliceObservedValue> row) {
+    /// The transition timeout T of the pair's expected next step (R-6.1.1, R-6.1.4), from the configured `bounds` (P3-Q12).
+    static long timeoutOf(DivergenceBounds bounds, SliceGoal goal, Option<SliceObservedValue> row) {
         var state = row.map(SliceObservedValue::state);
 
         return switch (goal) {
-            case LOADED -> state.filter(value -> value == SliceObservedState.ACTIVE || value == SliceObservedState.DEACTIVATING).map(_ -> DEACTIVATE_T).or(LOAD_T);
-            case ACTIVE -> state.filter(value -> value == SliceObservedState.LOADED || value == SliceObservedState.ACTIVATING).map(_ -> ACTIVATE_T).or(LOAD_T);
-            case UNLOADED, UNKNOWN -> UNLOAD_T;
+            case LOADED -> state.filter(value -> value == SliceObservedState.ACTIVE || value == SliceObservedState.DEACTIVATING).map(_ -> bounds.deactivate()).or(bounds.load());
+            case ACTIVE -> state.filter(value -> value == SliceObservedState.LOADED || value == SliceObservedState.ACTIVATING).map(_ -> bounds.activate()).or(bounds.load());
+            case UNLOADED, UNKNOWN -> bounds.unload();
         };
     }
 
@@ -155,7 +152,9 @@ public sealed interface Divergence {
         m.judgments.get(artifact)
                    .flatMap(judgment -> Option.option(judgment.unresponsive().get(node)))
                    .filter(entry -> Math.min(ctx.nowMs() - entry.at(),
-                                             (ctx.monoNs() - m.incarnationStart) / 1_000_000L) >= EXPIRY_FACTOR * timeoutOf(entry.goal(),
+                                             (ctx.monoNs() - m.incarnationStart) / 1_000_000L) >= EXPIRY_FACTOR * timeoutOf(ctx.settings()
+                                                                                                                               .divergence(),
+                                                                                                                            entry.goal(),
                                                                                                                             Rows.current(m,
                                                                                                                                          SlicePair.slicePair(node,
                                                                                                                                                              artifact))))

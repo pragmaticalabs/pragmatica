@@ -30,9 +30,9 @@ class ReviewDefectsTest {
     private MbWorld world() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.admit(CORE_3, 0x3333L);
 
         return w.target(ORDERS, 1, "CORE_ONLY")
                 .directive(CORE_2,
@@ -90,7 +90,7 @@ class ReviewDefectsTest {
         var w = world().activate();
         var model = w.h.model();
 
-        model.pendingJoins = model.pendingJoins.put(CORE_2, new PendingJoin(false, w.admissionOf(CORE_2, 1L)));
+        model.pendingJoins = model.pendingJoins.put(CORE_2, new PendingJoin(false, w.admissionOf(CORE_2)));
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         assertThat(w.h.model().pendingJoins.containsKey(CORE_2)).isFalse();
     }
