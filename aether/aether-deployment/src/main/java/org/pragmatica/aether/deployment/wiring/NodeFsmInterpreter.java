@@ -19,7 +19,6 @@ import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmModel;
 import org.pragmatica.aether.deployment.node.machine.TimerId;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Unit;
 
 
