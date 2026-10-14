@@ -13,7 +13,6 @@ import java.util.concurrent.locks.LockSupport;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
@@ -149,21 +148,17 @@ public final class FsmMailbox<I> {
 
     private void run() {
         while (!closed) {
-            Option.option(queue.pollFirst()).fold(this::idle, this::taken);
+            Option.option(queue.pollFirst()).onPresent(this::taken).onEmpty(this::idle);
         }
     }
 
-    private Unit idle() {
+    private void idle() {
         LockSupport.park(this);
-
-        return Unit.unit();
     }
 
-    private Unit taken(I item) {
+    private void taken(I item) {
         depth.decrementAndGet();
         handle(item);
-
-        return Unit.unit();
     }
 
     /// FER (degrade forward): a handler that fails is logged and the loop takes the next item. The guarantee earned is that the consumer

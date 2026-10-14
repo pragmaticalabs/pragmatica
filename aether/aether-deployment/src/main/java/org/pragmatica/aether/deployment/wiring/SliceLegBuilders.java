@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.wiring;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -547,27 +546,28 @@ final class SliceLegBuilders {
         return result;
     }
 
+    /// The manifest at `path`, absent when the class loader has none. The stream is read and closed through `Result.lift`, the adapter boundary
+    /// for the JDK's checked `IOException`.
     private static Result<Option<Properties>> readManifest(ClassLoader classLoader, String path) {
-        return Result.lift(Causes::fromThrowable, () -> load(classLoader, path));
+        return Result.lift(Causes::fromThrowable,
+                           () -> classLoader.getResourceAsStream(path))
+                     .flatMap(stream -> Option.option(stream).fold(() -> Result.success(Option.<Properties> none()),
+                                                                   SliceLegBuilders::parsed));
     }
 
-    /// The one place a checked `IOException` is born: the try-with-resources on the JDK resource stream, reached only through
-    /// `Result.lift` above (legacy suppresses the same rule at the same kind of site).
-    @SuppressWarnings("JBCT-EX-01")
-    private static Option<Properties> load(ClassLoader classLoader, String path) throws IOException {
-        try (var stream = classLoader.getResourceAsStream(path)) {
-            return Option.option(stream).isEmpty()
-                   ? Option.none()
-                   : Option.some(read(stream));
-        }
-    }
-
-    private static Properties read(InputStream stream) throws IOException {
+    private static Result<Option<Properties>> parsed(InputStream stream) {
         var props = new Properties();
+        var read = Result.lift(Causes::fromThrowable, () -> props.load(stream)).map(_ -> Option.some(props));
 
-        props.load(stream);
+        closed(stream);
 
-        return props;
+        return read;
+    }
+
+    /// FER: a stream that will not close after being read is logged and left to the class loader; the manifest was read.
+    private static void closed(InputStream stream) {
+        Result.lift(Causes::fromThrowable, stream::close).onFailure(cause -> log.debug("Could not close a manifest stream: {}",
+                                                                                       cause.message()));
     }
 
     /// The slice's own composite when it has one, the process-wide service otherwise (legacy `sliceConfigService` and its fallback).
