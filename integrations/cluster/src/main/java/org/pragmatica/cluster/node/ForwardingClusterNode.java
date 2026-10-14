@@ -53,6 +53,12 @@ public final class ForwardingClusterNode<C extends Command> implements ClusterNo
         return new ForwardingClusterNode<>(underlying, network, corePeers);
     }
 
+    /// How long a worker's `apply` waits for the core's answer: the submitting path's timeout a worker's write timers
+    /// must outlast (deployment spec R-3.4.4, G-6).
+    public static TimeSpan forwardApplyTimeout() {
+        return FORWARD_APPLY_TIMEOUT;
+    }
+
     /// Update the set of core peers for forwarding.
     @Contract
     public void updateCorePeers(Set<NodeId> newCorePeers) {
