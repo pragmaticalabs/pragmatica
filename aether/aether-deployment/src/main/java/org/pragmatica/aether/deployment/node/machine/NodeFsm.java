@@ -81,7 +81,9 @@ public record NodeFsm(NodeFsmConfig config, LongSupplier wallClock) {
             case NodeFsmInput.ConfigChanged changed -> Observations.configChanged(t, changed.key());
             case NodeFsmInput.TimerFired fired -> timerFired(t, fired.timer());
             case NodeFsmInput.WriteSettled settled -> writeSettled(t, settled);
-            case NodeFsmInput.LocalOpSettled settled -> Chains.localSettled(this, t, settled);
+            case NodeFsmInput.LocalOpSettled settled -> Probes.owns(t, settled)
+                                                        ? Probes.localSettled(this, t, settled)
+                                                        : Chains.localSettled(this, t, settled);
             case NodeFsmInput.QuorumEstablished _, NodeFsmInput.QuorumDisappeared _, NodeFsmInput.ReconcileActivation _ -> Transition.transition(t.model()).ignoring();
         };
     }
@@ -94,6 +96,7 @@ public record NodeFsm(NodeFsmConfig config, LongSupplier wallClock) {
 
         return switch (timer.kind()) {
             case WRITE_CONFIRM -> writeAttemptTimer(t, timer);
+            case WRITE_PROBE -> Probes.fired(this, t, timer);
             case CHAIN_BOUND -> Chains.boundExpired(this, t, timer);
             case ACTIVATING_CHECK -> Redrive.activatingCheck(this, t, timer);
             case PARKED_ESCALATION -> Planner.escalate(this, t, timer);
@@ -107,9 +110,12 @@ public record NodeFsm(NodeFsmConfig config, LongSupplier wallClock) {
                 .write()
                 .filter(write -> write.correlation() == timer.token())
                 .fold(() -> Transition.transition(t.model()).ignoring(),
-                      _ -> Writes.attemptFailed(this,
-                                                t,
-                                                timer.artifact()));
+                      write -> Writes.attemptFailed(this,
+                                                    Probes.confirmTimeout(this,
+                                                                          t,
+                                                                          timer.artifact(),
+                                                                          write),
+                                                    timer.artifact()));
     }
 
     /// N19: the next cycle of a FAILED row nobody confirmed, after R-6.0 has read the committed row.
@@ -129,11 +135,27 @@ public record NodeFsm(NodeFsmConfig config, LongSupplier wallClock) {
                ? Transition.transition(t.model()).ignoring()
                : t.instance(artifact)
                   .write()
-                  .filter(write -> write.correlation() == settled.correlation())
                   .fold(() -> Transition.transition(t.model()).ignoring(),
-                        _ -> settledWrite(t,
-                                          artifact,
-                                          settled.outcome()));
+                        write -> settledFor(t, artifact, write, settled));
+    }
+
+    /// The attempt's own settlement is judged; a probe resubmission's is metric-only (spec R-3.4.4): `Accepted` does nothing and
+    /// `Failed` neither consumes an attempt nor starts a retry.
+    private Transition settledFor(Transition t, Artifact artifact, InFlight write, NodeFsmInput.WriteSettled settled) {
+        if (write.correlation() == settled.correlation()) {
+            return settledWrite(t, artifact, settled.outcome());
+        }
+
+        return Probes.isResubmission(write, settled.correlation())
+               ? t.emit(submission(outcomeOf(settled.outcome())))
+               : Transition.transition(t.model()).ignoring();
+    }
+
+    private static String outcomeOf(NodeFsmInput.WriteOutcome outcome) {
+        return switch (outcome) {
+            case NodeFsmInput.WriteOutcome.Accepted _ -> "accepted";
+            case NodeFsmInput.WriteOutcome.Failed _ -> "failed";
+        };
     }
 
     private Transition settledWrite(Transition t, Artifact artifact, NodeFsmInput.WriteOutcome outcome) {
@@ -143,7 +165,7 @@ public record NodeFsm(NodeFsmConfig config, LongSupplier wallClock) {
         };
     }
 
-    private static NodeFsmEffect submission(String outcome) {
+    static NodeFsmEffect submission(String outcome) {
         return new NodeFsmEffect.Metric(SUBMISSIONS_TOTAL,
                                         Map.of("fsm", "node", "kind", "observed", "outcome", outcome),
                                         1L);

@@ -21,14 +21,30 @@ public sealed interface NodeFsmEffect {
     record SelfReady() implements NodeFsmEffect {}
 
     /// Submit one batch through consensus. The batch holds at most one observed Put (the only fenced command, R-3.4.9 (4)).
-    /// `correlation` comes back in `WriteSettled`; `attempt` counts from 1.
+    /// `correlation` comes back in `WriteSettled`; `attempt` counts from 1. `probe` is 0 for an attempt's own submission and the
+    /// 1-based probe index for a write probe's resubmission, which carries the attempt's number (spec R-3.4.4, O1; the field is
+    /// a guess of shape: the spec names none).
     record Submit(long incarnation,
                   Artifact artifact,
                   long correlation,
                   int attempt,
+                  int probe,
                   List<KVCommand<AetherKey>> commands) implements NodeFsmEffect {
         public Submit {
             commands = List.copyOf(commands);
+        }
+
+        /// An attempt's own submission.
+        public Submit(long incarnation,
+                      Artifact artifact,
+                      long correlation,
+                      int attempt,
+                      List<KVCommand<AetherKey>> commands) {
+            this(incarnation, artifact, correlation, attempt, 0, commands);
+        }
+
+        public boolean isProbe() {
+            return probe > 0;
         }
     }
 

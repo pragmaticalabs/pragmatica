@@ -45,6 +45,7 @@ class NodeFsmWriteTest {
 
             var loading = h.effectsOf(NodeFsmEffect.Submit.class)
                            .stream()
+                           .filter(submit -> !submit.isProbe())
                            .filter(submit -> NodeHarness.putOf(submit).map(put -> put.state() == SliceObservedState.LOADING).or(false))
                            .toList();
 
@@ -89,6 +90,7 @@ class NodeFsmWriteTest {
             assertThat(h.submitsOf(SliceObservedState.FAILED)).as("one first attempt per cycle").hasSize(timings.failedCycles());
             assertThat(h.effectsOf(NodeFsmEffect.Submit.class)
                         .stream()
+                        .filter(submit -> !submit.isProbe())
                         .filter(submit -> NodeHarness.putOf(submit).map(put -> put.state() == SliceObservedState.FAILED).or(false)))
                 .hasSize(timings.failedCycles() * timings.writeAttempts());
             assertThat(h.effectsOf(NodeFsmEffect.Schedule.class)

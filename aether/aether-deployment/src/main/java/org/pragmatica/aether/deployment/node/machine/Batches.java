@@ -83,19 +83,25 @@ sealed interface Batches {
                                                  Artifact artifact,
                                                  Chain chain,
                                                  SliceObservedValue value) {
+        return assembled(fsm, model, artifact, chain, value.state(), put(fsm, artifact, value), chain.collected());
+    }
+
+    /// `observed` first, then the `legs` a builder produced, filtered for the state being written (see [#chainBatch]). A write
+    /// probe calls this with the legs its rebuild produced and the attempt's own observed command (spec R-3.4.4, O1).
+    static List<KVCommand<AetherKey>> assembled(NodeFsm fsm,
+                                                NodeFsmModel model,
+                                                Artifact artifact,
+                                                Chain chain,
+                                                SliceObservedState state,
+                                                KVCommand<AetherKey> observed,
+                                                List<LegCommand> legs) {
         var batch = new ArrayList<KVCommand<AetherKey>>();
 
-        batch.add(put(fsm, artifact, value));
-        chain.collected()
-             .stream()
-             .filter(leg -> keeps(fsm,
-                                  model,
-                                  artifact,
-                                  chain,
-                                  value.state(),
-                                  leg))
-             .map(LegCommand::command)
-             .forEach(batch::add);
+        batch.add(observed);
+        legs.stream()
+            .filter(leg -> keeps(fsm, model, artifact, chain, state, leg))
+            .map(LegCommand::command)
+            .forEach(batch::add);
 
         return batch;
     }

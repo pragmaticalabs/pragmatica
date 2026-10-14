@@ -15,6 +15,9 @@ public record TimerId(TimerKind kind, Artifact artifact, long incarnation, long 
     public enum TimerKind {
         /// One attempt of an observed write: 30 s to see the local apply (spec R-3.4.9 (3)).
         WRITE_CONFIRM,
+        /// The probe series of one attempt (spec R-3.4.4, O1): re-reads the applied mirror and resubmits a rebuilt batch if the
+        /// row is absent. Keyed by the attempt's correlation; at most one live per write.
+        WRITE_PROBE,
         /// The overall bound of an activation chain (B-169).
         CHAIN_BOUND,
         /// The 90 s check after a committed ACTIVATING row (N7, N9).

@@ -52,7 +52,8 @@ sealed interface Writes {
                       commands,
                       InFlight.Purpose.CHAIN,
                       0,
-                      none());
+                      none(),
+                      chain.built());
     }
 
     private static SliceObservedValue rowFor(NodeFsm fsm, Chain chain, SliceObservedState state, long version) {
@@ -73,7 +74,8 @@ sealed interface Writes {
                       List.of(Batches.put(fsm, artifact, value)),
                       InFlight.Purpose.FAILED,
                       cycle,
-                      some(note));
+                      some(note),
+                      List.of());
     }
 
     private static Transition submit(NodeFsm fsm,
@@ -83,7 +85,8 @@ sealed interface Writes {
                                      List<KVCommand<AetherKey>> commands,
                                      InFlight.Purpose purpose,
                                      int cycle,
-                                     Option<FailureNote> failure) {
+                                     Option<FailureNote> failure,
+                                     List<LocalStep> builders) {
         return t.issuing((next, correlation) -> submitWith(fsm,
                                                            next,
                                                            artifact,
@@ -92,7 +95,8 @@ sealed interface Writes {
                                                                              value.state(),
                                                                              commands,
                                                                              purpose,
-                                                                             cycle),
+                                                                             cycle,
+                                                                             builders),
                                                            Unconfirmed.unconfirmed(value.state(),
                                                                                    value.version(),
                                                                                    failure)));
@@ -103,18 +107,28 @@ sealed interface Writes {
                                          Artifact artifact,
                                          InFlight write,
                                          Unconfirmed unconfirmed) {
-        return t.update(artifact,
-                        rec -> rec.withWrite(some(write))
-                                  .withUnconfirmed(some(unconfirmed)))
-                .emit(new NodeFsmEffect.Submit(t.incarnation(),
-                                               artifact,
-                                               write.correlation(),
-                                               1,
-                                               write.commands()))
-                .emit(confirmTimer(fsm,
-                                   t,
-                                   artifact,
-                                   write.correlation()));
+        var stamped = stamped(fsm, write);
+
+        return Probes.arm(fsm,
+                          t.update(artifact,
+                                   rec -> rec.withWrite(some(stamped))
+                                             .withUnconfirmed(some(unconfirmed)))
+                           .emit(new NodeFsmEffect.Submit(t.incarnation(),
+                                                          artifact,
+                                                          stamped.correlation(),
+                                                          1,
+                                                          stamped.commands()))
+                           .emit(confirmTimer(fsm,
+                                              t,
+                                              artifact,
+                                              stamped.correlation())),
+                          artifact,
+                          stamped);
+    }
+
+    /// The write with the submission time of its attempt, for the probe sensor's elapsed time.
+    private static InFlight stamped(NodeFsm fsm, InFlight write) {
+        return write.withProbing(write.probing().submittedAt(fsm.now()));
     }
 
     /// The witnessed Remove of the node's own tombstone (R-1.6.3): the exact committed value is the witness.
@@ -136,17 +150,22 @@ sealed interface Writes {
     }
 
     private static Transition submitRemoveWith(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
-        return t.update(artifact,
-                        rec -> rec.withWrite(some(write)))
-                .emit(new NodeFsmEffect.Submit(t.incarnation(),
-                                               artifact,
-                                               write.correlation(),
-                                               1,
-                                               write.commands()))
-                .emit(confirmTimer(fsm,
-                                   t,
-                                   artifact,
-                                   write.correlation()));
+        var stamped = stamped(fsm, write);
+
+        return Probes.arm(fsm,
+                          t.update(artifact,
+                                   rec -> rec.withWrite(some(stamped)))
+                           .emit(new NodeFsmEffect.Submit(t.incarnation(),
+                                                          artifact,
+                                                          stamped.correlation(),
+                                                          1,
+                                                          stamped.commands()))
+                           .emit(confirmTimer(fsm,
+                                              t,
+                                              artifact,
+                                              stamped.correlation())),
+                          artifact,
+                          stamped);
     }
 
     private static NodeFsmEffect confirmTimer(NodeFsm fsm, Transition t, Artifact artifact, long correlation) {
@@ -156,6 +175,16 @@ sealed interface Writes {
 
     private static TimerId writeTimer(Transition t, Artifact artifact, long correlation) {
         return TimerId.timerId(TimerId.TimerKind.WRITE_CONFIRM, artifact, t.incarnation(), correlation);
+    }
+
+    /// Disarms the write's attempt timer and its probe series together (spec R-3.4.4 "Cancellation").
+    static Transition cancelTimers(Transition t, Artifact artifact, InFlight write) {
+        return t.emit(new NodeFsmEffect.Cancel(writeTimer(t,
+                                                          artifact,
+                                                          write.correlation())))
+                .emit(new NodeFsmEffect.Cancel(Probes.probeTimer(t,
+                                                                 artifact,
+                                                                 write.correlation())));
     }
 
     /// One attempt did not confirm: its timer ran out or consensus reported a failure. A late apply the notification path
@@ -173,7 +202,7 @@ sealed interface Writes {
                                            Artifact artifact,
                                            InstanceRecord rec,
                                            InFlight write) {
-        if (appliedAlready(rec, write)) {
+        if (isApplied(rec, write)) {
             return confirmed(fsm, t, artifact);
         }
 
@@ -184,7 +213,8 @@ sealed interface Writes {
                : exhausted(fsm, t, artifact, write);
     }
 
-    private static boolean appliedAlready(InstanceRecord rec, InFlight write) {
+    /// The attempt boundary's test, shared with the write probe (R-3.4.9 (3)): the applied mirror already shows the write.
+    static boolean isApplied(InstanceRecord rec, InFlight write) {
         return write.purpose() == InFlight.Purpose.TOMBSTONE_REMOVE
                ? rec.observed()
                     .isEmpty()
@@ -198,35 +228,35 @@ sealed interface Writes {
     }
 
     private static Transition retry(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
-        return t.emit(new NodeFsmEffect.Cancel(writeTimer(t,
-                                                          artifact,
-                                                          write.correlation())))
-                .issuing((next, correlation) -> resubmit(fsm,
-                                                         next,
-                                                         artifact,
-                                                         write.retried(correlation)));
+        return cancelTimers(t, artifact, write).issuing((next, correlation) -> resubmit(fsm,
+                                                                                        next,
+                                                                                        artifact,
+                                                                                        write.retried(correlation)));
     }
 
     private static Transition resubmit(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
-        return t.update(artifact,
-                        rec -> rec.withWrite(some(write)))
-                .emit(new NodeFsmEffect.Submit(t.incarnation(),
-                                               artifact,
-                                               write.correlation(),
-                                               write.attempt(),
-                                               write.commands()))
-                .emit(confirmTimer(fsm,
-                                   t,
-                                   artifact,
-                                   write.correlation()));
+        var stamped = stamped(fsm, write);
+
+        return Probes.arm(fsm,
+                          t.update(artifact,
+                                   rec -> rec.withWrite(some(stamped)))
+                           .emit(new NodeFsmEffect.Submit(t.incarnation(),
+                                                          artifact,
+                                                          stamped.correlation(),
+                                                          stamped.attempt(),
+                                                          stamped.commands()))
+                           .emit(confirmTimer(fsm,
+                                              t,
+                                              artifact,
+                                              stamped.correlation())),
+                          artifact,
+                          stamped);
     }
 
     private static Transition exhausted(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
-        var cleared = t.update(artifact,
-                               rec -> rec.withWrite(none()))
-                       .emit(new NodeFsmEffect.Cancel(writeTimer(t,
-                                                                 artifact,
-                                                                 write.correlation())));
+        var cleared = cancelTimers(t.update(artifact, rec -> rec.withWrite(none())),
+                                   artifact,
+                                   write);
 
         return switch (write.purpose()) {
             case CHAIN -> cleared.instance(artifact).deferredFailure().fold(() -> Chains.failChain(fsm,
@@ -281,14 +311,13 @@ sealed interface Writes {
     }
 
     private static Transition clearWrite(Transition t, Artifact artifact, InFlight write) {
-        return t.update(artifact,
-                        rec -> rec.withWrite(none())
-                                  .withUnconfirmed(none())
-                                  .withLastVersion(Math.max(rec.lastVersion(),
-                                                            write.version())))
-                .emit(new NodeFsmEffect.Cancel(writeTimer(t,
-                                                          artifact,
-                                                          write.correlation())));
+        return cancelTimers(t.update(artifact,
+                                     rec -> rec.withWrite(none())
+                                               .withUnconfirmed(none())
+                                               .withLastVersion(Math.max(rec.lastVersion(),
+                                                                         write.version()))),
+                            artifact,
+                            write);
     }
 
     private static Transition afterConfirm(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
