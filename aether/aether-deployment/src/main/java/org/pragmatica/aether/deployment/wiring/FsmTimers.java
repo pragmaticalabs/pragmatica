@@ -88,11 +88,14 @@ public final class FsmTimers<K, A> {
     /// Takes the tick off the books: the attachment if the map holds the tick's id at the tick's generation (the entry is removed),
     /// nothing for a superseded, cancelled or already-claimed tick.
     public Option<A> claim(Tick<K> tick) {
-        var current = armed.get(tick.id());
+        return Option.option(armed.get(tick.id()))
+                     .filter(current -> current.generation() == tick.generation())
+                     .map(_ -> takeOut(tick.id()));
+    }
 
-        return current != null && current.generation() == tick.generation()
-               ? Option.some(armed.remove(tick.id()).attachment())
-               : Option.none();
+    private A takeOut(K id) {
+        return armed.remove(id)
+                    .attachment();
     }
 
     /// How many timers are armed.

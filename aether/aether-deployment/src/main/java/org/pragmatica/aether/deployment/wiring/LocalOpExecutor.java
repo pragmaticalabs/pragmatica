@@ -170,20 +170,21 @@ public final class LocalOpExecutor implements LocalOps {
     private Option<Queued> complete(Queued finished) {
         synchronized (lock) {
             var key = laneOf(finished.op());
-            var lane = lanes.get(key);
 
-            if (closed || lane == null) {
-                return Option.none();
-            }
-
-            if (finished.op().token() != 0L && finished.isStale() && COMPENSATED_ON_STALE.contains(finished.op().step())) {
-                counter.counted(finished.op().step().name(),
-                                "compensated");
-                lane.queue.addFirst(compensation(finished));
-            }
-
-            return takeNext(key, lane);
+            return closed
+                   ? Option.none()
+                   : Option.option(lanes.get(key)).flatMap(lane -> advance(key, lane, finished));
         }
+    }
+
+    private Option<Queued> advance(Object key, Lane lane, Queued finished) {
+        if (finished.op().token() != 0L && finished.isStale() && COMPENSATED_ON_STALE.contains(finished.op().step())) {
+            counter.counted(finished.op().step().name(),
+                            "compensated");
+            lane.queue.addFirst(compensation(finished));
+        }
+
+        return takeNext(key, lane);
     }
 
     private static Queued compensation(Queued stale) {

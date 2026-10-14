@@ -176,6 +176,11 @@ class SliceLegBuildersGoldenTest {
         return builders.legs(ARTIFACT, slice).unwrap().stream().filter(leg -> leg.kind() == kind).map(LegCommand::command).toList();
     }
 
+    /// The operator-warning sink hands warnings to a drain thread, so they arrive after the call that raised them.
+    private void awaitWarnings(int count) {
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> adapterWarnings.size() >= count && legacyWarnings.size() >= count);
+    }
+
     private static List<String> warningLines(List<OperatorWarning> warnings) {
         return warnings.stream().map(w -> w.code() + "|" + w.subject() + "|" + w.message()).toList();
     }
@@ -208,6 +213,7 @@ class SliceLegBuildersGoldenTest {
 
         assertThat(legacy).as("the declared consumer registered, the ghost one did not").hasSize(1);
         assertThat(adapter).isEqualTo(legacy);
+        awaitWarnings(1);
         assertThat(warningLines(adapterWarnings)).isNotEmpty().isEqualTo(warningLines(legacyWarnings));
         assertThat(adapterWarnings.getFirst().message()).contains("could NOT be registered").contains("streams.ghost");
     }
@@ -222,6 +228,7 @@ class SliceLegBuildersGoldenTest {
         legacyCommands("doPublishStreamSubscriptions", slice);
         legs(slice, LegKind.STREAM_REGISTRATION);
 
+        awaitWarnings(2);
         assertThat(warningLines(adapterWarnings)).hasSize(2).isEqualTo(warningLines(legacyWarnings));
     }
 

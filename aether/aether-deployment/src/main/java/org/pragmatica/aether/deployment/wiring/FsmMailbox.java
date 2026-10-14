@@ -13,6 +13,7 @@ import java.util.concurrent.locks.LockSupport;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import org.slf4j.Logger;
@@ -58,7 +59,7 @@ public final class FsmMailbox<I> {
     /// Starts the consumer thread: a daemon platform thread, so a node that is torn down without a `close()` cannot hold the JVM open.
     @Contract
     public synchronized void start() {
-        if (consumer == null && !closed) {
+        if (Option.option(consumer).isEmpty() && !closed) {
             var thread = new Thread(this::run, name);
 
             thread.setDaemon(true);
@@ -112,16 +113,16 @@ public final class FsmMailbox<I> {
     @Contract
     public void close() {
         closed = true;
-        var thread = consumer;
-
         wake();
-        if (thread != null && thread != Thread.currentThread()) {
-            Result.lift(Causes::fromThrowable,
-                        () -> thread.join(CLOSE_JOIN_MS))
-                  .onFailure(cause -> log.warn("Interrupted while stopping {}: {}",
-                                               name,
-                                               cause.message()));
-        }
+        Option.option(consumer).filter(thread -> thread != Thread.currentThread()).onPresent(this::awaitStopped);
+    }
+
+    private void awaitStopped(Thread thread) {
+        Result.lift(Causes::fromThrowable,
+                    () -> thread.join(CLOSE_JOIN_MS))
+              .onFailure(cause -> log.warn("Interrupted while stopping {}: {}",
+                                           name,
+                                           cause.message()));
     }
 
     /// Removes the queued items `superseded` matches and counts the ones this call took out, so the depth gauge stays exact when the consumer
@@ -141,15 +142,21 @@ public final class FsmMailbox<I> {
 
     private void run() {
         while (!closed) {
-            var item = queue.pollFirst();
-
-            if (item == null) {
-                LockSupport.park(this);
-            } else {
-                depth.decrementAndGet();
-                handle(item);
-            }
+            Option.option(queue.pollFirst()).fold(this::idle, this::taken);
         }
+    }
+
+    private Unit idle() {
+        LockSupport.park(this);
+
+        return Unit.unit();
+    }
+
+    private Unit taken(I item) {
+        depth.decrementAndGet();
+        handle(item);
+
+        return Unit.unit();
     }
 
     /// FER (degrade forward): a handler that fails is logged and the loop takes the next item. The guarantee earned is that the consumer

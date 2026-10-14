@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.wiring;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -54,6 +56,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -484,8 +487,7 @@ final class SliceLegBuilders {
     private static int manifestCount(String raw) {
         return Option.option(raw)
                      .filter(value -> !value.isEmpty())
-                     .flatMap(value -> org.pragmatica.lang.parse.Number.parseInt(value.trim())
-                                                                       .option())
+                     .flatMap(value -> Number.parseInt(value.trim()).option())
                      .or(0);
     }
 
@@ -544,19 +546,23 @@ final class SliceLegBuilders {
         return Result.lift(Causes::fromThrowable, () -> load(classLoader, path));
     }
 
+    /// The one place a checked `IOException` is born: the try-with-resources on the JDK resource stream, reached only through
+    /// `Result.lift` above (legacy suppresses the same rule at the same kind of site).
     @SuppressWarnings("JBCT-EX-01")
-    private static Option<Properties> load(ClassLoader classLoader, String path) throws java.io.IOException {
+    private static Option<Properties> load(ClassLoader classLoader, String path) throws IOException {
         try (var stream = classLoader.getResourceAsStream(path)) {
-            if (stream == null) {
-                return Option.none();
-            }
-
-            var props = new Properties();
-
-            props.load(stream);
-
-            return Option.some(props);
+            return Option.option(stream).isEmpty()
+                   ? Option.none()
+                   : Option.some(read(stream));
         }
+    }
+
+    private static Properties read(InputStream stream) throws IOException {
+        var props = new Properties();
+
+        props.load(stream);
+
+        return props;
     }
 
     /// The slice's own composite when it has one, the process-wide service otherwise (legacy `sliceConfigService` and its fallback).
