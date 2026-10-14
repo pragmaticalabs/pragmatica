@@ -151,7 +151,8 @@ mkdir -p "$WORK/repos"
 if [ "$SOURCE" = tree ]; then
     git init -q --bare "$WORK/repos/pragmatica.git"
     # fetch, not push: a push from $ROOT would run its pre-push hooks.
-    git -C "$WORK/repos/pragmatica.git" fetch -q "$ROOT" "$SHA:refs/heads/main"
+    # --no-tags: the clone source holds exactly main and the one tag the README clones, both at SHA.
+    git -C "$WORK/repos/pragmatica.git" fetch -q --no-tags "$ROOT" "$SHA:refs/heads/main"
     git -C "$WORK/repos/pragmatica.git" tag "v$RUN_VERSION" "$SHA"
     git -C "$WORK/repos/pragmatica.git" symbolic-ref HEAD refs/heads/main
     ln -s pragmatica.git "$WORK/repos/pragmatica"
