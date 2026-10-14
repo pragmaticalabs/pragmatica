@@ -52,8 +52,8 @@ import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.controller.RollbackEvent;
-import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.metrics.deployment.ReconciliationAdjustment;
 import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
@@ -1586,7 +1586,7 @@ public final class ClusterEventAggregator {
     }
 
     @Contract
-    public void onReconciliationAdjustment(ClusterDeploymentManager.ReconciliationAdjustment event) {
+    public void onReconciliationAdjustment(ReconciliationAdjustment event) {
         var scalingUp = event.currentInstances() < event.desiredInstances();
         var direction = scalingUp
                         ? "up"
