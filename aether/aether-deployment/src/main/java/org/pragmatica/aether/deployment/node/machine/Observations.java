@@ -178,13 +178,11 @@ sealed interface Observations {
     /// A row at the write's version that is not the write: someone else's commit won. The chain is dropped and the pair is
     /// evaluated again from the mirror.
     private static Transition superseded(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
-        var cleared = t.update(artifact,
-                               rec -> rec.withWrite(none())
-                                         .withChain(none()))
-                       .emit(new NodeFsmEffect.Cancel(TimerId.timerId(TimerId.TimerKind.WRITE_CONFIRM,
-                                                                      artifact,
-                                                                      t.incarnation(),
-                                                                      write.correlation())));
+        var cleared = Writes.cancelTimers(t.update(artifact,
+                                                   rec -> rec.withWrite(none())
+                                                             .withChain(none())),
+                                          artifact,
+                                          write);
 
         return Planner.reconcile(fsm, cleared, artifact);
     }
@@ -205,12 +203,9 @@ sealed interface Observations {
 
     /// The tombstone Remove committed: the write is done, and a goal recorded behind it is evaluated now (R-3.4.2).
     private static Transition removed(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
-        var cleared = t.update(artifact,
-                               rec -> rec.withWrite(none()))
-                       .emit(new NodeFsmEffect.Cancel(TimerId.timerId(TimerId.TimerKind.WRITE_CONFIRM,
-                                                                      artifact,
-                                                                      t.incarnation(),
-                                                                      write.correlation())));
+        var cleared = Writes.cancelTimers(t.update(artifact, rec -> rec.withWrite(none())),
+                                          artifact,
+                                          write);
 
         return Writes.settle(fsm, cleared, artifact);
     }

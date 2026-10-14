@@ -26,11 +26,13 @@ public record Chain(long id,
                     long stepToken,
                     Option<LocalStep> running,
                     List<LegCommand> collected,
-                    List<String> methods) {
+                    List<String> methods,
+                    List<LocalStep> built) {
     public Chain {
         steps = List.copyOf(steps);
         collected = List.copyOf(collected);
         methods = List.copyOf(methods);
+        built = List.copyOf(built);
     }
 
     /// What the chain is for. Decides the overall bound and the ACQUIRE filter.
@@ -79,7 +81,7 @@ public record Chain(long id,
     }
 
     public static Chain chain(long id, ChainKind kind, Generation generation, List<Step> steps) {
-        return new Chain(id, kind, generation, steps, 0L, none(), List.of(), List.of());
+        return new Chain(id, kind, generation, steps, 0L, none(), List.of(), List.of(), List.of());
     }
 
     /// `step` is the local step running now.
@@ -105,7 +107,8 @@ public record Chain(long id,
                          0L,
                          none(),
                          collected,
-                         methods);
+                         methods,
+                         built);
     }
 
     /// The chain with its head taken off and `step` running under `token`.
@@ -117,7 +120,28 @@ public record Chain(long id,
                          token,
                          some(step),
                          collected,
-                         methods);
+                         methods,
+                         built);
+    }
+
+    /// What `step` produced is added to what the next write carries. A builder step is remembered, so a write probe can run
+    /// it again (spec R-3.4.4, O1).
+    public Chain collecting(LocalStep step, List<LegCommand> commands, List<String> described) {
+        var more = new ArrayList<>(built);
+
+        if (isBuilder(step)) {
+            more.add(step);
+        }
+
+        return collecting(commands, described).withBuilt(more);
+    }
+
+    private static boolean isBuilder(LocalStep step) {
+        return step == LocalStep.BUILD_LEGS || step == LocalStep.DESCRIBE_ACTIVE || step == LocalStep.PREPARE_TEARDOWN;
+    }
+
+    private Chain withBuilt(List<LocalStep> next) {
+        return new Chain(id, kind, generation, steps, stepToken, running, collected, methods, next);
     }
 
     public Chain collecting(List<LegCommand> commands, List<String> described) {
@@ -134,10 +158,11 @@ public record Chain(long id,
                          all,
                          described.isEmpty()
                          ? methods
-                         : described);
+                         : described,
+                         built);
     }
 
     public Chain flushed() {
-        return new Chain(id, kind, generation, steps, stepToken, running, List.of(), methods);
+        return new Chain(id, kind, generation, steps, stepToken, running, List.of(), methods, List.of());
     }
 }
