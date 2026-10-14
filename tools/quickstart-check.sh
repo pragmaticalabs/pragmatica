@@ -169,6 +169,9 @@ java -version 2>&1 | head -1; mvn -v | head -1; git --version; docker version --
 
 if [ -d /gate/repos/pragmatica.git ]; then
     git config --global url."file:///gate/repos/".insteadOf "https://github.com/pragmaticalabs/"
+    # docker cp keeps the host's uid on the copied repository; git refuses a repository owned by another user.
+    git config --global --add safe.directory /gate/repos/pragmatica.git
+    git config --global --add safe.directory /gate/repos/pragmatica
     echo "  git clone of github.com/pragmaticalabs/* receives the commit under test"
 fi
 [ -f /gate/settings.xml ] && export MAVEN_ARGS="-s /gate/settings.xml" && echo "  Maven: Central + $(grep -o '<url>[^<]*' /gate/settings.xml | head -1 | cut -c6-)"
