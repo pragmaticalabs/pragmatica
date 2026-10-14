@@ -37,13 +37,13 @@ public record NodeFsmTimings(long loadMs,
     /// chain 90 s, deactivate 30 s, unload 2 min, ACTIVATING check 90 s, tombstone grace 120 s, parked-start escalation
     /// at the LOADING bound, 3 attempts of 35 s per write, 6 FAILED cycles 2 s apart.
     public static NodeFsmTimings nodeFsmTimings() {
-        return from(DeploymentTimeouts.deploymentTimeouts(), ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
+        return nodeFsmTimings(DeploymentTimeouts.deploymentTimeouts(), ProtocolConfig.DEFAULT_APPLY_TIMEOUT);
     }
 
     /// The bounds for a node whose writes go through a path that gives up after `submitTimeout`: RE's `applyTimeout` on
     /// a core, `ForwardingClusterNode.forwardApplyTimeout()` on a worker (spec R-3.4.4, R-3.4.10). A write attempt
     /// outlasts that timeout by a margin, so the path's own verdict always arrives first.
-    public static NodeFsmTimings from(DeploymentTimeouts deployment, TimeSpan submitTimeout) {
+    public static NodeFsmTimings nodeFsmTimings(DeploymentTimeouts deployment, TimeSpan submitTimeout) {
         var load = deployment.loading().millis();
 
         return new NodeFsmTimings(load,
