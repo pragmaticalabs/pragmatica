@@ -65,7 +65,8 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Testing -->
+        <!-- Testing. No test-logging (#953): it is not published to Maven Central, so a standalone build of this
+             example (mvn -f examples/pricing-engine/pom.xml install) could not resolve it, and the example has no tests. -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -74,11 +75,6 @@
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite</groupId>
-            <artifactId>test-logging</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
