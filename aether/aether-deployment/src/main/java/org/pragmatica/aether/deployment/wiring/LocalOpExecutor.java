@@ -50,8 +50,9 @@ import org.slf4j.LoggerFactory;
 ///   when the stale op ended Failed or TimedOut, since a failed publish may have left part of its effect; UNPUBLISH is best effort and
 ///   idempotent]`.
 /// - **Timeouts.** An op with `timeoutMs > 0` is settled `TimedOut` once that long after its start; the lane stays occupied until the body
-///   returns, so a runaway op cannot be overtaken by the next op on the same artifact. An op with `timeoutMs = 0` is bounded by
-///   `NodeFsmTimings.boundOf(step)` for observation only: `deployment-localop-overrun` is logged once the bound passes.
+///   returns, so a runaway op cannot be overtaken by the next op on the same artifact. Every op, `timeoutMs = 0` included, is also bounded by
+///   `NodeFsmTimings.boundOf(step)` for observation only: `deployment-localop-overrun` is logged once the bound passes, so a body that
+///   outlives its timeout and holds its lane is reported.
 ///
 /// A settlement is delivered once; a token-0 op delivers none. After [#close()] queued ops are dropped and nothing is delivered.
 public final class LocalOpExecutor implements LocalOps {
@@ -267,18 +268,24 @@ public final class LocalOpExecutor implements LocalOps {
         };
     }
 
-    /// Starts the clock of this op, now: the timeout that settles `TimedOut`, or, for an unbounded op, the overrun log. Returns the way to
-    /// stop it.
+    /// Starts the clocks of this op, now: the overrun log for every op, and for a bounded chain op the timeout that settles `TimedOut`.
+    /// Returns the way to stop them.
     private Runnable guardTimer(Queued queued, AtomicBoolean once) {
         var op = queued.op();
+        var overrun = clock.schedule(() -> overran(op),
+                                     Math.max(1L,
+                                              timings.boundOf(op.step())));
 
         if (op.timeoutMs() > 0L && op.token() != 0L) {
-            return clock.schedule(() -> report(queued, once, LocalOutcome.timedOut()), op.timeoutMs());
+            var timeout = clock.schedule(() -> report(queued, once, LocalOutcome.timedOut()), op.timeoutMs());
+
+            return () -> {
+                timeout.run();
+                overrun.run();
+            };
         }
 
-        return clock.schedule(() -> overran(op),
-                              Math.max(1L,
-                                       timings.boundOf(op.step())));
+        return overrun;
     }
 
     private static void overran(NodeFsmEffect.LocalOp op) {

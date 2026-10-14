@@ -509,11 +509,16 @@ class NodeFsmInterpreterTest {
             rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).enter();
             rig.awaitThat(() -> !rig.cluster.applied.isEmpty());
             rig.close();
+            var stepsAtClose = rig.stepped.size();
+            var appliesAtClose = rig.cluster.applied.size();
 
             hung.fail(new ConsensusError.NodeInactive(SELF));
             await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).until(() -> true);
 
             assertThat(rig.interpreter.mailboxDepth()).as("nothing queued behind a stopped consumer").isZero();
+            assertThat(rig.stepped).as("the late settlement was never stepped").hasSize(stepsAtClose);
+            assertThat(rig.cluster.applied).as("and nothing was submitted because of it").hasSize(appliesAtClose);
+            assertThat(rig.metric("WriteSettled", "closed")).as("the refused offer is counted").isEqualTo(1);
         }
     }
 }

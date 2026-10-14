@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.wiring;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
@@ -33,12 +34,13 @@ abstract class FsmRuntime<I, K, A> {
     private final String name;
     private final FsmMailbox<FsmItem<I, K>> mailbox;
     private final FsmTimers<K, A> timers;
+    private final AtomicBoolean shutDown = new AtomicBoolean();
     private long watermark;
 
     FsmRuntime(String threadName, FsmTimers.TimerService clock) {
         this.name = threadName;
-        this.mailbox = FsmMailbox.fsmMailbox(threadName, this::handle);
-        this.timers = FsmTimers.fsmTimers(clock, tick -> mailbox.offer(new FsmItem.Tick<>(tick)));
+        this.mailbox = FsmMailbox.fsmMailbox(threadName, this::handle, this::shutdown);
+        this.timers = FsmTimers.fsmTimers(clock, tick -> offered(mailbox.offer(new FsmItem.Tick<>(tick)), "Timer"));
     }
 
     // -- the producers' side ----------------------------------------------------------------------------------------
@@ -49,17 +51,26 @@ abstract class FsmRuntime<I, K, A> {
 
     /// Enqueues `input`. `false` only after [#close()].
     public boolean deliver(I input) {
-        return mailbox.offer(new FsmItem.Input<>(input));
+        return offered(mailbox.offer(new FsmItem.Input<>(input)), inputName(input));
     }
 
     /// Enqueues a KV-sourced `input` stamped by the delivering thread with `KVStore.notificationRevision()` and `KVStore.isReplaying()`.
     public boolean deliverKv(I input, long revision, boolean replay) {
-        return mailbox.offer(new FsmItem.Kv<>(input, revision, replay));
+        return offered(mailbox.offer(new FsmItem.Kv<>(input, revision, replay)), inputName(input));
     }
 
     /// Asks the consumer to enter: the consumer snapshots at a revision and steps the entry input, but only while not yet active.
     public boolean requestEntry(boolean reconcile) {
-        return mailbox.offer(new FsmItem.Entry<>(reconcile));
+        return offered(mailbox.offer(new FsmItem.Entry<>(reconcile)), "EnterRequested");
+    }
+
+    /// Design 7 (2c): an offer after Close is discarded and counted `inputs_total{result=closed}`.
+    private boolean offered(boolean accepted, String input) {
+        if (!accepted) {
+            count(input, "closed");
+        }
+
+        return accepted;
     }
 
     /// How many timers are armed; read on a quiescent interpreter (tests), since the map belongs to the consumer.
@@ -95,6 +106,7 @@ abstract class FsmRuntime<I, K, A> {
             case FsmItem.Entry<I, K> entry -> entry(entry.reconcile());
             case FsmItem.Close<I, K> close -> {
                 shutdown();
+                mailbox.close();
                 close.done().countDown();
             }
         }
@@ -117,9 +129,12 @@ abstract class FsmRuntime<I, K, A> {
               .onEmpty(() -> count("Timer", "dropped_superseded"));
     }
 
+    /// Once: on the consumer at `Close`, on the consumer as it exits after a `close()` whose wait expired, or on the caller when no consumer runs.
     private void shutdown() {
-        closing();
-        timers.close();
+        if (shutDown.compareAndSet(false, true)) {
+            closing();
+            timers.close();
+        }
     }
 
     /// FER: a wait that is interrupted is logged and `close` goes on to stop the consumer anyway; the guarantee is that `close` always
@@ -132,7 +147,17 @@ abstract class FsmRuntime<I, K, A> {
                         () -> done.await(CLOSE_WAIT_SECONDS, TimeUnit.SECONDS))
                   .onFailure(cause -> log.warn("Interrupted while closing {}: {}",
                                                name,
-                                               cause.message()));
+                                               cause.message()))
+                  .onSuccess(reached -> warnIfExpired(reached));
+        }
+    }
+
+    /// The wait is bounded (design 7, 2b): on expiry the consumer is still inside an input; it shuts down as it exits.
+    private void warnIfExpired(boolean reached) {
+        if (!reached) {
+            log.warn("deployment-fsm-stop-timeout {} did not reach Close within {} s; it shuts down when its current input returns",
+                     name,
+                     CLOSE_WAIT_SECONDS);
         }
     }
 

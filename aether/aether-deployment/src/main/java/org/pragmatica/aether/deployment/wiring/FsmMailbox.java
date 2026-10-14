@@ -39,20 +39,29 @@ public final class FsmMailbox<I> {
 
     private final String name;
     private final Consumer<? super I> handler;
+    private final Runnable onStop;
     private final ConcurrentLinkedDeque<I> queue = new ConcurrentLinkedDeque<>();
     private final AtomicInteger depth = new AtomicInteger();
     private final Object coalescing = new Object();
     private volatile Thread consumer;
     private volatile boolean closed;
 
-    private FsmMailbox(String name, Consumer<? super I> handler) {
+    private FsmMailbox(String name, Consumer<? super I> handler, Runnable onStop) {
         this.name = name;
         this.handler = handler;
+        this.onStop = onStop;
     }
 
     /// A mailbox whose consumer thread, once started, is called `name` and hands each item to `handler`.
     public static <I> FsmMailbox<I> fsmMailbox(String name, Consumer<? super I> handler) {
-        return new FsmMailbox<>(name, handler);
+        return new FsmMailbox<>(name,
+                                handler,
+                                () -> {});
+    }
+
+    /// As [#fsmMailbox(String, Consumer)], and the consumer runs `onStop` as the last thing it does, after [#close()] ended its loop.
+    public static <I> FsmMailbox<I> fsmMailbox(String name, Consumer<? super I> handler, Runnable onStop) {
+        return new FsmMailbox<>(name, handler, onStop);
     }
 
     /// Starts the consumer thread: a daemon platform thread, so a node that is torn down without a `close()` cannot hold the JVM open.
@@ -150,6 +159,8 @@ public final class FsmMailbox<I> {
         while (!closed) {
             Option.option(queue.pollFirst()).onPresent(this::taken).onEmpty(this::idle);
         }
+
+        onStop.run();
     }
 
     private void idle() {
