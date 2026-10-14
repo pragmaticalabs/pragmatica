@@ -36,9 +36,9 @@ class GapDepartureTest {
     private MbWorld world() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
+        w.admit(CORE_3, 0x3333L);
 
         return w.target(ORDERS, 1, "CORE_ONLY")
                 .directive(CORE_2,
@@ -77,7 +77,7 @@ class GapDepartureTest {
 
         w.h.held.clear();
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 2L)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         assertThat(w.recordOf(CORE_2).map(NodeDepartureValue::state)).as("J0 wrote ADMITTED first")
                   .isEqualTo(Option.some(DepartureState.ADMITTED));
         w.h.settleHeld(held, w.h.refused(held));
@@ -95,12 +95,12 @@ class GapDepartureTest {
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         var held = w.h.submits(SubmitKind.DEPARTURE).getFirst();
-        var next = w.admissionOf(CORE_2, 2L);
+        var next = w.admissionOf(CORE_2);
 
         w.h.held.clear();
         w.h.seedQuietly(new NodeDepartureKey(CORE_2),
                         new NodeDepartureValue(DepartureState.ADMITTED,
-                                               next.epoch(),
+                                               2L,
                                                next.process(),
                                                Option.none(),
                                                w.h.wallMs));

@@ -94,7 +94,7 @@ class V2174bPinsTest {
         var w = oneWorker(worker);
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 1L, 21L)));
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
         var first = w.h.submits(SubmitKind.DIRECTIVE).getFirst();
 
         w.h.deliver(new ClusterInput.Reconcile());
@@ -114,7 +114,7 @@ class V2174bPinsTest {
         var w = oneWorker(worker);
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 1L, 21L)));
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
         assertThat(w.h.submits(SubmitKind.DIRECTIVE)).as("precondition: one write, submitted").hasSize(1);
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
@@ -355,7 +355,7 @@ class V2174bPinsTest {
         h.activate();
         var input = h.state;
         var inputMeter = h.model().scans.count();
-        var stepped = h.fsm.step(input, new ClusterInput.NodeJoined(busy, admission(1L, 7L)));
+        var stepped = h.fsm.step(input, new ClusterInput.NodeJoined(busy, admission(7L)));
 
         assertThat(scanMetrics(stepped.effects())).as("the bucket walk is reported by the step that made it").isPositive();
         assertThat(((ClusterState.Active) input).model().scans.count()).as("the input model's meter is where it was").isEqualTo(inputMeter);
@@ -365,12 +365,13 @@ class V2174bPinsTest {
     private static MbWorld unmatchedWorld() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 5L, 0x2222L);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, 0x2222L);
+        w.admit(CORE_3, 0x3333L);
         w.directive(CORE_2, ActivationDirectiveValue.core())
          .record(CORE_2, DepartureState.DEPARTED, 5L, 0x2222L, DepartureCause.NODE_REMOVED)
          .activate();
+        w.unforeseen(CORE_2);
 
         return w;
     }
@@ -382,7 +383,7 @@ class V2174bPinsTest {
         var w = unmatchedWorld();
 
         w.h.clearLog();
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         assertThat(w.h.warns("join-unmatched")).as("the episode starts with one WARN").hasSize(1);
         var passes = w.h.metricTotal("aether_deployment_fsm_reconcile_passes_total", t -> true);
 
@@ -404,9 +405,9 @@ class V2174bPinsTest {
     void joinUnmatched_newJoinInput_startsANewEpisode() {
         var w = unmatchedWorld();
 
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         assertThat(w.h.warns("join-unmatched")).hasSize(1);
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         assertThat(w.h.warns("join-unmatched")).as("a new join input starts a new episode").hasSize(2);
     }
 
@@ -467,7 +468,7 @@ class V2174bPinsTest {
     void joinUnmatched_drainsAfterTheTick_addNoWarnBeyondTheTicksOwn() {
         var w = unmatchedWorld();
 
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         w.h.advance(w.h.settings.timing().tick() + 1);
         var afterTick = w.h.warns("join-unmatched").size();
 

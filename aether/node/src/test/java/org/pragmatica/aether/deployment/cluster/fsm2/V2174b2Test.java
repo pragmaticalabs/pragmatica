@@ -21,12 +21,13 @@ class V2174b2Test {
     private static MbWorld unmatchedWorld() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 5L, 0x2222L);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, 0x2222L);
+        w.admit(CORE_3, 0x3333L);
         w.directive(CORE_2, ActivationDirectiveValue.core())
          .record(CORE_2, DepartureState.DEPARTED, 5L, 0x2222L, DepartureCause.NODE_REMOVED)
          .activate();
+        w.unforeseen(CORE_2);
 
         return w;
     }
@@ -37,7 +38,7 @@ class V2174b2Test {
     void joinUnmatched_leaderChange_startsANewEpisode() {
         var w = unmatchedWorld();
 
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2, 5L)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admissionOf(CORE_2)));
         assertThat(w.h.warns("join-unmatched")).as("precondition: the episode starts with one WARN").hasSize(1);
         w.h.seed(new SliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
         w.h.drain();

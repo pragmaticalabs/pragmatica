@@ -27,9 +27,9 @@ class GapJudgmentTest {
     private MbWorld excluded() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, OLD_TOKEN);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, OLD_TOKEN);
+        w.admit(CORE_3, 0x3333L);
         w.target(ORDERS, 1, "CORE_ONLY").record(CORE_2, DepartureState.ADMITTED, 1L, OLD_TOKEN, null);
         w.h.seedQuietly(new ArtifactJudgmentKey(ORDERS),
                         new ArtifactJudgmentValue(false,
@@ -50,7 +50,7 @@ class GapJudgmentTest {
 
         assertThat(w.h.model().judgment(ORDERS).map(judgment -> judgment.unresponsive()
                                                                         .containsKey(CORE_2))).isEqualTo(Option.some(true));
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, Fixtures.admission(2L, NEW_TOKEN)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, Fixtures.admission(NEW_TOKEN)));
         assertThat(w.h.model().judgment(ORDERS)).as("nothing left to record").isEqualTo(Option.none());
     }
 
@@ -60,7 +60,7 @@ class GapJudgmentTest {
     void admissionOfTheSameProcess_keepsTheExclusion() {
         var w = excluded().activate();
 
-        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, 2L, OLD_TOKEN)));
+        w.h.deliver(new ClusterInput.NodeJoined(CORE_2, w.admit(CORE_2, OLD_TOKEN)));
         assertThat(w.h.model().judgment(ORDERS).map(judgment -> judgment.unresponsive()
                                                                         .containsKey(CORE_2))).isEqualTo(Option.some(true));
     }

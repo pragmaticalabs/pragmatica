@@ -89,9 +89,9 @@ class SpecRowPinsTest {
         var activating = Option.some(row(SliceObservedState.ACTIVATING, 1L, gen(1), process(7)));
         var loading = Option.some(row(SliceObservedState.LOADING, 1L, gen(1), process(7)));
 
-        assertThat(Divergence.timeoutOf(SliceGoal.ACTIVE, activating)).isEqualTo(90_000L);
-        assertThat(Divergence.timeoutOf(SliceGoal.ACTIVE, loading)).isEqualTo(120_000L);
-        assertThat(Divergence.timeoutOf(SliceGoal.LOADED, activating)).isEqualTo(120_000L);
+        assertThat(Divergence.timeoutOf(DivergenceBounds.DEFAULT, SliceGoal.ACTIVE, activating)).isEqualTo(90_000L);
+        assertThat(Divergence.timeoutOf(DivergenceBounds.DEFAULT, SliceGoal.ACTIVE, loading)).isEqualTo(120_000L);
+        assertThat(Divergence.timeoutOf(DivergenceBounds.DEFAULT, SliceGoal.LOADED, activating)).isEqualTo(120_000L);
     }
 
     /// 6.2. Red when: a SUCCEEDED that is refused with nothing moved is submitted more than 1 + 5 times.
@@ -118,9 +118,9 @@ class SpecRowPinsTest {
     private static MbWorld departedWithDirective() {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, 0x2222L);
-        w.admit(CORE_3, 1L, 0x3333L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, 0x2222L);
+        w.admit(CORE_3, 0x3333L);
 
         return w.directive(CORE_2,
                            ActivationDirectiveValue.core())

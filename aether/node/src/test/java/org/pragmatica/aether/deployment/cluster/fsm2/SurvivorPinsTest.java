@@ -36,8 +36,8 @@ class SurvivorPinsTest {
     private static MbWorld coreWorld() {
         var w = MbWorld.world(CORE_1, CORE_2);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, TOKEN_2);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, TOKEN_2);
 
         return w.directive(CORE_2,
                            ActivationDirectiveValue.core())
@@ -75,7 +75,7 @@ class SurvivorPinsTest {
         var w = MbWorld.world(CORE_1);
         var members = new NodeId[]{node("m1"), node("m2"), node("m3")};
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.community("c", 10, CommunityState.ACTIVE).activate();
         w.announce("c", members[0], members);
         var seen = w.h.model().announcementSeenAt.get("c").or(0L);

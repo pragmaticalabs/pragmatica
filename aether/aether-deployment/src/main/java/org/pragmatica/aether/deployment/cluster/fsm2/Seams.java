@@ -16,7 +16,8 @@ import org.pragmatica.lang.Option;
 /// wiring say, delivered with the input that needs it (R-3.1.1) and never read from inside the transition function.
 ///
 /// - `countedCores`, `ready`, `draining`: the placement audience (B-034, B-035).
-/// - `coreView`: membership's current **core** member set, `none` while the seam is unwired (R-2.15; C10).
+/// - `coreView`: membership's current **core** member set (`MembershipFsm.coreMembers()`), `none` while the seam is unwired (R-2.15; C10). It
+///   also feeds the core liveness evidence (R-2.11 (b)) and the deferral of C17b for a liveness-pending core (G-4); `none` makes both no-ops.
 /// - `localAlive`: the leader's local alive view, `none` while the supplier is unwired (R-2.15, M8-2).
 /// - `superseded`: ids whose retirement tombstone carries `supersededBy` (J1).
 /// - `memberSource`: the membership `source` label per node, for the worker community choice (B-070).

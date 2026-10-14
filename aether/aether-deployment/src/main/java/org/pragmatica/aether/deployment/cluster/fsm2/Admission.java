@@ -7,14 +7,16 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 
 
-/// What membership says about one node id (spec CI-15): the admission `epoch` (membership's incarnation
-/// high-water mark) and the `process` that epoch belongs to. A process whose `bootToken` is `0` is unknown
-/// (C8): the registry has recorded no token for it, the seam is absent, or it was not refreshed yet.
-public record Admission(long epoch, ProcessIncarnation process) {
-    public static final Admission UNKNOWN = new Admission(0L, new ProcessIncarnation(0L, 0L));
+/// What membership says about one node id (spec CI-15): the `process` it admitted. A process whose `bootToken` is
+/// `0` is unknown (C8): the registry has recorded no token for it, the seam is absent, or it was not refreshed yet.
+///
+/// Membership supplies no epoch (MQ-4): the admission epoch is leader-assigned in the committed `NodeDepartureValue`
+/// (R-4.3.0, `Departures#epochOf`).
+public record Admission(ProcessIncarnation process) {
+    public static final Admission UNKNOWN = new Admission(new ProcessIncarnation(0L, 0L));
 
-    public static Admission admission(long epoch, ProcessIncarnation process) {
-        return new Admission(epoch, process);
+    public static Admission admission(ProcessIncarnation process) {
+        return new Admission(process);
     }
 
     public long token() {
@@ -26,7 +28,7 @@ public record Admission(long epoch, ProcessIncarnation process) {
     }
 
     public Admission withProcess(ProcessIncarnation process) {
-        return new Admission(epoch, process);
+        return new Admission(process);
     }
 
     /// R-2.11 / C8: two admissions are a **different process** only on positive evidence: both tokens known and unequal.

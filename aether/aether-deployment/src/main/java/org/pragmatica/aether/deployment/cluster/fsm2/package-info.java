@@ -15,8 +15,9 @@
 /// - [Lifecycle], [Reconcile]: the Active entry, the leader mirror, the timers and the ten-step reconcile pass.
 /// - [Blueprints], [Schemas], [Slices], [Failures], [Strays], [Placement], [Rebalance], [Drains], [Communities], [Orphans],
 ///   [Divergence], [Outcomes]: the slice side.
-/// - [Joins], [DepartureFlow], [Absence], [Backstop], [Directory], [Departures]: the membership side (the join table,
-///   the fenced departure record, the per-class absence backstop and the community breaker).
+/// - [Joins], [DepartureFlow], [Absence], [Backstop], [Directory], [Departures], [Liveness]: the membership side (the join table,
+///   the fenced departure record with its leader-assigned epoch, the `joined` evidence that supersedes it, the per-class absence
+///   backstop and the community breaker).
 /// - [Outbox]: the write side. Handlers record intents; a queued `Flush` turns the intents of one mailbox drain into
 ///   `LeaderTransaction`s; [Outbox#settle] handles completions and refusals.
 ///

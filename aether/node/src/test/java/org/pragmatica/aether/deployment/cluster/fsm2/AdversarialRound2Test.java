@@ -51,7 +51,7 @@ class AdversarialRound2Test {
         var w = workerWorld(worker);
 
         w.h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
-        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 1L, 21L)));
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
         assertThat(w.h.submits(SubmitKind.DIRECTIVE)).isNotEmpty();
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.advance(120_000L);
@@ -66,7 +66,7 @@ class AdversarialRound2Test {
         var w = workerWorld(worker);
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 1L, 21L)));
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
         var first = w.h.submits(SubmitKind.DIRECTIVE).getFirst();
         var community = first.transaction()
                              .mutations()
@@ -120,7 +120,7 @@ class AdversarialRound2Test {
                                             .withMemberSource(Map.of(worker, "east")))
                        .activate();
 
-        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 1L, 21L)));
+        w.h.deliver(new ClusterInput.WorkerJoin(worker, w.admit(worker, 21L)));
         assertThat(w.h.warns("worker-no-community-policy")).hasSize(1);
         assertThat(w.present(new ActivationDirectiveKey(worker))).isFalse();
     }

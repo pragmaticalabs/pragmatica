@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.List;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.consensus.NodeId;
 
 
@@ -21,6 +22,17 @@ public sealed interface RoutedEvent {
     /// Reconciliation changed the instance count of `artifact`.
     record ReconciliationAdjustment(Artifact artifact, int current, int desired) implements RoutedEvent {}
 
-    /// A schema record holds the activation of `slices`.
-    record ActivationBlocked(String datasource, String owner, List<String> slices) implements RoutedEvent {}
+    /// A schema record holds the activation of `slices`. The record carries what the indexed `SchemaVersionValue` knows (H-4 (a)): the owning
+    /// blueprint as a typed id, the artifact coordinates and the attempt count, so that the interpreter can translate the event without
+    /// loss. `owner()` stays as the string form of `owningBlueprint` `[guess: "no field is dropped" read as "no information is dropped"; the
+    /// string is derived from the typed id instead of being a second component that could disagree with it]`.
+    record ActivationBlocked(String datasource,
+                             BlueprintId owningBlueprint,
+                             List<String> slices,
+                             String artifactCoords,
+                             int attemptCount) implements RoutedEvent {
+        public String owner() {
+            return owningBlueprint.asString();
+        }
+    }
 }

@@ -67,7 +67,8 @@ final class Fixtures {
                                     SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
                                     MembershipConfig.membershipConfig().splitTimeout(),
                                     GovernorAnnouncer.DEFAULT_REANNOUNCE_INTERVAL,
-                                    ClusterTimeouts.clusterTimeouts().communityAbsence());
+                                    ClusterTimeouts.clusterTimeouts().communityAbsence())
+                            .unwrap();
     }
 
     static long ms(long nanos) {
@@ -78,8 +79,8 @@ final class Fixtures {
         return new ProcessIncarnation(1_760_000_000_000L + token, token);
     }
 
-    static Admission admission(long epoch, long token) {
-        return new Admission(epoch, process(token));
+    static Admission admission(long token) {
+        return new Admission(process(token));
     }
 
     static Generation gen(long counter) {

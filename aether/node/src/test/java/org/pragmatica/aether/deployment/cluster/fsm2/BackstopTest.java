@@ -80,8 +80,8 @@ class BackstopTest {
         var w = MbWorld.world(CORE_1, CORE_2);
         var all = Set.of(W1, M1, M2, M3, M4);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, 0x2222L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, 0x2222L);
         w.workers(C, 10, all, W1, M1, M2, M3, M4).target(ORDERS, 2, "WORKERS_ONLY");
         w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(W1)).routes(W1, ORDERS);
         w.instance(M1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(M1));
@@ -137,7 +137,7 @@ class BackstopTest {
     void lostDeparture_afterTheBound_recordsStale_thenC17bRemovesRows_directiveWaits() {
         var w = lostDeparture();
 
-        w.h.deliver(new ClusterInput.WorkerJoin(W2, w.admit(W2, 1L, tokenOf(W2))));
+        w.h.deliver(new ClusterInput.WorkerJoin(W2, w.admit(W2, tokenOf(W2))));
         var alive = Set.of(M1, M2, M3, M4, W2);
         var listed = List.of(M1, M2, M3, M4, W2);
 
@@ -198,7 +198,7 @@ class BackstopTest {
                       WITHOUT_W1);
         var inferred = w.inferred().getFirst();
 
-        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 2L, tokenOf(W1))));
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, tokenOf(W1))));
         var admission = w.h.submits(SubmitKind.ADMISSION).getFirst();
 
         w.h.applyHeld(admission.correlationId());
@@ -233,7 +233,7 @@ class BackstopTest {
         w.h.drain();
         var cleanup = w.h.submits(SubmitKind.CLEANUP).getFirst();
 
-        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 2L, tokenOf(W1))));
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, tokenOf(W1))));
         w.h.applyHeld(w.h.submits(SubmitKind.ADMISSION).getLast().correlationId());
         w.h.drain();
         assertThat(w.recordOf(W1).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
@@ -250,9 +250,9 @@ class BackstopTest {
         var w = MbWorld.world(CORE_1);
         var w3 = node("w3");
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers(C, 10, ALIVE_WITHOUT_W1, w3, M1, M2, M3, M4);
-        w.h.admissions.put(w3, w.admit(w3, 1L, 0L));
+        w.h.admissions.put(w3, w.admit(w3, 0L));
         w.instance(w3,
                    ORDERS,
                    SliceGoal.ACTIVE,
@@ -303,7 +303,7 @@ class BackstopTest {
                          ? List.of(w5)
                          : List.<NodeId> of();
 
-            w.admit(CORE_1, 1L, 0x1111L);
+            w.admit(CORE_1, 0x1111L);
             w.workers(C, 10, alive, w5).target(ORDERS, 1, "WORKERS_ONLY");
             w.instance(w5, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w5)).activate();
             var before = Rows.activeCount(w.h.model(), ORDERS);
@@ -324,9 +324,9 @@ class BackstopTest {
             var w = MbWorld.world(CORE_1);
             var w6 = node("w6");
 
-            w.admit(CORE_1, 1L, 0x1111L);
+            w.admit(CORE_1, 0x1111L);
             if (variant.equals("dissolved")) {
-                w.admit(w6, 1L, tokenOf(w6));
+                w.admit(w6, tokenOf(w6));
                 w.directive(w6, ActivationDirectiveValue.worker());
                 w.seams(s -> s.withCoreView(Option.some(Set.of(CORE_1)))
                               .withLocalAlive(Option.some(Set.of())));
@@ -379,7 +379,7 @@ class BackstopTest {
         var w = MbWorld.world(CORE_1);
         var w7 = node("w7");
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers(C, 10, ALIVE_WITHOUT_W1, w7, M1, M2, M3, M4).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(w7, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w7)).activate();
         w.evolve(C, GOV, ALIVE_WITHOUT_W1, WITHOUT_W1, 5_000L);
@@ -405,7 +405,7 @@ class BackstopTest {
 
         assertThat(inferred).hasSize(1);
         assertThat(inferred.getFirst().transaction().mutations()).hasSize(1);
-        w.h.deliver(new ClusterInput.WorkerJoin(w7, w.admit(w7, 2L, tokenOf(w7))));
+        w.h.deliver(new ClusterInput.WorkerJoin(w7, w.admit(w7, tokenOf(w7))));
         w.h.applyHeld(w.h.submits(SubmitKind.ADMISSION).getLast().correlationId());
         w.h.drain();
         assertThat(w.h.applyHeld(inferred.getFirst().correlationId())).as("a concurrent ADMITTED refuses it as a whole")
@@ -420,8 +420,8 @@ class BackstopTest {
     void core_isJudgedAgainstTheCoreViewAlone() {
         var w = MbWorld.world(CORE_1, CORE_2);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, 0x2222L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, 0x2222L);
         w.directive(CORE_2,
                     ActivationDirectiveValue.core())
          .target(ORDERS, 1, "CORE_ONLY")
@@ -452,7 +452,7 @@ class BackstopTest {
     void core_withNoCoreView_isNeverRecorded() {
         var w = MbWorld.world(CORE_1, CORE_2);
 
-        w.admit(CORE_2, 1L, 0x2222L);
+        w.admit(CORE_2, 0x2222L);
         w.directive(CORE_2, ActivationDirectiveValue.core()).activate();
         w.h.advance(3 * BRM);
         assertThat(w.inferred()).isEmpty();

@@ -10,6 +10,7 @@ import java.util.stream.Stream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -23,6 +24,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
@@ -59,30 +61,54 @@ public sealed interface Directory {
     /// R-4.3.3: `Remove(NodeDepartureKey)` expecting the DEPARTED value, plus the observed rows at their exact values and any
     /// remaining desired and route keys.
     private static ClusterModel removeDeparted(ClusterModel m, Ctx ctx, NodeId node) {
-        var mutations = Stream.of(m.records.get(node)
-                                           .map(value -> DepartureFlow.removal(new NodeDepartureKey(node),
-                                                                               value))
-                                           .stream()
-                                           .toList(),
-                                  DepartureFlow.observedRemovals(m, node),
-                                  DepartureFlow.desiredRemovals(m, node),
-                                  DepartureFlow.routeRemovals(m, node))
-                              .flatMap(List::stream)
-                              .toList();
-
-        return Reconcile.request(submitRemovals(m, node, mutations), ctx);
+        return Reconcile.request(submitRemovals(m, node), ctx);
     }
 
-    private static ClusterModel submitRemovals(ClusterModel m,
-                                               NodeId node,
-                                               List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
-        return mutations.isEmpty()
-               ? m
-               : Outbox.direct(m,
-                               TxDraft.draft(SubmitKind.DIRECTIVE_REMOVAL,
-                                             mutations.getFirst().key(),
-                                             mutations)
-                                      .withNode(node));
+    private static List<KVCommand.Mutation<AetherKey, AetherValue>> removalMutations(ClusterModel m,
+                                                                                     NodeId node,
+                                                                                     NodeDepartureValue record) {
+        return Stream.of(List.of(DepartureFlow.removal(new NodeDepartureKey(node),
+                                                       record)),
+                         DepartureFlow.observedRemovals(m, node),
+                         DepartureFlow.desiredRemovals(m, node),
+                         DepartureFlow.routeRemovals(m, node))
+                     .flatMap(List::stream)
+                     .toList();
+    }
+
+    /// R-4.3.3 derived again from the mirror, after a refusal (R-5.7.2) or a lost or failed submission (#2143). R-4.3.3 is the only remover
+    /// of a departure record (R-4.3.5, MQ-4) and the directive it answers is already gone, so no reconcile step derives it: dropping it
+    /// would leave the record of a terminated id for good (NT-106). It stops when the node is no longer departed (its record moved or went)
+    /// or has a directive again.
+    static Option<TxDraft> refreshedRemoval(ClusterModel m, TxDraft draft) {
+        return draft.node()
+                    .filter(node -> m.departed.contains(node) && !m.directives.containsKey(node))
+                    .flatMap(node -> removalDraft(m,
+                                                  node,
+                                                  draft.attempt() + 1));
+    }
+
+    private static ClusterModel submitRemovals(ClusterModel m, NodeId node) {
+        return removalDraft(m, node, 0).fold(() -> m, draft -> Outbox.direct(m, draft));
+    }
+
+    /// The record's removal first (it expects the DEPARTED value), then the rows, desired keys and route keys at their current values.
+    private static Option<TxDraft> removalDraft(ClusterModel m, NodeId node, int attempt) {
+        return m.records.get(node)
+                        .map(record -> removalDraft(m, node, record, attempt));
+    }
+
+    private static TxDraft removalDraft(ClusterModel m, NodeId node, NodeDepartureValue record, int attempt) {
+        var mutations = removalMutations(m, node, record);
+
+        return new TxDraft(SubmitKind.DIRECTIVE_REMOVAL,
+                           mutations.getFirst().key(),
+                           mutations,
+                           List.of(),
+                           Set.of(),
+                           Option.some(node),
+                           attempt,
+                           List.of());
     }
 
     // -- C14, C11e: announcements and communities ------------------------------------------------------------------

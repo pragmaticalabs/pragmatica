@@ -160,7 +160,7 @@ class CommunityBackstopTest {
         var w = MbWorld.world(CORE_1);
         var w8 = node("w8");
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers("stable", 1, Set.of(M1), w8, M1).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(w8, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w8)).routes(w8, ORDERS);
         w.h.seedQuietly(new NodePlacementKey(w8), new NodePlacementValue("pool", Option.some("old"), "old-instance"));
@@ -195,7 +195,7 @@ class CommunityBackstopTest {
         var w = MbWorld.world(CORE_1);
         var w8 = node("w8");
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers("gone", 5, Set.of(M1), w8, M1).target(ORDERS, 1, "WORKERS_ONLY");
         w.h.seedQuietly(new CommunityKey("gone"),
                         new CommunityValue("pool",
@@ -217,7 +217,7 @@ class CommunityBackstopTest {
         var w = MbWorld.world(CORE_1);
         var w9 = node("w9");
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers(C, 10, Set.of(M1, M2, M3, M4), w9, M1, M2, M3, M4).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(w9, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w9));
         w.h.seedQuietly(new GovernorAnnouncementKey(C), roster(GOV, false, M1, M2, M3, M4));
@@ -242,7 +242,7 @@ class CommunityBackstopTest {
         var w10 = node("w10");
         var all = Set.of(w10, M1, M2, M3, M4);
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers(C, 10, all, w10, M1, M2, M3, M4).target(ORDERS, 1, "WORKERS_ONLY").target(BILLING, 1, "WORKERS_ONLY");
         w.instance(w10, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w10));
         w.instance(w10, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(w10));
@@ -317,7 +317,7 @@ class CommunityBackstopTest {
         var w = MbWorld.world(CORE_1);
         var members = new NodeId[]{node("e1"), node("e2"), node("e3"), node("e4"), node("e5"), node("e6")};
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers("e-comm", 10, Set.of(members), members).target(ORDERS, 1, "WORKERS_ONLY");
         for (var member : members) {
             w.instance(member, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(member));
@@ -359,7 +359,7 @@ class CommunityBackstopTest {
         var f1 = node("f1");
         var f2 = node("f2");
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers("f-comm", 10, Set.of(f1, f2), f1, f2).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(f1, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(f1)).activate();
         w.evolve("f-comm", GOV, Set.of(f2), List.of(f2), BW + 31_000L + 30_000L);
@@ -376,7 +376,7 @@ class CommunityBackstopTest {
         var w = MbWorld.world(CORE_1);
         var wx = node("wx");
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers(C, 10, Set.of(M1, M2), wx, M1, M2).target(ORDERS, 1, "WORKERS_ONLY");
         w.instance(wx, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(wx)).activate();
         w.announce(C, GOV, M1, M2);
@@ -399,7 +399,7 @@ class CommunityBackstopTest {
         var w = MbWorld.world(CORE_1);
         var wx = node("wx");
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers(C, 10, Set.of(M1, M2), wx, M1, M2).target(ORDERS, 1, "WORKERS_ONLY");
         w.h.seedQuietly(new SliceObservedKey(wx, ORDERS),
                         row(SliceObservedState.ACTIVE, 1L, gen(1), process(tokenOf(wx))));
@@ -421,7 +421,7 @@ class CommunityBackstopTest {
         var w = MbWorld.world(CORE_1);
         var spare = M3;
 
-        w.admit(CORE_1, 1L, 0x1111L);
+        w.admit(CORE_1, 0x1111L);
         w.workers(C, 10, Set.of(M1, M2, spare), M1, M2, spare).target(ORDERS, 2, "WORKERS_ONLY");
         w.instance(M1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(M1));
         w.instance(M2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(M2));
@@ -442,8 +442,8 @@ class CommunityBackstopTest {
     void staleCore_rowsGoOnlyAfterACommittedStaleRecord() {
         var w = MbWorld.world(CORE_1, CORE_2);
 
-        w.admit(CORE_1, 1L, 0x1111L);
-        w.admit(CORE_2, 1L, 0x2222L);
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, 0x2222L);
         w.directive(CORE_2,
                     ActivationDirectiveValue.core())
          .target(ORDERS, 1, "CORE_ONLY")
@@ -474,7 +474,7 @@ class CommunityBackstopTest {
         var four = MbWorld.world(CORE_1);
         var g = List.of(node("g1"), node("g2"), node("g3"), node("g4"));
 
-        four.admit(CORE_1, 1L, 0x1111L);
+        four.admit(CORE_1, 0x1111L);
         four.workers("g-comm", 10, Set.copyOf(g), g.toArray(new NodeId[0])).target(ORDERS, 1, "WORKERS_ONLY");
         for (var member : g) {
             four.instance(member, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(member));
@@ -491,7 +491,7 @@ class CommunityBackstopTest {
         var single = MbWorld.world(CORE_1);
         var only = node("only");
 
-        single.admit(CORE_1, 1L, 0x1111L);
+        single.admit(CORE_1, 0x1111L);
         single.workers("s-comm", 10, Set.of(), only).target(ORDERS, 1, "WORKERS_ONLY");
         single.instance(only, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(only)).activate();
         single.evolve("s-comm", GOV, Set.of(), List.of(M1), BW + 31_000L + 30_000L);
