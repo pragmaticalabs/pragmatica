@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Objects;
+
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
@@ -21,14 +23,22 @@ import org.pragmatica.lang.utils.Causes;
 /// - `announcementFreshness` (`S_ann`) = `2 x reannounceInterval`;
 /// - `coreSuspicion` = `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER`, the upper bound of one SWIM suspicion
 ///   window (R-2.14): how long a core must stay listed in this leader's core view to count as alive `[guess: one window, per the D-4 (ii) ruling]`.
-public record AbsenceBounds(long coreRemoval, long workerRemoval, long announcementFreshness, long coreSuspicion) {
+///
+/// W5 on every path (v-2190 N3, CTO ruling 2026-10-14): a final class with a private constructor, so the `Result` factory below is the only
+/// way to build one and a non-positive window can never exist.
+public final class AbsenceBounds {
     private static final Fn1<Cause, Long> NON_POSITIVE_WINDOW = Causes.forOneValue("The core suspicion window must be positive, was %s ns");
 
-    /// W5 on every path (v-2190 N3): the factory refuses a non-positive window with a `Result`; the canonical constructor, which the factory and
-    /// tests share, asserts the same invariant, as `DataSize.DataSizeValue` does in core. An assertion is checked where `-ea` is on (every test
-    /// run); production builds the record only through `absenceBounds`/`derive`.
-    public AbsenceBounds {
-        assert coreSuspicion > 0 : "The core suspicion window must be positive, was " + coreSuspicion + " ns";
+    private final long coreRemoval;
+    private final long workerRemoval;
+    private final long announcementFreshness;
+    private final long coreSuspicion;
+
+    private AbsenceBounds(long coreRemoval, long workerRemoval, long announcementFreshness, long coreSuspicion) {
+        this.coreRemoval = coreRemoval;
+        this.workerRemoval = workerRemoval;
+        this.announcementFreshness = announcementFreshness;
+        this.coreSuspicion = coreSuspicion;
     }
 
     /// A bounds record is valid only with a positive suspicion window: with a window of 0 a core counted as alive the moment it is first listed,
@@ -57,5 +67,44 @@ public record AbsenceBounds(long coreRemoval, long workerRemoval, long announcem
         var workerRemoval = (long)(workerSuspectTimeout.nanos() * window) + reannounceInterval.nanos() + communityAbsence.nanos();
 
         return absenceBounds(coreRemoval, workerRemoval, 2 * reannounceInterval.nanos(), coreSuspicion);
+    }
+
+    public long coreRemoval() {
+        return coreRemoval;
+    }
+
+    public long workerRemoval() {
+        return workerRemoval;
+    }
+
+    public long announcementFreshness() {
+        return announcementFreshness;
+    }
+
+    public long coreSuspicion() {
+        return coreSuspicion;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof AbsenceBounds that
+               && coreRemoval == that.coreRemoval
+               && workerRemoval == that.workerRemoval
+               && announcementFreshness == that.announcementFreshness
+               && coreSuspicion == that.coreSuspicion;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(coreRemoval, workerRemoval, announcementFreshness, coreSuspicion);
+    }
+
+    @Override
+    public String toString() {
+        return "AbsenceBounds[coreRemoval=" + coreRemoval
+             + ", workerRemoval=" + workerRemoval
+             + ", announcementFreshness=" + announcementFreshness
+             + ", coreSuspicion=" + coreSuspicion
+             + "]";
     }
 }

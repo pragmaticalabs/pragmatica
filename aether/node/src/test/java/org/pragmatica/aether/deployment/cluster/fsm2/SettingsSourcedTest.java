@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.lang.reflect.Modifier;
 import java.util.List;
 import java.util.Set;
 import java.util.function.UnaryOperator;
@@ -24,7 +25,6 @@ import org.junit.jupiter.api.Test;
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 
 /// What the cluster FSM takes from its `Settings` (spec R-3.4.10, MQ-7, P3-Q12, P3-Q16) and what it routes (H-4 (a)): the submission expiry,
@@ -252,8 +252,11 @@ class SettingsSourcedTest {
         assertThat(ms(bounds.coreRemoval())).as("B_rm = the window + splitTimeout").isEqualTo(255_000L);
         assertThat(ms(bounds.workerRemoval())).as("B_w").isEqualTo(170_000L);
         assertThat(ms(bounds.announcementFreshness())).as("S_ann").isEqualTo(60_000L);
-        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap()).isEqualTo(new AbsenceBounds(1L, 2L, 3L, 4L));
-        assertThat(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap().coreSuspicion()).isEqualTo(4L);
+        var built = AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap();
+
+        assertThat(List.of(built.coreRemoval(), built.workerRemoval(), built.announcementFreshness(), built.coreSuspicion()))
+                  .as("the factory keeps its arguments in order").containsExactly(1L, 2L, 3L, 4L);
+        assertThat(built).isEqualTo(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap());
     }
 
     // Red when: an admission does not carry the process it was built with, or `withProcess` keeps the old one.
@@ -332,12 +335,14 @@ class SettingsSourcedTest {
                                 .isFailure()).as("a zero suspect timeout derives a zero window").isTrue();
     }
 
-    // Red when: the canonical constructor builds an absence bounds record with a suspicion window that is not positive (W5 on every path, v-2190 N3):
-    // the factory refuses it, and so must a direct construction.
+    // Red when: an absence bounds value can be built without the Result factory (W5 on every path, v-2190 N3, CTO ruling 2026-10-14): the type must be
+    // final and every constructor private, so `absenceBounds`/`derive`, which refuse a non-positive window, are the only construction path.
     @Test
-    void absenceBounds_constructorRefusesAWindowThatIsNotPositive() {
-        assertThatThrownBy(() -> new AbsenceBounds(1L, 2L, 3L, 0L)).as("zero").isInstanceOf(AssertionError.class);
-        assertThatThrownBy(() -> new AbsenceBounds(1L, 2L, 3L, -1L)).as("negative").isInstanceOf(AssertionError.class);
-        assertThat(new AbsenceBounds(1L, 2L, 3L, 1L).coreSuspicion()).as("the smallest legal window").isEqualTo(1L);
+    void absenceBounds_hasNoConstructionPathButTheFactory() {
+        assertThat(Modifier.isFinal(AbsenceBounds.class.getModifiers())).as("final: no subclass constructor").isTrue();
+        assertThat(AbsenceBounds.class.getDeclaredConstructors()).as("every constructor is private")
+                  .allMatch(constructor -> Modifier.isPrivate(constructor.getModifiers()))
+                  .isNotEmpty();
+        assertThat(AbsenceBounds.class.isRecord()).as("a record's canonical constructor cannot be private").isFalse();
     }
 }
