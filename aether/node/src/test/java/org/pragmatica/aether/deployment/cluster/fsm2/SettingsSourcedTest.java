@@ -335,6 +335,21 @@ class SettingsSourcedTest {
                                 .isFailure()).as("a zero suspect timeout derives a zero window").isTrue();
     }
 
+    // Red when: AbsenceBounds' value equality ignores a field, the suspicion window included (v-2190 delta, N-b). `Settings` is a record, so its
+    // equality (and `settings_*`'s `isEqualTo(bounds())`) reads this one; bounds that differ only in the window must differ.
+    @Test
+    void absenceBounds_equalityCoversEveryBound() {
+        var base = AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap();
+
+        assertThat(base).isEqualTo(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap());
+        assertThat(base.hashCode()).isEqualTo(AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap().hashCode());
+        assertThat(base).as("coreRemoval").isNotEqualTo(AbsenceBounds.absenceBounds(9L, 2L, 3L, 4L).unwrap());
+        assertThat(base).as("workerRemoval").isNotEqualTo(AbsenceBounds.absenceBounds(1L, 9L, 3L, 4L).unwrap());
+        assertThat(base).as("announcementFreshness").isNotEqualTo(AbsenceBounds.absenceBounds(1L, 2L, 9L, 4L).unwrap());
+        assertThat(base).as("coreSuspicion").isNotEqualTo(AbsenceBounds.absenceBounds(1L, 2L, 3L, 9L).unwrap());
+        assertThat(base.hashCode()).as("hashCode reads coreSuspicion").isNotEqualTo(AbsenceBounds.absenceBounds(1L, 2L, 3L, 9L).unwrap().hashCode());
+    }
+
     // Red when: an absence bounds value can be built without the Result factory (W5 on every path, v-2190 N3, CTO ruling 2026-10-14): the type must be
     // final and every constructor private, so `absenceBounds`/`derive`, which refuse a non-positive window, are the only construction path.
     @Test

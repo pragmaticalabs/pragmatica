@@ -1040,6 +1040,26 @@ class JoinedEvidenceTest {
         assertThat(cleanupsOf(w, N)).isZero();
     }
 
+    // W3' scope (v-2190 delta, N-a): the ruling covers a DEPARTED record. An ADMITTED(E, p1) record with a different known admission p2 (only a restart
+    // under the same id reaches it; J8 is unreachable while b85d80993 holds) must not take J8 on a liveness resolution: no write, no WARN.
+    @Test
+    void w3scope_admittedRecordOfAnotherProcess_isNotJ8OnResolution() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_2, P2);
+        w.admit(CORE_3, 0x3333L);
+        w.target(ORDERS, 1, "CORE_ONLY")
+         .directive(CORE_2, ActivationDirectiveValue.core())
+         .record(CORE_2, DepartureState.ADMITTED, E, P1, null)
+         .seams(s -> s.withCoreView(Option.some(ALL_CORES)))
+         .activate();
+        runKeeping(w, SUSPICION_MS + 2 * TICK_MS);
+
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).as("no J8 write for an ADMITTED record").isEmpty();
+        assertThat(w.h.warns("identity-process-mismatch")).isEmpty();
+    }
+
     // (e) W3', control: an UNKNOWN process (C8) is not a different one, so the resolution keeps the pre-W3' behaviour: n is joined, the record is
     // superseded on read and rewritten by step 10 as ADMITTED(E + 1) keeping the process the record names; no J8, no C17b, the row is kept and counted.
     // Red if an unknown admission is routed to J8 (WARN identity-process-mismatch, an ADMITTED naming the unknown process) or C17b runs.
