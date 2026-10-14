@@ -10,6 +10,7 @@ import java.util.List;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistryKey;
@@ -96,8 +97,14 @@ class NodeFsmWriteProbeTest {
     }
 
     private static long arm(NodeHarness h, String outcome) {
+        return arm(h, "observed", outcome);
+    }
+
+    private static long arm(NodeHarness h, String kind, String outcome) {
         return h.effectsOf(NodeFsmEffect.Metric.class).stream()
-                .filter(metric -> metric.name().equals(SUBMISSIONS) && outcome.equals(metric.labels().get("outcome")))
+                .filter(metric -> metric.name().equals(SUBMISSIONS)
+                                  && kind.equals(metric.labels().get("kind"))
+                                  && outcome.equals(metric.labels().get("outcome")))
                 .mapToLong(NodeFsmEffect.Metric::delta)
                 .sum();
     }
@@ -148,6 +155,8 @@ class NodeFsmWriteProbeTest {
         assertThat(h.record(ARTIFACT).chain().isEmpty()).as("the chain completed").isTrue();
         assertThat(h.effectsOf(NodeFsmEffect.Submit.class)).extracting(NodeFsmEffect.Submit::attempt).as("no second attempt").containsOnly(1);
         assertThat(arm(h, "confirm_timeout")).isZero();
+        assertThat(arm(h, "observed_probe", "accepted")).as("the probe's settlement is counted apart").isEqualTo(1L);
+        assertThat(arm(h, "accepted")).as("and never on the attempt arm").isEqualTo(arm(control(), "accepted") - 1L);
         assertThat(noProbeTimers(h)).as("the probe series is cancelled by the confirmation").isTrue();
         assertThat(h.timersOf(TimerId.TimerKind.WRITE_CONFIRM)).isEmpty();
     }
@@ -275,6 +284,32 @@ class NodeFsmWriteProbeTest {
         assertThat(row(h).state()).isEqualTo(SliceObservedState.ACTIVE);
     }
 
+    /// The legs a probe's rebuild registers equal what one run registers (the rerun of BUILD_LEGS is idempotent): the topic
+    /// subscription and the stream registration, as real puts against the real applier, end identical to a run with no loss.
+    @Test
+    @DisplayName("NT-134 (b): running BUILD_LEGS twice registers the topic and the stream exactly as one run does")
+    void nt134b_buildLegsTwice_registersLikeOnce() {
+        var method = MethodName.methodName("handle").unwrap();
+        var topic = AetherKey.TopicSubscriptionKey.topicSubscriptionKey(REF.address(), ARTIFACT, method, SELF);
+        var stream = AetherKey.StreamRegistrationKey.streamRegistrationKey("orders", "stream.orders", ARTIFACT, method);
+        var legs = List.of(LegCommand.legCommand(LegCommand.LegKind.TOPIC_SUBSCRIPTION,
+                                                 new KVCommand.Put<AetherKey, AetherValue>(topic, AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF))),
+                           LegCommand.legCommand(LegCommand.LegKind.STREAM_REGISTRATION,
+                                                 new KVCommand.Put<AetherKey, AetherValue>(stream,
+                                                                                           AetherValue.StreamRegistrationValue.streamRegistrationValue(SELF, "g", false, "Order"))));
+        var once = builders(new NodeHarness());
+        var twice = lostFirstActive();
+
+        once.script(LocalStep.BUILD_LEGS, LocalOutcome.done(legs)).establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.ACTIVE, G1);
+        twice.script(LocalStep.BUILD_LEGS, LocalOutcome.done(legs)).advance(probeOffset(twice, 0));
+
+        assertThat(twice.localSteps().stream().filter(step -> step == LocalStep.BUILD_LEGS).count()).as("run twice").isEqualTo(2L);
+        assertThat(once.localSteps().stream().filter(step -> step == LocalStep.BUILD_LEGS).count()).as("run once").isEqualTo(1L);
+        assertThat(twice.store.get(topic).or((Object) null)).isNotNull().isEqualTo(once.store.get(topic).or((Object) null));
+        assertThat(twice.store.get(stream).or((Object) null)).isNotNull().isEqualTo(once.store.get(stream).or((Object) null));
+        assertThat(refCount(twice)).isEqualTo(refCount(once));
+    }
+
     // ------------------------------------------------------------------ (c)
 
     private static NodeHarness everythingLost() {
@@ -360,6 +395,8 @@ class NodeFsmWriteProbeTest {
         h.advance(3L * h.timings.writeAttemptMs());
 
         assertAttemptSchedule(h);
+        assertThat(arm(h, "observed_probe", "failed")).as("nine probe settlements, counted apart").isEqualTo(9L);
+        assertThat(arm(h, "failed")).as("the attempt arm never sees them").isZero();
         assertThat(h.effectsOf(NodeFsmEffect.Submit.class).stream().filter(submit -> !submit.isProbe() && submit.attempt() > 1))
             .as("a retry is submitted only at the attempt bound").hasSize(2);
     }

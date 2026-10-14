@@ -147,7 +147,7 @@ public record NodeFsm(NodeFsmConfig config, LongSupplier wallClock) {
         }
 
         return Probes.isResubmission(write, settled.correlation())
-               ? t.emit(submission(outcomeOf(settled.outcome())))
+               ? t.emit(probeSubmission(outcomeOf(settled.outcome())))
                : Transition.transition(t.model()).ignoring();
     }
 
@@ -163,6 +163,14 @@ public record NodeFsm(NodeFsmConfig config, LongSupplier wallClock) {
             case NodeFsmInput.WriteOutcome.Accepted _ -> t.emit(submission("accepted"));
             case NodeFsmInput.WriteOutcome.Failed _ -> Writes.attemptFailed(this, t.emit(submission("failed")), artifact);
         };
+    }
+
+    /// A probe resubmission's settlement, counted apart from the attempts' (`kind="observed_probe"`, the same `outcome` values), so
+    /// the attempt arms stay pure.
+    static NodeFsmEffect probeSubmission(String outcome) {
+        return new NodeFsmEffect.Metric(SUBMISSIONS_TOTAL,
+                                        Map.of("fsm", "node", "kind", "observed_probe", "outcome", outcome),
+                                        1L);
     }
 
     static NodeFsmEffect submission(String outcome) {
