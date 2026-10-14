@@ -142,7 +142,8 @@ sealed interface Chains {
                                        LocalOutcome.Done done) {
         var step = chain.running().or(LocalStep.ACTIVATE);
         var recorded = t.update(artifact,
-                                rec -> rec.withChain(some(chain.collecting(done.commands(),
+                                rec -> rec.withChain(some(chain.collecting(step,
+                                                                           done.commands(),
                                                                            done.methods())))
                                           .withServing(servingAfter(step,
                                                                     rec.serving())));

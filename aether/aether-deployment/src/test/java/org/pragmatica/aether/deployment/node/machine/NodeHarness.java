@@ -76,11 +76,15 @@ final class NodeHarness {
     final List<NodeFsmEffect> effects = new ArrayList<>();
     final List<Submitted> submitted = new ArrayList<>();
     final List<Applied> history = new ArrayList<>();
+    /// The wall clock at which each submission was handed to the interpreter, by correlation.
+    final Map<Long, Long> submitWall = new LinkedHashMap<>();
     final Map<Long, Pending> pendingLocal = new LinkedHashMap<>();
     final Map<TimerId, Long> timers = new LinkedHashMap<>();
     final Map<Artifact, SliceDesiredValue> desired = new LinkedHashMap<>();
     final java.util.Set<Artifact> slicesInStore = new java.util.HashSet<>();
     final Map<LocalStep, LocalOutcome> script = new HashMap<>();
+    /// A step whose outcome is computed when it runs, from the real store (a builder that reads the mirror).
+    final Map<LocalStep, java.util.function.Supplier<LocalOutcome>> computed = new HashMap<>();
     final Map<LocalStep, Boolean> holdSteps = new HashMap<>();
     final List<LocalRun> localRuns = new ArrayList<>();
     final ArrayDeque<NodeFsmInput> mailbox = new ArrayDeque<>();
@@ -136,6 +140,11 @@ final class NodeHarness {
     NodeHarness feed(NodeFsmInput input) {
         mailbox.add(input);
 
+        return drain();
+    }
+
+    /// Delivers whatever is queued, and everything it causes.
+    NodeHarness drain() {
         while (!mailbox.isEmpty()) {
             run(mailbox.poll());
         }
@@ -165,6 +174,8 @@ final class NodeHarness {
     // ------------------------------------------------------------------ the real applier
 
     private void submit(NodeFsmEffect.Submit submit) {
+        submitWall.put(submit.correlation(), wall);
+
         var mode = Option.option(writeScript.apply(new Submitted(submit, writeMode, false))).or(writeMode);
 
         if (mode == WriteMode.LOST) {
@@ -196,6 +207,25 @@ final class NodeHarness {
         if (mode != WriteMode.APPLY_NO_NOTIFY) {
             notifyChange(submit.artifact(), before, after);
         }
+    }
+
+    /// A submission the harness held back reaches the applier now: the batch is applied against the real store, the own
+    /// notification is delivered if the row changed, and the settlement arrives (a late original, spec NT-134 (b)).
+    NodeHarness applyLate(NodeFsmEffect.Submit submit) {
+        var before = observed(submit.artifact());
+
+        applyBatch(submit.commands());
+
+        var after = observed(submit.artifact());
+
+        if (!before.equals(after)) {
+            history.add(new Applied(submit.artifact(), before, after));
+        }
+
+        mailbox.add(new NodeFsmInput.WriteSettled(submit.incarnation(), submit.artifact(), submit.correlation(), NodeFsmInput.WriteOutcome.accepted()));
+        notifyChange(submit.artifact(), before, after);
+
+        return drain();
     }
 
     @SuppressWarnings("unchecked")
@@ -251,7 +281,20 @@ final class NodeHarness {
         mailbox.add(new NodeFsmInput.LocalOpSettled(op.incarnation(),
                                                     op.artifact().or(ARTIFACT),
                                                     op.token(),
-                                                    script.getOrDefault(op.step(), LocalOutcome.done())));
+                                                    outcomeOf(op.step())));
+    }
+
+    private LocalOutcome outcomeOf(LocalStep step) {
+        return Option.option(computed.get(step))
+                     .map(java.util.function.Supplier::get)
+                     .or(() -> script.getOrDefault(step, LocalOutcome.done()));
+    }
+
+    /// `step`'s outcome is computed by `outcome` each time it runs.
+    NodeHarness scriptWith(LocalStep step, java.util.function.Supplier<LocalOutcome> outcome) {
+        computed.put(step, outcome);
+
+        return this;
     }
 
     private void effectOnStore(LocalStep step, Artifact artifact) {
@@ -416,7 +459,7 @@ final class NodeHarness {
     /// Every observed Put the FSM submitted, in order.
     List<SliceObservedValue> observedPuts() {
         return effectsOf(NodeFsmEffect.Submit.class).stream()
-                                                    .filter(submit -> submit.attempt() == 1)
+                                                    .filter(submit -> submit.attempt() == 1 && !submit.isProbe())
                                                     .flatMap(submit -> submit.commands().stream())
                                                     .filter(KVCommand.Put.class::isInstance)
                                                     .map(command -> ((KVCommand.Put<?, ?>) command).value())
@@ -427,7 +470,7 @@ final class NodeHarness {
 
     List<SliceObservedState> writtenStates() {
         return effectsOf(NodeFsmEffect.Submit.class).stream()
-                                                    .filter(submit -> submit.attempt() == 1)
+                                                    .filter(submit -> submit.attempt() == 1 && !submit.isProbe())
                                                     .flatMap(submit -> submit.commands().stream())
                                                     .filter(KVCommand.Put.class::isInstance)
                                                     .map(command -> ((KVCommand.Put<?, ?>) command).value())
@@ -451,7 +494,7 @@ final class NodeHarness {
     /// Submissions that carry an observed Put of `state`, first attempts only.
     List<NodeFsmEffect.Submit> submitsOf(SliceObservedState state) {
         return effectsOf(NodeFsmEffect.Submit.class).stream()
-                                                    .filter(submit -> submit.attempt() == 1)
+                                                    .filter(submit -> submit.attempt() == 1 && !submit.isProbe())
                                                     .filter(submit -> putOf(submit).map(row -> row.state() == state).or(false))
                                                     .toList();
     }
