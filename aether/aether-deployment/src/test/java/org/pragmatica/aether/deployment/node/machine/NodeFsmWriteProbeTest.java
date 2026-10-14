@@ -678,6 +678,35 @@ class NodeFsmWriteProbeTest {
         assertThat(h.record(ARTIFACT).write().flatMap(write -> write.probing().rebuild()).isEmpty()).as("the rebuild is cleared").isTrue();
     }
 
+    /// Red when: the settlement of attempt 1's rebuild, arriving after the retry while attempt 2's own rebuild is under way, is
+    /// taken as attempt 2's step (the rebuild-token guard in `Probes.owns`) and resubmits.
+    @Test
+    @DisplayName("NT-134: a stale rebuild's settlement after a retry is not taken as the new attempt's rebuild")
+    void nt134_staleRebuildSettlementAfterARetry_isIgnored() {
+        var h = lostFirstActive();
+
+        h.writeScript = submitted -> NodeHarness.putOf(submitted.submit()).map(row -> row.state() == SliceObservedState.ACTIVE).or(false)
+                                     ? NodeHarness.WriteMode.LOST
+                                     : null;
+        h.hold(LocalStep.BUILD_LEGS);
+        h.advance(probeOffset(h, 0));
+        h.advance(h.timings.writeAttemptMs());
+
+        assertThat(h.record(ARTIFACT).write().map(InFlight::attempt).or(0)).as("precondition: attempt 2").isEqualTo(2);
+        assertThat(h.record(ARTIFACT).write().flatMap(write -> write.probing().rebuild()).isPresent()).as("precondition: attempt 2's rebuild is under way")
+                                                                                                         .isTrue();
+
+        var before = h.effectsOf(NodeFsmEffect.Submit.class).size();
+
+        h.holdSteps.clear();
+        h.settle(LocalStep.BUILD_LEGS, LocalOutcome.done(List.of(NodeHarness.leg(LegCommand.LegKind.TOPIC_SUBSCRIPTION, ARTIFACT))));
+
+        assertThat(h.effectsOf(NodeFsmEffect.Submit.class).subList(before, h.effectsOf(NodeFsmEffect.Submit.class).size()))
+            .as("attempt 1's rebuild step settled: nothing is submitted").isEmpty();
+        assertThat(h.record(ARTIFACT).write().flatMap(write -> write.probing().rebuild()).isPresent()).as("attempt 2's rebuild still waits for its own step")
+                                                                                                         .isTrue();
+    }
+
     /// Red when: a rebuild started by probe 1 that spans probe 2's tick resubmits with probe 2's index (or its line names probe 2).
     @Test
     @DisplayName("NT-134: a rebuild's resubmission carries the index of the probe that started it")
