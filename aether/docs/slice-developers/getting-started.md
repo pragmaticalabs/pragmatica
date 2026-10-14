@@ -13,6 +13,7 @@ modify it to make it your own, and deploy it to a local Forge.
 | Java     | 25+      | `java --version` |
 | Maven    | 3.8+     | `mvn --version`  |
 | JBCT CLI | 0.20.0+  | `jbct --version` |
+| Aether (Forge) | same release as the JBCT CLI | `aether-forge --help` |
 
 > **Network requirements:** Aether uses QUIC (UDP) for inter-node cluster communication.
 > When running a multi-node cluster, ensure UDP ports 8090 (cluster transport) and 8190
@@ -20,9 +21,12 @@ modify it to make it your own, and deploy it to a local Forge.
 > no special configuration is needed. See
 > [Networking Requirements](../operators/networking.md) for details.
 
-> **Don't have the JBCT CLI?** Install it with `mvn dependency:copy` or download from Maven Central.
+> **Don't have the JBCT CLI or Forge?** Install both from the GitHub release with the unified installer:
+> `curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh`.
+> Aether alone (including Forge) is `.../main/aether/install.sh`, the command the [Quick Start](../../../README.md#quick-start) uses.
+> Forge always comes from the release; you never build it to follow this guide.
 
-All JBCT and Aether artifacts (including the annotation processor and Maven plugin) are
+The artifacts a slice project builds against (the slice APIs, the annotation processor and the Maven plugin) are
 published to Maven Central. The generated POM references them automatically — no additional
 repository configuration needed.
 

@@ -448,12 +448,14 @@ Aether Forge is the local development environment for slices:
 ./run-forge.sh
 ```
 
-Or manually:
+Or manually, with the Forge the installer put on your `PATH` (`aether/install.sh`):
 
 ```bash
-mvn package -pl aether/forge/forge-core -am -DskipTests
-java -jar aether/forge/forge-core/target/aether-forge.jar
+aether-forge
 ```
+
+Contributors running a Forge built from a monorepo checkout: `mvn package -pl aether/forge/forge-core -am -DskipTests`,
+then `java -jar aether/forge/forge-core/target/aether-forge.jar`.
 
 Default dashboard port: 8888. Management ports start at 5150.
 

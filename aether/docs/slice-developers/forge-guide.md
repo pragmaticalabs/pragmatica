@@ -34,17 +34,16 @@ If your project was created with `jbct init --slice`, it includes a `run-forge.s
 
 This starts Forge with sensible defaults. Open the dashboard at `http://localhost:8888`.
 
-### Using java -jar (Manual)
+### Using the installed Forge (Manual)
+
+Forge is installed from the GitHub release by `aether/install.sh` (see the [Quick Start](../../../README.md#quick-start)):
 
 ```bash
-# Build Forge
-mvn package -pl aether/forge/forge-core -am -DskipTests
-
 # Start Forge with default configuration
-java -jar aether/forge/forge-core/target/aether-forge.jar
+aether-forge
 
 # Start with blueprint and load config
-java -jar aether/forge/forge-core/target/aether-forge.jar \
+aether-forge \
   --blueprint examples/blueprint.toml \
   --load-config examples/load-config.toml \
   --auto-start
@@ -52,6 +51,10 @@ java -jar aether/forge/forge-core/target/aether-forge.jar \
 # Open dashboard
 open http://localhost:8888
 ```
+
+**Contributor path** (a Forge built from a monorepo checkout, e.g. to test a Forge change):
+`mvn package -pl aether/forge/forge-core -am -DskipTests`, then `java -jar aether/forge/forge-core/target/aether-forge.jar`
+with the same arguments. The example scripts take this path only with `./run-forge.sh --forge-from-source`.
 
 The dashboard shows:
 - **Cluster topology** — Nodes with ports, leader indicator, health status
@@ -171,7 +174,9 @@ Three things worth knowing:
   breakpoint freezes consensus, heartbeats and timers with it. Expect SWIM suspicion and timer noise
   after long pauses — harmless in Forge, but worth knowing before you blame the runtime.
 - **Every `run-forge.sh` honors `FORGE_JVM_OPTS`** (word-split deliberately, so several flags work),
-  and the same flags work with a direct launch: `java $FORGE_JVM_OPTS -jar forge.jar ...`.
+  and the same flags work with a direct launch: `java $FORGE_JVM_OPTS -jar forge.jar ...`. With the
+  installed `aether-forge` launcher, `run-forge.sh` hands them over as `AETHER_JAVA_OPTS`, the variable both
+  installer launchers read; to launch it yourself, `AETHER_JAVA_OPTS="$FORGE_JVM_OPTS" aether-forge ...`.
 
 ## Configuration
 

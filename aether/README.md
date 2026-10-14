@@ -62,15 +62,23 @@ aether-forge
 # Open http://localhost:8888
 ```
 
+To run an example application on Forge, follow the [Quick Start](../README.md#quick-start): install, clone, start
+PostgreSQL, `./run-forge.sh`, then `curl`. The example scripts use the installed Forge; nothing is built from source but
+the example.
+
 Forge provides a visual dashboard, cluster operations, chaos testing, and per-node management API access.
 
 ### Installation
 
-Requires **Java 25**.
+Installs `aether`, `aether-node` and `aether-forge` from the GitHub release into `~/.aether` (self-contained archives
+bundle a JRE; the jar-only fallback needs **Java 25**):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh
 ```
+
+`--version VERSION` pins a release (`curl ... | sh -s -- --version VERSION`). To install the JBCT CLI as well, use the
+unified installer, `https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh`.
 
 ### Build from Source
 
