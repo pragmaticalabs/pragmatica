@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.wiring;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
@@ -15,8 +16,8 @@ final class ManualTimerService implements FsmTimers.TimerService {
         final Runnable body;
         final long delayMs;
         final long dueMs;
-        boolean cancelled;
-        boolean ran;
+        volatile boolean cancelled;
+        volatile boolean ran;
 
         Entry(Runnable body, long delayMs, long dueMs) {
             this.body = body;
@@ -25,8 +26,8 @@ final class ManualTimerService implements FsmTimers.TimerService {
         }
     }
 
-    final List<Entry> entries = new ArrayList<>();
-    long nowMs;
+    final List<Entry> entries = Collections.synchronizedList(new ArrayList<>());
+    volatile long nowMs;
 
     @Override
     public Runnable schedule(Runnable body, long delayMs) {
@@ -41,7 +42,7 @@ final class ManualTimerService implements FsmTimers.TimerService {
     void advance(long ms) {
         var target = nowMs + ms;
 
-        entries.stream()
+        snapshot().stream()
                .filter(entry -> !entry.cancelled && !entry.ran && entry.dueMs <= target)
                .sorted(Comparator.comparingLong(entry -> entry.dueMs))
                .toList()
@@ -59,11 +60,22 @@ final class ManualTimerService implements FsmTimers.TimerService {
         entry.body.run();
     }
 
+    private List<Entry> snapshot() {
+        synchronized (entries) {
+            return new ArrayList<>(entries);
+        }
+    }
+
     Entry last() {
         return entries.getLast();
     }
 
     long armedCount() {
-        return entries.stream().filter(entry -> !entry.cancelled && !entry.ran).count();
+        return snapshot().stream().filter(entry -> !entry.cancelled && !entry.ran).count();
+    }
+
+    /// The not-yet-run, not-cancelled entries, oldest first.
+    List<Entry> armed() {
+        return snapshot().stream().filter(entry -> !entry.cancelled && !entry.ran).toList();
     }
 }

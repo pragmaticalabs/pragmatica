@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.wiring;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
 import io.netty.buffer.ByteBuf;
@@ -151,13 +152,48 @@ final class WiringFixtures {
         }
     }
 
-    /// A `ClusterNode` over a real applier: `apply` processes the batch and returns the applier's results.
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    static StubCluster over(KVStore<AetherKey, AetherValue> store) {
-        var cluster = new StubCluster();
-        var raw = (KVStore) store;
+    /// The real applier driven the way consensus drives it: every batch is committed at the next slot, so notifications carry a revision.
+    static final class Applier {
+        private final KVStore<AetherKey, AetherValue> store;
+        private final AtomicLong slot;
 
-        cluster.script = commands -> Promise.success((List<Object>) raw.process(raw.createBatch(commands)));
+        Applier(KVStore<AetherKey, AetherValue> store) {
+            this.store = store;
+            this.slot = new AtomicLong(store.committedRevision());
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        synchronized List<Object> commit(List<? extends KVCommand<AetherKey>> commands) {
+            var raw = (KVStore) store;
+
+            return (List<Object>) raw.processCommitted(raw.createBatch(List.copyOf(commands)), slot.incrementAndGet());
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        synchronized void commitLeader(LeaderValue leader) {
+            var raw = (KVStore) store;
+
+            raw.processCommitted(raw.createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, leader))), slot.incrementAndGet());
+        }
+
+        void put(AetherKey key, AetherValue value) {
+            commit(List.of(new KVCommand.Put<AetherKey, AetherValue>(key, value)));
+        }
+
+        long slot() {
+            return slot.get();
+        }
+    }
+
+    /// A `ClusterNode` over a real applier: `apply` commits the batch and returns the applier's results.
+    static StubCluster over(KVStore<AetherKey, AetherValue> store) {
+        return over(new Applier(store));
+    }
+
+    static StubCluster over(Applier applier) {
+        var cluster = new StubCluster();
+
+        cluster.script = commands -> Promise.success(applier.commit(commands));
 
         return cluster;
     }
