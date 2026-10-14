@@ -76,7 +76,7 @@ abstract class FsmRuntime<I, K, A> {
     /// its settlement arrives at a closed mailbox and is dropped, because no consumer remains to step it.
     @Contract
     public void close() {
-        if (mailbox.onConsumerThread()) {
+        if (mailbox.onConsumerThread() || !mailbox.running()) {
             shutdown();
         } else {
             requestShutdown();

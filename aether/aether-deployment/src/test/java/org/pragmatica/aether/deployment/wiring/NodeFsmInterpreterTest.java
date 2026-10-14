@@ -492,6 +492,15 @@ class NodeFsmInterpreterTest {
         }
 
         @Test
+        void close_withoutStart_returnsAtOnce_andStillClosesTheLocalRuntime() {
+            var rig = new NodeRig(false);
+
+            org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(Duration.ofSeconds(3), rig::close);
+
+            assertThat(rig.localOps.closed).isTrue();
+        }
+
+        @Test
         void aSettlementThatArrivesAfterClose_isDropped_withoutError() {
             var rig = new NodeRig();
             var hung = Promise.<List<Object>>promise();

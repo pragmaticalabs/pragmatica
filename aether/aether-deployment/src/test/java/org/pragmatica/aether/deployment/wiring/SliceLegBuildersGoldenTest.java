@@ -299,6 +299,33 @@ class SliceLegBuildersGoldenTest {
         assertThat(adapter.stream().map(LegCommand::command).toList()).isEqualTo(legacy);
     }
 
+    /// L-03, documented: the ACQUIRE count is the committed count plus one at build time, so two builds before a commit agree, and a build after
+    /// the commit counts one more. This is the legacy behaviour, carried over unchanged.
+    @Test
+    void streamReferences_areAbsoluteCounts_readFromTheCommittedEntryWhenBuilt() {
+        var blueprint = BlueprintId.blueprintId(BLUEPRINT);
+        var events = ResourceAddress.resourceAddress("ticketing", "events", "1.0.0").unwrap();
+
+        owned(blueprint);
+        kv.process(kv.createBatch(List.of(new KVCommand.Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprint),
+                                                              BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of(BlueprintStreamBindingsValue.NamedAddress.namedAddress("events", events)))))));
+        var slice = new RuntimeFixtures.StreamRoleSlice();
+
+        var first = builders.streamReferences(ARTIFACT, slice);
+        var second = builders.streamReferences(ARTIFACT, slice);
+
+        assertThat(first).as("two builds before either commits write the same count").isEqualTo(second);
+        assertThat(refCount(first.getFirst())).isEqualTo(1);
+
+        kv.process(kv.createBatch(List.of(first.getFirst().command())));
+
+        assertThat(refCount(builders.streamReferences(ARTIFACT, slice).getFirst())).as("a build after the commit counts one more").isEqualTo(2);
+    }
+
+    private static int refCount(LegCommand leg) {
+        return ((AetherValue.StreamRegistryValue) ((KVCommand.Put<?, ?>) leg.command()).value()).entry().refCount();
+    }
+
     @Test
     void streamReferences_areEmpty_whenTheSliceHasNoOwningBlueprint_likeLegacy() throws Exception {
         var slice = new RuntimeFixtures.StreamRoleSlice();

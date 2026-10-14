@@ -104,6 +104,13 @@ public final class FsmMailbox<I> {
         return depth.get();
     }
 
+    /// True while a consumer thread is alive and the mailbox is open: someone is there to take a `Close` request.
+    public boolean running() {
+        return ! closed && Option.option(consumer)
+                                 .map(Thread::isAlive)
+                                 .or(false);
+    }
+
     /// True on the consumer thread (a confinement check for the state only that thread may touch).
     public boolean onConsumerThread() {
         return Thread.currentThread() == consumer;

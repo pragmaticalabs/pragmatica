@@ -139,6 +139,11 @@ final class SliceLegBuilders {
 
     /// The per-instance stream reference counts to take with the ACTIVE row (event-stream-namespaces 8.5), one per declared stream role
     /// whose address the blueprint's bindings resolve.
+    ///
+    /// **L-03, carried over from legacy and pinned (W-09).** The leg commands and the ACQUIRE ride beside the version-fenced observed Put,
+    /// not inside its fence, and ACQUIRE is an absolute count: it is the committed entry's count plus one, read when the command is built
+    /// (`KvBackedStreamRegistry.acquireCommand`). Two instances that build before either commits therefore write the same count, and a refused
+    /// observed Put does not undo a leg that landed. The rc5 L-03 fix, when it lands, changes this builder and the legacy one together.
     List<LegCommand> streamReferences(Artifact artifact, Slice slice) {
         var declarations = streamRoleDeclarations(artifact, slice);
 

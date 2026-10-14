@@ -64,6 +64,15 @@ final class NodeRig implements AutoCloseable {
     }
 
     NodeRig(NodeFsmTimings timings) {
+        this(timings, true);
+    }
+
+    /// `started` false leaves the consumer unstarted (a node closed before it ran).
+    NodeRig(boolean started) {
+        this(NodeFsmTimings.nodeFsmTimings(), started);
+    }
+
+    NodeRig(NodeFsmTimings timings, boolean started) {
         this.timings = timings;
         var config = NodeFsmConfig.nodeFsmConfig(SELF, PROCESS).withTimings(timings);
         var fsm = NodeFsm.nodeFsm(config, () -> wall);
@@ -87,7 +96,10 @@ final class NodeRig implements AutoCloseable {
                                                                                          }));
         routes();
         applier.commitLeader(LEADER);
-        interpreter.start();
+
+        if (started) {
+            interpreter.start();
+        }
     }
 
     private void routes() {

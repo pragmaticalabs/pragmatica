@@ -238,6 +238,17 @@ class FsmMailboxTest {
     }
 
     @Test
+    void running_isTrueOnlyBetweenStartAndClose() {
+        mailbox = FsmMailbox.fsmMailbox("deploy-fsm-test", this::record);
+
+        assertThat(mailbox.running()).as("not started").isFalse();
+        mailbox.start();
+        assertThat(mailbox.running()).isTrue();
+        mailbox.close();
+        assertThat(mailbox.running()).as("closed").isFalse();
+    }
+
+    @Test
     void start_isIdempotent() {
         var box = started();
 
