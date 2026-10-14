@@ -21,23 +21,40 @@ A monorepo for building reliable Java backends with functional programming patte
 | Java | 25+ | Runtime and build |
 | Maven | 3.9+ | Build system |
 | Docker | Latest | Container runtime (for examples with PostgreSQL) |
+| Git, curl, jq | any | Quick Start: clone the examples, install Aether, read the JSON reply |
 
 ## Quick Start
 
+Forge, the local simulator, comes from the GitHub release through the installer. The only thing built on your
+machine is the example itself, from artifacts on Maven Central.
+
+In a first terminal:
+
+<!-- quickstart:terminal-1 -- tools/quickstart-check.sh extracts and runs this block as written; keep it runnable. -->
 ```bash
-# Install Aether CLI
+# Install Aether (CLI, node and Forge) from the GitHub release into ~/.aether
 curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh
 
-# Run an example
-cd examples/pricing-engine
+# Get the examples
+git clone --depth 1 https://github.com/pragmaticalabs/pragmatica.git
+cd pragmatica/examples/pricing-engine
+
+# Start PostgreSQL, then build the example and run it on the installed Forge (stays in the foreground)
 ./start-postgres.sh
 ./run-forge.sh
+```
 
-# Try it
-curl -s -X POST http://localhost:8070/api/v1/pricing/calculate \
+In a second terminal, once Forge has deployed the blueprint:
+
+<!-- quickstart:terminal-2 -->
+```bash
+curl -fsS -X POST http://localhost:8070/api/v1/pricing/calculate \
   -H 'Content-Type: application/json' \
   -d '{"productId":"WIDGET-D","quantity":3,"regionCode":"US-CA","couponCode":"SAVE20"}' | jq
 ```
+
+`run-forge.sh` finds Forge on your `PATH` or in `~/.aether` (set `AETHER_FORGE` to use another one) and stops with the
+install command if there is none. Contributors running Forge built from this checkout use `./run-forge.sh --forge-from-source`.
 
 See [examples/](examples/) for more: URL shortener, ecommerce (multi-slice), banking, notification hub, PostgreSQL persistence showcase.
 
