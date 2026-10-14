@@ -1016,6 +1016,30 @@ class JoinedEvidenceTest {
         assertThat(w.h.warns("identity-process-mismatch")).as("one WARN per write that goes out").isNotEmpty();
     }
 
+    // (e) W3', arm E: while J8's admission write is in flight the DEPARTED record of the other process is still not superseded (R-4.3.0: J8 is not
+    // supersession), so n is not counted until that write commits, and no C17b is built meanwhile.
+    // Red if n counts before ADMITTED(E + 1, p2) commits, if a C17b is submitted while it is held, or if n is not counted once it commits.
+    @Test
+    void nt131e_differentKnownProcess_isCountedOnlyWhenTheAdmissionCommits() {
+        var w = anotherProcess(P2, false);
+
+        runKeeping(w, SUSPICION_MS - 2_000L, ORDERS);
+        w.h.policy = FsmHarness.SettlePolicy.HOLD;
+        runKeeping(w, 2_000L, ORDERS);
+        var admissions = w.h.submits(SubmitKind.ADMISSION);
+
+        assertThat(admissions).as("precondition: J8's write is in flight").hasSize(1);
+        assertThat(stateOf(w, N)).isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(w.counts(N)).as("not counted before the admission commits").isFalse();
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.applyHeld(admissions.getFirst().correlationId());
+        w.h.drain();
+
+        assertJ8CoreArm(w);
+        assertThat(w.counts(N)).as("counted once it commits").isTrue();
+        assertThat(cleanupsOf(w, N)).isZero();
+    }
+
     // (e) W3', control: an UNKNOWN process (C8) is not a different one, so the resolution keeps the pre-W3' behaviour: n is joined, the record is
     // superseded on read and rewritten by step 10 as ADMITTED(E + 1) keeping the process the record names; no J8, no C17b, the row is kept and counted.
     // Red if an unknown admission is routed to J8 (WARN identity-process-mismatch, an ADMITTED naming the unknown process) or C17b runs.
