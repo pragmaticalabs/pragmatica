@@ -63,6 +63,13 @@
             <artifactId>http-client</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Issue1117ReadinessTracerTest captures the node-deployment FSM's remediation lines; forge-core carries
+             log4j-core at runtime scope only, so the test compile needs it named. -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <scope>test</scope>
+        </dependency>
 
         <!-- Scaffold generator (jbct init) — the getting-started gate builds the very slice a
              cold user gets and deploys it by coordinates (issues #511 / #513 / #515). -->
