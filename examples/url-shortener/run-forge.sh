@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if [ ! -f "$SCRIPT_DIR/../run-forge-lib.sh" ]; then
-    echo "ERROR: $SCRIPT_DIR/../run-forge-lib.sh not found; run this script from a pragmatica checkout."
+    echo "ERROR: $SCRIPT_DIR/../run-forge-lib.sh not found; run this script from a pragmatica checkout." >&2
     exit 1
 fi
 source "$SCRIPT_DIR/../run-forge-lib.sh"
@@ -61,11 +61,11 @@ echo "  Management: http://localhost:5150"
 echo "  Blueprint:  $BLUEPRINT_COORDS"
 echo ""
 echo "Test:"
-echo "  curl -s -X POST http://localhost:8070/api/v1/urls/ \\"
+echo "  curl -fsS -X POST http://localhost:8070/api/v1/urls/ \\"
 echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{\"url\":\"https://example.com/hello\"}' | jq"
 echo ""
-echo "  curl -s http://localhost:8070/api/v1/urls/{shortCode} | jq"
+echo "  curl -fsS http://localhost:8070/api/v1/urls/{shortCode} | jq"
 echo ""
 echo "Load test (k6):"
 echo "  k6 run k6/load-test.js                # Steady-state 500 req/s"

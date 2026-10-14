@@ -85,21 +85,18 @@ The web dashboard (`index.html`) provides:
 
 ### Prerequisites
 
-- JDK 25+
-- Maven 3.9+
-- Built Aether project (`mvn clean install`)
+- Aether installed from the GitHub release, which puts `aether-forge` in `~/.aether/bin`:
+  `curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh`
+  (see the [Quick Start](../../../README.md#quick-start))
 
 ### Running Locally
 
 ```bash
-# Build Forge
-mvn package -pl aether/forge/forge-core -am -DskipTests
-
 # Run with defaults (5 nodes, 1000 req/sec)
-java -jar aether/forge/forge-core/target/aether-forge.jar
+aether-forge
 
 # Or with custom settings
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar aether/forge/forge-core/target/aether-forge.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 aether-forge
 ```
 
 The dashboard opens automatically at `http://localhost:8888`.
@@ -444,8 +441,9 @@ lsof -i :8081-8095  # Check for processes using these ports
 
 **Slice deployment fails:**
 ```bash
-# Ensure ecommerce example is installed
-cd examples/ecommerce && mvn install -DskipTests
+# Ensure ecommerce example is installed (standalone build; -P '!test-plan-gate' because the root pom's
+# test-plan-gate profile needs test-plan-witness, which is not on Maven Central)
+cd examples/ecommerce && mvn install -DskipTests -P '!test-plan-gate'
 ```
 
 ---

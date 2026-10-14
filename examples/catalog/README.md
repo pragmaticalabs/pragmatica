@@ -112,15 +112,16 @@ curl http://localhost:5150/api/versions
 ## Build and run
 
 ```bash
-# Build the slice (from repo root)
-env -u HCLOUD_TOKEN mvn -pl examples/catalog install -DskipTests
+# From examples/catalog: build the slice and run its unit tests against artifacts on Maven Central.
+# -P '!test-plan-gate': the root pom's test-plan-gate profile needs test-plan-witness, which is not on Central.
+mvn install -P '!test-plan-gate'
 
-# Run the unit tests
-env -u HCLOUD_TOKEN mvn -pl examples/catalog test
-
-# Run on a local 5-node Forge cluster (builds the slice + Forge jar, deploys the blueprint)
+# Run on a local 5-node Forge cluster with the installed Forge (builds the slice, deploys the blueprint)
 ./run-forge.sh              # add --skip-build to start without rebuilding
 ```
+
+Forge comes from the installer (see the [Quick Start](../../README.md#quick-start)); `./run-forge.sh --forge-from-source`
+is the contributor path, which builds Forge and the platform from this checkout.
 
 `run-forge.sh` deploys blueprint coordinate `org.pragmatica.aether.example:catalog:<version>:blueprint`
 onto a single-JVM 5-node cluster (see `forge.toml`) and prints the curl commands above.

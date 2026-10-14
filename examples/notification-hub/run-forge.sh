@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if [ ! -f "$SCRIPT_DIR/../run-forge-lib.sh" ]; then
-    echo "ERROR: $SCRIPT_DIR/../run-forge-lib.sh not found; run this script from a pragmatica checkout."
+    echo "ERROR: $SCRIPT_DIR/../run-forge-lib.sh not found; run this script from a pragmatica checkout." >&2
     exit 1
 fi
 source "$SCRIPT_DIR/../run-forge-lib.sh"
@@ -61,19 +61,19 @@ echo "  Blueprint:  $BLUEPRINT_COORDS"
 echo ""
 echo "Test:"
 echo "  # Health check (public)"
-echo "  curl -s http://localhost:8070/api/v1/notifications/health | jq"
+echo "  curl -fsS http://localhost:8070/api/v1/notifications/health | jq"
 echo ""
 echo "  # Send notification (authenticated)"
-echo '  curl -s -X POST http://localhost:8070/api/v1/notifications/ \'
+echo '  curl -fsS -X POST http://localhost:8070/api/v1/notifications/ \'
 echo '    -H "Content-Type: application/json" \'
 echo '    -H "Authorization: Bearer <token>" \'
 echo "    -d '{\"message\":\"Hello world\",\"channel\":\"general\"}' | jq"
 echo ""
 echo "  # List recent notifications"
-echo "  curl -s http://localhost:8070/api/v1/notifications/ | jq"
+echo "  curl -fsS http://localhost:8070/api/v1/notifications/ | jq"
 echo ""
 echo "  # Analytics"
-echo "  curl -s http://localhost:8070/api/v1/analytics/ | jq"
+echo "  curl -fsS http://localhost:8070/api/v1/analytics/ | jq"
 echo ""
 
 FORGE_ARGS=(

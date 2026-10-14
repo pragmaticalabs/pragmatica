@@ -7,17 +7,22 @@
 # from the README is a step this gate no longer runs, and the Quick Start then fails here.
 #
 # Usage:
-#   tools/quickstart-check.sh --version V [--maven-repo PATH|URL] [--ref REF] [--source tree|github]
-#                             [--timeout SECONDS] [--keep]
+#   tools/quickstart-check.sh [--version V] [--maven-repo PATH|URL] [--ref REF] [--source tree|github]
+#                             [--expect JQ_FILTER] [--timeout SECONDS] [--keep]
 #   tools/quickstart-check.sh stage-repo REPO_LOCAL OUT_DIR
 #
-#   --version V       Aether release the installer installs (exported as VERSION, which aether/install.sh
-#                     reads). Required: e.g. 1.0.0-rc4-candidate, which the unpinned installer skips.
+#   --version V       Run the Quick Start as if it named release V: the README's single
+#                     `AETHER_VERSION=<R>` line is rewritten to V, so the installer installs V and the clone
+#                     takes tag vV. For a candidate, e.g. 1.0.0-rc4-candidate. Default: R, unchanged.
+#                     The override never weakens the version check below: that compares R, not V.
 #   --maven-repo P|U  Extra Maven repository standing in for Maven Central until the platform version is
 #                     published there. A directory is copied into the container. Omit it to resolve from Central only.
 #   --ref REF         Commit whose README.md is extracted and whose tree the README's `git clone` receives
 #                     (default HEAD; committed content only, never the working tree).
 #   --source github   Let `git clone` reach GitHub instead of REF (tests the published repository).
+#   --expect F        jq filter the second terminal's stdout must satisfy (`jq -e`; default
+#                     '.totalPrice | numbers', the priced result). Exit 0 alone is not success: Forge
+#                     answers a wrong path with a JSON problem body, which `jq` prints happily.
 #   --timeout S       Seconds the second-terminal block may take to succeed (default 1200).
 #   --keep            Leave the containers and the work directory for inspection.
 #
@@ -25,9 +30,14 @@
 #                     this repository, exactly the modules the publish set publishes
 #                     (tools/check-publish-closure.py --table, docs/release/maven-central-publish-set.md).
 #
+# Version check (before anything runs): terminal 1 must assign AETHER_VERSION exactly once, and that
+# value R must equal the version of the tree under test (the root pom's, minus -SNAPSHOT). A README left
+# at the previous release fails here, naming both versions.
+#
 # What the gate substitutes, and nothing else:
-#   - VERSION=<V> in the environment, read by aether/install.sh (the README installs "latest").
-#   - git `url.insteadOf`, so the README's clone URL receives REF (unless --source github).
+#   - the AETHER_VERSION line, only when --version differs from R.
+#   - git `url.insteadOf`, so the README's clone URL receives REF, as branch main and tag v<version>
+#     (unless --source github, where the tag must exist on GitHub).
 #   - MAVEN_ARGS="-s settings.xml" adding --maven-repo (only when given).
 # The installer itself is the one the README downloads (raw.githubusercontent.com .../main/aether/install.sh).
 #
@@ -70,6 +80,7 @@ if [ "${1:-}" = stage-repo ]; then
 fi
 
 VERSION_ARG=""
+EXPECT='.totalPrice | numbers'
 MAVEN_REPO=""
 REF=HEAD
 SOURCE=tree
@@ -81,12 +92,12 @@ while [ $# -gt 0 ]; do
         --maven-repo) MAVEN_REPO="$2"; shift 2 ;;
         --ref)        REF="$2"; shift 2 ;;
         --source)     SOURCE="$2"; shift 2 ;;
+        --expect)     EXPECT="$2"; shift 2 ;;
         --timeout)    TIMEOUT="$2"; shift 2 ;;
         --keep)       KEEP=true; shift ;;
         *)            die "unknown argument: $1" ;;
     esac
 done
-[ -n "$VERSION_ARG" ] || die "--version is required"
 case "$SOURCE" in tree|github) ;; *) die "--source must be tree or github" ;; esac
 command -v docker >/dev/null || die "docker not found"
 
@@ -117,6 +128,21 @@ extract_block terminal-2 > "$WORK/terminal-2.sh"
 for block in terminal-1 terminal-2; do
     grep -q '[^[:space:]]' "$WORK/$block.sh" || die "README.md at $SHA has no fenced block after <!-- quickstart:$block -->"
 done
+# --- The version: named once in the README, and the tree's own ---
+assignments=$(grep -cE '^AETHER_VERSION=' "$WORK/terminal-1.sh" || true)
+[ "$assignments" = 1 ] || die "README.md at $SHA: terminal 1 must assign AETHER_VERSION exactly once (found $assignments)"
+README_VERSION=$(sed -n 's/^AETHER_VERSION=//p' "$WORK/terminal-1.sh" | tr -d "\"' ")
+TREE_VERSION=$(git -C "$ROOT" show "$SHA:pom.xml" | grep -o '<version>[^<]*</version>' | head -1 | sed 's#<version>\(.*\)</version>#\1#')
+TREE_VERSION="${TREE_VERSION%-SNAPSHOT}"
+[ "$README_VERSION" = "$TREE_VERSION" ] \
+    || die "README Quick Start names AETHER_VERSION=$README_VERSION but the tree at $SHA is version $TREE_VERSION (root pom.xml); bump the Quick Start version"
+echo "== version: README $README_VERSION = tree $TREE_VERSION"
+RUN_VERSION="${VERSION_ARG:-$README_VERSION}"
+if [ "$RUN_VERSION" != "$README_VERSION" ]; then
+    sed -i.orig "s/^AETHER_VERSION=.*/AETHER_VERSION=$RUN_VERSION/" "$WORK/terminal-1.sh" && rm -f "$WORK/terminal-1.sh.orig"
+    echo "== --version $RUN_VERSION: substituted for AETHER_VERSION=$README_VERSION (installer and clone tag)"
+fi
+
 echo "== README.md at $SHA, Quick Start terminal 1 =="; cat "$WORK/terminal-1.sh"
 echo "== terminal 2 (retried until it succeeds) =="; cat "$WORK/terminal-2.sh"
 
@@ -126,6 +152,7 @@ if [ "$SOURCE" = tree ]; then
     git init -q --bare "$WORK/repos/pragmatica.git"
     # fetch, not push: a push from $ROOT would run its pre-push hooks.
     git -C "$WORK/repos/pragmatica.git" fetch -q "$ROOT" "$SHA:refs/heads/main"
+    git -C "$WORK/repos/pragmatica.git" tag "v$RUN_VERSION" "$SHA"
     git -C "$WORK/repos/pragmatica.git" symbolic-ref HEAD refs/heads/main
     ln -s pragmatica.git "$WORK/repos/pragmatica"
 fi
@@ -191,16 +218,17 @@ while true; do
         exit 1
     fi
     attempt=$((attempt + 1))
-    if (cd /work && bash -eo pipefail /gate/terminal-2.sh) > /work/terminal-2.out 2>&1 && [ -s /work/terminal-2.out ]; then
+    if (cd /work && bash -eo pipefail /gate/terminal-2.sh) > /work/terminal-2.out 2> /work/terminal-2.err \
+        && jq -e "$GATE_EXPECT" /work/terminal-2.out > /dev/null 2>&1; then
         step "terminal 1 so far"
         cat /work/terminal-1.log
-        step "PASS: terminal 2 succeeded on attempt $attempt after $((SECONDS - started))s"
+        step "PASS: terminal 2 succeeded on attempt $attempt after $((SECONDS - started))s; jq -e '$GATE_EXPECT' holds"
         cat /work/terminal-2.out
         exit 0
     fi
     if [ $((SECONDS - started)) -ge "$GATE_TIMEOUT" ]; then
-        step "FAIL: terminal 2 did not succeed within ${GATE_TIMEOUT}s ($attempt attempts); last output:"
-        cat /work/terminal-2.out
+        step "FAIL: terminal 2 did not succeed, with jq -e '$GATE_EXPECT' holding, within ${GATE_TIMEOUT}s ($attempt attempts); last output:"
+        cat /work/terminal-2.out /work/terminal-2.err
         step "terminal 1"
         cat /work/terminal-1.log
         exit 1
@@ -225,13 +253,13 @@ for _ in $(seq 1 60); do
 done
 docker exec "$NAME-dind" docker info >/dev/null 2>&1 || die "the private Docker daemon did not start"
 
-echo "== running the Quick Start: version $VERSION_ARG, commit $SHA, maven repo ${REPO_URL:-<Central only>}, source $SOURCE"
+echo "== running the Quick Start: version $RUN_VERSION, commit $SHA, maven repo ${REPO_URL:-<Central only>}, source $SOURCE"
 # Inputs are copied in, never bind-mounted: a bind mount depends on what the Docker host shares (Docker Desktop
 # shares neither $TMPDIR nor /private/tmp by default, and mounts them EMPTY without an error).
 docker create --name "$NAME" --entrypoint bash \
     --network "container:$NAME-dind" \
     -e DOCKER_HOST=tcp://localhost:2375 \
-    -e VERSION="$VERSION_ARG" \
+    -e GATE_EXPECT="$EXPECT" \
     -e GATE_TIMEOUT="$TIMEOUT" \
     "$IMAGE" /gate/run.sh >/dev/null
 docker cp -q "$WORK/." "$NAME:/gate"

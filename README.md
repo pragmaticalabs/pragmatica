@@ -32,11 +32,14 @@ In a first terminal:
 
 <!-- quickstart:terminal-1 -- tools/quickstart-check.sh extracts and runs this block as written; keep it runnable. -->
 ```bash
-# Install Aether (CLI, node and Forge) from the GitHub release into ~/.aether
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh
+# The release this Quick Start uses; the installer and the clone below both take it
+AETHER_VERSION=1.0.0-rc4
 
-# Get the examples
-git clone --depth 1 https://github.com/pragmaticalabs/pragmatica.git
+# Install Aether (CLI, node and Forge) from the GitHub release into ~/.aether
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh -s -- --version "$AETHER_VERSION"
+
+# Get the examples at the same release
+git clone --depth 1 --branch "v$AETHER_VERSION" https://github.com/pragmaticalabs/pragmatica.git
 cd pragmatica/examples/pricing-engine
 
 # Start PostgreSQL, then build the example and run it on the installed Forge (stays in the foreground)

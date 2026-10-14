@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 if [ ! -f "$SCRIPT_DIR/../run-forge-lib.sh" ]; then
-    echo "ERROR: $SCRIPT_DIR/../run-forge-lib.sh not found; run this script from a pragmatica checkout."
+    echo "ERROR: $SCRIPT_DIR/../run-forge-lib.sh not found; run this script from a pragmatica checkout." >&2
     exit 1
 fi
 source "$SCRIPT_DIR/../run-forge-lib.sh"
@@ -61,7 +61,7 @@ echo "  Management: http://localhost:5150"
 echo "  Blueprint:  $BLUEPRINT_COORDS"
 echo ""
 echo "Test:"
-echo '  curl -s -X POST http://localhost:8070/api/v1/orders/ \'
+echo '  curl -fsS -X POST http://localhost:8070/api/v1/orders/ \'
 echo '    -H "Content-Type: application/json" \'
 echo '    -d '"'"'{"customerId":"CUST-001","productId":"LAPTOP-PRO","quantity":2,"amount":"99.99"}'"'"' | jq'
 echo ""

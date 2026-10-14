@@ -194,10 +194,10 @@ Here's something you won't find in most distributed systems: a tool that runs a 
 
 ```bash
 # Start a 5-node cluster with load generation
-java -jar aether-forge.jar
+aether-forge
 
 # Or configure it
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar aether-forge.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 aether-forge
 ```
 
 Open your browser to `http://localhost:8888` and you'll see a live dashboard showing cluster health, request throughput, latency distributions, and node status. The load generator hammers your slices with configurable traffic patterns while you watch metrics respond.
@@ -309,7 +309,7 @@ Let me walk you through what developing with Aether actually looks like.
 You're building an order processing system. You've written your OrderService slice and want to see how it behaves. You start Forge:
 
 ```bash
-java -jar aether-forge.jar
+aether-forge
 ```
 
 Within seconds, you have a 5-node cluster running on your laptop. The dashboard opens automatically--you see five green nodes, consensus established, leader elected.
