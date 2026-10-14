@@ -14,7 +14,7 @@
 #   --version V       Aether release the installer installs (exported as VERSION, which aether/install.sh
 #                     reads). Required: e.g. 1.0.0-rc4-candidate, which the unpinned installer skips.
 #   --maven-repo P|U  Extra Maven repository standing in for Maven Central until the platform version is
-#                     published there. A directory is mounted read-only. Omit it to resolve from Central only.
+#                     published there. A directory is copied into the container. Omit it to resolve from Central only.
 #   --ref REF         Commit whose README.md is extracted and whose tree the README's `git clone` receives
 #                     (default HEAD; committed content only, never the working tree).
 #   --source github   Let `git clone` reach GitHub instead of REF (tests the published repository).
@@ -131,13 +131,13 @@ if [ "$SOURCE" = tree ]; then
 fi
 
 # --- The Central stand-in ---
-MOUNT_REPO=()
+REPO_DIR=""
 REPO_URL=""
 if [ -n "$MAVEN_REPO" ]; then
     case "$MAVEN_REPO" in
         http://*|https://*|file://*) REPO_URL="$MAVEN_REPO" ;;
         *)  [ -d "$MAVEN_REPO" ] || die "--maven-repo '$MAVEN_REPO' is neither a URL nor a directory"
-            MOUNT_REPO=(-v "$(cd "$MAVEN_REPO" && pwd):/gate-maven-repo:ro")
+            REPO_DIR="$MAVEN_REPO"
             REPO_URL="file:///gate-maven-repo" ;;
     esac
     cat > "$WORK/settings.xml" <<EOF
@@ -223,14 +223,18 @@ done
 docker exec "$NAME-dind" docker info >/dev/null 2>&1 || die "the private Docker daemon did not start"
 
 echo "== running the Quick Start: version $VERSION_ARG, commit $SHA, maven repo ${REPO_URL:-<Central only>}, source $SOURCE"
-set +e
-docker run --name "$NAME" --entrypoint bash \
+# Inputs are copied in, never bind-mounted: a bind mount depends on what the Docker host shares (Docker Desktop
+# shares neither $TMPDIR nor /private/tmp by default, and mounts them EMPTY without an error).
+docker create --name "$NAME" --entrypoint bash \
     --network "container:$NAME-dind" \
     -e DOCKER_HOST=tcp://localhost:2375 \
     -e VERSION="$VERSION_ARG" \
     -e GATE_TIMEOUT="$TIMEOUT" \
-    -v "$WORK:/gate:ro" ${MOUNT_REPO[@]+"${MOUNT_REPO[@]}"} \
-    "$IMAGE" /gate/run.sh
+    "$IMAGE" /gate/run.sh >/dev/null
+docker cp -q "$WORK/." "$NAME:/gate"
+[ -z "$REPO_DIR" ] || docker cp -q "$REPO_DIR/." "$NAME:/gate-maven-repo"
+set +e
+docker start -a "$NAME"
 rc=$?
 set -e
 if [ $rc -eq 0 ]; then echo "quickstart-check: PASS"; else echo "quickstart-check: FAIL (exit $rc)"; fi
