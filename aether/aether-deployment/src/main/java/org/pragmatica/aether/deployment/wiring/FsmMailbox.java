@@ -152,6 +152,9 @@ public final class FsmMailbox<I> {
         }
     }
 
+    /// FER (degrade forward): a handler that fails is logged and the loop takes the next item. The guarantee earned is that the consumer
+    /// survives; the failed input itself is lost. The mechanism that repairs the loss is the FSMs' own level-based inputs (the periodic
+    /// reconcile, the timers), which re-derive from state.
     private void handle(I item) {
         Result.lift(Causes::fromThrowable,
                     () -> handler.accept(item))

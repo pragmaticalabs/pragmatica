@@ -232,8 +232,10 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     }
 
     // -- teardown on the path ------------------------------------------------------------------------------------------
-    /// Routes, the bridge and, for `UNPUBLISH`, the config registration. Best effort: the step reports `Done` even if the publisher fails,
-    /// because the FSM has nothing to do about a route that would not go away, and a node must not serve what it no longer owns.
+    /// Routes, the bridge and, for `UNPUBLISH`, the config registration. FER (degrade forward): the step reports `Done` even if the publisher
+    /// fails, because the FSM has nothing to do about a route that would not go away. The guarantee earned is that the bridge is gone (it is
+    /// unregistered first and cannot fail) and that the chain proceeds; the route may linger. The mechanism is the publisher's own WARN
+    /// below, and the next `PUBLISH_ROUTES` of the artifact, which replaces what is there.
     private Promise<LocalOutcome> unpublish(Artifact artifact, boolean includingConfig) {
         c.invocationHandler().unregisterSlice(artifact);
         if (includingConfig) {
@@ -250,6 +252,8 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
                 .recover(_ -> LocalOutcome.done());
     }
 
+    /// FER: a failing `unloadSlice` is not reported. The step is fire and forget (token 0), and what it clears is an entry a failed load already
+    /// left unusable; the next load of the artifact replaces it.
     private Promise<LocalOutcome> evict(Artifact artifact) {
         return loaded(artifact).isPresent()
                ? Promise.success(LocalOutcome.done())

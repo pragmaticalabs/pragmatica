@@ -519,7 +519,8 @@ final class SliceLegBuilders {
     }
 
     /// The `META-INF/slice/<Interface>.manifest` of every interface the slice implements; one that cannot be read is logged and skipped,
-    /// as legacy does.
+    /// as legacy does. FER (degrade forward): the slice activates without the legs that manifest would have declared; the guarantee earned
+    /// is that one bad manifest does not stop the slice, the cost is a leg silently absent (the WARN is the only trace).
     private List<Properties> manifests(Artifact artifact, Slice slice) {
         var classLoader = slice.getClass().getClassLoader();
         var result = new ArrayList<Properties>();

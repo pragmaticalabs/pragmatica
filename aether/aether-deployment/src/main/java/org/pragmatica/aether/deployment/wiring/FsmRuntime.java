@@ -122,6 +122,8 @@ abstract class FsmRuntime<I, K, A> {
         timers.close();
     }
 
+    /// FER: a wait that is interrupted is logged and `close` goes on to stop the consumer anyway; the guarantee is that `close` always
+    /// returns, the cost is that timers may not have been cancelled by the consumer before it stops (the map is dropped with the runtime).
     private void requestShutdown() {
         var done = new CountDownLatch(1);
 
