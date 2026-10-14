@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test;
 import static org.pragmatica.aether.deployment.cluster.fsm2.Fixtures.*;
 import static org.pragmatica.aether.deployment.cluster.fsm2.SlFixtures.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 
 /// What the cluster FSM takes from its `Settings` (spec R-3.4.10, MQ-7, P3-Q12, P3-Q16) and what it routes (H-4 (a)): the submission expiry,
@@ -329,5 +330,14 @@ class SettingsSourcedTest {
                                         TimeSpan.timeSpan(30).seconds(),
                                         TimeSpan.timeSpan(60).seconds())
                                 .isFailure()).as("a zero suspect timeout derives a zero window").isTrue();
+    }
+
+    // Red when: the canonical constructor builds an absence bounds record with a suspicion window that is not positive (W5 on every path, v-2190 N3):
+    // the factory refuses it, and so must a direct construction.
+    @Test
+    void absenceBounds_constructorRefusesAWindowThatIsNotPositive() {
+        assertThatThrownBy(() -> new AbsenceBounds(1L, 2L, 3L, 0L)).as("zero").isInstanceOf(AssertionError.class);
+        assertThatThrownBy(() -> new AbsenceBounds(1L, 2L, 3L, -1L)).as("negative").isInstanceOf(AssertionError.class);
+        assertThat(new AbsenceBounds(1L, 2L, 3L, 1L).coreSuspicion()).as("the smallest legal window").isEqualTo(1L);
     }
 }

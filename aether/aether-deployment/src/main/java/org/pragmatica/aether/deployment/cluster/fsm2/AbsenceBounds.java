@@ -24,6 +24,13 @@ import org.pragmatica.lang.utils.Causes;
 public record AbsenceBounds(long coreRemoval, long workerRemoval, long announcementFreshness, long coreSuspicion) {
     private static final Fn1<Cause, Long> NON_POSITIVE_WINDOW = Causes.forOneValue("The core suspicion window must be positive, was %s ns");
 
+    /// W5 on every path (v-2190 N3): the factory refuses a non-positive window with a `Result`; the canonical constructor, which the factory and
+    /// tests share, asserts the same invariant, as `DataSize.DataSizeValue` does in core. An assertion is checked where `-ea` is on (every test
+    /// run); production builds the record only through `absenceBounds`/`derive`.
+    public AbsenceBounds {
+        assert coreSuspicion > 0 : "The core suspicion window must be positive, was " + coreSuspicion + " ns";
+    }
+
     /// A bounds record is valid only with a positive suspicion window: with a window of 0 a core counted as alive the moment it is first listed,
     /// so a `Rebuild` snapshot alone would promote it at C1 (R-2.11, D-4 (ii)).
     public static Result<AbsenceBounds> absenceBounds(long coreRemovalNs,

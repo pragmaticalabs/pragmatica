@@ -17,7 +17,8 @@ import org.pragmatica.consensus.NodeId;
 ///
 /// - **Window**: `AbsenceBounds#coreSuspicion` `[guess: one window, per the ruling]`.
 /// - **Pending** (G-4): a departed core that `coreView` lists is liveness-pending, and its C17b is deferred until the window
-///   resolves: positively when the window completes (the core becomes joined, so the record is superseded and rewritten), negatively
+///   resolves: positively when the window completes (the core becomes joined, so the record is superseded and rewritten, or J8's core arm
+///   records a different known process, W3'), negatively
 ///   when the core leaves `coreView` or a removal input arrives.
 /// - **With `coreView = none`** (unwired) nothing is tracked and nothing is pending (L-18 fail-safe: the backstop and the deferral
 ///   are no-ops).
@@ -54,10 +55,31 @@ public sealed interface Liveness {
         return m;
     }
 
+    /// A window resolves once: a core already joined has nothing left to resolve.
     private static ClusterModel promote(ClusterModel m, Ctx ctx) {
-        completed(m, ctx).forEach(node -> Joins.markJoined(m, ctx, node));
+        completed(m, ctx).stream()
+                 .filter(node -> !m.joined.contains(node))
+                 .forEach(node -> windowCompleted(m, ctx, node));
 
         return m;
+    }
+
+    /// W3' (CTO ruling 2026-10-14): a positive resolution for a core whose DEPARTED record names a different known process than `admissions[n]`
+    /// is evaluated as the join table on `NodeJoined(n)` with that admission, which takes J8's core arm. Any other resolution joins the node, so
+    /// its record is superseded on read; an unknown process is not a different one (C8).
+    private static ClusterModel windowCompleted(ClusterModel m, Ctx ctx, NodeId node) {
+        return isAnotherProcess(m, node)
+               ? Joins.onLivenessResolved(m, ctx, node)
+               : Joins.markJoined(m, ctx, node);
+    }
+
+    private static boolean isAnotherProcess(ClusterModel m, NodeId node) {
+        return m.records.get(node)
+                        .filter(Departures::isDeparted)
+                        .map(record -> m.admissions.get(node)
+                                                   .or(Admission.UNKNOWN)
+                                                   .isDifferentProcessFrom(record.process()))
+                        .or(false);
     }
 
     private static List<NodeId> completed(ClusterModel m, Ctx ctx) {
@@ -89,8 +111,8 @@ public sealed interface Liveness {
     }
 
     /// G-4: a departed `node` that this leader's view lists is liveness-pending, with its window unresolved: until the window completes (the node
-    /// becomes joined, and the record is superseded unless it names another process) or a removal input broke the listing. Only the removal of its
-    /// rows waits; once the window has resolved either way, C17b proceeds.
+    /// becomes joined: the record is superseded, or, naming another known process, replaced by J8's ADMITTED write, W3') or a removal input broke
+    /// the listing. Only the removal of its rows waits; after a negative resolution C17b proceeds.
     static boolean isPending(ClusterModel m, NodeId node) {
         return ! m.livenessVetoed.contains(node)
                && !m.joined.contains(node)

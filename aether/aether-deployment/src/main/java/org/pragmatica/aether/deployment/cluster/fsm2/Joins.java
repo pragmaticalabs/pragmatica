@@ -66,6 +66,17 @@ public sealed interface Joins {
                : m;
     }
 
+    /// W3' (CTO ruling 2026-10-14): a core's liveness window resolved positively while its DEPARTED record names a different known process than
+    /// `admissions[n]`. The resolution is evaluated as the join table on `NodeJoined(n)` with that admission, so J8's core arm records it:
+    /// WARN `identity-process-mismatch` and `ADMITTED(e + 1, p)` expecting the observed DEPARTED, after which no C17b is built for n.
+    static ClusterModel onLivenessResolved(ClusterModel m, Ctx ctx, NodeId node) {
+        return evaluate(m,
+                        ctx,
+                        node,
+                        new PendingJoin(false,
+                                        m.admissions.get(node).or(Admission.UNKNOWN)));
+    }
+
     /// R-2.11: a removal input, or a C17s submission that stands in for a lost one, ends the join evidence.
     static ClusterModel clearJoined(ClusterModel m, NodeId node) {
         m.joined = m.joined.remove(node);
@@ -191,15 +202,19 @@ public sealed interface Joins {
     }
 
     /// J8: a different process under a known id, on positive evidence. A worker is refused; a core is recorded, and its
-    /// earlier rows read as stale (C5, N4-2).
+    /// earlier rows read as stale (C5, N4-2). The WARN goes with the admission write: a re-evaluation while that write is in flight (the
+    /// reconcile retries every pending join) writes nothing, so it does not warn again.
     private static ClusterModel differentProcess(ClusterModel m,
                                                  Ctx ctx,
                                                  NodeId node,
                                                  PendingJoin join,
                                                  Option<NodeDepartureValue> record) {
-        ctx.warn("identity-process-mismatch",
-                 node.id(),
-                 "Node " + node.id() + " was admitted as a different process than the one on record");
+        if (!DepartureFlow.admissionInFlight(m, node)) {
+            ctx.warn("identity-process-mismatch",
+                     node.id(),
+                     "Node " + node.id() + " was admitted as a different process than the one on record");
+        }
+
         if (join.worker()) {
             return refuse(m,
                           ctx,

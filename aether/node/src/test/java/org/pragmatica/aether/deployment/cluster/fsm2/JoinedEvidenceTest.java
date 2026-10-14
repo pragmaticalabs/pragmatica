@@ -6,6 +6,8 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
+import org.pragmatica.aether.artifact.Artifact;
+
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.KvPut;
@@ -876,31 +878,167 @@ class JoinedEvidenceTest {
         assertThat(epochOf(w, N)).as("at the first tick, once the window has elapsed").isEqualTo(Option.some(E + 1));
     }
 
-    // W3. Red when: C17b stays deferred for ever for a core that remains in the view although its DEPARTED record names another process than the one
-    // membership admitted (DEPARTED(e, p1), admission p2 known): the window resolves, the record is not superseded (J8), and the rows of p1 must go.
-    @Test
-    void nt131_c17b_proceeds_whenTheWindowResolvesWithoutSupersession() {
+    // -- NT-131 (e): a window resolving with a different known process takes J8's core arm (W3', CTO ruling 2026-10-14) -----------------
+    private static final long P1 = TOKEN_2;
+    private static final long P2 = 0x7777L;
+
+    /// `DEPARTED(E, p1)` for core n; membership admitted another known process p2 for n; n stays in `coreView`. p1 holds the ORDERS row; with
+    /// `p2Billing`, p2 holds a BILLING row too. `ordersToken` names the process that wrote the ORDERS row.
+    private static MbWorld anotherProcess(long ordersToken, boolean p2Billing) {
         var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
 
         w.admit(CORE_1, 0x1111L);
-        w.admit(CORE_2, 0x7777L);
+        w.admit(CORE_2, P2);
         w.admit(CORE_3, 0x3333L);
         w.target(ORDERS, 1, "CORE_ONLY")
          .directive(CORE_2, ActivationDirectiveValue.core())
-         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), TOKEN_2)
-         .record(CORE_2, DepartureState.DEPARTED, E, TOKEN_2, DepartureCause.NODE_REMOVED)
+         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), ordersToken)
+         .record(CORE_2, DepartureState.DEPARTED, E, P1, DepartureCause.NODE_REMOVED);
+        if (p2Billing) {
+            w.target(BILLING, 1, "CORE_ONLY")
+             .instance(CORE_2, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), P2);
+        }
+
+        return w.seams(s -> s.withCoreView(Option.some(ALL_CORES)))
+                .activate();
+    }
+
+    /// Advance tick by tick, asserting at every step that no row of n written by p2 was removed and that no C17b for n was submitted.
+    private static void runKeeping(MbWorld w, long ms, Artifact... p2Rows) {
+        for (var spent = 0L; spent < ms; spent += TICK_MS) {
+            w.h.advance(Math.min(TICK_MS, ms - spent));
+            assertThat(cleanupsOf(w, N)).as("no C17b for n at any point").isZero();
+            for (var artifact : p2Rows) {
+                assertThat(w.present(new SliceObservedKey(N, artifact))).as("p2's %s row is never removed", artifact).isTrue();
+            }
+        }
+    }
+
+    private static long cleanupsOf(MbWorld w, NodeId node) {
+        return w.h.submits(SubmitKind.CLEANUP)
+                  .stream()
+                  .filter(submit -> submit.transaction()
+                                          .mutations()
+                                          .stream()
+                                          .anyMatch(m -> m.key().equals(new NodeDepartureKey(node))
+                                                         || m.key() instanceof SliceObservedKey key && key.nodeId().equals(node)))
+                  .count();
+    }
+
+    /// Exactly one admission write for n, and it is J8's: `ADMITTED(E + 1, p2)` expecting the observed `DEPARTED(E, p1)`, with one WARN.
+    private static void assertJ8CoreArm(MbWorld w) {
+        var admissions = w.h.submits(SubmitKind.ADMISSION);
+
+        assertThat(admissions).as("exactly one admission write").hasSize(1);
+        var put = admissions.getFirst().transaction().mutations().getFirst();
+
+        assertThat(put.key()).isEqualTo(new NodeDepartureKey(N));
+        assertThat(put.expected().map(v -> (NodeDepartureValue) v).map(v -> v.state() + "/" + v.epoch() + "/" + v.process().bootToken()))
+                  .as("expects the observed DEPARTED(E, p1)")
+                  .isEqualTo(Option.some(DepartureState.DEPARTED + "/" + E + "/" + P1));
+        assertThat(put.replacement().map(v -> (NodeDepartureValue) v).map(v -> v.state() + "/" + v.epoch() + "/" + v.process().bootToken()))
+                  .as("ADMITTED(E + 1, p2)")
+                  .isEqualTo(Option.some(DepartureState.ADMITTED + "/" + (E + 1) + "/" + P2));
+        assertThat(w.h.warns("identity-process-mismatch")).as("J8's WARN, once").hasSize(1);
+        assertThat(stateOf(w, N)).isEqualTo(Option.some(DepartureState.ADMITTED));
+    }
+
+    /// p1's ORDERS row is never counted or adopted: it is departed during the window, and stale (both tokens known, different) after it.
+    private static void assertP1RowIgnored(MbWorld w) {
+        assertThat(Rows.activeCount(w.h.model(), ORDERS) + Rows.liveCount(w.h.model(), ORDERS)).as("p1's row is not counted").isZero();
+        assertThat(w.h.model().hasStray(MbWorld.pair(N, ORDERS))).as("p1's row is not adopted").isFalse();
+    }
+
+    // (e) W3', arm A: p1's row on ORDERS, p2's row on BILLING (v-2190 item 2 arm A, flipped).
+    // Red unless, after the window, exactly one ADMITTED(E + 1, p2) is written expecting DEPARTED(E, p1) with WARN identity-process-mismatch; red if
+    // p2's BILLING row is removed at any point, if any C17b runs for n, or if p1's row is counted or adopted.
+    @Test
+    void nt131e_differentKnownProcess_takesJ8sCoreArm_andKeepsP2sRows() {
+        var w = anotherProcess(P1, true);
+
+        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("deferred during the window").isEmpty();
+        assertP1RowIgnored(w);
+        runKeeping(w, SUSPICION_MS - 2_000L, BILLING);
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).as("not before the window resolved").isEmpty();
+        assertP1RowIgnored(w);
+        runKeeping(w, 2_000L + 2 * TICK_MS, BILLING);
+
+        assertJ8CoreArm(w);
+        assertP1RowIgnored(w);
+        assertThat(w.present(new SliceObservedKey(N, ORDERS))).as("p1's stale row stays until n's own N0 overwrites it (J8)").isTrue();
+        assertThat(w.counts(N)).as("n is counted, as membership decided").isTrue();
+    }
+
+    // (e) W3', arm B: every row of n is p2's (v-2190 item 2 arm B, flipped).
+    // Red if a C17b removes p2's ORDERS row after the window, or the resolution writes anything but the one J8 admission.
+    @Test
+    void nt131e_differentKnownProcess_onlyP2Rows_areNeverRemoved() {
+        var w = anotherProcess(P2, false);
+
+        runKeeping(w, SUSPICION_MS + 2 * TICK_MS, ORDERS);
+
+        assertJ8CoreArm(w);
+        assertThat(Rows.activeCount(w.h.model(), ORDERS)).as("p2's current row counts once n is admitted").isEqualTo(1);
+    }
+
+    // (e) W3', arm C: p2 rewrites its row after the window (v-2190 item 2 arm C, flipped: each rewrite was removed again on the next tick).
+    // Red if any rewrite by p2 is removed, or a C17b for n is submitted on any later tick.
+    @Test
+    void nt131e_differentKnownProcess_p2RewritesItsRow_afterTheWindow_isKept() {
+        var w = anotherProcess(P2, false);
+
+        runKeeping(w, SUSPICION_MS + 2 * TICK_MS, ORDERS);
+        for (var i = 0; i < 3; i++) {
+            w.h.seed(new SliceObservedKey(N, ORDERS), row(SliceObservedState.ACTIVE, 10L + i, gen(1), process(P2)));
+            runKeeping(w, TICK_MS, ORDERS);
+        }
+
+        assertJ8CoreArm(w);
+    }
+
+    // (e) W3', arm D: J8's admission write FAILS at the resolution, and the next reconcile retries it. The reconcile sweeps C17b before it retries the
+    // pending joins, so a C17b gated only on an admission in flight would remove p2's rows in that pass.
+    // Red if any C17b for n is submitted or any of p2's rows is removed; red unless the retried write commits ADMITTED(E + 1, p2).
+    @Test
+    void nt131e_differentKnownProcess_failedAdmission_isRetried_andP2sRowsAreKept() {
+        var w = anotherProcess(P2, false);
+
+        runKeeping(w, SUSPICION_MS - 2_000L, ORDERS);
+        w.h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
+        runKeeping(w, 2_000L + TICK_MS, ORDERS);
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).as("precondition: the resolution's write was submitted").isNotEmpty();
+        assertThat(stateOf(w, N)).as("precondition: it failed").isEqualTo(Option.some(DepartureState.DEPARTED));
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        runKeeping(w, 2 * TICK_MS, ORDERS);
+
+        assertThat(w.recordOf(N).map(v -> v.state() + "/" + v.epoch() + "/" + v.process().bootToken()))
+                  .isEqualTo(Option.some(DepartureState.ADMITTED + "/" + (E + 1) + "/" + P2));
+        assertThat(w.h.warns("identity-process-mismatch")).as("one WARN per write that goes out").isNotEmpty();
+    }
+
+    // (e) W3', control: an UNKNOWN process (C8) is not a different one, so the resolution keeps the pre-W3' behaviour: n is joined, the record is
+    // superseded on read and rewritten by step 10 as ADMITTED(E + 1) keeping the process the record names; no J8, no C17b, the row is kept and counted.
+    // Red if an unknown admission is routed to J8 (WARN identity-process-mismatch, an ADMITTED naming the unknown process) or C17b runs.
+    @Test
+    void nt131e_unknownProcess_isSupersededAndRewritten_notJ8() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+
+        w.admit(CORE_1, 0x1111L);
+        w.admit(CORE_3, 0x3333L);
+        w.target(ORDERS, 1, "CORE_ONLY")
+         .directive(CORE_2, ActivationDirectiveValue.core())
+         .instance(CORE_2, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), P1)
+         .record(CORE_2, DepartureState.DEPARTED, E, P1, DepartureCause.NODE_REMOVED)
          .seams(s -> s.withCoreView(Option.some(ALL_CORES)))
          .activate();
+        assertThat(w.h.model().admissions.get(N).or(Admission.UNKNOWN).tokenKnown()).as("precondition: n's process is unknown").isFalse();
+        runKeeping(w, SUSPICION_MS + 2 * TICK_MS, ORDERS);
 
-        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("deferred while the window is open").isEmpty();
-        run(w, SUSPICION_MS - 2 * TICK_MS);
-        assertThat(w.h.submits(SubmitKind.CLEANUP)).isEmpty();
-        run(w, 4 * TICK_MS);
-
-        assertThat(w.h.submits(SubmitKind.CLEANUP)).as("once the window has resolved without supersession").isNotEmpty();
-        assertThat(w.present(new SliceObservedKey(CORE_2, ORDERS))).as("the rows of the departed process go").isFalse();
-        assertThat(stateOf(w, CORE_2)).as("another process: not superseded (J8)").isEqualTo(Option.some(DepartureState.DEPARTED));
-        assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
+        assertThat(w.h.warns("identity-process-mismatch")).isEmpty();
+        assertThat(w.h.submits(SubmitKind.ADMISSION)).as("the step-10 rewrite, once").hasSize(1);
+        assertThat(w.recordOf(N).map(v -> v.state() + "/" + v.epoch() + "/" + v.process().bootToken()))
+                  .isEqualTo(Option.some(DepartureState.ADMITTED + "/" + (E + 1) + "/" + P1));
+        assertThat(Rows.activeCount(w.h.model(), ORDERS)).as("the row is current (C8) and counted").isEqualTo(1);
     }
 
     // W4. Red when: a removal input processed after Rebuild leaves the worker in `inherited`: a stale fresh announcement then re-admits a worker whose

@@ -325,6 +325,23 @@ class AdmissionEpochTest {
         assertThat(w.recordOf(W1).isEmpty()).as("expired, parked and derived again by the next reconcile").isTrue();
     }
 
+    // Red when: an R-4.3.3 submission that FAILED (a settlement failure, not a loss or a refusal) is never derived again, so the record of the
+    // terminated id persists (spec R-4.3.3: "a lost or failed submission is parked"; NT-106). v-2190: V-ob-failed-noparkDR survived without it.
+    @Test
+    void spotExit_failedSubmission_isParkedAndDerivedAgain() {
+        var w = spotWorker();
+
+        w.h.policy = FsmHarness.SettlePolicy.FAIL_AND_HOLD;
+        w.h.seedRemove(new ActivationDirectiveKey(W1));
+        w.h.drain();
+        assertThat(w.recordOf(W1).isPresent()).as("precondition: the failed submission left the record").isTrue();
+        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL)).as("precondition: one R-4.3.3 was submitted").hasSize(1);
+        w.h.policy = FsmHarness.SettlePolicy.APPLY;
+        w.h.advance(w.h.settings.timing().tick());
+
+        assertThat(w.recordOf(W1).isEmpty()).as("parked on the failure and derived again by a later reconcile").isTrue();
+    }
+
     // Red when: an R-4.3.3 that is derived again removes the record of a node that was re-admitted meanwhile (the record moved to ADMITTED).
     @Test
     void spotExit_derivedAgain_neverRemovesAReadmittedRecord() {

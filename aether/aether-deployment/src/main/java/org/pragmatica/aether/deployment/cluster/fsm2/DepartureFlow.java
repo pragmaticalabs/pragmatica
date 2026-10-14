@@ -280,8 +280,15 @@ public sealed interface DepartureFlow {
     // -- C17b ------------------------------------------------------------------------------------------------------
     /// One transaction, guarded on the committed DEPARTED record: the node's observed rows at their exact values (current
     /// or stale alike), and any desired and route keys still present. Never the directive or the placement key.
+    ///
+    /// Not built for a **joined** node: a departed node is joined only when its admission names a different known process than its record, which
+    /// J8's core arm admits (a joined node of the same process is superseded, so not departed; a token learned after the join, C11d, reaches
+    /// this state only until the step-10 rewrite already in flight commits). That admission replaces the DEPARTED record; until it commits, or
+    /// after it failed until the reconcile re-runs the pending join, a C17b would remove the rows of the process being admitted (W3', CTO ruling
+    /// 2026-10-14). A removal input or a C17s clears `joined`, and C17b follows.
     static ClusterModel cleanup(ClusterModel m, Ctx ctx, NodeId node, int attempt) {
-        if (!m.departed.contains(node) || cleanupInFlight(m, node) || Liveness.isPending(m, node)) {
+        if (!m.departed.contains(node) || cleanupInFlight(m, node) || m.joined.contains(node) || Liveness.isPending(m,
+                                                                                                                    node)) {
             return m;
         }
 
