@@ -55,18 +55,16 @@ public sealed interface Liveness {
         return m;
     }
 
-    /// A window resolves once: a core already joined has nothing left to resolve.
     private static ClusterModel promote(ClusterModel m, Ctx ctx) {
-        completed(m, ctx).stream()
-                 .filter(node -> !m.joined.contains(node))
-                 .forEach(node -> windowCompleted(m, ctx, node));
+        completed(m, ctx).forEach(node -> windowCompleted(m, ctx, node));
 
         return m;
     }
 
     /// W3' (CTO ruling 2026-10-14): a positive resolution for a core whose DEPARTED record names a different known process than `admissions[n]`
     /// is evaluated as the join table on `NodeJoined(n)` with that admission, which takes J8's core arm. Any other resolution joins the node, so
-    /// its record is superseded on read; an unknown process is not a different one (C8).
+    /// its record is superseded on read; an unknown process is not a different one (C8). A complete window is seen again on every refresh; the
+    /// repeat is idempotent (J8 writes once while its write is in flight, and warns with that write only).
     private static ClusterModel windowCompleted(ClusterModel m, Ctx ctx, NodeId node) {
         return isAnotherProcess(m, node)
                ? Joins.onLivenessResolved(m, ctx, node)
@@ -113,6 +111,9 @@ public sealed interface Liveness {
     /// G-4: a departed `node` that this leader's view lists is liveness-pending, with its window unresolved: until the window completes (the node
     /// becomes joined: the record is superseded, or, naming another known process, replaced by J8's ADMITTED write, W3') or a removal input broke
     /// the listing. Only the removal of its rows waits; after a negative resolution C17b proceeds.
+    ///
+    /// The `joined` term is also enforced by C17b's own guard (`DepartureFlow#cleanup` builds nothing for a joined node), so it changes no C17b
+    /// decision; it keeps this predicate meaning what G-4 names: a window not yet resolved.
     static boolean isPending(ClusterModel m, NodeId node) {
         return ! m.livenessVetoed.contains(node)
                && !m.joined.contains(node)
