@@ -570,6 +570,57 @@ class NodeFsmWriteProbeTest {
     }
 
     /// Red when: a lost tombstone Remove is not resubmitted, witnessed by the same tombstone, by the probe (absence confirms).
+    /// Red when: a lost teardown write is resubmitted without running its builder (PREPARE_TEARDOWN) again, or with a batch that
+    /// differs from the builder's output.
+    @Test
+    @DisplayName("NT-134 (g): a lost DEACTIVATING write is rebuilt by running PREPARE_TEARDOWN again")
+    void nt134g_teardownWrite_isRebuiltByItsBuilder() {
+        var h = builders(new NodeHarness());
+        var release = NodeHarness.leg(LegCommand.LegKind.TOPIC_SUBSCRIPTION, ARTIFACT);
+
+        h.script(LocalStep.PREPARE_TEARDOWN, LocalOutcome.done(List.of(release)));
+        h.writeScript = submitted -> !submitted.submit().isProbe() && NodeHarness.putOf(submitted.submit()).map(row -> row.state() == SliceObservedState.DEACTIVATING).or(false)
+                                     ? NodeHarness.WriteMode.LOST
+                                     : null;
+        h.establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.ACTIVE, G1);
+        h.goal(ARTIFACT, SliceGoal.LOADED, G2);
+
+        var original = h.submitsOf(SliceObservedState.DEACTIVATING).getFirst();
+
+        assertThat(original.commands()).as("precondition: the teardown batch carries the builder's command").hasSize(2);
+
+        h.advance(probeOffset(h, 0));
+
+        assertThat(probes(h)).hasSize(1);
+        assertThat(probes(h).getFirst().commands()).isEqualTo(original.commands());
+        assertThat(h.localSteps().stream().filter(step -> step == LocalStep.PREPARE_TEARDOWN).count())
+            .as("the builder ran again for the probe").isEqualTo(2L);
+        assertThat(row(h).state()).isIn(SliceObservedState.DEACTIVATING, SliceObservedState.LOADED);
+    }
+
+    /// Red when: a probe of a reactivation write keeps the stream-ref ACQUIRE (R-3.4.7: the row is already ACTIVE, no ACQUIRE).
+    @Test
+    @DisplayName("NT-134 (g): a lost reactivation write is rebuilt without the ACQUIRE")
+    void nt134g_reactivationWrite_isRebuiltWithoutTheAcquire() {
+        var h = builders(new NodeHarness());
+
+        h.establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.ACTIVE, G1);
+        h.feed(new NodeFsmInput.QuorumDisappeared());
+        h.writeScript = submitted -> ownActive(submitted) ? NodeHarness.WriteMode.LOST : null;
+        h.clearEffects().establish();
+
+        var original = firstActive(h);
+
+        assertThat(original.commands()).as("precondition: no ACQUIRE rides a reactivation").noneMatch(command -> command instanceof KVCommand.Put<?, ?> put
+                                                                                                                  && put.key() instanceof StreamRegistryKey);
+
+        h.advance(probeOffset(h, 0));
+
+        assertThat(probes(h)).hasSize(1);
+        assertThat(probes(h).getFirst().commands()).isEqualTo(original.commands());
+        assertThat(refCount(h)).as("only the first activation's ACQUIRE").isEqualTo(1);
+    }
+
     @Test
     @DisplayName("NT-134 (g): a lost tombstone Remove is resubmitted by the probe; absence confirms")
     void nt134g_tombstoneRemove_isResubmittedByTheProbe() {

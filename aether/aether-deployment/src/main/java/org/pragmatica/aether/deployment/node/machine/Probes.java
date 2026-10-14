@@ -151,12 +151,24 @@ sealed interface Probes {
                                           Artifact artifact,
                                           InFlight write,
                                           LocalOutcome outcome) {
+        return write.probing()
+                    .rebuild()
+                    .fold(() -> Transition.transition(t.model()).ignoring(),
+                          rebuild -> settledRebuild(fsm, t, artifact, write, rebuild, outcome));
+    }
+
+    private static Transition settledRebuild(NodeFsm fsm,
+                                             Transition t,
+                                             Artifact artifact,
+                                             InFlight write,
+                                             InFlight.Rebuild rebuild,
+                                             LocalOutcome outcome) {
         return switch (outcome) {
             case LocalOutcome.Done done -> stepDone(fsm,
                                                     t,
                                                     artifact,
                                                     write,
-                                                    write.probing().rebuild().unwrap().collecting(done.commands()));
+                                                    rebuild.collecting(done.commands()));
             case LocalOutcome.Failed failed -> abandoned(t,
                                                          artifact,
                                                          write,
