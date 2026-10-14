@@ -45,8 +45,13 @@ final class ManualTimerService implements FsmTimers.TimerService {
                .filter(entry -> !entry.cancelled && !entry.ran && entry.dueMs <= target)
                .sorted(Comparator.comparingLong(entry -> entry.dueMs))
                .toList()
-               .forEach(ManualTimerService::run);
+               .forEach(this::runAtDueTime);
         nowMs = target;
+    }
+
+    private void runAtDueTime(Entry entry) {
+        nowMs = entry.dueMs;
+        run(entry);
     }
 
     static void run(Entry entry) {
