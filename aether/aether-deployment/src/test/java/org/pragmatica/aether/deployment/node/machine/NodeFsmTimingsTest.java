@@ -34,6 +34,7 @@ class NodeFsmTimingsTest {
         assertThat(timings.failedRetryMs()).as("N19: every 2 s").isEqualTo(2_000L);
         assertThat(timings.failedCycles()).as("N19 / B-150: 6 cycles [guess]").isEqualTo(6);
         assertThat(timings.parkedBoundMs()).as("B-158: the LOADING timeout").isEqualTo(120_000L);
+        assertThat(timings.probeOffsetsMs()).as("R-3.4.4 (O1): probes at 2 s, 6 s, 14 s [guess]").containsExactly(2_000L, 6_000L, 14_000L);
     }
 
     /// Red when: a step bound is not read from its `[timeouts.deployment]` key, or a bound with no key moves with the

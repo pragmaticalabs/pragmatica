@@ -443,6 +443,21 @@ class NodeFsmWriteProbeTest {
         assertThat(arm(h, "probe_resubmit")).isEqualTo(9L);
         assertThat(arm(h, "confirm_timeout")).isEqualTo(3L);
         assertThat(lines(h, "write-probe-resubmit")).hasSize(9);
+
+        var version = versionOf(firstActive(h));
+        var expected = new java.util.ArrayList<String>();
+
+        for (var attempt = 1; attempt <= 3; attempt++) {
+            for (var probe = 1; probe <= 3; probe++) {
+                expected.add("write-probe-resubmit: node " + SELF.id() + " artifact " + ARTIFACT + " state ACTIVE version " + version
+                             + " attempt " + attempt + " probe " + probe + " elapsed_ms " + probeOffset(h, probe - 1));
+            }
+        }
+
+        assertThat(lines(h, "write-probe-resubmit")).as("every probe line names node, artifact, state, version, attempt, probe index and elapsed time")
+                                                       .allSatisfy(log -> assertThat(log.level()).isEqualTo(NodeFsmEffect.Level.INFO))
+                                                       .extracting(NodeFsmEffect.Log::message)
+                                                       .containsExactlyElementsOf(expected);
         assertThat(lines(h, "write-confirm-timeout")).hasSize(3)
                                                        .allSatisfy(log -> assertThat(log.level()).isEqualTo(NodeFsmEffect.Level.WARN))
                                                        .allSatisfy(log -> assertThat(log.message()).contains("node " + SELF.id(),
@@ -533,6 +548,155 @@ class NodeFsmWriteProbeTest {
         assertThat(probes(h)).hasSize(1);
         assertThat(probes(h).getFirst().probe()).as("the second probe").isEqualTo(2);
         assertThat(row(h).state()).isEqualTo(SliceObservedState.ACTIVE);
+    }
+
+    /// Red when: a rebuild step that timed out resubmits anyway (with that step's commands missing) or is silent.
+    @Test
+    @DisplayName("NT-134: a timed-out rebuild step is logged at WARN and resubmits nothing")
+    void nt134_timedOutRebuild_isLoggedAndResubmitsNothing() {
+        var h = lostFirstActive();
+
+        h.script(LocalStep.BUILD_LEGS, LocalOutcome.timedOut());
+        h.advance(probeOffset(h, 0));
+
+        assertThat(probes(h)).isEmpty();
+        assertThat(h.effectsOf(NodeFsmEffect.Log.class)).anyMatch(log -> log.level() == NodeFsmEffect.Level.WARN
+                                                                       && log.message().contains("could not rebuild")
+                                                                       && log.message().contains("timed out"));
+    }
+
+    /// Red when: a probe runs any local step other than the builders its batch came from (for N4's ACTIVE batch: BUILD_LEGS, then
+    /// DESCRIBE_ACTIVE), e.g. ACTIVATE or REGISTER_BRIDGE again.
+    @Test
+    @DisplayName("NT-134: a probe runs only the builder steps of its batch, in order")
+    void nt134_probeRunsOnlyTheBuilderSteps() {
+        var h = lostFirstActive();
+        var before = h.localSteps().size();
+
+        h.advance(probeOffset(h, 0));
+
+        assertThat(h.localSteps().subList(before, h.localSteps().size())).containsExactly(LocalStep.BUILD_LEGS, LocalStep.DESCRIBE_ACTIVE);
+    }
+
+    /// Red when: the probe series of an attempt is left armed after the write is exhausted (here every own submission settles
+    /// Failed at once, so the last attempt's probes are still pending when it is exhausted).
+    @Test
+    @DisplayName("NT-134 (f): exhaustion cancels the probe series that is still pending")
+    void nt134f_probeAfterExhaustion_isCancelled() {
+        var h = builders(new NodeHarness());
+
+        h.writeScript = submitted -> ownActive(submitted) ? NodeHarness.WriteMode.FAIL : null;
+        h.establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.ACTIVE, G1);
+
+        assertThat(h.effectsOf(NodeFsmEffect.Submit.class).stream()
+                    .filter(submit -> !submit.isProbe())
+                    .filter(submit -> NodeHarness.putOf(submit).map(row -> row.state() == SliceObservedState.ACTIVE).or(false))
+                    .count())
+            .as("precondition: three attempts, all failed at once").isEqualTo(3L);
+        assertThat(h.record(ARTIFACT).write().map(write -> write.state() == SliceObservedState.ACTIVE).or(false)).as("precondition: exhausted")
+                                                                                                                 .isFalse();
+        assertThat(h.timersOf(TimerId.TimerKind.WRITE_PROBE)).as("no probe of the exhausted write is left armed")
+                                                             .allMatch(timer -> h.record(ARTIFACT)
+                                                                                 .write()
+                                                                                 .map(write -> write.correlation() == timer.token())
+                                                                                 .or(false));
+    }
+
+    /// ACTIVE is the goal, every ACTIVE submission (the attempts' and the probes') is lost, and the chain bound is `chainBoundMs`.
+    private static NodeHarness orphanable(long chainBoundMs) {
+        var d = NodeFsmTimings.nodeFsmTimings();
+        var h = builders(new NodeHarness(NodeHarness.SELF_TOKEN,
+                                         new NodeFsmTimings(d.loadMs(),
+                                                            d.activateMs(),
+                                                            d.deactivateMs(),
+                                                            d.unloadMs(),
+                                                            chainBoundMs,
+                                                            d.activatingCheckMs() * 10L,
+                                                            d.tombstoneGraceMs(),
+                                                            d.parkedBoundMs(),
+                                                            d.writeAttemptMs(),
+                                                            d.writeAttempts(),
+                                                            d.failedRetryMs(),
+                                                            d.failedCycles())));
+
+        h.writeScript = submitted -> NodeHarness.putOf(submitted.submit()).map(row -> row.state() == SliceObservedState.ACTIVE).or(false)
+                                     ? NodeHarness.WriteMode.LOST
+                                     : null;
+
+        return h.establish().permit(ARTIFACT).goal(ARTIFACT, SliceGoal.ACTIVE, G1);
+    }
+
+    /// Red when: a probe that fires after the chain bound dropped the chain still resubmits the orphaned chain write.
+    @Test
+    @DisplayName("NT-134: a probe of an orphaned chain write (the chain bound expired) resubmits nothing")
+    void nt134_orphanedChainWrite_laterProbesResubmitNothing() {
+        var h = orphanable(40_000L);
+        var t0 = h.wall;
+
+        h.advance(h.timings.chainBoundMs() - 1L);
+
+        var before = probes(h).size();
+
+        assertThat(h.record(ARTIFACT).chain().isPresent()).as("precondition: the chain is alive before its bound").isTrue();
+        assertThat(before).as("precondition: probes resubmitted while the chain was alive").isPositive();
+
+        h.advance(2L);
+
+        assertThat(h.record(ARTIFACT).chain().isEmpty()).as("precondition: the bound dropped the chain").isTrue();
+        assertThat(h.record(ARTIFACT).write().isPresent()).as("precondition: the ACTIVE write is still in flight").isTrue();
+
+        var builds = h.localSteps().stream().filter(step -> step == LocalStep.BUILD_LEGS).count();
+
+        h.advance(3L * h.timings.writeAttemptMs() - (h.wall - t0));
+
+        assertThat(probes(h)).as("no probe resubmits an orphaned chain write").hasSize(before);
+        assertThat(h.localSteps().stream().filter(step -> step == LocalStep.BUILD_LEGS).count()).as("and none reruns its builders").isEqualTo(builds);
+    }
+
+    /// Red when: a rebuild that started while the chain was alive, and settles after the chain bound dropped it, resubmits the
+    /// orphaned write (with the observed command alone, its legs gone).
+    @Test
+    @DisplayName("NT-134: a rebuild that settles after the chain was dropped resubmits nothing")
+    void nt134_rebuildSettlingAfterTheChainWasDropped_resubmitsNothing() {
+        var h = orphanable(10_000L);
+
+        h.hold(LocalStep.BUILD_LEGS);
+        h.advance(probeOffset(h, 0));
+
+        assertThat(h.record(ARTIFACT).write().flatMap(write -> write.probing().rebuild()).isPresent()).as("precondition: a rebuild is under way")
+                                                                                                         .isTrue();
+
+        h.advance(h.timings.chainBoundMs());
+
+        assertThat(h.record(ARTIFACT).chain().isEmpty()).as("precondition: the bound dropped the chain").isTrue();
+        assertThat(h.record(ARTIFACT).write().isPresent()).as("precondition: the ACTIVE write is still in flight").isTrue();
+
+        h.holdSteps.clear();
+        h.settle(LocalStep.BUILD_LEGS, LocalOutcome.done(List.of(NodeHarness.leg(LegCommand.LegKind.TOPIC_SUBSCRIPTION, ARTIFACT))));
+
+        assertThat(probes(h)).as("the orphaned write is not resubmitted at the rebuild's settlement").isEmpty();
+        assertThat(h.record(ARTIFACT).write().flatMap(write -> write.probing().rebuild()).isEmpty()).as("the rebuild is cleared").isTrue();
+    }
+
+    /// Red when: a rebuild started by probe 1 that spans probe 2's tick resubmits with probe 2's index (or its line names probe 2).
+    @Test
+    @DisplayName("NT-134: a rebuild's resubmission carries the index of the probe that started it")
+    void nt134_rebuildSpanningALaterTick_carriesTheStartingProbesIndex() {
+        var h = lostFirstActive();
+
+        h.hold(LocalStep.BUILD_LEGS);
+        h.advance(probeOffset(h, 1));
+
+        assertThat(h.timers.keySet().stream().filter(timer -> timer.kind() == TimerId.TimerKind.WRITE_PROBE)).as("probe 2 has fired, probe 3 is armed").hasSize(1);
+        assertThat(probes(h)).as("the rebuild is still under way").isEmpty();
+
+        h.holdSteps.clear();
+        h.settle(LocalStep.BUILD_LEGS, LocalOutcome.done(List.of(NodeHarness.leg(LegCommand.LegKind.TOPIC_SUBSCRIPTION, ARTIFACT))));
+
+        assertThat(probes(h)).hasSize(1);
+        assertThat(probes(h).getFirst().probe()).as("started by probe 1, settled after probe 2's tick").isEqualTo(1);
+        assertThat(lines(h, "write-probe-resubmit")).hasSize(1);
+        assertThat(lines(h, "write-probe-resubmit").getFirst().message()).contains("probe 1 elapsed_ms ");
     }
 
     // ------------------------------------------------------------------ (f)

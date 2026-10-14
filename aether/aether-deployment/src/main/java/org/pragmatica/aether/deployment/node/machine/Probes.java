@@ -90,8 +90,19 @@ sealed interface Probes {
         var steps = write.probing().builders();
 
         return steps.isEmpty()
-               ? resubmit(fsm, t, artifact, write, List.of(), none())
-               : startStep(fsm, t, artifact, write, InFlight.Rebuild.rebuild(steps));
+               ? resubmit(fsm,
+                          t,
+                          artifact,
+                          write,
+                          List.of(),
+                          none(),
+                          write.probing().fired())
+               : startStep(fsm,
+                           t,
+                           artifact,
+                           write,
+                           InFlight.Rebuild.rebuild(steps,
+                                                    write.probing().fired()));
     }
 
     private static boolean isOrphanChainWrite(Transition t, Artifact artifact, InFlight write) {
@@ -189,7 +200,8 @@ sealed interface Probes {
     }
 
     /// The builders ran. The mirror is re-checked first: a row that appeared meanwhile confirms the write and the rebuilt batch is
-    /// discarded (R-3.4.4 (2)).
+    /// discarded (R-3.4.4 (2)). A chain that was dropped while the builders ran makes the write an orphan, which is not
+    /// resubmitted either (see [#rebuild]).
     private static Transition finished(NodeFsm fsm,
                                        Transition t,
                                        Artifact artifact,
@@ -197,9 +209,14 @@ sealed interface Probes {
                                        InFlight.Rebuild rebuild) {
         var rec = t.instance(artifact);
 
-        return Writes.isApplied(rec, write)
-               ? Writes.confirmed(fsm, t, artifact)
-               : resubmit(fsm, t, artifact, write, rebuild.collected(), rec.chain());
+        if (Writes.isApplied(rec, write)) {
+            return Writes.confirmed(fsm, t, artifact);
+        }
+
+        return isOrphanChainWrite(t, artifact, write)
+               ? t.update(artifact,
+                          r -> r.withWrite(some(write.withProbing(write.probing().notRebuilding()))))
+               : resubmit(fsm, t, artifact, write, rebuild.collected(), rec.chain(), rebuild.probe());
     }
 
     /// FER (degrade and continue): a rebuild step that failed or timed out leaves the write to the next probe and to the attempt
@@ -221,10 +238,11 @@ sealed interface Probes {
                                        Artifact artifact,
                                        InFlight write,
                                        List<LegCommand> legs,
-                                       Option<Chain> chain) {
+                                       Option<Chain> chain,
+                                       int probe) {
         var batch = batchOf(fsm, t, artifact, write, legs, chain);
 
-        return t.issuing((next, correlation) -> submitted(fsm, next, artifact, write, batch, correlation));
+        return t.issuing((next, correlation) -> submitted(fsm, next, artifact, write, batch, correlation, probe));
     }
 
     private static List<KVCommand<AetherKey>> batchOf(NodeFsm fsm,
@@ -248,7 +266,8 @@ sealed interface Probes {
                                         Artifact artifact,
                                         InFlight write,
                                         List<KVCommand<AetherKey>> batch,
-                                        long correlation) {
+                                        long correlation,
+                                        int probe) {
         var recorded = write.withProbing(write.probing().resubmitted(correlation));
 
         return t.update(artifact,
@@ -257,22 +276,26 @@ sealed interface Probes {
                                                artifact,
                                                correlation,
                                                write.attempt(),
-                                               write.probing().fired(),
+                                               probe,
                                                batch))
                 .emit(new NodeFsmEffect.Log(NodeFsmEffect.Level.INFO,
-                                            line(fsm, PROBE_LINE, artifact, write)))
+                                            line(fsm, PROBE_LINE, artifact, write, probe)))
                 .emit(NodeFsm.submission("probe_resubmit"));
     }
 
     /// The attempt's `WRITE_CONFIRM` ran out: one line and one metric arm, whether or not the expiry then confirms from the mirror.
     static Transition confirmTimeout(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
         return t.emit(new NodeFsmEffect.Log(NodeFsmEffect.Level.WARN,
-                                            line(fsm, CONFIRM_LINE, artifact, write)))
+                                            line(fsm,
+                                                 CONFIRM_LINE,
+                                                 artifact,
+                                                 write,
+                                                 write.probing().fired())))
                 .emit(NodeFsm.submission("confirm_timeout"));
     }
 
     /// Names the node, artifact, state, version, attempt, probe index and elapsed time since the attempt's submission.
-    private static String line(NodeFsm fsm, String code, Artifact artifact, InFlight write) {
+    private static String line(NodeFsm fsm, String code, Artifact artifact, InFlight write, int probe) {
         return code
              + ": node " + fsm.config()
                               .self()
@@ -281,8 +304,7 @@ sealed interface Probes {
              + " state " + write.state()
              + " version " + write.version()
              + " attempt " + write.attempt()
-             + " probe " + write.probing()
-                                .fired()
+             + " probe " + probe
              + " elapsed_ms " + (fsm.now() - write.probing()
                                                   .submittedAtMs());
     }

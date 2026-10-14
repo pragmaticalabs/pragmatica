@@ -80,16 +80,16 @@ public record InFlight(long correlation,
         }
     }
 
-    /// A probe's rebuild under way: `token` is the running local step's token, `remaining` the steps after it, `collected` what the
+    /// A probe's rebuild under way, started by probe number `probe` (its resubmission carries that index, not a later tick's): `token` is the running local step's token, `remaining` the steps after it, `collected` what the
     /// finished steps produced.
-    public record Rebuild(long token, List<LocalStep> remaining, List<LegCommand> collected) {
+    public record Rebuild(long token, List<LocalStep> remaining, List<LegCommand> collected, int probe) {
         public Rebuild {
             remaining = List.copyOf(remaining);
             collected = List.copyOf(collected);
         }
 
-        public static Rebuild rebuild(List<LocalStep> steps) {
-            return new Rebuild(0L, steps, List.of());
+        public static Rebuild rebuild(List<LocalStep> steps, int probe) {
+            return new Rebuild(0L, steps, List.of(), probe);
         }
 
         public Rebuild collecting(List<LegCommand> commands) {
@@ -97,13 +97,14 @@ public record InFlight(long correlation,
 
             all.addAll(commands);
 
-            return new Rebuild(token, remaining, all);
+            return new Rebuild(token, remaining, all, probe);
         }
 
         public Rebuild next(long newToken) {
             return new Rebuild(newToken,
                                remaining.subList(1, remaining.size()),
-                               collected);
+                               collected,
+                               probe);
         }
     }
 
