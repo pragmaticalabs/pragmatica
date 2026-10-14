@@ -86,7 +86,7 @@ class KvSnapshotterTest {
     void nodeSnapshot_holdsTheOwnRows_thePeersRowsWithTheirTokens_theTargetsAndTheRoutings() {
         seed();
 
-        var cut = snapshotter.nodeSnapshot(SELF, node -> node.equals(PEER) ? 0xBEEFL : 0L, Set.of(ORDERS));
+        var cut = snapshotter.nodeSnapshot(SELF, node -> node.equals(PEER) ? 0xBEEFL : 0x5E1FL, Set.of(ORDERS));
         var snapshot = cut.snapshot();
 
         assertThat(cut.revision()).isEqualTo(applier.slot());
@@ -94,6 +94,7 @@ class KvSnapshotterTest {
         assertThat(snapshot.observed()).containsOnlyKeys(ORDERS);
         assertThat(snapshot.observed().get(ORDERS).state()).isEqualTo(SliceObservedState.ACTIVE);
         assertThat(snapshot.replicas().get(ORDERS)).containsOnlyKeys(PEER);
+        assertThat(snapshot.replicas().get(ORDERS).get(PEER).knownToken()).as("MT-04: the peer's token, not ours").isEqualTo(0xBEEFL);
         assertThat(snapshot.targets()).containsEntry(ORDERS.base(), ORDERS.version());
         assertThat(snapshot.routings().get(ORDERS.base()).names(BILLING.version())).isTrue();
         assertThat(snapshot.loaded()).containsExactly(ORDERS);
@@ -124,9 +125,9 @@ class KvSnapshotterTest {
         seed();
         var token = new java.util.concurrent.atomic.AtomicLong(0L);
 
-        var before = snapshotter.nodeSnapshot(SELF, _ -> token.get(), Set.of()).snapshot();
+        var before = snapshotter.nodeSnapshot(SELF, node -> node.equals(PEER) ? token.get() : 0x5E1FL, Set.of()).snapshot();
         token.set(0xCAFEL);
-        var after = snapshotter.nodeSnapshot(SELF, _ -> token.get(), Set.of()).snapshot();
+        var after = snapshotter.nodeSnapshot(SELF, node -> node.equals(PEER) ? token.get() : 0x5E1FL, Set.of()).snapshot();
 
         assertThat(before.replicas().get(ORDERS).get(PEER)).isEqualTo(PeerRow.peerRow(observed(SliceObservedState.LOADED, 0xBEEFL), 0L));
         assertThat(after.replicas().get(ORDERS).get(PEER).knownToken()).isEqualTo(0xCAFEL);
