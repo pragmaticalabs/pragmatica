@@ -65,7 +65,7 @@ The dashboard shows:
 ### CLI Options
 
 ```bash
-java -jar aether-forge.jar [options]
+aether-forge [options]          # or: java -jar aether-forge.jar [options]
 
 Options:
   --config <forge.toml>       Forge cluster configuration
