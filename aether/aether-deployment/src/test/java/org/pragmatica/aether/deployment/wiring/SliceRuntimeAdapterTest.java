@@ -214,7 +214,7 @@ class SliceRuntimeAdapterTest {
         assertThat(run(LocalStep.REGISTER_CONFIG)).isInstanceOf(LocalOutcome.Done.class);
         configNotifications.notifyChange("database.pool", artifact -> RuntimeFixtures.noConfig());
 
-        assertThat(ConfigProbe.calls).isEmpty();
+        await().during(Duration.ofMillis(400)).atMost(Duration.ofSeconds(5)).until(ConfigProbe.calls::isEmpty);
     }
 
     @Test
@@ -288,7 +288,8 @@ class SliceRuntimeAdapterTest {
         assertThat(publisher.calls).containsExactly("unpublish " + ORDERS);
         assertThat(bridge.calls).containsExactly("unregister " + ORDERS);
         configNotifications.notifyChange("database.pool", artifact -> RuntimeFixtures.noConfig());
-        assertThat(ConfigProbe.calls).as("the config registration is gone").isEmpty();
+        // the registration is gone: a change to its section reaches nobody
+        await().during(Duration.ofMillis(400)).atMost(Duration.ofSeconds(5)).until(ConfigProbe.calls::isEmpty);
     }
 
     @Test
