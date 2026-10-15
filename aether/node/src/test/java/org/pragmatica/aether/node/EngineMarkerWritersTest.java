@@ -26,7 +26,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EngineMarkerWritersTest {
     private static final Path MAIN = Path.of("src", "main", "java");
     /// The mint writes it, the guard reads it, and `WorkerMetadataIndex` names it in its exhaustive scope switch (it reaches no worker scope).
-    private static final Set<String> ALLOWED = Set.of("ClusterIncarnation.java", "EngineMarkerGuard.java", "WorkerMetadataIndex.java");
+    /// `DeploymentWiring` names the key type only to recognise its notification as a trigger for the guard's re-read.
+    private static final Set<String> ALLOWED = Set.of("ClusterIncarnation.java", "EngineMarkerGuard.java", "WorkerMetadataIndex.java", "DeploymentWiring.java");
 
     private static List<String> namingTheKey(Path root) {
         try (Stream<Path> files = Files.walk(root)) {
