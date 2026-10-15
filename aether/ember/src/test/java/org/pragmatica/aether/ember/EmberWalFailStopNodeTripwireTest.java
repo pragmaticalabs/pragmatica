@@ -55,6 +55,21 @@ class EmberWalFailStopNodeTripwireTest {
     /// called. A narrower pattern would let a fix with an unexpected name turn the real assertion green and leave the tripwire green.
     private static final String GAUGE_REGEX = "(?im)^(?=.*wal)(?=.*(fail|stop)).*$";
     private static final Pattern WAL_FAIL_GAUGE = Pattern.compile(GAUGE_REGEX);
+
+    /// The matching sample lines (comment lines excluded) whose value is not zero: a gauge exposed at 0 from boot is not an alarm.
+    private static boolean nonZeroGauge(String scrape) {
+        return scrape.lines().filter(line -> !line.startsWith("#")).filter(line -> WAL_FAIL_GAUGE.matcher(line).find()).anyMatch(EmberWalFailStopNodeTripwireTest::isNonZero);
+    }
+
+    private static boolean isNonZero(String line) {
+        var value = line.substring(line.lastIndexOf(' ') + 1);
+
+        try {
+            return Double.parseDouble(value) != 0.0;
+        } catch (NumberFormatException e) {
+            return true;
+        }
+    }
     private static final String STREAM = "d01";
     private static final String ENGINE_KEY = engineKey(STREAM);
 
@@ -83,8 +98,8 @@ class EmberWalFailStopNodeTripwireTest {
         assertThat(committedOwner()).as("D-01 fixed? The committed owner changed after the owner's WAL fail-stop. Delete this tripwire and enable "
                                         + "walFailStopOnTheOwner_stepsDown and walFailStopOnTheOwner_isGauged (#2201)")
                                     .isEqualTo(Option.some(ownerId));
-        assertThat(WAL_FAIL_GAUGE.matcher(scrapeBefore).find()).as("control: the scrape before the fail-stop has no line matching " + GAUGE_REGEX).isFalse();
-        assertThat(WAL_FAIL_GAUGE.matcher(scrape(owner)).find()).as("no scrape line matches " + GAUGE_REGEX + " after the fail-stop").isFalse();
+        assertThat(nonZeroGauge(scrapeBefore)).as("control: before the fail-stop no scrape line matching " + GAUGE_REGEX + " has a non-zero value (no line, or a line at 0)").isFalse();
+        assertThat(nonZeroGauge(scrape(owner))).as("D-01 gauge fixed? A scrape line matching " + GAUGE_REGEX + " has a non-zero value after the fail-stop").isFalse();
     }
 
     @Test
@@ -99,13 +114,13 @@ class EmberWalFailStopNodeTripwireTest {
     }
 
     @Test
-    @Disabled("D-01 (#2201): enable when a WAL fail-stop is gauged; RED today: no scrape line matches the shared regex")
+    @Disabled("D-01 (#2201): enable when a WAL fail-stop is gauged; RED today: no scrape line matching the shared regex has a non-zero value")
     @Timeout(600)
     void walFailStopOnTheOwner_isGauged() {
         var owner = failStopTheOwner();
 
         publishFails(owner);
-        awaitUntil(() -> WAL_FAIL_GAUGE.matcher(scrape(owner)).find(), WINDOW_MS, "a scrape line matches " + GAUGE_REGEX);
+        awaitUntil(() -> nonZeroGauge(scrape(owner)), WINDOW_MS, "a scrape line matching " + GAUGE_REGEX + " has a non-zero value");
     }
 
     private AetherNode failStopTheOwner() {
