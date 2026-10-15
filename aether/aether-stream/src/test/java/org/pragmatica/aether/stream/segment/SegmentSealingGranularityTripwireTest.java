@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.segment;
 
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
@@ -15,10 +16,12 @@ import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.AppendLog;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,6 +45,9 @@ class SegmentSealingGranularityTripwireTest {
     private static final int MIN_EVENTS_PER_SEGMENT = 4;
     private static final long AWAIT_MS = 30_000;
     private static final String ENABLE = "C-02 tripwire: eviction no longer seals one segment per event; delete this tripwire and enable the real assertion beside it (#2201)";
+
+    @TempDir
+    Path walDir;
 
     private final List<SealedSegment> segments = new CopyOnWriteArrayList<>();
     private final ScheduledExecutorService clock = Executors.newSingleThreadScheduledExecutor();
@@ -83,9 +89,35 @@ class SegmentSealingGranularityTripwireTest {
         assertThat(segments.size() * MIN_EVENTS_PER_SEGMENT).isLessThanOrEqualTo(EVICTED);
     }
 
-    /// `APPENDS` appends of one tiny event each into a ring of `RING_EVENTS`, then waits for every seal to land. The sink answers after `sealMillis`.
+    /// The WAL-backed entry (`admitSpilling`, what a durable partition takes in production): the same granularity, a different admission path from
+    /// `enqueue`, so a fix confined to the no-WAL path leaves this pair as it is.
+    @Test
+    void fullRingWithAWal_sealsOneSegmentPerEvictedEvent_tripwire() {
+        sealAfterAppends(0, true);
+
+        assertThat(segments.stream().mapToInt(SealedSegment::eventCount).sum()).as("control: every evicted event was sealed exactly once").isEqualTo(EVICTED);
+        assertThat(segments).as(ENABLE + " (WAL-backed admission)").hasSize(EVICTED);
+    }
+
+    @Disabled("C-02 real assertion, RED today: WAL-backed partitions must coalesce evicted events too, at least 4 per segment on average (#2201)")
+    @Test
+    void fullRingWithAWal_coalescesEvictedEventsIntoFewerSegments() {
+        sealAfterAppends(0, true);
+
+        assertThat(segments.size() * MIN_EVENTS_PER_SEGMENT).isLessThanOrEqualTo(EVICTED);
+    }
+
     private void sealAfterAppends(long sealMillis) {
+        sealAfterAppends(sealMillis, false);
+    }
+
+    /// `APPENDS` appends of one tiny event each into a ring of `RING_EVENTS`, then waits for every seal to land. The sink answers after `sealMillis`.
+    private void sealAfterAppends(long sealMillis, boolean withWal) {
         var sealer = segmentSealer((segment, _) -> record(segment, sealMillis));
+
+        if (withWal) {
+            sealer.walAttached(STREAM, PARTITION, AppendLog.open(walDir.resolve("p.wal")).onFailure(cause -> fail(cause.message())).unwrap());
+        }
 
         try (var ring = OffHeapRingBuffer.offHeapRingBuffer(STREAM, PARTITION, RING_EVENTS, 4096, sealer)) {
             for (var i = 0; i < APPENDS; i++) {
