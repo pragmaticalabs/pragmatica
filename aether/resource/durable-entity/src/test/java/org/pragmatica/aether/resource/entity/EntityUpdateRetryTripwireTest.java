@@ -3,6 +3,9 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import java.nio.ByteBuffer;
+import java.util.Arrays;
+import org.pragmatica.lang.utils.Causes;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -222,7 +225,7 @@ class EntityUpdateRetryTripwireTest {
             if (refuseNextAppendBeforeLanding) {
                 refuseNextAppendBeforeLanding = false;
 
-                return org.pragmatica.lang.utils.Causes.cause("not enough in-sync replicas").promise();
+                return Causes.cause("not enough in-sync replicas").promise();
             }
 
             var offset = appendRaw(record);
@@ -230,7 +233,7 @@ class EntityUpdateRetryTripwireTest {
             if (barrierUnmetOnNextAppend) {
                 barrierUnmetOnNextAppend = false;
 
-                return new EntityLogError.ReplicationBarrierUnmet(keyspace, partition, offset, 2, org.pragmatica.lang.utils.Causes.cause("replica down")).promise();
+                return new EntityLogError.ReplicationBarrierUnmet(keyspace, partition, offset, 2, Causes.cause("replica down")).promise();
             }
 
             return Promise.success(offset);
@@ -316,8 +319,8 @@ class EntityUpdateRetryTripwireTest {
 
             var window = log.subList((int) Math.max(0, offset - 3), (int) offset + 1);
 
-            return Option.some(java.nio.ByteBuffer.allocate(Integer.BYTES)
-                                                  .putInt(window.stream().mapToInt(java.util.Arrays::hashCode).reduce(17, (h, e) -> 31 * h + e))
+            return Option.some(ByteBuffer.allocate(Integer.BYTES)
+                                                  .putInt(window.stream().mapToInt(Arrays::hashCode).reduce(17, (h, e) -> 31 * h + e))
                                                   .array());
         }
     }

@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
+import org.pragmatica.aether.stream.replication.ReplicationManager;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -83,7 +86,7 @@ class EntityCheckpointTripwireTest {
         metadata = MetadataStore.inMemoryMetadataStore("entity-ckpt");
         manager = streamPartitionManager(64L * 1024 * 1024,
                                          EvictionListener.NOOP,
-                                         org.pragmatica.aether.stream.replication.ReplicationManager.NONE,
+                                         ReplicationManager.NONE,
                                          walBaseDir,
                                          (_, _) -> sealedFloor);
         manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
@@ -206,7 +209,7 @@ class EntityCheckpointTripwireTest {
     /// The owner reports `through` committed. With a WAL the replica's own write is durable a moment after the append returns, and the position
     /// is exposed only up to that, so the report is repeated (as the owner's tick does) until the substrate shows it.
     private void commit(long through, Epoch epoch) {
-        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
 
         manager.syncReplicated(arc, PARTITION).await();
 
@@ -217,7 +220,7 @@ class EntityCheckpointTripwireTest {
                 return;
             }
 
-            java.util.concurrent.locks.LockSupport.parkNanos(5_000_000L);
+            LockSupport.parkNanos(5_000_000L);
         } while (System.nanoTime() < deadline);
 
         assertThat(substrate.committedOffset(KEYSPACE, PARTITION)).as("the committed position reached " + through).isGreaterThanOrEqualTo(through);

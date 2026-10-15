@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.validation;
 
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -145,7 +146,7 @@ class InertStreamConfigParityTripwireTest {
                """.formatted(line);
     }
 
-    private static java.util.List<String> rejectedRules(String toml) {
+    private static List<String> rejectedRules(String toml) {
         return StreamResourceValidator.partition(Option.some(toml), APP_ARTIFACT, Map.of(), ReplicationContext.BUILT_IN)
                                       .onFailure(cause -> fail("Expected a partition, got: " + cause.message()))
                                       .unwrap()

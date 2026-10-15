@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -34,6 +35,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 import static org.pragmatica.aether.stream.forward.StreamForwardHandler.streamForwardHandler;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
@@ -92,7 +94,7 @@ class ReplicaFloorTripwireTest {
 
     /// The forward handler answers asynchronously, after its barrier (5 s ack timeout when a listed peer never acks).
     private PublishForwardResponse answer() {
-        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20);
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
 
         while (answers.isEmpty() && System.nanoTime() < deadline) {
             Thread.onSpinWait();
@@ -102,7 +104,7 @@ class ReplicaFloorTripwireTest {
     }
 
     private void materialize(int confirmationFactor) {
-        manager.createStream(config(confirmationFactor)).onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+        manager.createStream(config(confirmationFactor)).onFailure(cause -> fail(cause.message()));
     }
 
     /// Controls, GREEN and meant to stay green: with the ISR already shrunk below `CF - 1` every variant that has a floor
