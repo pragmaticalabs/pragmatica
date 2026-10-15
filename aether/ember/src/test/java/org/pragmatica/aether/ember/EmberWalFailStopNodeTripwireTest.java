@@ -42,7 +42,7 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 ///   true (control: it IS exposed), yet for 60 s the committed owner of the partition is unchanged, and the owner's
 ///   Prometheus scrape (`/api/v1/metrics/prometheus`) has no line matching one shared case-insensitive regex (`wal` and `fail|stop` on one line) (control: the
 ///   scrape works and carries other `aether` lines).
-/// - `@Disabled` acceptance: both happen - the committed owner changes within 60 s, and a gauge line naming the WAL
+/// - `@Disabled` acceptance, two tests so that a fix doing only one shows: (a) `stepsDown`, (b) `isGauged`; both - the committed owner changes within 60 s, and a gauge line naming the WAL
 ///   fail-stop appears. Which gauge name and which step-down mechanism is the overhaul's choice; the regex is the contract.
 @PortBudget
 class EmberWalFailStopNodeTripwireTest {
@@ -88,14 +88,23 @@ class EmberWalFailStopNodeTripwireTest {
     }
 
     @Test
-    @Disabled("D-01 (#2201): enable when a WAL fail-stop steps the owner down and raises a gauge; RED today: the committed owner never changes and no metric names it")
+    @Disabled("D-01 (#2201): enable when a WAL fail-stop steps the owner down; RED today: the committed owner never changes")
     @Timeout(600)
-    void walFailStopOnTheOwner_stepsDownAndIsGauged() {
+    void walFailStopOnTheOwner_stepsDown() {
         var owner = failStopTheOwner();
         var ownerId = owner.self().id();
 
         publishFails(owner);
         awaitUntil(() -> !committedOwner().equals(Option.some(ownerId)) && committedOwner().isPresent(), WINDOW_MS, "the committed owner moved off " + ownerId + " after its WAL fail-stop");
+    }
+
+    @Test
+    @Disabled("D-01 (#2201): enable when a WAL fail-stop is gauged; RED today: no scrape line matches the shared regex")
+    @Timeout(600)
+    void walFailStopOnTheOwner_isGauged() {
+        var owner = failStopTheOwner();
+
+        publishFails(owner);
         awaitUntil(() -> WAL_FAIL_GAUGE.matcher(scrape(owner)).find(), WINDOW_MS, "a scrape line matches " + GAUGE_REGEX);
     }
 
