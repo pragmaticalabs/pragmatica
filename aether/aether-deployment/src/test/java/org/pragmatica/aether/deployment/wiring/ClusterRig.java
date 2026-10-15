@@ -65,6 +65,10 @@ final class ClusterRig implements AutoCloseable {
     private volatile String gatedInput = "";
     /// The committed leader changes without the FSM hearing of it yet: the window the pre-submit self-check exists for.
     volatile boolean muteLeaderNotifications;
+    /// The seams the next `Rebuild` reads; the default is a three-core roster with no `coreView`.
+    volatile Seams supplied;
+    /// The seams the model held at the end of its last `Rebuild` step.
+    volatile Seams atRebuild;
 
     ClusterRig() {
         var settings = Settings.settings(SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds());
@@ -101,12 +105,17 @@ final class ClusterRig implements AutoCloseable {
     private Seams seams() {
         snapshots.incrementAndGet();
 
-        return Seams.UNWIRED.withCountedCores(Set.of(SELF, CORE_2, CORE_3)).withReady(Set.of(SELF, CORE_2, CORE_3));
+        return supplied != null
+               ? supplied
+               : Seams.UNWIRED.withCountedCores(Set.of(SELF, CORE_2, CORE_3)).withReady(Set.of(SELF, CORE_2, CORE_3));
     }
 
     private void stepped(String fsm, String input, long nanos) {
         stepThreads.add(Thread.currentThread().getName());
         stepped.add(input);
+        if (input.equals("Rebuild") && interpreter.state() instanceof ClusterState.Active active) {
+            atRebuild = active.model().seams();
+        }
 
         if (input.equals(gatedInput)) {
             await().atMost(Duration.ofSeconds(10)).until(() -> gate.getCount() == 0);
@@ -157,6 +166,26 @@ final class ClusterRig implements AutoCloseable {
     /// A target of `instances` for `artifact`: the leader places goals for it.
     ClusterRig target(Artifact artifact, int instances) {
         applier.put(new SliceTargetKey(artifact.base()), SliceTargetValue.sliceTargetValue(artifact.version(), instances, 1));
+
+        return this;
+    }
+
+    /// A committed DEPARTED record for `node` naming `process`, written the way the leader writes it: one `LeaderTransaction`.
+    ClusterRig departed(NodeId node, org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation process) {
+        var key = AetherKey.NodeDepartureKey.nodeDepartureKey(node);
+        var value = new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED,
+                                                       1L,
+                                                       process,
+                                                       org.pragmatica.lang.Option.some(AetherValue.DepartureCause.NODE_REMOVED),
+                                                       START_WALL);
+
+        applier.commit(List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction<>(key,
+                                                                                                      "departed-" + node.id(),
+                                                                                                      LEADER,
+                                                                                                      List.of(),
+                                                                                                      List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Mutation<>(key,
+                                                                                                                                                                              org.pragmatica.lang.Option.none(),
+                                                                                                                                                                              org.pragmatica.lang.Option.some(value))))));
 
         return this;
     }

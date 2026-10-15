@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.wiring;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
@@ -55,6 +56,17 @@ abstract class FsmRuntime<I, K, A> {
     /// Enqueues `input`. `false` only after [#close()].
     public boolean deliver(I input) {
         return offered(mailbox.offer(new FsmItem.Input<>(input)), inputName(input));
+    }
+
+    /// Enqueues `input` after removing every queued input `superseded` matches: *drop the older, append the newer* (design 3.1, review M1). The
+    /// newer input stays behind everything enqueued before it, so a sample that already lacks a node never overtakes that node's removal.
+    public boolean deliverCoalescing(I input, Predicate<I> superseded) {
+        return offered(mailbox.offerCoalescing(new FsmItem.Input<>(input), item -> supersedes(item, superseded)),
+                       inputName(input));
+    }
+
+    private static <I, K> boolean supersedes(FsmItem<I, K> item, Predicate<I> superseded) {
+        return item instanceof FsmItem.Input<I, K> queued && superseded.test(queued.input());
     }
 
     /// Enqueues a KV-sourced `input` stamped by the delivering thread with `KVStore.notificationRevision()` and `KVStore.isReplaying()`.
