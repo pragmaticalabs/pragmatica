@@ -71,11 +71,12 @@ class WalFailStopObservabilityTripwireTest {
         assertThat(first.isFailure()).as("control: the publish that met the I/O failure is reported failed").isTrue();
         assertThat(second.isFailure()).as("control: the partition stays unwritable").isTrue();
         assertThat(failStoppedInTheSnapshot()).as("control, 1b-edge: WalStats.failStopped IS exposed (the management JSON reads this)").isTrue();
-        TimeUnit.MILLISECONDS.sleep(500);
+        // same 5 s allowance as the real assertion: an alarm raised late must also redden this tripwire
+        TimeUnit.SECONDS.sleep(5);
         assertThat(warnings).as(ENABLE).isEmpty();
     }
 
-    @Disabled("D-01 real assertion, RED today: a WAL fail-stop must raise an operator warning within 5 s (#2201)")
+    @Disabled("D-01 real assertion, RED today: a WAL fail-stop must raise an operator warning naming the stream and partition within 5 s (#2201)")
     @Test
     void walFailStop_raisesAnOperatorWarning() throws Exception {
         failStopTheWal();
@@ -84,11 +85,15 @@ class WalFailStopObservabilityTripwireTest {
 
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
 
-        while (warnings.isEmpty() && System.nanoTime() < deadline) {
+        while (!namesTheStoppedPartition() && System.nanoTime() < deadline) {
             TimeUnit.MILLISECONDS.sleep(20);
         }
 
-        assertThat(warnings).as("an operator learns of the fail-stop from an alarm, not from polling the JSON").isNotEmpty();
+        assertThat(namesTheStoppedPartition()).as("an operator learns of the fail-stop from an alarm that names the stream and partition, not from polling the JSON: %s", warnings).isTrue();
+    }
+
+    private boolean namesTheStoppedPartition() {
+        return warnings.stream().anyMatch(warning -> warning.subject().contains(STREAM) && warning.subject().contains(String.valueOf(PARTITION)));
     }
 
     private boolean failStoppedInTheSnapshot() {

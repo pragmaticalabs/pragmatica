@@ -81,7 +81,7 @@ class InertStreamConfigParityTripwireTest {
         var toml = streamSection(key.line());
 
         assertThat(rejectedRules(toml).contains("[streams.orders]::" + key.rule()) && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
-            .as("the validator rejects `%s` as inert, yet the activation binder accepts it", key.line())
+            .as("the validator rejects `%s` as inert, yet the activation binder accepts it; satisfied by making the key effective; deleting the validation also satisfies it and is NOT the fix", key.line())
             .isFalse();
     }
 
@@ -102,7 +102,7 @@ class InertStreamConfigParityTripwireTest {
 
         assertThat(StreamResourceValidator.ensureHonourableConsistency(Option.some(toml)).isFailure()
                    && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
-            .as("the publish gate refuses STRONG, yet the activation binder accepts it")
+            .as("the publish gate refuses STRONG, yet the activation binder accepts it; satisfied by making the key effective; deleting the validation also satisfies it and is NOT the fix")
             .isFalse();
     }
 
@@ -124,7 +124,7 @@ class InertStreamConfigParityTripwireTest {
 
         assertThat(rejectedRules(toml).contains("[streams.orders.consumers.billing]::" + key.rule())
                    && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
-            .as("the validator rejects `%s` as inert, yet the activation binder accepts the section", key.line())
+            .as("the validator rejects `%s` as inert, yet the activation binder accepts the section; satisfied by making the key effective; deleting the validation also satisfies it and is NOT the fix", key.line())
             .isFalse();
     }
 

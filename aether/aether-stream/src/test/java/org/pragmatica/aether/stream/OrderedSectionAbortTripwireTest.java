@@ -51,6 +51,11 @@ class OrderedSectionAbortTripwireTest {
     private static final String ENABLE = "A-01 tripwire: the ordered section now aborts a refused append; delete this tripwire and enable the real assertion beside it (#2201)";
 
     /// The ring contract itself: a failed `inOrder` must leave the head where it was (RING appendOrdered).
+    ///
+    /// This pair is ring-API specific: it flips ONLY for an abort inside `OffHeapRingBuffer.appendOrdered`. An abort placed in the manager
+    /// (wrapping `inOrder` in `StreamPartitionManager`, which 1b-core's "no caller change" leaves open) leaves the ring contract as it is. The two
+    /// manager-level groups below (`FailStoppedWal`, `EpochRace`) flip for either placement; read them as the acceptance criterion, and this pair as
+    /// the pin for a ring-level fix only.
     @Nested
     class RingContract {
         @Test

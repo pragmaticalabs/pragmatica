@@ -48,6 +48,11 @@ import static org.pragmatica.aether.stream.replication.ReplicationManager.replic
 /// been acknowledged. Every variant below runs the real caller class, the real manager and the real
 /// `DefaultReplicationManager`; the replica set is the only fixture.
 ///
+/// **Limit of the dead-peer fixture (a fix that uses real liveness must supply that input here).** "Dead" is modelled only as "listed in the committed
+/// ISR and never acking"; the floor has no liveness input today, so nothing in the fixture says the peer is down. A fix that decides on a real
+/// liveness signal (SWIM membership, a heartbeat age) will not flip these tripwires until the fixture feeds that signal to the manager; the fixture
+/// then changes, the assertion (nothing appended) does not.
+///
 /// The "dead" peer is modelled as: registered, listed in the committed ISR, and never acking. How the overhauled floor
 /// learns of the death (a liveness input) does not exist yet, so the REAL assertions state only the outcome the
 /// overhaul owes: the publish is refused BEFORE anything is appended. [unverified: the fixture gains a liveness input
@@ -155,6 +160,23 @@ class ReplicaFloorTripwireTest {
             assertThat(answer().success()).isFalse();
             assertThat(answer().outcomeUnknown()).isFalse();
             assertThat(manager.nextExpectedOffset(STREAM, PARTITION)).isZero();
+        }
+    }
+
+    /// Positive control, GREEN now and after the fix: with every listed replica alive and acking the publish succeeds, so the real assertions
+    /// below cannot be satisfied by refusing everything.
+    @Nested
+    class HealthyIsrIsAcked {
+        @Test
+        void routerSinglePublish_succeeds_whenEveryListedReplicaAcks() {
+            listInIsr(List.of(SELF, DEAD));
+            registry.updateWatermark(STREAM, PARTITION, DEAD, 1_000L);
+            materialize(DECLARED_CF);
+
+            var outcome = StreamWriteRouter.localOnly(manager).publish(STREAM, PARTITION, PAYLOAD, TIMESTAMP).await();
+
+            assertThat(outcome.isSuccess()).as("control: " + outcome).isTrue();
+            assertThat(manager.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(1L);
         }
     }
 
