@@ -71,6 +71,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -205,13 +206,34 @@ public interface BlueprintService {
                                              Option<ConfigurationProvider> nodeComposite,
                                              OperatorWarningSink operatorWarnings,
                                              boolean routeVersionInHeader) {
+        return blueprintService(cluster,
+                                store,
+                                repository,
+                                artifactStore,
+                                nodeComposite,
+                                operatorWarnings,
+                                routeVersionInHeader,
+                                false);
+    }
+
+    /// `recordsApply`: the FSM2 engine is running (phase-3 design 8.3 B17, Q8), so the publish batch also opens the apply record
+    /// (`DeploymentApplyKey`), which the cluster FSM completes with SUCCEEDED; the publish confirms it landed.
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             ArtifactStore artifactStore,
+                                             Option<ConfigurationProvider> nodeComposite,
+                                             OperatorWarningSink operatorWarnings,
+                                             boolean routeVersionInHeader,
+                                             boolean recordsApply) {
         return new BlueprintServiceInstance(cluster,
                                             store,
                                             repository,
                                             Option.some(artifactStore),
                                             nodeComposite,
                                             operatorWarnings,
-                                            routeVersionInHeader);
+                                            routeVersionInHeader,
+                                            recordsApply);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -232,6 +254,21 @@ public interface BlueprintService {
                                              Repository repository,
                                              OperatorWarningSink operatorWarnings) {
         return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty(), operatorWarnings);
+    }
+
+    /// No artifact store, the apply record on or off (phase-3 design 8.3 B17): for the engine the node runs.
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             boolean recordsApply) {
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.empty(),
+                                            Option.empty(),
+                                            OperatorWarningSink.logOnly(),
+                                            false,
+                                            recordsApply);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -271,6 +308,7 @@ class BlueprintServiceInstance implements BlueprintService {
     private final Option<ConfigurationProvider> nodeComposite;
     private final OperatorWarningSink operatorWarnings;
     private final boolean routeVersionInHeader;
+    private final boolean recordsApply;
 
     BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                              KVStore<AetherKey, AetherValue> store,
@@ -288,6 +326,18 @@ class BlueprintServiceInstance implements BlueprintService {
                              Option<ConfigurationProvider> nodeComposite,
                              OperatorWarningSink operatorWarnings,
                              boolean routeVersionInHeader) {
+        this(cluster, store, repository, artifactStore, nodeComposite, operatorWarnings, routeVersionInHeader, false);
+    }
+
+    BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
+                             KVStore<AetherKey, AetherValue> store,
+                             Repository repository,
+                             Option<ArtifactStore> artifactStore,
+                             Option<ConfigurationProvider> nodeComposite,
+                             OperatorWarningSink operatorWarnings,
+                             boolean routeVersionInHeader,
+                             boolean recordsApply) {
+        this.recordsApply = recordsApply;
         this.routeVersionInHeader = routeVersionInHeader;
         this.cluster = cluster;
         this.store = store;
@@ -605,9 +655,85 @@ class BlueprintServiceInstance implements BlueprintService {
 
         return cluster.apply(commands)
                       .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0))
+                      .flatMap(stored -> confirmApplyRecord(stored, attemptId, 0))
                       .map(stored -> PublishedBlueprint.publishedBlueprint(stored,
                                                                            bindings.rejected(),
                                                                            bindings.warnings()));
+    }
+
+    // -- the apply record (phase-3 design 8.3 B17, spec Q8, R-4.1.1..R-4.1.3, NT-86, NT-118) -----------------------------
+    /// The failure of a publish whose apply record never landed: with no open apply the cluster FSM never writes SUCCEEDED, so the deployment
+    /// would sit IN_PROGRESS for good. Reported to the publisher instead of confirming a publish that cannot complete.
+    private static final Fn1<Cause, String> APPLY_RECORD_NOT_CONFIRMED = Causes.forOneValue("Blueprint %s is published but its apply record did not land; it would never complete");
+
+    private Option<KVCommand<AetherKey>> applyRecord(ExpandedBlueprint expanded, String attemptId) {
+        return recordsApply
+               ? Option.some(applyRecordPut(expanded, attemptId))
+               : Option.none();
+    }
+
+    private KVCommand<AetherKey> applyRecordPut(ExpandedBlueprint expanded, String attemptId) {
+        return new Put<>(AetherKey.DeploymentApplyKey.deploymentApplyKey(expanded.id()),
+                         new AetherValue.DeploymentApplyValue(attemptId,
+                                                              previousBlueprint(expanded),
+                                                              System.currentTimeMillis()));
+    }
+
+    /// R-4.1.2: what a rollback restores: the same-id overwritten value; otherwise the blueprint of the committed target's prior version;
+    /// otherwise none (delete).
+    private Option<AppBlueprintValue> previousBlueprint(ExpandedBlueprint expanded) {
+        return committedBlueprint(expanded.id()).orElse(() -> priorActiveBlueprint(expanded));
+    }
+
+    private Option<AppBlueprintValue> committedBlueprint(BlueprintId id) {
+        return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
+                    .filter(AppBlueprintValue.class::isInstance)
+                    .map(AppBlueprintValue.class::cast);
+    }
+
+    private Option<AppBlueprintValue> priorActiveBlueprint(ExpandedBlueprint expanded) {
+        return Option.option(expanded.loadOrder().isEmpty()
+                             ? null
+                             : expanded.loadOrder().getFirst())
+                     .map(slice -> slice.artifact()
+                                        .base())
+                     .flatMap(base -> store.get(AetherKey.SliceTargetKey.sliceTargetKey(base)))
+                     .filter(AetherValue.SliceTargetValue.class::isInstance)
+                     .map(AetherValue.SliceTargetValue.class::cast)
+                     .map(AetherValue.SliceTargetValue::currentVersion)
+                     .filter(prior -> !prior.equals(expanded.id().artifact().version()))
+                     .flatMap(prior -> committedBlueprint(BlueprintId.blueprintId(expanded.id()
+                                                                                          .base()
+                                                                                          .withVersion(prior))));
+    }
+
+    /// The existing re-read, extended to the apply record: it landed (this attempt's record is committed), or it already did its job (the apply
+    /// closed: this attempt's terminal outcome is committed), or a newer publish owns the id. Anything else is retried, bounded, then reported.
+    private Promise<ExpandedBlueprint> confirmApplyRecord(ExpandedBlueprint expanded, String attemptId, int attempt) {
+        if (!recordsApply || applyRecordSettled(expanded.id(), attemptId)) {
+            return Promise.success(expanded);
+        }
+
+        if (attempt >= MAX_OUTCOME_START_ATTEMPTS) {
+            return APPLY_RECORD_NOT_CONFIRMED.apply(expanded.id().asString()).promise();
+        }
+
+        return cluster.apply(List.<KVCommand<AetherKey>> of(applyRecordPut(expanded, attemptId)))
+                      .flatMap(_ -> confirmApplyRecord(expanded, attemptId, attempt + 1));
+    }
+
+    private boolean applyRecordSettled(BlueprintId id, String attemptId) {
+        var landed = store.get(AetherKey.DeploymentApplyKey.deploymentApplyKey(id))
+                          .filter(AetherValue.DeploymentApplyValue.class::isInstance)
+                          .map(AetherValue.DeploymentApplyValue.class::cast)
+                          .filter(record -> record.attemptId()
+                                                  .equals(attemptId))
+                          .isPresent();
+        var closed = outcome(id).filter(outcome -> outcome.status() != AetherValue.DeploymentOutcomeStatus.IN_PROGRESS && outcome.describesAttempt(attemptId))
+                            .isPresent();
+        var superseded = committedAttempt(id).filter(committed -> !committed.equals(attemptId)).isPresent();
+
+        return landed || closed || superseded;
     }
 
     /// Deploy-time single-migrator gate. Every datasource this artifact declares migrations for must
@@ -675,6 +801,8 @@ class BlueprintServiceInstance implements BlueprintService {
         // rather than an absence. Absence was what five rounds of #924 condemned deployments on.
         commands.add(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
                                startedOutcome(expanded.id(), attemptId)));
+        // Q8 (FSM2 only): the open apply, and what a rollback restores, ride the same batch.
+        applyRecord(expanded, attemptId).onPresent(commands::add);
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -1185,8 +1313,13 @@ class BlueprintServiceInstance implements BlueprintService {
         // buildAllCommands. The FSM writes each slice's `SliceTargetKey` only after applying this
         // blueprint, so no node can see a slice target without its bindings — the ordering
         // `StreamAddressError` rests on when it treats missing bindings as fatal rather than retryable.
-        return cluster.apply(List.of(command, outcomeStart, streamBindings))
-                      .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0));
+        var batch = new ArrayList<KVCommand<AetherKey>>(List.of(command, outcomeStart, streamBindings));
+
+        applyRecord(expanded, attemptId).onPresent(batch::add);
+
+        return cluster.apply(batch)
+                      .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0))
+                      .flatMap(stored -> confirmApplyRecord(stored, attemptId, 0));
     }
 
     private Promise<Unit> removeFromStore(AetherKey.AppBlueprintKey key) {

@@ -69,6 +69,14 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
     private static final Logger log = LoggerFactory.getLogger(SliceRuntimeAdapter.class);
     private static final Fn1<Cause, LocalStep> UNWIRED = Causes.forOneValue("unwired in phase 3 tracer: %s");
 
+    /// The steps this adapter does not execute in the tracer: they lie outside the path T and E-01 walk. [#wired] is the single answer to "does a step
+    /// run?", so a binding that feeds the adapter's steps (the config hook feeding `NOTIFY_CONFIG`) can ask instead of assuming.
+    private static final java.util.Set<LocalStep> UNWIRED_STEPS = java.util.EnumSet.of(LocalStep.PREPARE_TEARDOWN,
+                                                                                       LocalStep.DEACTIVATE,
+                                                                                       LocalStep.UNLOAD,
+                                                                                       LocalStep.FORCED_CLEANUP,
+                                                                                       LocalStep.NOTIFY_CONFIG);
+
     /// What the adapter drives.
     public record Collaborators(NodeId self,
                                 SliceStore sliceStore,
@@ -97,6 +105,12 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
 
     public static SliceRuntimeAdapter sliceRuntimeAdapter(Collaborators collaborators) {
         return new SliceRuntimeAdapter(collaborators);
+    }
+
+    /// Whether `step` is executed by this adapter. A step that is not fails loudly (`unwired in phase 3 tracer`), so whatever input would
+    /// cause it must not be bound to the node FSM (N-2).
+    public static boolean wired(LocalStep step) {
+        return ! UNWIRED_STEPS.contains(step);
     }
 
     @Override

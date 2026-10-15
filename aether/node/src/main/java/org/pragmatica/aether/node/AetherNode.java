@@ -65,6 +65,14 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
+import org.pragmatica.aether.deployment.wiring.FsmTimers;
+import org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapter;
+import org.pragmatica.aether.node.deployment.AdmissionSeam;
+import org.pragmatica.aether.node.deployment.DeploymentWiring;
+import org.pragmatica.aether.node.deployment.EffectTranslator;
+import org.pragmatica.aether.node.deployment.Fsm2System;
+import org.pragmatica.aether.node.deployment.SeamPoller;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
@@ -402,6 +410,7 @@ import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.composite.CompositeMeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -439,6 +448,8 @@ public interface AetherNode extends ManageableNode {
     PeriodicTasks periodicTasks();
     InvocationHandler invocationHandler();
     BlueprintService blueprintService();
+    /// Phase-3 design 8.3: the one place the engine-dependent hooks are bound, with the FSM2 system when the engine is FSM2.
+    DeploymentWiring deploymentWiring();
     MavenProtocolHandler mavenProtocolHandler();
     ArtifactStore artifactStore();
     TopologyManager topologyManager();
@@ -2528,7 +2539,9 @@ public interface AetherNode extends ManageableNode {
                           // can close.
                           Option<SpiResourceProvider> spiResourceProvider,
                           NodeReplacementService nodeReplacementService,
-                          UpgradeRunService upgradeRunService) implements AetherNode {
+                          UpgradeRunService upgradeRunService,
+                          // Phase-3 design 8.3: the one place the engine-dependent hooks are bound; stopped with the node.
+                          DeploymentWiring deploymentWiring) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -2649,6 +2662,7 @@ public interface AetherNode extends ManageableNode {
             /// an observer that races awaiters.
             private Unit armPeriodicTasks(Unit unit) {
                 periodicTasks.arm();
+                deploymentWiring.start();
 
                 return unit;
             }
@@ -2668,6 +2682,7 @@ public interface AetherNode extends ManageableNode {
                 kvBackupService.onPresent(KvBackupService::stop);
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
+                deploymentWiring.stop();
                 controlLoop.stop();
                 workerMetricsAggregator.stop();
                 metricsScheduler.stop();
@@ -2725,7 +2740,7 @@ public interface AetherNode extends ManageableNode {
                 //
                 // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
                 // skipped past rather than ending the shutdown.
-                return NodeStopSequence.run(NodeStopSequence.Steps.steps(clusterDeploymentManager::deactivate,
+                return NodeStopSequence.run(NodeStopSequence.Steps.steps(() -> deploymentWiring.deactivateCluster(clusterDeploymentManager::deactivate),
                                                                          () -> managementServer.map(ManagementServer::stop)
                                                                                                .or(Promise.unitPromise()),
                                                                          appHttpServer::stop,
@@ -3771,6 +3786,17 @@ public interface AetherNode extends ManageableNode {
         // Ember node's). It hands each warning off to a bounded queue, so a raise from SWIM, replication or the
         // core-absence fence never waits on the event log. Idle throttle keys are evicted once per minute.
         var operatorWarningSink = OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);
+        // Phase-3 design 8: the deployment engine this node runs. ONE boot-token registry per process (shared below by SWIM and the QUIC
+        // transport), read by the FSM2 routes at delivery; the engine marker guard; and the one place every engine-dependent hook is bound.
+        var bootTokens = BootTokens.bootTokens(bootToken);
+        var deploymentMeters = new CompositeMeterRegistry();
+        var deploymentWiring = DeploymentWiring.deploymentWiring(config,
+                                                                 configuredWorker(config),
+                                                                 kvStore,
+                                                                 bootTokens,
+                                                                 deploymentMeters,
+                                                                 operatorWarningSink,
+                                                                 identityRefusedExit);
         // #2062: an instance whose termination the CTM cannot confirm after its bounded retries is an operator event.
         clusterTopologyManager.setOperatorWarningSink(operatorWarningSink);
         // #1109: the leader's committed-target gate reports a LOAD it has refused past the bound to THIS node's event log.
@@ -3797,7 +3823,8 @@ public interface AetherNode extends ManageableNode {
                                                                  operatorWarningSink,
                                                                  config.appHttp()
                                                                        .apiVersioningDetection()
-                                                                       .isHeaderMode());
+                                                                       .isHeaderMode(),
+                                                                 deploymentWiring.applyRecords());
         // #1640: a cluster event whose publish did not land (the partition's owner died with it) waits in the
         // aggregator and is re-sent once a second until it lands or its horizon passes.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,
@@ -4040,6 +4067,14 @@ public interface AetherNode extends ManageableNode {
                                                                                             currentGenerationEpochSupplier);
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
+        // B4, B10, B11, B12 (design 8.3): hooks of the legacy engine that are off the FSM2 tracer's path; under FSM2 each is a counted drop.
+        var passiveClientActivation = deploymentWiring.legacyGated("B4.PassiveClientSwitch",
+                                                                   () -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
+                                                                                                 nodeDeploymentManager));
+        var workerAdmissionJoin = deploymentWiring.legacy("B10.WorkerAdmission", clusterDeploymentManager::onWorkerJoin);
+        var placementRedrive = deploymentWiring.legacy("B11.PlacementRedrive",
+                                                       clusterDeploymentManager::onNodePlacementPut);
+        var drainReportTarget = deploymentWiring.legacy("B12.DrainReport", clusterDeploymentManager::onNodeDraining);
         var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
@@ -4129,6 +4164,7 @@ public interface AetherNode extends ManageableNode {
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
+                                                deploymentWiring,
                                                 endpointRegistry,
                                                 topicSubscriptionRegistry,
                                                 streamConsumerRegistry,
@@ -4326,7 +4362,7 @@ public interface AetherNode extends ManageableNode {
                                                      .onPut(AetherKey.NodePlacementKey.class,
                                                             (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
                                                                                                                                                             membershipFsmRef::get,
-                                                                                                                                                            clusterDeploymentManager))
+                                                                                                                                                            placementRedrive))
                                                      .onPut(AetherKey.GossipKeyRotationKey.class,
                                                             gossipKeyRotationHandler::onGossipKeyRotationPut)
                                                      .build();
@@ -4359,6 +4395,7 @@ public interface AetherNode extends ManageableNode {
         allEntries.addAll(epochSources.incarnation().routeEntries());
         allEntries.addAll(aetherEntries);
         allEntries.addAll(activationKvRouter.asRouteEntries());
+        allEntries.addAll(deploymentWiring.guardEntries());
         var swimTimeouts = config.timeouts().swim();
         var swimConfig = SwimConfig.fromTimeouts(swimTimeouts.period(),
                                                  swimTimeouts.probeTimeout(),
@@ -4435,8 +4472,6 @@ public interface AetherNode extends ManageableNode {
         swimHealthDetectorHolder.set(swimHealthDetector);
         // ONE boot-token registry per process, shared by SWIM and the QUIC transport: a process
         // either layer refuses can never be admitted by the other (terminal removal, #1528).
-        var bootTokens = BootTokens.bootTokens(bootToken);
-
         swimHealthDetector.setBootTokens(bootTokens);
         // #1574: SWIM's operator warnings reach THIS node's event log, never another Ember node's.
         swimHealthDetector.setOperatorWarningSink(operatorWarningSink);
@@ -4635,8 +4670,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                       () -> {
                                                                                                                           clusterNode.authorizePassiveClient();
                                                                                                                           switchableCluster.switchTo(forwardingClusterNode);
-                                                                                                                          reconcileNodeActivation(() -> runtimeReady(clusterNode),
-                                                                                                                                                  nodeDeploymentManager);
+                                                                                                                          passiveClientActivation.run();
                                                                                                                       },
                                                                                                                       message -> metadataFailureReporter.report(config.self(),
                                                                                                                                                                 message),
@@ -4748,9 +4782,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                             descriptor);
                                                                                                                                                      if (membershipFsm.countedMembers()
                                                                                                                                                                       .contains(peer)) {
-                                                                                                                                                     clusterDeploymentManager.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(peer,
-                                                                                                                                                                                                                                 descriptor.role(),
-                                                                                                                                                                                                                                 hlcClock.now()));
+                                                                                                                                                     workerAdmissionJoin.accept(WorkerJoinDecision.workerJoinDecision(peer,
+                                                                                                                                                                                                                      descriptor.role(),
+                                                                                                                                                                                                                      hlcClock.now()));
                                                                                                                                                  }
                                                                                                                                                  }),
                                                                                                   System::nanoTime,
@@ -4878,7 +4912,7 @@ public interface AetherNode extends ManageableNode {
         // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
         // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
         // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
-        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, clusterDeploymentManager));
+        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, drainReportTarget));
         // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
         // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
         // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
@@ -6728,7 +6762,8 @@ public interface AetherNode extends ManageableNode {
                                   backupRestoreCoordinator::onNodeStopping,
                                   resourceProviderSetup.spiProvider(),
                                   replacementWiring.service(),
-                                  upgradeWiring.service());
+                                  upgradeWiring.service(),
+                                  deploymentWiring);
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -6754,17 +6789,70 @@ public interface AetherNode extends ManageableNode {
         // the DHT cannot answer. Without this the node would report ready while its DHT tiers still refuse
         // every operation.
         var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
+        Runnable selfReadySignal = () -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
+                                                                            nodeLifecycle::signalReady,
+                                                                            nodeReportedStateHolder);
 
-        nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
-                                                                                          nodeLifecycle::signalReady,
-                                                                                          nodeReportedStateHolder));
+        deploymentWiring.legacyBinding("B6.SelfReady", () -> nodeDeploymentManager.setSelfReadySignal(selfReadySignal));
+        // Phase-3 design 4.2, 5.2, 8.3: the FSM2 engine, from this node's real collaborators. A worker never gets one (N-3).
+        if (deploymentWiring.isFsm2() && !configuredWorker(config)) {
+            deploymentWiring.attach(Fsm2System.fsm2System(new Fsm2System.Collaborators(config,
+                                                                                       new AetherValue.ProcessIncarnation(bootIncarnation,
+                                                                                                                          bootToken),
+                                                                                       swimConfig,
+                                                                                       membershipConfig.splitTimeout(),
+                                                                                       kvStore,
+                                                                                       () -> switchableCluster,
+                                                                                       bootTokens,
+                                                                                       new SliceRuntimeAdapter.Collaborators(config.self(),
+                                                                                                                             sliceStore,
+                                                                                                                             invocationHandler,
+                                                                                                                             nodeCodec,
+                                                                                                                             Option.some(httpRoutePublisher),
+                                                                                                                             Option.some(sliceInvoker),
+                                                                                                                             ConfigNotificationManager.configNotificationManager(),
+                                                                                                                             kvStore,
+                                                                                                                             () -> switchableCluster,
+                                                                                                                             System::currentTimeMillis,
+                                                                                                                             () -> operatorWarningSink),
+                                                                                       () -> sliceStore.loaded()
+                                                                                                       .stream()
+                                                                                                       .map(SliceStore.LoadedSlice::artifact)
+                                                                                                       .collect(Collectors.toSet()),
+                                                                                       selfReadySignal,
+                                                                                       new EffectTranslator.Targets(config.self(),
+                                                                                                                    delegateRouter::route,
+                                                                                                                    () -> operatorWarningSink,
+                                                                                                                    deploymentMeters,
+                                                                                                                    datasource -> schemaOrchestrator.migrateIfNeeded(datasource)),
+                                                                                       new SeamPoller.Sources(cdmCoreCountedMembersSupplier,
+                                                                                                              stableCdmReadyNodesSupplier,
+                                                                                                              stableCdmDrainingNodesSupplier,
+                                                                                                              () -> Option.option(membershipFsmRef.get()).map(MembershipFsm::coreMembers),
+                                                                                                              () -> Option.some(communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers())),
+                                                                                                              Set::of,
+                                                                                                              () -> deploymentMemberSources(membershipFsm),
+                                                                                                              Map::of,
+                                                                                                              () -> membershipFsm.memberDescriptors()
+                                                                                                                                 .keySet(),
+                                                                                                              bootTokens::tokenOf),
+                                                                                       AdmissionSeam.admissionSeam(bootTokens::tokenOf,
+                                                                                                                   peer -> membershipFsm.memberIncarnations()
+                                                                                                                                        .getOrDefault(peer,
+                                                                                                                                                      0L)),
+                                                                                       deploymentWiring.guard(),
+                                                                                       FsmTimers.sharedScheduler())));
+        }
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
         // stuck in Dormant (self-ready/subsystemsReady never fire) so the node reports SYNCING forever.
         // This tick re-dispatches QuorumEstablished only while still Dormant AND consensus is live —
         // a dropped edge self-heals within one interval; a no-op on every healthy node thereafter.
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
-                                                                                                    nodeDeploymentManager),
+        var activationDriver = deploymentWiring.activationDriver(() -> runtimeReady(clusterNode),
+                                                                 () -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
+                                                                                               nodeDeploymentManager));
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(activationDriver,
                                                                       NDM_ACTIVATION_RECONCILE_INTERVAL));
         nodeLifecycle.subsystemsReady();
         // Review catch (#634 batch): the guard cannot run MEANINGFULLY earlier — `aetherEntries`
@@ -6865,6 +6953,7 @@ public interface AetherNode extends ManageableNode {
 
                                                   managementServer.setOperatorWarningSink(operatorWarningSink);
                                                   managementServerRef.set(Option.some(managementServer));
+                                                  deploymentMeters.add(managementServer.meterRegistry());
                                                   // #278: expose the node's real MeterRegistry to slice-facing resource
                                                   // provisioning so MetricsInterceptorFactory records into the SAME
                                                   // registry the Management API scrapes, instead of each interceptor
@@ -6958,7 +7047,8 @@ public interface AetherNode extends ManageableNode {
                                                                         backupRestoreCoordinator::onNodeStopping,
                                                                         resourceProviderSetup.spiProvider(),
                                                                         replacementWiring.service(),
-                                                                        upgradeWiring.service());
+                                                                        upgradeWiring.service(),
+                                                                        deploymentWiring);
                                               }
 
                                                   return node;
@@ -7959,9 +8049,14 @@ public interface AetherNode extends ManageableNode {
     /// `startDrainEviction`. Package-private so the composition is pinned without booting a node.
     static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm,
                                                 ClusterDeploymentManager clusterDeploymentManager) {
+        return drainReportListener(membershipFsm, clusterDeploymentManager::onNodeDraining);
+    }
+
+    /// The same composition with the eviction half given as a target, which the deployment wiring binds per engine (B12).
+    static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm, Consumer<NodeId> eviction) {
         return drainingNode -> {
             membershipFsm.onDrainAcknowledged(drainingNode);
-            clusterDeploymentManager.onNodeDraining(drainingNode);
+            eviction.accept(drainingNode);
         };
     }
 
@@ -8760,14 +8855,14 @@ public interface AetherNode extends ManageableNode {
 
     private static void retryPlacedWorker(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put,
                                           Supplier<MembershipFsm> membership,
-                                          ClusterDeploymentManager deployment) {
+                                          Consumer<ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue>> redrive) {
         var node = put.cause().key().nodeId();
 
         Option.option(membership.get())
               .filter(fsm -> fsm.isTrackedAndNotDead(node))
               .flatMap(fsm -> fsm.memberDescriptor(node))
               .filter(descriptor -> "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
-              .onPresent(_ -> deployment.onNodePlacementPut(put));
+              .onPresent(_ -> redrive.accept(put));
     }
 
     private static Set<NodeId> retirementCandidates(Set<NodeId> planned,
@@ -9222,6 +9317,16 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// The membership `source` label per tracked node, for the FSM2 seams (B-070, worker community choice).
+    private static Map<NodeId, String> deploymentMemberSources(MembershipFsm membershipFsm) {
+        return membershipFsm.memberDescriptors()
+                            .entrySet()
+                            .stream()
+                            .collect(Collectors.toMap(Map.Entry::getKey,
+                                                      entry -> entry.getValue()
+                                                                    .source()));
+    }
+
     private static boolean configuredWorker(AetherNodeConfig config) {
         return config.workerConfig()
                      .isPresent() || config.topology()
@@ -9292,6 +9397,7 @@ public interface AetherNode extends ManageableNode {
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
                                                                     NodeDeploymentManager nodeDeploymentManager,
                                                                     ClusterDeploymentManager clusterDeploymentManager,
+                                                                    DeploymentWiring deploymentWiring,
                                                                     EndpointRegistry endpointRegistry,
                                                                     TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                                     StreamConsumerRegistry streamConsumerRegistry,
@@ -9338,26 +9444,34 @@ public interface AetherNode extends ManageableNode {
                                                                                                      appHttpServer::httpRoutePublisher);
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                   .onPut(AetherKey.AppBlueprintKey.class,
-                                                         clusterDeploymentManager::onAppBlueprintPut)
+                                                         deploymentWiring.legacy("B1.cdm.AppBlueprintKey.put",
+                                                                                 clusterDeploymentManager::onAppBlueprintPut))
                                                   .onPut(AetherKey.AppBlueprintKey.class,
                                                          securityOverrideSynchronizer::onAppBlueprintPut)
                                                   .onRemove(AetherKey.AppBlueprintKey.class,
                                                             securityOverrideSynchronizer::onAppBlueprintRemove)
                                                   .onPut(AetherKey.SliceTargetKey.class,
-                                                         clusterDeploymentManager::onSliceTargetPut)
+                                                         deploymentWiring.legacy("B1.cdm.SliceTargetKey.put",
+                                                                                 clusterDeploymentManager::onSliceTargetPut))
                                                   .onPut(AetherKey.VersionRoutingKey.class,
-                                                         clusterDeploymentManager::onVersionRoutingPut)
+                                                         deploymentWiring.legacy("B1.cdm.VersionRoutingKey.put",
+                                                                                 clusterDeploymentManager::onVersionRoutingPut))
                                                   .onRemove(AetherKey.AppBlueprintKey.class,
-                                                            clusterDeploymentManager::onAppBlueprintRemove)
+                                                            deploymentWiring.legacy("B1.cdm.AppBlueprintKey.remove",
+                                                                                    clusterDeploymentManager::onAppBlueprintRemove))
                                                   .onRemove(AetherKey.SliceTargetKey.class,
-                                                            clusterDeploymentManager::onSliceTargetRemove)
+                                                            deploymentWiring.legacy("B1.cdm.SliceTargetKey.remove",
+                                                                                    clusterDeploymentManager::onSliceTargetRemove))
                                                   .onRemove(AetherKey.VersionRoutingKey.class,
-                                                            clusterDeploymentManager::onVersionRoutingRemove)
+                                                            deploymentWiring.legacy("B1.cdm.VersionRoutingKey.remove",
+                                                                                    clusterDeploymentManager::onVersionRoutingRemove))
                                                   .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
                                                   .onPut(AetherKey.SliceTargetKey.class,
-                                                         nodeDeploymentManager::onSliceTargetPut)
+                                                         deploymentWiring.legacy("B1.ndm.SliceTargetKey.put",
+                                                                                 nodeDeploymentManager::onSliceTargetPut))
                                                   .onPut(AetherKey.VersionRoutingKey.class,
-                                                         nodeDeploymentManager::onVersionRoutingPut)
+                                                         deploymentWiring.legacy("B1.ndm.VersionRoutingKey.put",
+                                                                                 nodeDeploymentManager::onVersionRoutingPut))
                                                   .onRemove(AetherKey.SliceTargetKey.class,
                                                             controlLoop::onSliceTargetRemove)
                                                   .onPut(AetherKey.AlertThresholdKey.class,
@@ -9401,15 +9515,20 @@ public interface AetherNode extends ManageableNode {
                                                   // ClusterDeploymentManager derive membership from MembershipDecision (routed near the
                                                   // generationSnapshotPublisher wiring above); there are no remaining NodeLifecycleKey consumers.
                                                   .onPut(AetherKey.ActivationDirectiveKey.class,
-                                                         clusterDeploymentManager::onActivationDirectivePut)
+                                                         deploymentWiring.legacy("B1.cdm.ActivationDirectiveKey.put",
+                                                                                 clusterDeploymentManager::onActivationDirectivePut))
                                                   .onRemove(AetherKey.ActivationDirectiveKey.class,
-                                                            clusterDeploymentManager::onActivationDirectiveRemove)
+                                                            deploymentWiring.legacy("B1.cdm.ActivationDirectiveKey.remove",
+                                                                                    clusterDeploymentManager::onActivationDirectiveRemove))
                                                   .onPut(AetherKey.SchemaVersionKey.class,
-                                                         clusterDeploymentManager::onSchemaVersionPut)
+                                                         deploymentWiring.legacy("B1.cdm.SchemaVersionKey.put",
+                                                                                 clusterDeploymentManager::onSchemaVersionPut))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
-                                                         nodeDeploymentManager::onNodeArtifactPut)
+                                                         deploymentWiring.legacy("B1.ndm.NodeArtifactKey.put",
+                                                                                 nodeDeploymentManager::onNodeArtifactPut))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
-                                                         clusterDeploymentManager::onNodeArtifactPut)
+                                                         deploymentWiring.legacy("B1.cdm.NodeArtifactKey.put",
+                                                                                 clusterDeploymentManager::onNodeArtifactPut))
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          endpointRegistry::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class,
@@ -9423,9 +9542,11 @@ public interface AetherNode extends ManageableNode {
                                                   .onPut(AetherKey.GovernorAnnouncementKey.class,
                                                          eventAggregator::onGovernorAnnouncementPut)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            nodeDeploymentManager::onNodeArtifactRemove)
+                                                            deploymentWiring.legacy("B1.ndm.NodeArtifactKey.remove",
+                                                                                    nodeDeploymentManager::onNodeArtifactRemove))
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
-                                                            clusterDeploymentManager::onNodeArtifactRemove)
+                                                            deploymentWiring.legacy("B1.cdm.NodeArtifactKey.remove",
+                                                                                    clusterDeploymentManager::onNodeArtifactRemove))
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
                                                             endpointRegistry::onNodeArtifactRemove)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
@@ -9451,7 +9572,9 @@ public interface AetherNode extends ManageableNode {
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
         // #381: push each applied config change to the registered slices' notifyConfigUpdate.
-        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(nodeDeploymentManager::onConfigChanged));
+        var configApplied = deploymentWiring.configApplied(nodeDeploymentManager::onConfigChanged);
+
+        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(configApplied));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
@@ -9461,15 +9584,19 @@ public interface AetherNode extends ManageableNode {
         // #731 round 3: re-run the dead-worker sweep on every committed reannouncement, not only on
         // the one-shot 2s deferredTopologyRecheck timer (ClusterDeploymentState onEntry).
         kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
-                              clusterDeploymentManager::onGovernorAnnouncementPut);
+                              deploymentWiring.legacy("B1.cdm.GovernorAnnouncementKey.put",
+                                                      clusterDeploymentManager::onGovernorAnnouncementPut));
         kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               ownershipEpochHighWater::onStreamPartitionOwnershipPut);
         // #1640: a new cluster-events owner re-sends every event waiting for redelivery at once.
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               eventAggregator::onStreamPartitionOwnershipPut);
+        deploymentWiring.registerKv(kvRouterBuilder);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
-        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
+                                              deploymentWiring.legacyGated("B2.ClusterStateNotification",
+                                                                           nodeDeploymentManager::onQuorumStateChange)));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, metricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
@@ -9494,7 +9621,9 @@ public interface AetherNode extends ManageableNode {
         // #231 Step 2 — CDM (DEPLOYMENT) leader-pinned. LoadBalancer (DEPLOYMENT) MUST be registered
         // AFTER CDM since it reconciles routes CDM produces.
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
-                                              change -> toggleCdmOnLeaderChange(change, clusterDeploymentManager)));
+                                              deploymentWiring.legacyGated("B7.LeaderChange",
+                                                                           change -> toggleCdmOnLeaderChange(change,
+                                                                                                             clusterDeploymentManager))));
         loadBalancerManager.onPresent(lbm -> entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                                                    change -> toggleLbOnLeaderChange(change,
                                                                                                                     lbm))));
@@ -9527,20 +9656,27 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
-                                              clusterDeploymentManager::onMembershipDecision));
+                                              deploymentWiring.legacy("B9.cdm.NodeJoined",
+                                                                      clusterDeploymentManager::onMembershipDecision)));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
-                                              clusterDeploymentManager::onMembershipDecision));
+                                              deploymentWiring.legacy("B9.cdm.NodeRemoved",
+                                                                      clusterDeploymentManager::onMembershipDecision)));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
-                                              clusterDeploymentManager::onMembershipDecision));
+                                              deploymentWiring.legacy("B9.cdm.NodeDecommissioned",
+                                                                      clusterDeploymentManager::onMembershipDecision)));
         // #728: the non-core join channel. Workers never appear in MembershipDecision (the core
         // topology stream), so without this route assignNodeRole is unreachable for exactly the
         // nodes that need a community — they reach FSM Member and are never assigned a role.
-        entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterDeploymentManager::onWorkerJoin));
+        entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class,
+                                              deploymentWiring.legacy("B10.cdm.WorkerJoin",
+                                                                      clusterDeploymentManager::onWorkerJoin)));
         // #731: the non-core leave channel, symmetric to the join route above — a departed
         // worker's REMOVED edge never reaches MembershipDecision either, so without this route
         // handleNodeRemoval is unreachable for a dead worker and its allocation-pool slot and KV
         // footprint (SliceNodeKey/NodeArtifactKey/NodeRoutesKey) linger forever.
-        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class, clusterDeploymentManager::onWorkerLeave));
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
+                                              deploymentWiring.legacy("B9.cdm.WorkerLeave",
+                                                                      clusterDeploymentManager::onWorkerLeave)));
         entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
                                               decision -> {
                                                   var node = decision.nodeId();
@@ -9559,20 +9695,26 @@ public interface AetherNode extends ManageableNode {
         // dropped `onNodeLifecyclePut` listener's work (drain eviction, etc.) is
         // covered through the single canonical MembershipDecision channel.
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoining.class,
-                                              clusterDeploymentManager::onMembershipDecision));
+                                              deploymentWiring.legacy("B9.cdm.NodeJoining",
+                                                                      clusterDeploymentManager::onMembershipDecision)));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDraining.class,
-                                              clusterDeploymentManager::onMembershipDecision));
+                                              deploymentWiring.legacy("B9.cdm.NodeDraining",
+                                                                      clusterDeploymentManager::onMembershipDecision)));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeFailedDrain.class,
-                                              clusterDeploymentManager::onMembershipDecision));
+                                              deploymentWiring.legacy("B9.cdm.NodeFailedDrain",
+                                                                      clusterDeploymentManager::onMembershipDecision)));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class,
-                                              clusterDeploymentManager::onMembershipDecision));
+                                              deploymentWiring.legacy("B9.cdm.NodeShuttingDown",
+                                                                      clusterDeploymentManager::onMembershipDecision)));
         // RC1 Step 2: NodeDeploymentManager consumes MembershipDecision.NodeShuttingDown
         // to trigger self-shutdown after its `onNodeLifecyclePut` listener was retired.
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeShuttingDown.class,
-                                              nodeDeploymentManager::onMembershipDecision));
+                                              deploymentWiring.legacy("B9.ndm.NodeShuttingDown",
+                                                                      nodeDeploymentManager::onMembershipDecision)));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
-                                              clusterDeploymentManager::onSelfShutdown));
+                                              deploymentWiring.legacy("B9.cdm.SelfShutdown",
+                                                                      clusterDeploymentManager::onSelfShutdown)));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
                                               clusterTopologyManager::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
@@ -9742,6 +9884,7 @@ public interface AetherNode extends ManageableNode {
             entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                                   lbm::onSelfShutdown));
         });
+        deploymentWiring.registerEntries(entries);
 
         return entries;
     }
