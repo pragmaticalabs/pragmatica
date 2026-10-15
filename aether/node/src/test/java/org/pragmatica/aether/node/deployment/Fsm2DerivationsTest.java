@@ -89,6 +89,22 @@ class Fsm2DerivationsTest {
         assertThat(settings.timing().tick()).isEqualTo(30_000L);
     }
 
+    /// H-2 (design 5.3.1, ruled with `coreMembers()` = MEMBER + SUSPECT): a SUSPECT core stays in the core view, so D-4 (ii)(b) is safe only if the
+    /// window a core must stay continuously listed for, before it counts as alive again, is at least the longest suspicion window SWIM can arm. SWIM
+    /// scales the window by its local health multiplier, saturating at `lhmMaxScore` (not the base timeout): `suspectTimeout x lhmMaxScore`.
+    /// Pinned from the real SWIM configurations the node can run with, so a change to either side that breaks the inequality is red.
+    @Test
+    void theCoreSuspicionWindow_isAtLeastTheLongestScaledSwimSuspicion_forTheRealSwimConfigs() {
+        var configs = List.of(SwimConfig.DEFAULT, SwimConfig.fromTimeouts(TimeSpan.timeSpan(1).seconds(), TimeSpan.timeSpan(500).millis(), TimeSpan.timeSpan(3).seconds()));
+
+        for (var swim : configs) {
+            var window = Fsm2System.clusterSettings(configuredWith(TimeSpan.timeSpan(30).seconds()), PROCESS, swim, TimeSpan.timeSpan(15).seconds()).bounds().coreSuspicion();
+            var longestScaledSuspicion = swim.suspectTimeout().nanos() * swim.lhmMaxScore();
+
+            assertThat(window).as("window (ns) vs suspectTimeout x lhmMaxScore for " + swim).isGreaterThanOrEqualTo(longestScaledSuspicion);
+        }
+    }
+
     @Test
     void theEngineMismatchWindow_isTwiceTheWorstCaseElection() {
         var config = configuredWith(TimeSpan.timeSpan(30).seconds());
