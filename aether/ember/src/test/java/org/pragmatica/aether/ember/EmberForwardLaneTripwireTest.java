@@ -26,27 +26,35 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
 
 /// Streams overhaul tripwire, step 2 (#2201), transport lanes: C-05 - replication, forwards and catch-up share one FORWARD
-/// lane that drops at the writability watermark.
+/// lane that refuses sends while it is unwritable.
 ///
-/// What is deterministic and what is not. Whether a lane drops under real load depends on the peer's drain rate against
-/// Netty's 64 KiB high watermark, which a loopback test cannot pin. What IS deterministic is the consequence of the shared
+/// What is deterministic and what is not. Whether a lane drops under real load depends on the peer's drain rate and the
+/// transport's flow control, which a loopback test cannot pin. What IS deterministic is the consequence of the shared
 /// lane once it is unwritable: this test puts it there itself. Node 1 sends node 2 one 16 MiB `CatchupResponse` (the
 /// catch-up traffic class, 4 payloads of 4 MiB, for a stream that does not exist so the receiver ignores it) and, on the
 /// same thread and straight after, 100 small `ReplicateEvents` (the replication class), 200 microseconds apart. (Writability
 /// is a property of the channel's outbound buffer, which the event loop updates when it processes the big write, so sends
 /// made in the same instant as the big one would still see a writable lane; the spacing lets the loop get there while the
-/// peer is still draining.) The big write leaves the stream's outbound buffer above the watermark, so the small sends find
+/// peer is still draining.) The big write leaves the stream unwritable, so the small sends find
 /// the lane unwritable, and `QuicClusterNetwork` answers
 /// every non-CONSENSUS, non-DHT lane with `BackpressureRefused` (the replication transport is `void` and discards it).
 ///
 /// - Tripwire: the sender's `quic_backpressure_drops_total` rises, and node 2 receives fewer than all 100 replication
-///   messages. The big message itself is delivered, which shows the lane works and the loss is the watermark's.
+///   messages. The big message itself is delivered, which shows the lane works and the loss is the unwritable lane's.
 /// - `@Disabled` acceptance: all 100 replication messages arrive - replication does not share a droppable lane with
-///   catch-up/forward traffic. (How the overhaul achieves it - a separate lane, a raised watermark, or the async retry
+///   catch-up/forward traffic. (How the overhaul achieves it - a separate lane or the async retry
 ///   CONSENSUS/DHT use - is its choice.)
 ///
 /// The tripwire repeats the burst up to five times and passes if ANY round dropped, because a round in which the big write
 /// drained before the small sends would show nothing; the report records how many rounds dropped.
+/// **Attribution (v-2205 F-C05).** The drops are NOT shown to come from Netty's 64 KiB watermark. Evidence: raising the FORWARD
+/// stream's write-buffer watermark to 32/64 MiB left the tripwire GREEN (`drops=48, smallReceived=52`, 90 "lane FORWARD
+/// (isWritable=false)" lines), so the lane is unwritable for another reason `[unverified: likely QUIC stream or connection flow
+/// control; not isolated]`. What the evidence supports: the lane refuses while unwritable, and a mutation that gives the FORWARD
+/// lane the CONSENSUS/DHT async retry, or a separate lane for replication, flips the tripwire. A watermark fix will not satisfy
+/// the real assertion.
+///
+/// Not reached: real catch-up chunking against the lane (the messages are synthetic, on one thread, for a ghost stream).
 @PortBudget
 class EmberForwardLaneTripwireTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
@@ -91,7 +99,7 @@ class EmberForwardLaneTripwireTest {
     @Disabled("C-05 (#2201): enable when replication no longer shares a droppable lane with catch-up/forward traffic; RED today: the small sends behind a big catch-up write are refused")
     @Timeout(600)
     void replicationBehindCatchupTraffic_isNotDropped() {
-        var rounds = bootAndRun(1);
+        var rounds = bootAndRun(ROUNDS);
 
         assertThat(rounds).allSatisfy(round -> assertThat(round.smallReceived()).as("replication messages that arrived behind a 16 MiB catch-up write (drops=%d)", round.drops()).isEqualTo((long) SMALL_MESSAGES));
     }

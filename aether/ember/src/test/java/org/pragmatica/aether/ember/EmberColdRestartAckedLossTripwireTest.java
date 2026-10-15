@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -79,6 +80,8 @@ class EmberColdRestartAckedLossTripwireTest {
     private static final long ISR_BUDGET_MS = 90_000L;
     private static final long ISR_SHRINK_BUDGET_MS = 150_000L;
     private static final long NEW_OWNER_BUDGET_MS = 420_000L;
+    /// How long the acceptance assertion gives the three nodes that came up first to activate an owner before it starts the others.
+    private static final long EARLY_OWNER_WINDOW_MS = 120_000L;
     /// Time given to the returned nodes to rejoin and for any cut-back or backfill to finish before the live stream is read.
     private static final long SETTLE_MS = 60_000L;
     private static final long BACKUP_QUIET_MS = 10_000L;
@@ -101,7 +104,7 @@ class EmberColdRestartAckedLossTripwireTest {
     @Test
     @Timeout(2400)
     void ackedRecordsOnALateReturningNode_tripwire_leaveTheLiveStreamWhenItIsCutBack() {
-        var outcome = runLateReturn();
+        var outcome = runLateReturn(true);
 
         assertThat(outcome.acknowledgedRecordsStillOnReturnedNodesDisk()).as("control: the acknowledged records are still on the returned old owner's volume (nothing was destroyed)").isTrue();
         assertThat(outcome.ownerServes()).as("A-15 fixed? The acknowledged records are still in the live stream after the late node returned (or the new lineage adopted them). "
@@ -116,7 +119,7 @@ class EmberColdRestartAckedLossTripwireTest {
     @Disabled("A-15 (#2201): enable when acknowledged records on a late-returning node are not lost from the live stream after a cold restart (persisted ISR, or no escape on a cold boot, or re-injection); RED today: the live stream holds only the new records")
     @Timeout(2400)
     void ackedRecordsOnALateReturningNode_stayInTheLiveStream() {
-        var outcome = runLateReturn();
+        var outcome = runLateReturn(false);
 
         assertThat(outcome.ownerServes()).as("the live stream after the late node returned").containsAll(ackedPayloads());
     }
@@ -140,7 +143,10 @@ class EmberColdRestartAckedLossTripwireTest {
         assertThat(runRestartWithoutBackup()).as("records of the re-created stream").containsAll(ackedPayloads());
     }
 
-    private Outcome runLateReturn() {
+    /// `requireEarlyOwner`: the tripwire needs a new owner among the three nodes that came up first (it is the shape pinned). The
+    /// acceptance assertion must not: a fix that keeps the new lineage from activating without the copy-holders (a persisted
+    /// in-sync set) leaves no early owner, and the records must then be served once the held-back nodes have returned.
+    private Outcome runLateReturn(boolean requireEarlyOwner) {
         baseDir = StreamTripwireSupport.newDataDir("a15-tripwire");
 
         var remote = baseDir.resolve("kv-backup-remote.git");
@@ -175,9 +181,31 @@ class EmberColdRestartAckedLossTripwireTest {
         // Cold start with the two nodes that hold the acknowledged records held back: the three that come up lack them.
         assertThat(cluster.start(Set.of(ownerId, returningReplicaId)).await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
         StreamTripwireSupport.awaitLeader(cluster);
-        awaitUntil(() -> liveOwner(key).isPresent(), NEW_OWNER_BUDGET_MS, "a node among the three that came up activated as owner of the restored partition");
+        if (requireEarlyOwner) {
+            awaitUntil(() -> liveOwner(key).isPresent(), NEW_OWNER_BUDGET_MS, "a node among the three that came up activated as owner of the restored partition");
+        } else {
+            awaitQuietly(() -> liveOwner(key).isPresent(), EARLY_OWNER_WINDOW_MS);
+        }
 
-        var newOwner = liveOwner(key).unwrap();
+        var earlyOwner = liveOwner(key);
+
+        earlyOwner.onPresent(newOwner -> publishPostRecords(newOwner, key));
+        assertThat(cluster.startHeldBackNodes().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+
+        var returned = cluster.getNode(ownerId).unwrap();
+
+        sleepQuietly(SETTLE_MS);
+
+        if (!requireEarlyOwner) {
+            awaitUntil(() -> liveOwner(key).isPresent(), NEW_OWNER_BUDGET_MS, "a node owns the restored partition and serves reads once the held-back nodes have returned");
+        }
+
+        var serving = requireEarlyOwner ? earlyOwner.unwrap() : liveOwner(key).unwrap();
+
+        return new Outcome(servedBy(serving, key), payloadsHeld(returned, key), containsOnDisk(baseDir.resolve(ownerId), "acked-19"));
+    }
+
+    private static void publishPostRecords(AetherNode newOwner, String key) {
         var newRouter = StreamTripwireSupport.component(newOwner, "streamWriteRouter", StreamWriteRouter.class);
 
         for (var i = 0; i < POST; i++) {
@@ -185,13 +213,15 @@ class EmberColdRestartAckedLossTripwireTest {
 
             assertThat(offset.isSuccess()).as("post-restart publish %d on %s: %s", i, newOwner.self().id(), offset).isTrue();
         }
-        assertThat(cluster.startHeldBackNodes().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+    }
 
-        var returned = cluster.getNode(ownerId).unwrap();
+    /// Waits up to `budgetMs` for `condition`; unlike [StreamTripwireSupport#awaitUntil] a miss is not a failure.
+    private static void awaitQuietly(BooleanSupplier condition, long budgetMs) {
+        var deadline = System.currentTimeMillis() + budgetMs;
 
-        sleepQuietly(SETTLE_MS);
-
-        return new Outcome(servedBy(newOwner, key), payloadsHeld(returned, key), containsOnDisk(baseDir.resolve(ownerId), "acked-19"));
+        while (!condition.getAsBoolean() && System.currentTimeMillis() < deadline) {
+            sleepQuietly(200L);
+        }
     }
 
     private List<String> runRestartWithoutBackup() {
@@ -221,7 +251,13 @@ class EmberColdRestartAckedLossTripwireTest {
                    "the re-created stream's owner serves reads");
         sleepQuietly(15_000L);
 
-        return servedBy(cluster.getNode(reborn.owner().id()).unwrap(), key);
+        var finalRead = cluster.getNode(reborn.owner().id()).unwrap().streamPartitionManager().readServing(key, PARTITION, 0L, 1000);
+
+        assertThat(containsOnDisk(baseDir, "acked-19")).as("control: the old life's acknowledged records are still on the nodes' volumes (unread, not absent)").isTrue();
+
+        assertThat(finalRead.isSuccess()).as("control: the final read of the re-created stream succeeded (a failed read must not pass for 'nothing recovered'): %s", finalRead).isTrue();
+
+        return finalRead.map(EmberColdRestartAckedLossTripwireTest::texts).or(List.of());
     }
 
     private Option<AetherNode> liveOwner(String key) {

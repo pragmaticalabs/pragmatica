@@ -88,11 +88,12 @@ class EmberOwnerRestartAckedTailTripwireTest {
     void ownerAfterColdRestart_tripwire_holdsItsAckedTailInvisibleUntilTheReplicasReAck() {
         var owner = restartWithAcksHeldOff();
 
-        assertThat(droppedAcks.get()).as("control: the inbound filter was live and dropped replica acks after the restart").isPositive();
         assertThat(ringHead(owner)).as("control: the WAL replay put the whole acked tail in the owner's rebuilt ring").isEqualTo(ACKED_TAIL);
 
         var highestVisible = highestVisibleOver(owner, HOLD_MS);
 
+        assertThat(droppedAcks.get()).as("control: the inbound filter was live and dropped replica acks after the restart (read after the %d ms hold: a replica re-acks within about one backfill tick, so the count is not decided by the instant the ring is rebuilt)", HOLD_MS).isPositive();
+        assertThat(highestVisible).as("control: the owner reported visible bounds while its acks were held (-2 means no bounds at all, which would read as 'below the tail')").isGreaterThanOrEqualTo(-1L);
         assertThat(highestVisible).as("B-04/B-17 fixed? The rebuilt owner's visible head covers the acked tail (%d) with replica acks held off. "
                                       + "Delete this tripwire and enable ownerAfterColdRestart_seesItsAckedTailWithoutReplicaAcks (#2201)",
                                       ACKED_TAIL)
