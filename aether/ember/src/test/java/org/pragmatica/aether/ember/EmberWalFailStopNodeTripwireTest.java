@@ -81,7 +81,7 @@ class EmberWalFailStopNodeTripwireTest {
         assertThat(failStopped(owner)).as("control, 1b-edge: WalStats.failStopped IS exposed").isTrue();
         sleepQuietly(WINDOW_MS);
         assertThat(committedOwner()).as("D-01 fixed? The committed owner changed after the owner's WAL fail-stop. Delete this tripwire and enable "
-                                        + "walFailStopOnTheOwner_stepsDownAndIsGauged (#2201)")
+                                        + "walFailStopOnTheOwner_stepsDown and walFailStopOnTheOwner_isGauged (#2201)")
                                     .isEqualTo(Option.some(ownerId));
         assertThat(WAL_FAIL_GAUGE.matcher(scrapeBefore).find()).as("control: the scrape before the fail-stop has no line matching " + GAUGE_REGEX).isFalse();
         assertThat(WAL_FAIL_GAUGE.matcher(scrape(owner)).find()).as("no scrape line matches " + GAUGE_REGEX + " after the fail-stop").isFalse();
