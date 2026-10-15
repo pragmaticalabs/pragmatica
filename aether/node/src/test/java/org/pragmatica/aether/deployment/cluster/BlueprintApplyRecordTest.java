@@ -241,13 +241,14 @@ class BlueprintApplyRecordTest {
     }
 
     /// A terminal outcome that describes ANOTHER attempt is not this attempt's closure: only the outcome of this attempt means the apply did its job.
+    /// It lands after the outcome start was confirmed (the first retry of the record), so the failure is the record's, not the outcome's.
     @Test
     void aTerminalOutcomeOfAnotherAttempt_isNotThisAttemptsClosure() {
         var node = new Node();
 
         node.drop = command -> command.key() instanceof AetherKey.DeploymentApplyKey;
         node.after = index -> {
-            if (index == 0) {
+            if (index == 1) {
                 store.process(store.createBatch(List.of(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(ID),
                                                                             DeploymentOutcomeValue.succeeded(2L, outcomeVersion(), "an-earlier-attempt")))));
             }
@@ -256,6 +257,7 @@ class BlueprintApplyRecordTest {
         var result = BlueprintService.blueprintService(node, store, repository, true).publish(DSL).await();
 
         assertThat(result.isFailure()).as("the other attempt's SUCCEEDED does not confirm this publish").isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("apply record did not land"));
     }
 
     /// A newer publish owns the id: the blueprint now carries its attempt, so this attempt's record is superseded, not missing, and is not retried.

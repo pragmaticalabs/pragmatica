@@ -25,12 +25,16 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -92,6 +96,15 @@ class Fsm2LevelBBootTest {
         await().atMost(DEPLOY_TIMEOUT).pollInterval(Duration.ofMillis(250)).until(() -> cluster.allNodes().stream().allMatch(node -> node.invocationHandler().localSlice(artifact).isPresent()));
         // the leader's reconcile and its timers need a moment after SUCCEEDED
         await().pollDelay(Duration.ofSeconds(8)).atMost(Duration.ofSeconds(12)).until(() -> true);
+
+        assertThat(leader().kvStore()
+                           .getTyped(AetherKey.DeploymentEngineKey.deploymentEngineKey(), AetherValue.DeploymentEngineValue.class)
+                           .map(AetherValue.DeploymentEngineValue::engine)).as("B20: the lineage mint wrote the FSM2 marker").isEqualTo(Option.some(DeploymentEngine.FSM2));
+        assertThat(httpGet(cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort()), "/api/v1/metrics/prometheus")).as("the FSM metrics are scraped from the management registry").contains("aether_deployment_fsm_inputs_total");
+        var clusterModel = ((ClusterState.Active) leader().deploymentWiring().system().unwrap().clusterInterpreter().state()).model();
+
+        assertThat(clusterModel.seams().coreView().isPresent()).as("W-33: the leader's cluster FSM was given a core view").isTrue();
+        assertThat(clusterModel.seams().localAlive().isPresent()).as("and the local liveness").isTrue();
 
         var required = requiredInputs();
         var missing = new ArrayList<String>();

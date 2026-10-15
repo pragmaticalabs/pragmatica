@@ -61,6 +61,7 @@ class DeploymentEngineMarkerRecordsTest {
     void theKey_parsesFromItsOwnString_andRefusesAnyOther() {
         var key = DeploymentEngineKey.deploymentEngineKey();
 
+        assertThat(key.asString()).as("the string is in every backup and every mirror: it is a wire fact").isEqualTo("deployment-engine");
         assertThat(DeploymentEngineKey.deploymentEngineKey(key.asString()).unwrap()).isSameAs(key);
         assertThat(DeploymentEngineKey.deploymentEngineKey("cluster-incarnation").isFailure()).isTrue();
     }

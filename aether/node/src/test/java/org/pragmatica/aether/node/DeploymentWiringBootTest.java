@@ -9,6 +9,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 
@@ -20,6 +21,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.config.ConfigService;
@@ -31,6 +34,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
@@ -69,6 +73,29 @@ class DeploymentWiringBootTest {
     @Timeout(value = 120, unit = SECONDS)
     void fsm2Node_recordsTheFsm2Baseline() {
         assertThat(boot(DeploymentEngine.FSM2)).isEqualTo(baseline("wiring-fsm2.txt"));
+    }
+
+    /// What `AetherNode` hands the FSM2 system, seen from a real boot (W-14, W-33, W-23, B13, B20): the system is started and its seams sample the
+    /// node's real membership (the core view, the local liveness and the member sources are wired, not left `none`), and the node's stop closes both
+    /// interpreters. (A single node commits nothing through consensus here, so the minted marker is read in the multi-node Level B boot test.)
+    @Test
+    @Timeout(value = 180, unit = SECONDS)
+    void fsm2Node_startsItsSystem_samplesItsRealSeams_andStopClosesBoth() {
+        boot(DeploymentEngine.FSM2);
+        var system = node.deploymentWiring().system().unwrap();
+        var meters = node.deploymentWiring().meters();
+
+        await("seams counter").atMost(Duration.ofSeconds(60)).until(() -> meters.find("aether_deployment_fsm_inputs_total").tags("fsm", "cluster", "input", "SeamsRefreshed").counters().size() > 0);
+        var seams = system.seamPoller().sample();
+
+        assertThat(seams.coreView().map(view -> view.contains(node.self())).or(false)).as("the core view is MembershipFsm.coreMembers()").isTrue();
+        assertThat(seams.localAlive().map(alive -> alive.contains(node.self())).or(false)).as("the local liveness is wired").isTrue();
+        assertThat(seams.memberSource()).as("the member sources are the membership's own").containsKey(node.self());
+
+        node.stop().await(timeSpan(30).seconds());
+
+        assertThat(system.nodeInterpreter().deliver(new NodeFsmInput.QuorumDisappeared())).as("the node's stop closed the node FSM").isFalse();
+        assertThat(system.clusterInterpreter().deliver(new ClusterInput.Flush())).as("and the cluster FSM").isFalse();
     }
 
     /// The two engines never share a binding target for a branch point: every FSM2 row for a legacy hook is a counted drop, and no LEGACY row
