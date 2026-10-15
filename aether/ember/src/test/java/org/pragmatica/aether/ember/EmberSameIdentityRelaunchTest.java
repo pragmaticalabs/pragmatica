@@ -10,7 +10,6 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.List;
-import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -54,23 +53,16 @@ class EmberSameIdentityRelaunchTest {
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Registered in forge-tests' `TEST_PORT_ALLOCATION.md`: blocks 23000-23394 (step [#CANDIDATE_STEP]; one cluster's footprint
-    /// is base..base+max(APP_HTTP_OFFSET, SWIM_PORT_OFFSET)+SLOTS-1, because SWIM binds UDP at the QUIC port plus
-    /// `EmberTestPorts.SWIM_PORT_OFFSET`, so the step must cover the larger of the two or a live cluster on one block holds the
-    /// QUIC ports of the next: with the former step 100 and offset 100 every neighbour pair overlapped), BELOW the Linux ephemeral range 32768-60999 — the former 36100-37900 lay inside it,
-    /// and under load a kernel-assigned port left no free block in 4 of 9 bigboy runs (#1558). The previous
-    /// 22000-23800 scan was not disjoint: five forge-tests classes bind fixed ports at 22000-22885 and
-    /// 23500-23702. 23000-23499 is bound by no test in the repository (searched for every five-digit
-    /// literal under `src/test`), and sits between those classes and `SurvivorLivenessAfterGracefulKillTest`
-    /// (24500).
-    private static final int FIRST_CANDIDATE_BASE = 23000;
-    /// Four disjoint blocks, the last one ending at 23423, inside the free 23000-23499 range.
-    private static final int LAST_CANDIDATE_BASE = 23394;
-    private static final int CANDIDATE_STEP = Math.max(APP_HTTP_OFFSET, EmberTestPorts.SWIM_PORT_OFFSET) + SLOTS;
-    /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
-    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
-                                                                                LAST_CANDIDATE_BASE,
-                                                                                CANDIDATE_STEP,
+    /// The shared probed pool ([EmberTestPorts#POOL_FIRST]..[EmberTestPorts#POOL_LAST], registered in forge-tests'
+    /// `TEST_PORT_ALLOCATION.md`), like every other Ember class that starts clusters. The class used to scan four private
+    /// blocks at 23000-23300, step 100: SWIM binds UDP at the QUIC port plus `EmberTestPorts.SWIM_PORT_OFFSET` (100), so every
+    /// neighbouring pair overlapped, and with this class starting five or more clusters (a refused or force-killed node's
+    /// sockets can stay bound until the JVM exits) the four candidates ran out ("no free port block ... after 90000 ms"). The pool
+    /// has 17 candidates, and its probe binds every port of a candidate, so a candidate overlapping a live or leaked cluster is
+    /// skipped instead of colliding.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
+                                                                                EmberTestPorts.POOL_LAST,
+                                                                                EmberTestPorts.POOL_STEP,
                                                                                 SLOTS,
                                                                                 MGMT_OFFSET,
                                                                                 APP_HTTP_OFFSET);
@@ -143,24 +135,6 @@ class EmberSameIdentityRelaunchTest {
                            .filter(entry -> "Member".equals(entry.getValue()))
                            .map(entry -> entry.getKey().id())
                            .collect(Collectors.toSet())).as("the survivor's MEMBER records").isEqualTo(expected);
-    }
-
-    /// The scanner's candidate blocks must be disjoint over a cluster's WHOLE footprint (QUIC, SWIM at +SWIM_PORT_OFFSET,
-    /// management, app HTTP). With step 100 and the SWIM offset 100 consecutive candidates overlapped, so one live or leaked cluster
-    /// made its neighbour unusable and the four candidates ran out.
-    @Test
-    void candidateBlocks_neverOverlap() {
-        var seen = new HashSet<Integer>();
-
-        for (var base = FIRST_CANDIDATE_BASE; base <= LAST_CANDIDATE_BASE; base += CANDIDATE_STEP) {
-            for (var slot = 0; slot < SLOTS; slot++) {
-                var quic = base + slot;
-
-                for (var port : new int[] {quic, quic + EmberTestPorts.SWIM_PORT_OFFSET, base + MGMT_OFFSET + slot, base + APP_HTTP_OFFSET + slot}) {
-                    assertThat(seen.add(port)).as("port %d of the block at %d is already in an earlier candidate block", port, base).isTrue();
-                }
-            }
-        }
     }
 
     @Test
