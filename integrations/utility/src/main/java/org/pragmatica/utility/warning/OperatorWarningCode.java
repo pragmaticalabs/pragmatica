@@ -149,6 +149,9 @@ public enum OperatorWarningCode {
     /// A start this node refused for want of a committed `SliceTarget` (LOAD, ACTIVATE or an ACTIVE claim) has stayed parked past the
     /// bound (#1109): the target the leader acted on has not arrived in this node's applied log. The park stays retry-able and is
     /// re-driven when the target arrives. The subject is `<artifact>@<node>`. Closed by [#SLICE_START_DEFERRAL_ENDED].
+    /// A node's configured deployment engine disagrees with the engine the cluster committed (phase-3 design 8.2): the node refuses itself and
+    /// exits when its window ends unless the mismatch clears. The message names the evidence and the recovery. Subject is the node.
+    DEPLOYMENT_ENGINE_MISMATCH("deployment-engine-mismatch", "deployment", WarningLevel.WARNING),
     SLICE_START_AWAITING_TARGET("slice-start-awaiting-target", "deployment", WarningLevel.WARNING),
     /// The recovery of [#SLICE_START_AWAITING_TARGET], same subject (#1109): the target arrived and the start proceeded, or the parked
     /// entry was superseded or removed (an UNLOAD, the leader's orphan sweep). The message says which. Raised only when the warning was.

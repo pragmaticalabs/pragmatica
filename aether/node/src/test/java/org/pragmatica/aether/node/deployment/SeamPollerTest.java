@@ -15,7 +15,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
-import org.pragmatica.aether.deployment.wiring.FsmTimers.TimerService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.lang.Option;
@@ -29,27 +28,6 @@ class SeamPollerTest {
     private static final NodeId SELF = NodeId.nodeId("core-1").unwrap();
     private static final NodeId PEER = NodeId.nodeId("core-2").unwrap();
     private static final NodeId OTHER = NodeId.nodeId("core-3").unwrap();
-
-    /// A clock that fires on demand.
-    private static final class ManualClock implements TimerService {
-        private final List<Runnable> due = new ArrayList<>();
-        private final List<Long> delays = new ArrayList<>();
-
-        @Override
-        public Runnable schedule(Runnable body, long delayMs) {
-            due.add(body);
-            delays.add(delayMs);
-
-            return () -> due.remove(body);
-        }
-
-        void fire() {
-            var bodies = List.copyOf(due);
-
-            due.clear();
-            bodies.forEach(Runnable::run);
-        }
-    }
 
     private final List<String> log = Collections.synchronizedList(new ArrayList<>());
     private final List<Seams> refreshed = Collections.synchronizedList(new ArrayList<>());
@@ -189,12 +167,12 @@ class SeamPollerTest {
 
         poller.start();
         assertThat(refreshed).as("the first sample is immediate").hasSize(1);
-        assertThat(clock.delays).containsExactly(SeamPoller.INTERVAL_MS);
+        assertThat(clock.armedDelays()).containsExactly(SeamPoller.INTERVAL_MS);
 
         counted.set(Set.of(SELF));
         clock.fire();
         assertThat(refreshed).as("the tick sampled").hasSize(2);
-        assertThat(clock.delays).as("and re-armed").hasSize(2);
+        assertThat(clock.armedDelays()).as("and re-armed").containsExactly(SeamPoller.INTERVAL_MS);
 
         poller.stop();
         counted.set(Set.of(SELF, OTHER));

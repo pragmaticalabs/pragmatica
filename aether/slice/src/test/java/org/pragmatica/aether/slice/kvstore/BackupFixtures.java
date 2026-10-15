@@ -36,6 +36,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentEngineKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionRecoveryKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReason;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PartitionRecoveryReasonKind;
@@ -65,6 +66,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsVa
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
@@ -239,6 +242,8 @@ final class BackupFixtures {
                                    EntityFoldCheckpointValue.entityFoldCheckpointValue(4_242L, "00ff10ab")),
                        new Fixture(ClusterIncarnationKey.clusterIncarnationKey(),
                                    ClusterIncarnationValue.clusterIncarnationValue("01K4ZT9Q6W3X8Y2B7C5D1E0F9G", 3, "01K4ZTA0000000000000000000")),
+                       new Fixture(DeploymentEngineKey.deploymentEngineKey(),
+                                   new DeploymentEngineValue(DeploymentEngine.FSM2, org.pragmatica.consensus.NodeId.nodeId("node-1").unwrap(), 1_700_000_000_000L)),
                        new Fixture(ScheduledTaskPauseKey.scheduledTaskPauseKey("orders.cleanup",
                                                                                artifact("org.example:orders-slice:1.2.3"),
                                                                                MethodName.methodName("purgeExpired")

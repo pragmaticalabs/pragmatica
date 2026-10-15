@@ -5,16 +5,26 @@
 package org.pragmatica.aether.node;
 
 import java.util.List;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentEngineKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.ULID;
 
 
 /// The single authority for the cluster's lineage and incarnation (#1529 part 1). Everything that needs
@@ -22,7 +32,8 @@ import org.pragmatica.lang.Option;
 ///
 /// - [#current] — the committed incarnation, or `0` before genesis has minted one.
 /// - [#currentId] — the committed per-incarnation ULID (#1625), absent before genesis.
-/// - [#genesisCommand] — the leader's mint for a cluster that has none yet (incarnation 1, fresh lineage).
+/// - [#genesisCommand] — the leader's mint for a cluster that has none yet (incarnation 1, fresh lineage), as ONE leader transaction that also
+///   commits the deployment engine marker ([DeploymentEngineKey], phase-3 design 8.2).
 /// - [#restoreCommands] — what a restore (#1533) commits: the restored lineage, above every incarnation
 ///   the backup has recorded for it.
 /// - [#superseding]/[#supersedeCommands] — what `aether backup declare-genesis` commits (#1532).
@@ -51,15 +62,66 @@ public sealed interface ClusterIncarnation {
         return kvStore.getTyped(ClusterIncarnationKey.clusterIncarnationKey(), ClusterIncarnationValue.class);
     }
 
-    /// The genesis write for a cluster with no committed incarnation; absent once one exists. Racing
-    /// mints resolve first-wins in the applier ([ClusterIncarnationValue] is version-fenced), so a caller
-    /// confirms by re-reading [#committed] rather than trusting that its own write landed.
-    static Option<KVCommand<AetherKey>> genesisCommand(KVStore<AetherKey, AetherValue> kvStore,
-                                                       Supplier<String> freshLineageId,
-                                                       Supplier<String> freshIncarnationId) {
+    /// The mint is not possible yet: no leader is committed, so there is no witness to authorize the transaction. Transient.
+    Cause NO_COMMITTED_LEADER = Causes.cause("Cluster incarnation genesis waits for a committed leader");
+
+    /// What the mint needs besides the store: fresh identities, the minting node, its configured engine and the clock.
+    ///
+    /// `freshTransactionId` is called once per pass, so two passes never carry the same id (an identical retry would content-merge into a
+    /// batch that is stuck, #2143).
+    record Mint(Supplier<String> freshLineageId,
+                Supplier<String> freshIncarnationId,
+                Supplier<String> freshTransactionId,
+                DeploymentEngine engine,
+                NodeId self,
+                LongSupplier now) {
+        /// The production mint: ULIDs for the three identities and the wall clock.
+        public static Mint mint(DeploymentEngine engine, NodeId self) {
+            return new Mint(ClusterIncarnation::freshUlid,
+                            ClusterIncarnation::freshUlid,
+                            () -> "mint-" + freshUlid(),
+                            engine,
+                            self,
+                            System::currentTimeMillis);
+        }
+    }
+
+    private static String freshUlid() {
+        return ULID.ulid().encoded();
+    }
+
+    /// The genesis write for a cluster with no committed incarnation; none once one exists (a restart, a leader change and a restore all find
+    /// the key present, so the marker is minted once per lineage and never alone).
+    ///
+    /// **One leader transaction** puts the incarnation and the engine marker, each expecting its key absent, so either both commit or neither
+    /// does: a plain batch would let one racer's incarnation lose to the version fence while its marker landed (review G-1). The witness is the
+    /// committed `LeaderValue` read NOW, on every pass; a witness captured once would be refused forever after a re-election (`KVS:193`).
+    /// A caller confirms by re-reading [#committed] rather than trusting that its own write landed.
+    static Result<Option<KVCommand<AetherKey>>> genesisCommand(KVStore<AetherKey, AetherValue> kvStore, Mint mint) {
         return committed(kvStore).isPresent()
-               ? Option.none()
-               : Option.some(put(ClusterIncarnationValue.genesis(freshLineageId.get(), freshIncarnationId.get())));
+               ? Result.success(Option.none())
+               : kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+                        .toResult(NO_COMMITTED_LEADER)
+                        .map(leader -> Option.some(mintTransaction(mint, leader)));
+    }
+
+    private static KVCommand<AetherKey> mintTransaction(Mint mint, LeaderValue leader) {
+        var incarnation = ClusterIncarnationValue.genesis(mint.freshLineageId().get(),
+                                                          mint.freshIncarnationId().get());
+        var marker = new DeploymentEngineValue(mint.engine(),
+                                               mint.self(),
+                                               mint.now().getAsLong());
+
+        return new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterIncarnationKey.clusterIncarnationKey(),
+                                                                       mint.freshTransactionId().get(),
+                                                                       leader,
+                                                                       List.of(),
+                                                                       List.of(new KVCommand.Mutation<AetherKey, AetherValue>(ClusterIncarnationKey.clusterIncarnationKey(),
+                                                                                                                              Option.none(),
+                                                                                                                              Option.some(incarnation)),
+                                                                               new KVCommand.Mutation<AetherKey, AetherValue>(DeploymentEngineKey.deploymentEngineKey(),
+                                                                                                                              Option.none(),
+                                                                                                                              Option.some(marker))));
     }
 
     /// The commands a restore applies in ONE batch, after the restored state is in place: keep the

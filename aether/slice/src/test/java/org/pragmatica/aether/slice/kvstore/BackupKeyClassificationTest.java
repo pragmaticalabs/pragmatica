@@ -48,7 +48,10 @@ class BackupKeyClassificationTest {
     private static final Map<String, String> ALLOWED_NODE_REFERENCES = Map.of(
             // Node-scoped overrides share the key type with cluster-wide config; ConfigKey#isBackedUp is
             // false for them, so only the `nodeScope = none` rows reach a backup (pinned below).
-            "ConfigKey.nodeScope", "filtered per entry by ConfigKey#isBackedUp");
+            "ConfigKey.nodeScope", "filtered per entry by ConfigKey#isBackedUp",
+            // The engine marker names the leader that minted it (phase-3 design 8.2, H-5). It is history, not a reference: it is read only into
+            // the text of the mismatch WARN, never looked up as a live node, so a restored name that no longer exists misleads nothing.
+            "DeploymentEngineValue.mintedBy", "a historical writer name, read only into the mismatch WARN and never dereferenced");
 
     @Test
     void everyKeyType_isExactlyOneOfClusterStateOrRuntime() {
@@ -81,7 +84,11 @@ class BackupKeyClassificationTest {
     void nodeReferenceAllowlist_hasNoStaleEntries() {
         var found = new ArrayList<String>();
 
-        Arrays.stream(ClusterStateKey.class.getPermittedSubclasses())
+        Stream.concat(Arrays.stream(ClusterStateKey.class.getPermittedSubclasses()),
+                      FIXTURES.stream()
+                              .map(Fixture::value)
+                              .map(Object::getClass))
+              .distinct()
               .forEach(root -> collectNodeReferences(root, root.getSimpleName(), new HashSet<>(), found));
 
         assertThat(found).containsAll(ALLOWED_NODE_REFERENCES.keySet());

@@ -6429,7 +6429,9 @@ public interface AetherNode extends ManageableNode {
         // #1529 part 1: the leader mints the cluster lineage/incarnation at genesis if absent. Same
         // self-healing, leader-armed shape as the bootstrap admin key; a restored value is left alone.
         var clusterIncarnationRegistrar = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
-                                                                                                                                         clusterCommandApplier));
+                                                                                                                                         clusterCommandApplier,
+                                                                                                                                         ClusterIncarnation.Mint.mint(config.deploymentEngine(),
+                                                                                                                                                                      config.self())));
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  clusterIncarnationRegistrar::onLeaderChange));
