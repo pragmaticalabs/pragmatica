@@ -165,6 +165,27 @@ class EngineMarkerMintTest {
         assertThat(marker().isEmpty()).isTrue();
     }
 
+    /// A restore of a pre-phase-3 backup lands between the pass's read and its apply: the mint is refused (the incarnation is no longer absent), and
+    /// the confirmation sees "incarnation present, marker absent". That is done (LEGACY), never "retry forever".
+    @Test
+    void aRestoreLandingFirst_leavesIncarnationWithoutMarker_andTheConfirmationCountsItDone() {
+        commitLeader(NODE_A, 1L);
+        var registrar = registrar(mint("L1", DeploymentEngine.FSM2, NODE_A), commands -> restoreThenApply(commands));
+
+        registrar.onLeaderChange(LeaderNotification.leaderChange(Option.some(NODE_A), true));
+
+        assertThat(registrar.isComplete()).as("confirmation needs the incarnation, not the marker").isTrue();
+        assertThat(incarnation()).isEqualTo(Option.some(ClusterIncarnationValue.genesis("restored", "restored-id")));
+        assertThat(marker().isEmpty()).as("the refused mint wrote no marker").isTrue();
+    }
+
+    private Promise<List<Object>> restoreThenApply(List<KVCommand<AetherKey>> commands) {
+        commit(new KVCommand.Put<>(INCARNATION, ClusterIncarnationValue.genesis("restored", "restored-id")));
+        commands.forEach(this::commit);
+
+        return Promise.success(List.of());
+    }
+
     // -- the implementation rules (draft-5 delta review A) --------------------------------------------------------------------
     /// Rule 1: the witness is the committed `LeaderValue` read on THIS pass. A transaction built before a re-election is refused, and the next
     /// pass, built after it, is accepted.

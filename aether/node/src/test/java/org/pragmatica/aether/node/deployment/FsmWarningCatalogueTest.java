@@ -72,6 +72,17 @@ class FsmWarningCatalogueTest {
         });
     }
 
+    /// The engine marker guard's own warning (design 8.2): not raised by a FSM, so the scan above does not see it, and equally a deployment WARNING
+    /// with the text an operator searches for.
+    @Test
+    void theEngineMismatchWarning_isADeploymentWarning_underItsStableCode() {
+        var code = OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH;
+
+        assertThat(code.code()).isEqualTo("deployment-engine-mismatch");
+        assertThat(code.subsystem()).isEqualTo("deployment");
+        assertThat(code.level()).isEqualTo(WarningLevel.WARNING);
+    }
+
     /// The positive control: a planted raise of a code no catalogue entry has is found by the same scan.
     @Test
     void aPlantedUncataloguedCode_isFound(@TempDir Path temp) throws IOException {
