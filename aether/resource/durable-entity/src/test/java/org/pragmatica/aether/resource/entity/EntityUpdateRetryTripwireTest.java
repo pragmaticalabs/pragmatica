@@ -120,18 +120,26 @@ class EntityUpdateRetryTripwireTest {
 
     @Disabled("B-09 real assertion, RED today: the same retry token passed twice applies the mutator once; needs the additive update(K, token, C) overload (#2201)")
     @Test
-    void updateWithTheSameToken_afterAnUnmetBarrier_appliesTheMutatorOnce() throws Exception {
+    void updateWithTheSameToken_afterAnUnmetBarrier_appliesTheMutatorOnce() {
         var overload = tokenOverload().orElseThrow(() -> new AssertionError("no DurableEntity.update overload taking a retry token"));
         var token = tokenFor(overload.getParameterTypes()[1]);
 
         assertThat(entity.create("k", 10).await().isSuccess()).isTrue();
         substrate.commitThrough(0L);
         substrate.barrierUnmetOnNextAppend = true;
-        ((Promise<?>) overload.invoke(entity, "k", token, new IntOp.Add(1))).await();
-        ((Promise<?>) overload.invoke(entity, "k", token, new IntOp.Add(1))).await();
+        invokeOrFail(overload, token);
+        invokeOrFail(overload, token);
         substrate.commitThrough(2L);
 
         assertThat(entity.get("k").await().unwrap()).isEqualTo(Option.some(11));
+    }
+
+    private void invokeOrFail(Method overload, Object token) {
+        try {
+            ((Promise<?>) overload.invoke(entity, "k", token, new IntOp.Add(1))).await();
+        } catch (ReflectiveOperationException | IllegalArgumentException | ClassCastException e) {
+            throw new AssertionError("token overload shape differs from the guess; adapt the test (" + e + ")", e);
+        }
     }
 
     private static Optional<Method> tokenOverload() {

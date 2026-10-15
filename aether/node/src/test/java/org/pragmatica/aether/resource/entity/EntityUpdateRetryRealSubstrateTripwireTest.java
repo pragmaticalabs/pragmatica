@@ -48,7 +48,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationManager.replic
 /// barrier is unmet, as `EntityAppendFloorTripwireTest` shows), then restored, and the caller retries the same plain `update`.
 ///
 /// Because the substrate is real, an A-03 floor on the entity path DOES act here: it refuses the first update before the append, so nothing
-/// double-applies. The real assertion therefore flips for the floor OR for a retry token; it states only the outcome (one logical update applied
+/// double-applies. The real assertion therefore flips for the A-03 entity floor; it states only the outcome (one logical update applied
 /// once). TRIPWIRE (enabled, GREEN) beside the REAL assertion (`@Disabled`, RED today).
 class EntityUpdateRetryRealSubstrateTripwireTest {
     private static final NodeId SELF = new NodeId("owner-self");
@@ -134,7 +134,7 @@ class EntityUpdateRetryRealSubstrateTripwireTest {
         assertThat(stateOf(result.second())).as(ENABLE).isEqualTo(12);
     }
 
-    @Disabled("B-09 real assertion (real substrate), RED today: one logical update must apply once; flips for the A-03 entity floor or a retry token (#2201)")
+    @Disabled("B-09 real assertion (real substrate), RED today: one logical update must apply once; flips for the A-03 entity floor (#2201)")
     @Test
     void retriedUpdate_afterAnUnmetBarrierOnTheRealSubstrate_appliesTheMutatorOnce() {
         var result = updateTwiceAcrossAnUnmetBarrier();
