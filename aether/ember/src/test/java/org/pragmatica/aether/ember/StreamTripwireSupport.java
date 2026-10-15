@@ -255,6 +255,26 @@ final class StreamTripwireSupport {
         }
     }
 
+    @SuppressWarnings("JBCT-EX-01")
+    static void joinQuietly(java.util.concurrent.Future<?> future) {
+        try {
+            future.get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (java.util.concurrent.ExecutionException e) {
+            throw new AssertionError("a concurrent caller failed: " + e.getCause(), e.getCause());
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    static void joinQuietly(Thread thread) {
+        try {
+            thread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     static long elapsedMs(long startedNanos) {
         return (System.nanoTime() - startedNanos) / 1_000_000L;
     }
