@@ -155,6 +155,11 @@ public final class DeploymentWiring {
                : LEGACY_TARGET;
     }
 
+    /// The registry the FSM2 metrics are published to (the sensor arms T reads).
+    public MeterRegistry meters() {
+        return registry;
+    }
+
     public DeploymentEngine engine() {
         return engine;
     }

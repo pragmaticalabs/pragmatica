@@ -58,6 +58,7 @@ import org.slf4j.LoggerFactory;
 public final class Fsm2System {
     private static final Logger log = LoggerFactory.getLogger(Fsm2System.class);
     private static final String NODE_ENTRY = "node-entry";
+    private static final String NODE_ENTRY_HEAL = "node-entry-heal";
     private static final String CLUSTER_ACTIVATION = "cluster-activation";
     /// `[guess: the re-announcement interval the fsm2 follow-up used for R-2.14; a worker's announcement cadence is not wired in phase 3]`
     private static final TimeSpan REANNOUNCE_INTERVAL = TimeSpan.timeSpan(30).seconds();
@@ -306,6 +307,8 @@ public final class Fsm2System {
         } else {
             guard.whenOpen(NODE_ENTRY,
                            () -> {});
+            guard.whenOpen(NODE_ENTRY_HEAL,
+                           () -> {});
             node.deliver(new NodeFsmInput.QuorumDisappeared());
         }
     }
@@ -322,7 +325,7 @@ public final class Fsm2System {
     @Contract
     public void reconcileActivation(BooleanSupplier consensusActive) {
         if (consensusActive.getAsBoolean()) {
-            guard.whenOpen(NODE_ENTRY, () -> node.requestEntry(true));
+            guard.whenOpen(NODE_ENTRY_HEAL, () -> node.requestEntry(true));
         }
     }
 

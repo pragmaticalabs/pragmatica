@@ -63,4 +63,46 @@ class ActivationWriteFaultTest {
 
         assertThat(ActivationWriteFault.unansweredSubmissions()).isZero();
     }
+
+    // -- the FSM2 submission point ------------------------------------------------------------------------------------------
+    private static java.util.List<org.pragmatica.cluster.state.kvstore.KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey>> write(NodeId node,
+                                                                                                                                         Artifact artifact,
+                                                                                                                                         org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState state) {
+        var key = org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey.sliceObservedKey(node, artifact);
+        var row = new org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue(state,
+                                                                                        1L,
+                                                                                        new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(1L, 1L),
+                                                                                        new org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation(1L, 5L),
+                                                                                        org.pragmatica.lang.Option.none(),
+                                                                                        false,
+                                                                                        0,
+                                                                                        java.util.List.of(),
+                                                                                        1L);
+
+        return java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Put<>(key, row));
+    }
+
+    @Test
+    void fsm2_neverArmed_answersEverySubmission() {
+        var active = org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.ACTIVE;
+
+        assertThat(ActivationWriteFault.leavesUnansweredFsm2(NODE, ARTIFACT, 1, 0, write(NODE, ARTIFACT, active))).isFalse();
+    }
+
+    @Test
+    void fsm2_armed_takesOnlyTheFirstOwnActiveSubmission_notItsProbe() {
+        var active = org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.ACTIVE;
+        var loaded = org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.LOADED;
+
+        ActivationWriteFault.arm(NODE, ARTIFACT);
+
+        assertThat(ActivationWriteFault.leavesUnansweredFsm2(NODE, ARTIFACT, 1, 0, write(NODE, ARTIFACT, active))).as("attempt 1, the write's own submission").isTrue();
+        assertThat(ActivationWriteFault.leavesUnansweredFsm2(NODE, ARTIFACT, 1, 1, write(NODE, ARTIFACT, active))).as("a probe resubmission of the same attempt").isFalse();
+        assertThat(ActivationWriteFault.leavesUnansweredFsm2(NODE, ARTIFACT, 2, 0, write(NODE, ARTIFACT, active))).as("a later attempt").isFalse();
+        assertThat(ActivationWriteFault.leavesUnansweredFsm2(NODE, ARTIFACT, 1, 0, write(NODE, ARTIFACT, loaded))).as("not an ACTIVE write").isFalse();
+        assertThat(ActivationWriteFault.leavesUnansweredFsm2(OTHER_NODE, ARTIFACT, 1, 0, write(OTHER_NODE, ARTIFACT, active))).as("another node").isFalse();
+        assertThat(ActivationWriteFault.leavesUnansweredFsm2(NODE, OTHER_ARTIFACT, 1, 0, write(NODE, OTHER_ARTIFACT, active))).as("another artifact").isFalse();
+        assertThat(ActivationWriteFault.leavesUnansweredFsm2(NODE, ARTIFACT, 1, 0, write(OTHER_NODE, ARTIFACT, active))).as("a row of another node in the batch").isFalse();
+        assertThat(ActivationWriteFault.unansweredSubmissions()).isEqualTo(1);
+    }
 }

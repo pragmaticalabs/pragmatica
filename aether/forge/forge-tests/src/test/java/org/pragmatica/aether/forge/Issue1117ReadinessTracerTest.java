@@ -25,6 +25,9 @@ import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
@@ -49,6 +52,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
@@ -89,6 +95,16 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 ///   - (d) the map reaches all-ACTIVE and agrees with every node's local view, and no node's map and local states
 ///     disagree for longer than X.
 ///
+/// **Both engines, one class** (phase-3 design 13.1; `-Dt1117.engine=legacy|fsm2`, default legacy). Under FSM2 the cluster is constructed with
+/// `DeploymentEngine.FSM2` and the same fault is consulted at FSM2's submission point (the first ACTIVE submission of the target, `attempt == 1`,
+/// `probe == 0`). What changes in the assertions:
+///   - the map view is the committed `SliceObservedKey` row of each node; the local view is the node's SERVING SURFACE (the slice's bridge is
+///     registered), per the spec's O1 ruling, falling back to the node FSM's own instance state while the bridge is absent;
+///   - (b) reads the `write-probe-resubmit` / `write-confirm-timeout` sensor lines and the `submissions_total` arms instead of the legacy remediation
+///     line, and every WARN of the deployment FSM loggers and every operator warning must be on `fsm2/expected-warns-t1117.txt` (design 9.5 O6);
+///   - (c) is NOT DETERMINABLE under FSM2 in phase 3: the stream-consumer reader (`StreamConsumerManager`, fed by the legacy `DeploymentMap`) is not
+///     migrated until phase 4a, so no assignment exists to move. It is reported, never faked.
+///
 /// The node-local view is read in-JVM from the node's deployment FSM. No production accessor exposes it, so the read
 /// goes through two reflective hops ([#localStates]); that is test-only coupling to the legacy engine's shape, which
 /// is what this tracer measures.
@@ -113,6 +129,13 @@ class Issue1117ReadinessTracerTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
 
     private static final boolean INJECT = Boolean.parseBoolean(System.getProperty("t1117.inject", "true"));
+    /// `-Dt1117.engine=fsm2` runs the cluster on the FSM2 engine; the default keeps the LEGACY mode the tracer was written for.
+    private static final boolean FSM2 = "fsm2".equalsIgnoreCase(System.getProperty("t1117.engine", "legacy"));
+    private static final String EXPECTED_WARNS = "/fsm2/expected-warns-t1117.txt";
+    private static final List<String> FSM2_LOGGERS = List.of("org.pragmatica.aether.deployment.fsm.node",
+                                                             "org.pragmatica.aether.deployment.fsm.cluster",
+                                                             "org.pragmatica.utility.warning.OperatorWarnings",
+                                                             "org.pragmatica.aether.node.deployment.EffectTranslator");
 
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:t1117-tracer:1.0.0";
@@ -126,6 +149,8 @@ class Issue1117ReadinessTracerTest {
 
     private final HttpOperations http = jdkHttpOperations();
     private final List<String> remediationLines = new CopyOnWriteArrayList<>();
+    private final List<Logged> fsm2Logged = new CopyOnWriteArrayList<>();
+    private final List<CapturingFsm2Appender> fsm2Appenders = new ArrayList<>();
     private EmberCluster cluster;
     private CapturingAppender appender;
     private LoggerConfig captureConfig;
@@ -133,11 +158,15 @@ class Issue1117ReadinessTracerTest {
     @BeforeAll
     void setUp() {
         installCapture();
+        installFsm2Capture();
         var configProvider = ConfigurationProvider.builder()
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
                                                   .build();
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "t11", Option.some(configProvider));
+        if (FSM2) {
+            cluster.withDeploymentEngine(DeploymentEngine.FSM2);
+        }
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(() -> cluster.currentLeader().isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(Duration.ofMillis(500)).until(this::allNodesHealthy);
@@ -146,6 +175,7 @@ class Issue1117ReadinessTracerTest {
     @AfterAll
     void tearDown() {
         ActivationWriteFault.disarm();
+        removeFsm2Capture();
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort());
 
@@ -165,7 +195,7 @@ class Issue1117ReadinessTracerTest {
         } else {
             ActivationWriteFault.disarm();
         }
-        System.out.printf("T1117 inject=%s target=%s (HRW owner of %s[0])%n", INJECT, target.id(), TARGET_STREAM);
+        System.out.printf("T1117 engine=%s inject=%s target=%s (HRW owner of %s[0])%n", FSM2 ? "FSM2" : "LEGACY", INJECT, target.id(), TARGET_STREAM);
 
         deployBlueprint();
         var samples = sample(artifact);
@@ -178,7 +208,7 @@ class Issue1117ReadinessTracerTest {
         remediationLines.forEach(line -> System.out.println("T1117 remediation: " + line));
 
         assertSetup(succeededAt, target);
-        assertTracer(samples, succeededAt.orElseThrow(), artifact);
+        assertTracer(samples, succeededAt.orElseThrow(), artifact, target);
     }
 
     // --- SETUP preconditions: a failure here is never a tracer verdict --------------------------------------
@@ -195,6 +225,10 @@ class Issue1117ReadinessTracerTest {
         if (!INJECT && unanswered != 0) {
             fail("SETUP: the control run left %d submissions unanswered; the fault was not disarmed", unanswered);
         }
+        if (FSM2) {
+            return;
+        }
+
         var reportedOwner = reportedOwner(TARGET_STREAM, 0);
 
         if (INJECT && !reportedOwner.equals(target.id())) {
@@ -207,16 +241,24 @@ class Issue1117ReadinessTracerTest {
 
     // --- the tracer's assertions ------------------------------------------------------------------------------
 
-    private void assertTracer(List<Sample> samples, long succeededAt, Artifact artifact) {
+    private void assertTracer(List<Sample> samples, long succeededAt, Artifact artifact, NodeId target) {
         var violations = new ArrayList<String>();
 
         violations.addAll(lateNonActive(samples, succeededAt));
-        violations.addAll(forcedTransitions(artifact));
-        violations.addAll(lateAssignmentMoves(samples, succeededAt));
+        violations.addAll(FSM2 ? fsm2Sensors(target) : forcedTransitions(artifact));
+        violations.addAll(FSM2 ? notDeterminable() : lateAssignmentMoves(samples, succeededAt));
         violations.addAll(mapLocalDisagreement(samples, succeededAt));
 
-        assertThat(violations).describedAs("T1117 tracer violations (inject=%s); timeline above", INJECT)
+        assertThat(violations).describedAs("T1117 tracer violations (engine=%s, inject=%s); timeline above", FSM2 ? "FSM2" : "LEGACY", INJECT)
                               .isEmpty();
+    }
+
+    /// (c) under FSM2: the stream-consumer reader is not FSM2-fed until phase 4a, so no assignment exists to move. Reported, not faked; not a
+    /// violation, and not a pass of (c) either.
+    private List<String> notDeterminable() {
+        System.out.println("T1117 (c) NOT DETERMINABLE under FSM2 in phase-3 scope: the stream-consumer reader is fed by the legacy deployment map (phase 4a)");
+
+        return List.of();
     }
 
     /// (a) The last sample at which an instance was non-ACTIVE, in the map or in its node's local view, must lie
@@ -400,6 +442,10 @@ class Issue1117ReadinessTracerTest {
 
     /// The cluster deployment map as the current leader mirrors it.
     private Map<String, SliceState> mapStates(Artifact artifact) {
+        if (FSM2) {
+            return committedRows(artifact);
+        }
+
         var states = new TreeMap<String, SliceState>();
 
         nodeIds().forEach(node -> states.put(node, null));
@@ -412,6 +458,10 @@ class Issue1117ReadinessTracerTest {
 
     /// Every node's OWN view of its instance: the `deployments` map of its node-deployment FSM's Active state.
     private Map<String, SliceState> localStates(Artifact artifact) {
+        if (FSM2) {
+            return servingSurfaces(artifact);
+        }
+
         var states = new TreeMap<String, SliceState>();
 
         for (var node : cluster.allNodes()) {
@@ -419,6 +469,199 @@ class Issue1117ReadinessTracerTest {
         }
 
         return states;
+    }
+
+    // --- FSM2: the committed rows, the serving surface, the sensors -----------------------------------------------------
+
+    /// The leader's committed `SliceObservedKey` row of each node for the artifact.
+    private Map<String, SliceState> committedRows(Artifact artifact) {
+        var states = new TreeMap<String, SliceState>();
+        var store = leaderNode().kvStore();
+
+        for (var node : cluster.allNodes()) {
+            states.put(node.self().id(),
+                       store.getTyped(SliceObservedKey.sliceObservedKey(node.self(), artifact), SliceObservedValue.class)
+                            .map(row -> SliceState.valueOf(row.state() == org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.UNLOADED
+                                                           ? "UNLOADING"
+                                                           : row.state().name()))
+                            .or((SliceState) null));
+        }
+
+        return states;
+    }
+
+    /// The node's SERVING SURFACE (spec O1 ruling): ACTIVE while the slice's bridge is registered with the node's invocation handler, otherwise the
+    /// state of the node FSM's own record of the instance (or none).
+    private Map<String, SliceState> servingSurfaces(Artifact artifact) {
+        var states = new TreeMap<String, SliceState>();
+
+        for (var node : cluster.allNodes()) {
+            states.put(node.self().id(), servingSurface(node, artifact));
+        }
+
+        return states;
+    }
+
+    private static SliceState servingSurface(AetherNode node, Artifact artifact) {
+        if (node.invocationHandler().localSlice(artifact).isPresent()) {
+            return SliceState.ACTIVE;
+        }
+
+        return node.deploymentWiring()
+                   .system()
+                   .flatMap(system -> system.nodeInterpreter().model().instance(artifact).observed())
+                   .map(row -> SliceState.valueOf(row.state() == org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.UNLOADED
+                                                  ? "UNLOADING"
+                                                  : row.state().name()))
+                   .or((SliceState) null);
+    }
+
+    /// One entry of `expected-warns-t1117.txt`: `warn` (a regex on a WARN line, an occurrence range), `line` (an INFO sensor line on the target node)
+    /// or `metric` (a `submissions_total` outcome arm on the target node). Control mode requires the sensor lines and arms silent.
+    private record Expectation(String kind, String name, int min, int max) {
+        boolean admits(long count) {
+            return count >= min && count <= max;
+        }
+    }
+
+    private static List<Expectation> expectations() {
+        try (InputStream in = Issue1117ReadinessTracerTest.class.getResourceAsStream(EXPECTED_WARNS)) {
+            if (in == null) {
+                throw new AssertionError("SETUP: the checked-in expected-WARN list " + EXPECTED_WARNS + " is missing");
+            }
+
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8).lines()
+                                                                         .filter(line -> !line.startsWith("#") && !line.isBlank())
+                                                                         .map(Issue1117ReadinessTracerTest::expectation)
+                                                                         .toList();
+        } catch (IOException e) {
+            throw new AssertionError("SETUP: cannot read " + EXPECTED_WARNS, e);
+        }
+    }
+
+    private static Expectation expectation(String line) {
+        var match = Pattern.compile("^(warn|line|metric)\\s+(\\S+)\\s+(\\d+)\\.\\.(\\d+)").matcher(line);
+
+        if (!match.find()) {
+            throw new AssertionError("SETUP: unreadable expected-WARN entry: " + line);
+        }
+
+        return new Expectation(match.group(1), match.group(2), Integer.parseInt(match.group(3)), Integer.parseInt(match.group(4)));
+    }
+
+    /// (b) under FSM2 and the expected-WARN lists (design 9.5 O6, 12 item 6): the sensors read what the fault should have caused and nothing else;
+    /// no WARN of the deployment FSM loggers and no operator warning is outside the list.
+    private List<String> fsm2Sensors(NodeId target) {
+        var violations = new ArrayList<String>();
+        var expectations = expectations();
+        var warnLines = fsm2Logged.stream()
+                                  .filter(logged -> logged.level().isMoreSpecificThan(Level.WARN))
+                                  .map(Logged::message)
+                                  .toList();
+        var targetNode = cluster.getNode(target.id()).unwrap();
+
+        System.out.printf("T1117 FSM2 WARN/ERROR lines=%d, sensor lines=%d%n", warnLines.size(), sensorLines(target, "write-").size());
+        warnLines.forEach(line -> System.out.println("T1117 warn: " + line));
+        warnLines.stream()
+                 .filter(line -> expectations.stream().filter(e -> e.kind().equals("warn")).noneMatch(e -> Pattern.compile(e.name()).matcher(line).find()))
+                 .forEach(line -> violations.add("T(b) WARN not on the expected list: " + line));
+        for (var entry : expectations) {
+            var count = switch (entry.kind()) {
+                case "warn" -> warnLines.stream().filter(line -> Pattern.compile(entry.name()).matcher(line).find()).count();
+                case "line" -> sensorLines(target, entry.name()).size();
+                default -> (long) armCount(targetNode, entry.name());
+            };
+            var admits = !entry.kind().equals("warn") && !INJECT
+                         ? count == 0
+                         : entry.admits(count);
+
+            if (!admits) {
+                violations.add("T(b) %s %s: %d, expected %d..%d%s".formatted(entry.kind(), entry.name(), count, entry.min(), entry.max(), INJECT ? "" : " (control: silent)"));
+            }
+        }
+
+        return violations;
+    }
+
+    private List<String> sensorLines(NodeId target, String name) {
+        return fsm2Logged.stream()
+                         .map(Logged::message)
+                         .filter(message -> message.contains(name) && message.contains("node " + target.id()))
+                         .toList();
+    }
+
+    private static double armCount(AetherNode node, String outcome) {
+        return node.deploymentWiring()
+                   .meters()
+                   .find("aether_deployment_fsm_submissions_total")
+                   .tags("fsm", "node", "outcome", outcome)
+                   .counters()
+                   .stream()
+                   .mapToDouble(counter -> counter.count())
+                   .sum();
+    }
+
+    private record Logged(Level level, String message) {}
+
+    private void installFsm2Capture() {
+        if (!FSM2) {
+            return;
+        }
+
+        var ctx = (LoggerContext) LogManager.getContext(false);
+        var configuration = ctx.getConfiguration();
+
+        for (var name : FSM2_LOGGERS) {
+            var existing = configuration.getLoggerConfig(name);
+            var config = name.equals(existing.getName())
+                         ? existing
+                         : new LoggerConfig(name, existing.getLevel(), true);
+
+            if (!name.equals(existing.getName())) {
+                configuration.addLogger(name, config);
+            }
+            var appender = new CapturingFsm2Appender(name, fsm2Logged);
+
+            appender.start();
+            config.addAppender(appender, Level.INFO, null);
+            fsm2Appenders.add(appender);
+        }
+        ctx.updateLoggers();
+    }
+
+    private void removeFsm2Capture() {
+        if (fsm2Appenders.isEmpty()) {
+            return;
+        }
+
+        var ctx = (LoggerContext) LogManager.getContext(false);
+
+        for (var appender : fsm2Appenders) {
+            ctx.getConfiguration().getLoggerConfig(appender.logger()).removeAppender(appender.getName());
+            appender.stop();
+        }
+        ctx.updateLoggers();
+        fsm2Appenders.clear();
+    }
+
+    private static final class CapturingFsm2Appender extends AbstractAppender {
+        private final String logger;
+        private final List<Logged> sink;
+
+        private CapturingFsm2Appender(String logger, List<Logged> sink) {
+            super("T1117Fsm2Capture-" + logger, (Filter) null, null, true, Property.EMPTY_ARRAY);
+            this.logger = logger;
+            this.sink = sink;
+        }
+
+        String logger() {
+            return logger;
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            sink.add(new Logged(event.getLevel(), event.getMessage().getFormattedMessage()));
+        }
     }
 
     private static SliceState localState(AetherNode node, Artifact artifact) {

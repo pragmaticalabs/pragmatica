@@ -100,6 +100,23 @@ class Fsm2SystemTest {
             }
         }
 
+        /// Level B finding (PR C): a genuine quorum entry and the level-heal parked behind a closed guard are two different actions. Under one shared
+        /// name the heal replaced the genuine entry, so the node entered through the heal and `QuorumEstablished` was never stepped.
+        @Test
+        void aGenuineEntry_andTheHeal_parkedBehindAClosedGuard_bothSurviveTheOpening() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false).assembled()) {
+                harness.router.route(ClusterStateNotification.active());
+                harness.wiring.activationDriver(() -> true, () -> {}).run();
+                assertThat(activeNode(harness)).as("closed: nothing ran").isFalse();
+
+                harness.markerCommitted.set(true);
+                harness.guard.evaluate();
+                harness.awaitThat(() -> activeNode(harness));
+
+                assertThat(harness.count("QuorumEstablished", "applied", "node")).as("the genuine entry was stepped, not replaced by the heal").isEqualTo(1.0);
+            }
+        }
+
         /// N-2 (W-20): the config hook reaches the node interpreter only if the adapter runs the step it triggers. Today it does not, so it is a
         /// counted drop; this ties the two so that wiring `NOTIFY_CONFIG` without binding the hook (or the reverse) is red.
         @Test

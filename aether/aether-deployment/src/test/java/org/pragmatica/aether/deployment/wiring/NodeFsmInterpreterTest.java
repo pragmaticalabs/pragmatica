@@ -296,6 +296,50 @@ class NodeFsmInterpreterTest {
         }
     }
 
+    /// T on FSM2 (phase-3 design 13.1): the tracer's fault sits where a node `Submit` becomes an `apply`. It leaves the first ACTIVE submission of the
+    /// target unanswered and lets the probe through: that is the whole of why T is green on FSM2.
+    @Nested
+    class TracerFault {
+        @org.junit.jupiter.api.AfterEach
+        void disarm() {
+            org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.disarm();
+        }
+
+        @Test
+        void theFirstActiveSubmission_isLeftUnanswered_andTheProbeResubmissionCommitsIt() {
+            try (var rig = new NodeRig()) {
+                org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.arm(SELF, ORDERS);
+
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitThat(() -> org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.unansweredSubmissions() == 1);
+                rig.settle();
+
+                assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).as("the first ACTIVE submission never reached consensus").isZero();
+                assertThat(rig.stateOf(ORDERS).or(SliceObservedState.LOADING)).isNotEqualTo(SliceObservedState.ACTIVE);
+
+                rig.clock.advance(2_000L);
+                rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+
+                assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).as("the probe resubmission got through, once").isEqualTo(1);
+                assertThat(org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.unansweredSubmissions()).as("and was not itself taken").isEqualTo(1);
+            }
+        }
+
+        @Test
+        void disarmed_everyActiveSubmissionReachesConsensus() {
+            org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.arm(SELF, ORDERS);
+            org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.disarm();
+
+            try (var rig = new NodeRig()) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+
+                assertThat(org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.unansweredSubmissions()).isZero();
+                assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).isEqualTo(1);
+            }
+        }
+    }
+
     @Nested
     class WriteProbe {
         private NodeRig hungActiveWrite() {
@@ -384,6 +428,45 @@ class NodeFsmInterpreterTest {
                 assertThat(((SliceObservedValue) probe.value()).version()).isEqualTo(((SliceObservedValue) first.value()).version());
                 assertThat(probe.key()).isEqualTo(first.key());
                 rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+            }
+        }
+
+        /// W-36, the real-applier arm (spec NT-134 (b)): the original ACTIVE write and its probe resubmission both reach the REAL applier, in either
+        /// order. The second is a fenced Put at a version already written: refused silently, so the node receives exactly one own `ObservedPut` for
+        /// the ACTIVE row and the instance is ACTIVE once. Every submission is held and applied by hand, so the order is the test's.
+        @org.junit.jupiter.params.ParameterizedTest
+        @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+        void theOriginalAndItsProbe_appliedInEitherOrder_leaveOneRow_andOneOwnObservedPut(boolean originalFirst) {
+            try (var rig = new NodeRig()) {
+                var real = rig.cluster.script;
+                var held = new java.util.concurrent.CopyOnWriteArrayList<List<KVCommand<AetherKey>>>();
+
+                rig.cluster.script = commands -> {
+                    if (observedActive(commands)) {
+                        held.add(commands);
+
+                        return Promise.<List<Object>>promise();
+                    }
+
+                    return real.apply(commands);
+                };
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitThat(() -> held.size() == 1);
+                rig.clock.advance(2_000);
+                rig.awaitThat(() -> held.size() == 2);
+                rig.settle();
+                var before = rig.countOf("ObservedPut");
+
+                var order = originalFirst
+                            ? List.of(held.get(0), held.get(1))
+                            : List.of(held.get(1), held.get(0));
+
+                order.forEach(rig.applier::commit);
+                rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+                rig.settle();
+
+                assertThat(rig.countOf("ObservedPut") - before).as("one own ObservedPut for the row; the fenced duplicate is refused silently").isEqualTo(1);
+                assertThat(rig.stateOf(ORDERS)).isEqualTo(Option.some(SliceObservedState.ACTIVE));
             }
         }
 

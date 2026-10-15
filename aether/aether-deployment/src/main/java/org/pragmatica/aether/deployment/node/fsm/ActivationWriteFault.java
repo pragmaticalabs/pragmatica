@@ -4,11 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.node.fsm;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -54,6 +58,39 @@ public final class ActivationWriteFault {
     /// fault fired, so a run in which it never did is not mistaken for a run the engine survived.
     public static int unansweredSubmissions() {
         return UNANSWERED.get();
+    }
+
+    /// The FSM2 submission point (phase-3 design 13.1, T): the first submission of an ACTIVE write of the target node for the target artifact is left
+    /// unanswered. FSM2 counts attempts from 1, and a probe resubmission carries the attempt of the write it re-sends (`probe > 0`; spec R-3.4.4: a probe
+    /// does not consume an attempt), so the fault takes `attempt == 1 && probe == 0` only: keyed on the attempt alone it would swallow the probe too, and
+    /// T would stay red under FSM2 for the wrong reason. An ACTIVE write is one whose commands put this node's observed row for the artifact as ACTIVE.
+    public static boolean leavesUnansweredFsm2(NodeId self,
+                                               Artifact artifact,
+                                               int attempt,
+                                               int probe,
+                                               List<KVCommand<AetherKey>> commands) {
+        var unanswered = attempt == 1 && probe == 0 && writesActive(self, artifact, commands) && TARGET.get()
+                                                                                                       .filter(target -> target.names(self,
+                                                                                                                                      artifact))
+                                                                                                       .isPresent();
+
+        if (unanswered) {
+            UNANSWERED.incrementAndGet();
+        }
+
+        return unanswered;
+    }
+
+    private static boolean writesActive(NodeId self, Artifact artifact, List<KVCommand<AetherKey>> commands) {
+        return commands.stream()
+                       .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                            && put.key() instanceof AetherKey.SliceObservedKey key
+                                            && key.nodeId()
+                                                  .equals(self)
+                                            && key.artifact()
+                                                  .equals(artifact)
+                                            && put.value() instanceof AetherValue.SliceObservedValue observed
+                                            && observed.state() == AetherValue.SliceObservedState.ACTIVE);
     }
 
     /// True when this submission must be left unanswered; counts it when so.

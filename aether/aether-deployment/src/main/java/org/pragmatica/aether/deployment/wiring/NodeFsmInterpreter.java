@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import java.util.function.ToLongFunction;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault;
 import org.pragmatica.aether.deployment.node.machine.NodeFsm;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
@@ -151,13 +152,25 @@ public final class NodeFsmInterpreter extends FsmRuntime<NodeFsmInput, TimerId, 
 
     /// One `apply` for the whole step: every Submit's commands leave in one batch, and every Submit is settled with that batch's outcome. A Submit
     /// always carries its observed Put (R-3.4.9 (4)); an empty step never reaches the engine.
-    private void submit(List<NodeFsmEffect.Submit> submits) {
+    private void submit(List<NodeFsmEffect.Submit> allSubmits) {
+        var submits = allSubmits.stream().filter(this::reachesConsensus).toList();
+
         if (!submits.isEmpty()) {
             parts.submitter()
                  .submitBatch(submits.stream().flatMap(submit -> submit.commands()
                                                                        .stream()).toList())
                  .onSuccess(outcome -> submits.forEach(submit -> settle(submit, outcome)));
         }
+    }
+
+    /// The tracer's fault (T, phase-3 design 13.1) is consulted at the one point where a Submit becomes an `apply`: inert unless a test arms it,
+    /// and then it leaves the first ACTIVE submission of the target unanswered (never settled), as a lost write looks from the node.
+    private boolean reachesConsensus(NodeFsmEffect.Submit submit) {
+        return ! ActivationWriteFault.leavesUnansweredFsm2(parts.fsm().config().self(),
+                                                           submit.artifact(),
+                                                           submit.attempt(),
+                                                           submit.probe(),
+                                                           submit.commands());
     }
 
     private void settle(NodeFsmEffect.Submit submit, NodeFsmInput.WriteOutcome outcome) {

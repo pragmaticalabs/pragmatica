@@ -79,7 +79,15 @@ final class Fsm2Harness implements AutoCloseable {
     private final DeploymentEngine engine;
     private final boolean worker;
 
+    /// Whether the cluster's engine marker is committed; false holds the guard closed (WAITING) until a test commits it.
+    final java.util.concurrent.atomic.AtomicBoolean markerCommitted = new java.util.concurrent.atomic.AtomicBoolean(true);
+
     Fsm2Harness(DeploymentEngine engine, boolean worker) {
+        this(engine, worker, true);
+    }
+
+    Fsm2Harness(DeploymentEngine engine, boolean worker, boolean markerCommitted) {
+        this.markerCommitted.set(markerCommitted);
         this.engine = engine;
         this.worker = worker;
         cluster.script = commands -> org.pragmatica.lang.Promise.success(commitAll(commands));
@@ -96,12 +104,14 @@ final class Fsm2Harness implements AutoCloseable {
         var guard = EngineMarkerGuard.engineMarkerGuard(configured, SELF, 1_000L, new EngineMarkerGuard.Reader() {
             @Override
             public Option<DeploymentEngineValue> marker() {
-                return Option.some(new DeploymentEngineValue(configured, SELF, 1L));
+                return markerCommitted.get()
+                       ? Option.some(new DeploymentEngineValue(configured, SELF, 1L))
+                       : Option.none();
             }
 
             @Override
             public boolean incarnationPresent() {
-                return true;
+                return markerCommitted.get();
             }
 
             @Override
