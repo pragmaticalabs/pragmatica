@@ -76,6 +76,7 @@ class EmberSameIdentityRelaunchTest {
     private static final long REFUSAL_BOUND_MS = 20_000L;
     /// Attempts of the forming-kill scenario: 0.5^14 = 6.1e-5 never reach it, see the test's doc.
     private static final int SCENARIO_ATTEMPTS = 14;
+    private static final long LINK_BOUND_MS = 30_000L;
 
     private EmberCluster cluster;
 
@@ -154,7 +155,7 @@ class EmberSameIdentityRelaunchTest {
     /// is then retired by a boot-token conflict, a death-path removal that feeds the membership FSM nothing, and the SWIM FAULTY
     /// was turned into UNKNOWN by the cold-boot rule and dropped when the member was swept, so the survivor's record for the
     /// NodeId stayed MEMBER for good. The kill has to win a race against the link establishment, so one attempt does not always
-    /// hit it (about half did before the fix). The test therefore attempts the scenario up to [#SCENARIO_ATTEMPTS] times, each on
+    /// hit it (about half did before the fix); it kills btk-3 the moment btk-1 reports it as a connected peer, not on a clock. The test therefore attempts the scenario up to [#SCENARIO_ATTEMPTS] times, each on
     /// a fresh cluster, until an attempt REACHES it (the relaunch is refused), and fails only on a wrong outcome there (the
     /// survivor still counts the killed original as MEMBER) or on never reaching it. With a per-attempt miss probability of at
     /// most 0.5 (a conservative reading of "about half"), 14 attempts never reach it with probability 0.5^14 = 6.1e-5, under
@@ -178,7 +179,14 @@ class EmberSameIdentityRelaunchTest {
         var basePort = EmberTestPorts.freeBase(PORTS);
         cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
         cluster.start();
-        awaitCondition("the forming cluster's nodes exist", () -> cluster.getNode("btk-1").isPresent() && cluster.getNode("btk-3").isPresent());
+        // The kill must land AFTER the survivors learned btk-3's boot token (its QUIC link is up) and while the cluster is still
+        // forming. Killed any earlier (the old trigger: as soon as the nodes exist) the original is never seen, the relaunch is
+        // the first process they meet and joins - a miss that repeats every attempt on a box where the nodes appear faster than the
+        // links, so retrying a blind kill is not a retry of the same chance. Trigger on the link, not on the clock.
+        if (!awaitLinkedWithin(LINK_BOUND_MS)) {
+            return false;
+        }
+
         var survivor = cluster.getNode("btk-1").unwrap();
         var killedId = cluster.getNode("btk-3").unwrap().self();
 
@@ -224,6 +232,21 @@ class EmberSameIdentityRelaunchTest {
         assertThat(survivor.transportMetrics().get("boot_token_refusals_total").longValue())
             .as("a same-token heal is never refused")
             .isZero();
+    }
+
+    /// True once btk-1 has btk-3 among its connected peers, false when the bound passes first (an aborted start never links).
+    private boolean awaitLinkedWithin(long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
+
+        while (System.currentTimeMillis() < deadline) {
+            if (cluster.getNode("btk-1").isPresent() && cluster.getNode("btk-3").isPresent()
+                && cluster.getNode("btk-1").unwrap().connectedPeerIds().stream().anyMatch(peer -> "btk-3".equals(peer.id()))) {
+                return true;
+            }
+            sleep(5);
+        }
+
+        return false;
     }
 
     /// Refused means the relaunched process exited with the identity-refused code. Its absence from the cluster is not

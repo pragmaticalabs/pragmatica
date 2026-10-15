@@ -7,7 +7,9 @@ package org.pragmatica.aether.ember;
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
@@ -91,6 +93,39 @@ class EmberClusterTeardownWiringTest {
         harness.assertRegistryEmpty();
     }
 
+    /// The harness-only listener leak (listener-leak-investigation, harness arm): a node that `relaunchNode` puts into the registry
+    /// while an abort or a stop is already in flight is not among the nodes that teardown snapshotted, so the clear used to drop
+    /// it WITHOUT stopping it and its ports stayed bound until the JVM exited. Every teardown must stop what it clears.
+    @Test
+    @Timeout(30)
+    void abortStart_stopsANodeAddedWhileItsStopsAreInFlight() {
+        var harness = Harness.seeded(2);
+        var lateStops = new AtomicInteger();
+        var outcome = harness.cluster().abortStart(START_FAILED, Map.of());
+
+        harness.adoptLate(lateStops);
+        harness.stops().forEach(stop -> stop.succeed(unit()));
+
+        assertThat(outcome.await(SETTLED)).isEqualTo(START_FAILED.result());
+        assertThat(lateStops.get()).as("the node added after the abort's snapshot was stopped before it was cleared").isEqualTo(1);
+        harness.assertRegistryEmpty();
+    }
+
+    @Test
+    @Timeout(30)
+    void stop_stopsANodeAddedWhileItsStopsAreInFlight() {
+        var harness = Harness.seeded(2);
+        var lateStops = new AtomicInteger();
+        var outcome = harness.cluster().stop();
+
+        harness.adoptLate(lateStops);
+        harness.stops().forEach(stop -> stop.succeed(unit()));
+
+        assertThat(outcome.await(SETTLED)).isEqualTo(success(unit()));
+        assertThat(lateStops.get()).as("the node added after the stop's snapshot was stopped before it was cleared").isEqualTo(1);
+        harness.assertRegistryEmpty();
+    }
+
     private static EmberCluster.NodeStartResult started(String id, int slot) {
         return EmberCluster.NodeStartResult.nodeStartResult(id, BASE_PORT + slot, BASE_MGMT_PORT + slot, none());
     }
@@ -136,6 +171,13 @@ class EmberClusterTeardownWiringTest {
                       .isFalse();
         }
 
+        /// A node the registry gains AFTER teardown took its snapshot, as `relaunchNode` does; its stop resolves at once.
+        void adoptLate(AtomicInteger stopCalls) {
+            var id = nodeId("wire-late").unwrap();
+
+            cluster.adoptNode(NodeInfo.nodeInfo(id, nodeAddress("localhost", BASE_PORT + 9).unwrap()), fakeNode(id, stopCalls));
+        }
+
         void assertRegistryEmpty() {
             assertThat(cluster.allNodes()).isEmpty();
             assertThat(cluster.status().nodes()).isEmpty();
@@ -156,11 +198,23 @@ class EmberClusterTeardownWiringTest {
 
     /// Everything the three real paths touch on a node — `stop()`, and what `status()` reads for the
     /// #727 snapshot — answers; anything else throws, so an unexpected access fails loudly.
+    private static AetherNode fakeNode(NodeId id, AtomicInteger stopCalls) {
+        return fakeNode(id, () -> {
+            stopCalls.incrementAndGet();
+
+            return Promise.success(unit());
+        });
+    }
+
     private static AetherNode fakeNode(NodeId id, Promise<Unit> stop) {
+        return fakeNode(id, () -> stop);
+    }
+
+    private static AetherNode fakeNode(NodeId id, Supplier<Promise<Unit>> stop) {
         return (AetherNode) Proxy.newProxyInstance(AetherNode.class.getClassLoader(),
                                                    new Class<?>[]{AetherNode.class},
                                                    (proxy, method, args) -> switch (method.getName()) {
-            case "stop" -> stop;
+            case "stop" -> stop.get();
             case "self" -> id;
             case "isReady" -> false;
             case "leader" -> Option.empty();
