@@ -5,6 +5,9 @@ package org.pragmatica.aether.resource.entity;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.UUID;
+import java.util.Optional;
+import java.lang.reflect.Method;
 import org.pragmatica.lang.utils.Causes;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -42,7 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EntityUpdateRetryTripwireTest {
     private static final String KEYSPACE = "orders";
     private static final NodeId SELF = new NodeId("self-node");
-    private static final String ENABLE_RETRY = "B-09 tripwire: a retried update after an unmet barrier no longer applies the mutator twice; delete this tripwire and enable the real assertion beside it (#2201)";
+    private static final String ENABLE_RETRY = "B-09 tripwire: a retried plain update after an unmet barrier no longer applies the mutator twice; this flips only if the spec makes plain update idempotent; delete this tripwire and enable the real assertion beside it (#2201)";
+    private static final String ENABLE_TOKEN = "B-09 tripwire: DurableEntity now has an update overload taking a retry token; delete this tripwire and enable the real assertion beside it (#2201)";
     private static final String ENABLE_ADVICE = "B-09 tripwire: the cause's re-read advice now works during the outage (or no longer gives it); delete this tripwire and enable the real assertion beside it (#2201)";
 
     private CommitGatedSubstrate substrate;
@@ -94,7 +98,7 @@ class EntityUpdateRetryTripwireTest {
         assertThat(entity.get("k").await().unwrap()).as(ENABLE_RETRY).isEqualTo(Option.some(12));
     }
 
-    @Disabled("B-09 real assertion, RED today: one logical update must apply once; needs the additive update(K, token, C) overload or equivalent dedup (#2201)")
+    @Disabled("B-09 real assertion for today's plain update(K, C), RED today: flips only if the spec makes plain update idempotent; the token overload has its own pair (#2201)")
     @Test
     void retriedUpdate_afterAnUnmetBarrier_appliesTheMutatorOnce() {
         updateWithUnmetBarrier();
@@ -103,6 +107,43 @@ class EntityUpdateRetryTripwireTest {
         substrate.commitThrough(2L);
 
         assertThat(entity.get("k").await().unwrap()).isEqualTo(Option.some(11));
+    }
+
+    /// The additive fix 1b-core proposes: `update(K, token, C)`. It does not exist, so the pair works by reflection and compiles today. The tripwire pins
+    /// its absence; the real assertion finds the overload, passes the SAME token twice across an unmet barrier and shows the mutator applied once.
+    /// The overload's shape is a guess marked as one: three parameters, the key first, the token second, the mutator last, the token a `UUID`, `String`
+    /// or `long`; a different shape needs this helper adjusted, the assertion (11, not 12) does not change.
+    @Test
+    void durableEntity_hasNoUpdateOverloadTakingARetryToken_tripwire() {
+        assertThat(tokenOverload()).as(ENABLE_TOKEN).isEmpty();
+    }
+
+    @Disabled("B-09 real assertion, RED today: the same retry token passed twice applies the mutator once; needs the additive update(K, token, C) overload (#2201)")
+    @Test
+    void updateWithTheSameToken_afterAnUnmetBarrier_appliesTheMutatorOnce() throws Exception {
+        var overload = tokenOverload().orElseThrow(() -> new AssertionError("no DurableEntity.update overload taking a retry token"));
+        var token = tokenFor(overload.getParameterTypes()[1]);
+
+        assertThat(entity.create("k", 10).await().isSuccess()).isTrue();
+        substrate.commitThrough(0L);
+        substrate.barrierUnmetOnNextAppend = true;
+        ((Promise<?>) overload.invoke(entity, "k", token, new IntOp.Add(1))).await();
+        ((Promise<?>) overload.invoke(entity, "k", token, new IntOp.Add(1))).await();
+        substrate.commitThrough(2L);
+
+        assertThat(entity.get("k").await().unwrap()).isEqualTo(Option.some(11));
+    }
+
+    private static Optional<Method> tokenOverload() {
+        return Arrays.stream(DurableEntity.class.getMethods())
+                     .filter(method -> method.getName().equals("update") && method.getParameterCount() == 3)
+                     .findFirst();
+    }
+
+    private static Object tokenFor(Class<?> type) {
+        return type == UUID.class
+               ? new UUID(0L, 7L)
+               : type == String.class ? "retry-token-7" : (Object) 7L;
     }
 
     /// Positive control for the real assertion above: it is satisfiable. When the failed attempt leaves NO record in the log (what a pre-append
