@@ -306,9 +306,9 @@ class CloseAndOverrunProbeTest {
         assertThat(probe.closings.get()).as("nothing shut down on the second caller").isZero();
 
         probe.release.countDown();
-        second.join(15_000);
+        second.join(3_000);
 
-        assertThat(second.isAlive()).isFalse();
+        assertThat(second.isAlive()).as("released by the shutdown the exiting consumer ran, not by the timeout").isFalse();
         await().atMost(Duration.ofSeconds(5)).until(() -> probe.closings.get() == 1);
     }
 
