@@ -321,9 +321,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return start(none(), GossipEncryptor.none());
     }
 
-    /// Refuses with [SwimStartError.General#DETECTOR_CLOSED] when `stop()` already preceded the first start:
-    /// no transport is built and no port is bound. A caller that is stopping the node must treat that
-    /// refusal as "nothing to start", not as a SWIM failure.
+    /// When `stop()` already preceded the first start the detector is closed: no transport is built, no
+    /// port is bound, and the start resolves as a no-op success (logged). It must not fail: the caller
+    /// is stopping the node, and a failure would run `failNode`.
     public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
         return isClosed()
                ? refuseClosedStart()
@@ -332,8 +332,9 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     private Promise<Unit> refuseClosedStart() {
         context.dispatch(new SwimHealthEvents.StartRequested());
+        log.info("SWIM start refused: the detector is closed (stop() preceded start()); nothing bound");
 
-        return SwimStartError.General.DETECTOR_CLOSED.promise();
+        return Promise.success(Unit.unit());
     }
 
     /// True once a `stop()` that preceded the first start has made the detector terminally stopped.

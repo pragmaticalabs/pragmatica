@@ -89,8 +89,8 @@ class AetherNodeStartSwimTest {
         assertThat(detector.lifecycleState()).isInstanceOf(SwimHealthState.Stopped.class);
     }
 
-    /// A node stopped before SWIM started is not a SWIM failure: `failNode` (production: halt) must not
-    /// run, the node's start outcome stays unsettled, and no join is announced.
+    /// A node stopped before SWIM started is not a SWIM failure: `failNode` (production: halt, Ember: stop
+    /// of the node) must not run, the node's start outcome stays unsettled, and no join is announced.
     @Test
     void startSwim_detectorClosedByEarlyStop_doesNotFailTheNodeOrAnnounce() throws Exception {
         var detector = detectorWithSwimPort(freeUdpPort());
@@ -100,7 +100,7 @@ class AetherNodeStartSwimTest {
 
         var result = AetherNode.startSwim(detector, network(), encryptor(), this::announce, this::fail, this::diverge, outcome);
 
-        assertThat(result.await().isFailure()).isTrue();
+        assertThat(result.await().isSuccess()).as("a refused start is a no-op success").isTrue();
         assertThat(failures.get()).as("a stopping node must not be failed or halted").isZero();
         assertThat(announcements.get()).isZero();
         assertThat(outcome.isResolved()).as("the start outcome is left to consensus formation").isFalse();

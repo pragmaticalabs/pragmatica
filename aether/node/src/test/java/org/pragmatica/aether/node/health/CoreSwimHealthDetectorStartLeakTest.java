@@ -104,7 +104,7 @@ class CoreSwimHealthDetectorStartLeakTest {
     }
 
     /// The refusal happens before any transport exists: with the SWIM port HELD by this test, a start
-    /// that tried to bind would fail with a bind cause. It fails with DETECTOR_CLOSED instead, and the
+    /// that tried to bind would fail with a bind cause. It succeeds as a no-op instead, and the
     /// post-bind seam never runs.
     @Test
     void start_afterStopBeforeStart_isRefusedWithoutBinding() throws Exception {
@@ -119,7 +119,7 @@ class CoreSwimHealthDetectorStartLeakTest {
             var started = detector.start(Option.none(), GossipEncryptor.none())
                                   .await();
 
-            assertThat(started).isEqualTo(SwimStartError.General.DETECTOR_CLOSED.result());
+            assertThat(started.isSuccess()).as("a refused start is a no-op success, got %s", started).isTrue();
         }
 
         assertThat(bindAttempts.get()).as("no transport may be bound by a refused start").isZero();
