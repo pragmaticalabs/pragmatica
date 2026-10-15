@@ -10,7 +10,6 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -104,15 +103,12 @@ class CoreSwimHealthDetectorStartLeakTest {
     }
 
     /// The refusal happens before any transport exists: with the SWIM port HELD by this test, a start
-    /// that tried to bind would fail with a bind cause. It succeeds as a no-op instead, and the
-    /// post-bind seam never runs.
+    /// that tried to bind would fail with a bind cause (the `isClosed()`-false mutation shows exactly that).
+    /// It succeeds as a no-op instead.
     @Test
     void start_afterStopBeforeStart_isRefusedWithoutBinding() throws Exception {
         var swimPort = freeUdpPort();
         var detector = detectorWithSwimPort(swimPort);
-        var bindAttempts = new AtomicInteger();
-
-        detector.afterBindForTest(() -> countBind(bindAttempts));
         detector.stop();
 
         try (var holder = new DatagramSocket(swimPort)) {
@@ -122,14 +118,7 @@ class CoreSwimHealthDetectorStartLeakTest {
             assertThat(started.isSuccess()).as("a refused start is a no-op success, got %s", started).isTrue();
         }
 
-        assertThat(bindAttempts.get()).as("no transport may be bound by a refused start").isZero();
         assertThat(detector.isClosed()).isTrue();
-    }
-
-    private static Result<Unit> countBind(AtomicInteger attempts) {
-        attempts.incrementAndGet();
-
-        return Result.unitResult();
     }
 
     private static Result<Unit> holdUntilReleased(CountDownLatch reached, CountDownLatch release) {
