@@ -20,6 +20,7 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.slice.generation.Epoch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.sleepQuietly;
@@ -152,7 +153,7 @@ class EmberForwardLaneTripwireTest {
                                                                   offset,
                                                                   List.of(new byte[16]),
                                                                   List.of(0L),
-                                                                  org.pragmatica.aether.slice.generation.Epoch.ZERO);
+                                                                  Epoch.ZERO);
     }
 
     private EmberCluster threeNodes(int basePort) {

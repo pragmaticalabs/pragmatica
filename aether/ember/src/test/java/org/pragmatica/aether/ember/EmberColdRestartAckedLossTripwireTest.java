@@ -25,6 +25,7 @@ import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.PARTITION;
@@ -223,7 +224,7 @@ class EmberColdRestartAckedLossTripwireTest {
         return servedBy(cluster.getNode(reborn.owner().id()).unwrap(), key);
     }
 
-    private org.pragmatica.lang.Option<AetherNode> liveOwner(String key) {
+    private Option<AetherNode> liveOwner(String key) {
         return StreamTripwireSupport.committedRecord(cluster, key, PARTITION)
                                     .flatMap(value -> cluster.getNode(value.owner().id()))
                                     .filter(node -> node.streamPartitionManager().readServing(key, PARTITION, 0L, 1).isSuccess());

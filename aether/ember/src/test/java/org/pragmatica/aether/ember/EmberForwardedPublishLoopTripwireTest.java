@@ -11,6 +11,10 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.Arrays;
+import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Disabled;
@@ -150,7 +154,7 @@ class EmberForwardedPublishLoopTripwireTest {
         var running = new AtomicBoolean(true);
         var inside = new AtomicLong();
         var parked = new AtomicLong();
-        var example = new java.util.concurrent.atomic.AtomicReference<>("none");
+        var example = new AtomicReference<>("none");
         var sampler = Thread.ofPlatform().name("tripwire-stack-sampler").start(() -> sampleLoop(running, inside, parked, example));
         var router = StreamTripwireSupport.component(replica, "streamWriteRouter", StreamWriteRouter.class);
 
@@ -162,7 +166,7 @@ class EmberForwardedPublishLoopTripwireTest {
         running.set(false);
         StreamTripwireSupport.joinQuietly(sampler);
 
-        var names = new java.util.TreeSet<String>();
+        var names = new TreeSet<String>();
 
         forwardThreads.forEach(thread -> names.add(thread.getName()));
 
@@ -172,7 +176,7 @@ class EmberForwardedPublishLoopTripwireTest {
     private void sampleLoop(AtomicBoolean running,
                             AtomicLong inside,
                             AtomicLong parked,
-                            java.util.concurrent.atomic.AtomicReference<String> example) {
+                            AtomicReference<String> example) {
         while (running.get()) {
             for (var thread : List.copyOf(forwardThreads)) {
                 sampleOne(thread, inside, parked, example);
@@ -181,17 +185,17 @@ class EmberForwardedPublishLoopTripwireTest {
         }
     }
 
-    private static void sampleOne(Thread thread, AtomicLong inside, AtomicLong parked, java.util.concurrent.atomic.AtomicReference<String> example) {
+    private static void sampleOne(Thread thread, AtomicLong inside, AtomicLong parked, AtomicReference<String> example) {
         var frames = thread.getStackTrace();
-        var inHandler = java.util.Arrays.stream(frames).anyMatch(frame -> frame.getMethodName().equals("onPublishForward"));
+        var inHandler = Arrays.stream(frames).anyMatch(frame -> frame.getMethodName().equals("onPublishForward"));
 
         if (!inHandler) {
             return;
         }
         inside.incrementAndGet();
-        if (java.util.Arrays.stream(frames).limit(12).anyMatch(EmberForwardedPublishLoopTripwireTest::isBlockingFrame)) {
+        if (Arrays.stream(frames).limit(12).anyMatch(EmberForwardedPublishLoopTripwireTest::isBlockingFrame)) {
             parked.incrementAndGet();
-            example.compareAndSet("none", java.util.Arrays.stream(frames).limit(8).map(StackTraceElement::toString).collect(java.util.stream.Collectors.joining(" <- ")));
+            example.compareAndSet("none", Arrays.stream(frames).limit(8).map(StackTraceElement::toString).collect(Collectors.joining(" <- ")));
         }
     }
 

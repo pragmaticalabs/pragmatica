@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
@@ -24,6 +25,7 @@ import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.ember.StreamTripwireSupport.PARTITION;
@@ -69,7 +71,7 @@ class EmberOwnerRestartAckedTailTripwireTest {
 
     private final AtomicBoolean dropAcks = new AtomicBoolean(false);
     private final AtomicLong droppedAcks = new AtomicLong();
-    private final Set<AetherNode> filtered = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Set<AetherNode> filtered = ConcurrentHashMap.newKeySet();
     private EmberCluster cluster;
     private Path baseDir;
 
@@ -174,7 +176,7 @@ class EmberOwnerRestartAckedTailTripwireTest {
         return true;
     }
 
-    private org.pragmatica.lang.Option<AetherNode> restoredOwner() {
+    private Option<AetherNode> restoredOwner() {
         return StreamTripwireSupport.committedRecord(cluster, ENGINE_KEY, PARTITION)
                                     .flatMap(value -> cluster.getNode(value.owner().id()))
                                     .filter(node -> ringHead(node) == ACKED_TAIL);

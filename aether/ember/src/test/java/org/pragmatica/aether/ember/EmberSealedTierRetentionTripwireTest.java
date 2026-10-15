@@ -5,6 +5,7 @@
 package org.pragmatica.aether.ember;
 
 import java.nio.file.Path;
+import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
@@ -92,7 +93,7 @@ class EmberSealedTierRetentionTripwireTest {
     }
 
     /// Per node, the number of sealed segments this node's index holds for the stream's only partition.
-    private java.util.List<Integer> segmentCounts() {
+    private List<Integer> segmentCounts() {
         return cluster.allNodes().stream().map(this::segmentCount).toList();
     }
 

@@ -17,6 +17,9 @@ import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 import java.util.function.BooleanSupplier;
+import java.util.Comparator;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
@@ -214,7 +217,7 @@ final class StreamTripwireSupport {
         }
 
         try (var walk = Files.walk(directory)) {
-            walk.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+            walk.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
         } catch (IOException e) {
             // best effort: the directory is under the temp root and a stray file costs nothing but space
         }
@@ -298,12 +301,12 @@ final class StreamTripwireSupport {
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    static void joinQuietly(java.util.concurrent.Future<?> future) {
+    static void joinQuietly(Future<?> future) {
         try {
             future.get();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-        } catch (java.util.concurrent.ExecutionException e) {
+        } catch (ExecutionException e) {
             throw new AssertionError("a concurrent caller failed: " + e.getCause(), e.getCause());
         }
     }
