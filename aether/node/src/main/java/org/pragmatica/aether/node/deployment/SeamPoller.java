@@ -18,6 +18,10 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+
 
 /// Samples the read seams of the cluster FSM and hands the interpreter what changed (phase-3 design 5.3.1, CI-15, CI-15b, CI-15c).
 ///
@@ -63,7 +67,7 @@ public final class SeamPoller {
     private final TimerService clock;
     private final long intervalMs;
     private final Map<NodeId, Long> tokens = new HashMap<>();
-    private Option<Seams> delivered = Option.none();
+    private Option<Seams> delivered = none();
 
     private Runnable cancellation = () -> {};
 
@@ -127,8 +131,8 @@ public final class SeamPoller {
     }
 
     private void deliverIfChanged(Seams seams) {
-        if (!delivered.equals(Option.some(seams))) {
-            delivered = Option.some(seams);
+        if (!delivered.equals(some(seams))) {
+            delivered = some(seams);
             sink.seamsRefreshed(seams);
         }
     }
@@ -140,7 +144,7 @@ public final class SeamPoller {
     /// 0 to `t` is reported once; a node first seen with `t` already known was known at its first sample, not learned later (CI-15b).
     private void observeToken(NodeId node) {
         var token = sources.tokenOf().applyAsLong(node);
-        var before = Option.option(tokens.put(node, token));
+        var before = option(tokens.put(node, token));
 
         before.filter(known -> known == 0L && token != 0L).onPresent(_ -> sink.processKnown(node, token));
     }

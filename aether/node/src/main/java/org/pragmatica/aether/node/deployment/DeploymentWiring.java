@@ -150,10 +150,14 @@ public final class DeploymentWiring {
     /// The target of a hook whose FSM2 side exists only on a core: the FSM2 target there, a drop on a FSM2 worker (N-3), the legacy one otherwise.
     private String engineTarget(String fsm2Target) {
         return isFsm2()
-               ? (worker
-                  ? DROPPED_TARGET
-                  : fsm2Target)
+               ? fsm2TargetOrDrop(fsm2Target)
                : LEGACY_TARGET;
+    }
+
+    private String fsm2TargetOrDrop(String fsm2Target) {
+        return worker
+               ? DROPPED_TARGET
+               : fsm2Target;
     }
 
     /// The registry the FSM2 metrics are published to (the sensor arms T reads).
@@ -404,7 +408,11 @@ public final class DeploymentWiring {
     public List<String> recorded() {
         return bindings.entrySet()
                        .stream()
-                       .map(entry -> entry.getKey() + " -> " + entry.getValue())
+                       .map(DeploymentWiring::row)
                        .toList();
+    }
+
+    private static String row(Map.Entry<String, String> binding) {
+        return binding.getKey() + " -> " + binding.getValue();
     }
 }

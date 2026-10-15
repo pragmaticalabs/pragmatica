@@ -190,12 +190,20 @@ public final class EngineMarkerGuard {
     }
 
     private static Verdict fsm2Verdict(Option<DeploymentEngineValue> marker, boolean incarnationPresent) {
-        return marker.fold(() -> incarnationPresent
-                                 ? Verdict.MISMATCH
-                                 : Verdict.WAIT,
-                           value -> value.engine() == DeploymentEngine.FSM2
-                                    ? Verdict.OPEN
-                                    : Verdict.MISMATCH);
+        return marker.fold(() -> absentMarker(incarnationPresent), EngineMarkerGuard::committedFsm2Verdict);
+    }
+
+    /// Both keys absent is genesis still running; an incarnation without a marker is a pre-phase-3 cluster.
+    private static Verdict absentMarker(boolean incarnationPresent) {
+        return incarnationPresent
+               ? Verdict.MISMATCH
+               : Verdict.WAIT;
+    }
+
+    private static Verdict committedFsm2Verdict(DeploymentEngineValue value) {
+        return value.engine() == DeploymentEngine.FSM2
+               ? Verdict.OPEN
+               : Verdict.MISMATCH;
     }
 
     private static Verdict legacyVerdict(Option<DeploymentEngineValue> marker) {
