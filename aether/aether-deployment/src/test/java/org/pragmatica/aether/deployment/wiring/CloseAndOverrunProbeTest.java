@@ -32,6 +32,7 @@ class CloseAndOverrunProbeTest {
         final CountDownLatch release = new CountDownLatch(1);
         final CountDownLatch blocking = new CountDownLatch(1);
         volatile boolean closingRan;
+        final java.util.concurrent.atomic.AtomicInteger closings = new java.util.concurrent.atomic.AtomicInteger();
 
         Probe(FsmTimers.TimerService clock) {
             super("deploy-fsm-probe", clock);
@@ -70,6 +71,7 @@ class CloseAndOverrunProbeTest {
         @Override
         Unit closing() {
             closingRan = true;
+            closings.incrementAndGet();
             return Unit.unit();
         }
     }
@@ -143,5 +145,99 @@ class CloseAndOverrunProbeTest {
 
         assertThat(clock.armed().stream().map(entry -> entry.delayMs)).as("timeout 1000 armed AND the overrun watch at boundOf(LOAD)")
                                                                      .contains(1_000L, timings.boundOf(LocalStep.LOAD));
+    }
+
+    @Test
+    void aTimerTickAfterClose_isCountedClosed() {
+        var clock = new ManualTimerService();
+        var probe = new Probe(clock);
+
+        probe.start();
+        probe.close();
+        probe.timers().schedule("late", Unit.unit(), 10);
+        clock.advance(10);
+
+        assertThat(probe.counts).as("the tick's refused offer is counted too").contains("Timer:closed");
+    }
+
+    @Test
+    void aNormalClose_shutsDownExactlyOnce() {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        probe.close();
+
+        assertThat(probe.closings.get()).isEqualTo(1);
+    }
+
+    /// F-3: the wait expires with the consumer inside an input; WARN `deployment-fsm-stop-timeout` is logged, the shutdown runs when the input
+    /// returns, and it runs once although the Close item and the exit hook both reach it.
+    @Test
+    void closeWhoseWaitExpires_warns_andShutsDownOnce() throws Exception {
+        try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+            var probe = new Probe(new ManualTimerService());
+
+            probe.start();
+            probe.deliver("block");
+            assertThat(probe.blocking.await(5, TimeUnit.SECONDS)).isTrue();
+
+            var closer = Thread.ofPlatform().start(probe::close);
+
+            await().atMost(Duration.ofSeconds(15)).until(() -> logs.lines().stream().anyMatch(line -> line.message().contains("deployment-fsm-stop-timeout")));
+            probe.release.countDown();
+            closer.join(15_000);
+            await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
+            await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).until(() -> probe.closings.get() == 1);
+
+            assertThat(logs.lines()).anySatisfy(line -> assertThat(line.level()).isEqualTo(org.apache.logging.log4j.Level.WARN));
+        }
+    }
+
+    /// F-4: the overrun is reported for a bounded op whose body outlives its timeout, and both clocks are stopped when the body returns.
+    @Test
+    void aBoundedOpWhoseBodyOutlivesItsTimeout_isReportedOverrunning_andBothClocksStopWhenItReturns() {
+        try (var logs = new LogCapture(LocalOpExecutor.class.getName())) {
+            var clock = new ManualTimerService();
+            var timings = NodeFsmTimings.nodeFsmTimings();
+            var started = Collections.synchronizedList(new ArrayList<Promise<LocalOutcome>>());
+            var settled = Collections.synchronizedList(new ArrayList<Object>());
+            var executor = LocalOpExecutor.localOpExecutor(op -> {
+                var promise = Promise.<LocalOutcome>promise();
+                started.add(promise);
+                return promise;
+            }, clock, timings, LocalOpExecutor.Counter.NONE);
+
+            executor.run(new NodeFsmEffect.LocalOp(1L, 10L, Option.some(ORDERS), LocalStep.LOAD, 1_000L, Option.none()), () -> 1L, settled::add);
+            await().atMost(Duration.ofSeconds(5)).until(() -> started.size() == 1);
+
+            clock.advance(1_000);
+            await().atMost(Duration.ofSeconds(5)).until(() -> settled.size() == 1);
+            assertThat(logs.lines()).as("not yet past the step bound").noneMatch(line -> line.message().contains("deployment-localop-overrun"));
+
+            clock.advance(timings.boundOf(LocalStep.LOAD));
+            await().atMost(Duration.ofSeconds(5)).until(() -> logs.lines().stream().anyMatch(line -> line.message().contains("deployment-localop-overrun")));
+
+            started.getFirst().succeed(LocalOutcome.done());
+            await().atMost(Duration.ofSeconds(5)).until(() -> clock.armedCount() == 0);
+        }
+    }
+
+    @Test
+    void aBoundedOpThatReturnsInTime_stopsBothClocks() {
+        var clock = new ManualTimerService();
+        var started = Collections.synchronizedList(new ArrayList<Promise<LocalOutcome>>());
+        var executor = LocalOpExecutor.localOpExecutor(op -> {
+            var promise = Promise.<LocalOutcome>promise();
+            started.add(promise);
+            return promise;
+        }, clock, NodeFsmTimings.nodeFsmTimings(), LocalOpExecutor.Counter.NONE);
+
+        executor.run(new NodeFsmEffect.LocalOp(1L, 10L, Option.some(ORDERS), LocalStep.LOAD, 1_000L, Option.none()), () -> 1L, _ -> {});
+        await().atMost(Duration.ofSeconds(5)).until(() -> started.size() == 1);
+        assertThat(clock.armedCount()).isEqualTo(2);
+
+        started.getFirst().succeed(LocalOutcome.done());
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> clock.armedCount() == 0);
     }
 }
