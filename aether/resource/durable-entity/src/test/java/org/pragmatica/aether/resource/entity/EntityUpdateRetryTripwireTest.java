@@ -102,6 +102,22 @@ class EntityUpdateRetryTripwireTest {
         assertThat(entity.get("k").await().unwrap()).isEqualTo(Option.some(11));
     }
 
+    /// Positive control for the real assertion above: it is satisfiable. When the failed attempt leaves NO record in the log (what a pre-append
+    /// refusal does), the same retry applies once. 1b-core proposed deleting the fold apply in `translateAppendFailure` as the mutation proving
+    /// reach; it does not: the record IS in the log, and the fold's catch-up on access replays it, so the retry still sees 11 and applies to 12.
+    @Test
+    void retriedUpdate_whenTheFailedAttemptLeftNoRecord_appliesTheMutatorOnce_control() {
+        assertThat(entity.create("k", 10).await().isSuccess()).isTrue();
+        substrate.commitThrough(0L);
+        substrate.refuseNextAppendBeforeLanding = true;
+
+        assertThat(entity.update("k", new IntOp.Add(1)).await().isFailure()).as("control: refused before the append").isTrue();
+        assertThat(entity.update("k", new IntOp.Add(1)).await().isSuccess()).isTrue();
+        substrate.commitThrough(1L);
+
+        assertThat(entity.get("k").await().unwrap()).isEqualTo(Option.some(11));
+    }
+
     @Test
     void theCausesReReadAdvice_failsDuringTheOutageItIsRaisedFor_tripwire() {
         var failed = updateWithUnmetBarrier();
@@ -198,9 +214,17 @@ class EntityUpdateRetryTripwireTest {
 
         /// The next append lands in the log (fsync-durable on the owner) but its confirmation barrier is not met.
         volatile boolean barrierUnmetOnNextAppend;
+        /// The next append is refused BEFORE it lands, as a pre-append floor would: nothing enters the log.
+        volatile boolean refuseNextAppendBeforeLanding;
 
         @Override
         public Promise<Long> append(String keyspace, int partition, byte[] record) {
+            if (refuseNextAppendBeforeLanding) {
+                refuseNextAppendBeforeLanding = false;
+
+                return org.pragmatica.lang.utils.Causes.cause("not enough in-sync replicas").promise();
+            }
+
             var offset = appendRaw(record);
 
             if (barrierUnmetOnNextAppend) {
