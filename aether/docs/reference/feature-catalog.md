@@ -380,10 +380,10 @@ capabilities.
 
 | Status | Count |
 |--------|-------|
-| Complete | 169 |
+| Complete | 168 |
 | Cluster-tested | 0 |
 | Battle-tested | 23 |
-| Partial | 27 |
+| Partial | 28 |
 | Planned | 10 |
 | Total | 229 |
 <!-- END GENERATED STATISTICS -->
