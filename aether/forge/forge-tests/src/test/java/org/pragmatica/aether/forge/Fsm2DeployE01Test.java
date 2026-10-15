@@ -8,6 +8,8 @@ package org.pragmatica.aether.forge;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -58,11 +60,15 @@ class Fsm2DeployE01Test {
     /// Leader 4 (3 to 4 typical) + three nodes x 4 + the publish 1 (7.1); a bound with no slack beyond the spec's own "typical".
     private static final double ROUNDS_BOUND = 4 + NODES * 4;
 
+    private static final String EXPECTED_WARNS = "/fsm2/expected-warns-e01.txt";
+
     private final HttpOperations http = jdkHttpOperations();
     private EmberCluster cluster;
+    private Fsm2Sensors sensors;
 
     @BeforeAll
     void setUp() {
+        sensors = Fsm2Sensors.capture();
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "e01");
         cluster.withDeploymentEngine(DeploymentEngine.FSM2);
         LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
@@ -72,6 +78,7 @@ class Fsm2DeployE01Test {
 
     @AfterAll
     void tearDown() {
+        sensors.close();
         if (cluster != null) {
             LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
@@ -99,6 +106,56 @@ class Fsm2DeployE01Test {
 
         System.out.printf("E01 outcomeVersion=%d acceptedRounds=%.0f (bound %.0f)%n", version, rounds, ROUNDS_BOUND);
         assertThat(rounds).as("FSM2 write rounds, spec 7.1").isLessThanOrEqualTo(ROUNDS_BOUND);
+        assertThat(sensorViolations()).as("E-01 against fsm2/expected-warns-e01.txt and the O6 metrics (no fault: silent)").isEmpty();
+    }
+
+    /// Design 9.5 O6: every WARN of the deployment FSM loggers is on the checked-in list, each entry's occurrences are in its range (summed over the
+    /// nodes), and no submission is lost or settled unknown and no input is discarded as closed while the cluster runs.
+    private List<String> sensorViolations() {
+        var violations = new ArrayList<String>();
+        var expectations = Fsm2Sensors.expectations(EXPECTED_WARNS);
+        var warnLines = sensors.warnLines();
+
+        warnLines.forEach(line -> System.out.println("E01 warn: " + line));
+        warnLines.stream()
+                 .filter(line -> expectations.stream().filter(e -> e.kind().equals("warn")).noneMatch(e -> e.matches(line)))
+                 .forEach(line -> violations.add("WARN not on the expected list: " + line));
+        for (var entry : expectations) {
+            var count = switch (entry.kind()) {
+                case "warn" -> warnLines.stream().filter(entry::matches).count();
+                case "line" -> cluster.allNodes().stream().mapToLong(node -> sensors.sensorLines(node.self().id(), entry.name()).size()).sum();
+                default -> (long) cluster.allNodes().stream().mapToDouble(node -> Fsm2Sensors.armCount(node, entry.name())).sum();
+            };
+
+            if (!entry.admits(count)) {
+                violations.add("%s %s: %d, expected %d..%d".formatted(entry.kind(), entry.name(), count, entry.min(), entry.max()));
+            }
+        }
+        for (var arm : List.of("lost", "settled_unknown")) {
+            var count = cluster.allNodes().stream().mapToDouble(node -> Fsm2Sensors.armCount(node, arm)).sum();
+
+            if (count != 0.0) {
+                violations.add("submissions_total{outcome=%s}: %.0f, expected 0".formatted(arm, count));
+            }
+        }
+        var closed = cluster.allNodes().stream().mapToDouble(this::closedInputs).sum();
+
+        if (closed != 0.0) {
+            violations.add("inputs_total{result=closed}: %.0f, expected 0 outside stop".formatted(closed));
+        }
+
+        return violations;
+    }
+
+    private double closedInputs(AetherNode node) {
+        return node.deploymentWiring()
+                   .meters()
+                   .find("aether_deployment_fsm_inputs_total")
+                   .tags("result", "closed")
+                   .counters()
+                   .stream()
+                   .mapToDouble(counter -> counter.count())
+                   .sum();
     }
 
     private boolean succeeded(BlueprintId id) {

@@ -133,10 +133,6 @@ class Issue1117ReadinessTracerTest {
     /// `-Dt1117.engine=fsm2` runs the cluster on the FSM2 engine; the default keeps the LEGACY mode the tracer was written for.
     private static final boolean FSM2 = "fsm2".equalsIgnoreCase(System.getProperty("t1117.engine", "legacy"));
     private static final String EXPECTED_WARNS = "/fsm2/expected-warns-t1117.txt";
-    private static final List<String> FSM2_LOGGERS = List.of("org.pragmatica.aether.deployment.fsm.node",
-                                                             "org.pragmatica.aether.deployment.fsm.cluster",
-                                                             "org.pragmatica.utility.warning.OperatorWarnings",
-                                                             "org.pragmatica.aether.node.deployment.EffectTranslator");
 
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:t1117-tracer:1.0.0";
@@ -150,8 +146,7 @@ class Issue1117ReadinessTracerTest {
 
     private final HttpOperations http = jdkHttpOperations();
     private final List<String> remediationLines = new CopyOnWriteArrayList<>();
-    private final List<Logged> fsm2Logged = new CopyOnWriteArrayList<>();
-    private final List<CapturingFsm2Appender> fsm2Appenders = new ArrayList<>();
+    private Fsm2Sensors sensors;
     private EmberCluster cluster;
     private CapturingAppender appender;
     private LoggerConfig captureConfig;
@@ -159,7 +154,7 @@ class Issue1117ReadinessTracerTest {
     @BeforeAll
     void setUp() {
         installCapture();
-        installFsm2Capture();
+        sensors = FSM2 ? Fsm2Sensors.capture() : null;
         var configProvider = ConfigurationProvider.builder()
                                                   .withSystemProperties("aether.")
                                                   .withEnvironment("AETHER_")
@@ -176,7 +171,9 @@ class Issue1117ReadinessTracerTest {
     @AfterAll
     void tearDown() {
         ActivationWriteFault.disarm();
-        removeFsm2Capture();
+        if (sensors != null) {
+            sensors.close();
+        }
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort());
 
@@ -517,60 +514,24 @@ class Issue1117ReadinessTracerTest {
                    .or((SliceState) null);
     }
 
-    /// One entry of `expected-warns-t1117.txt`: `warn` (a regex on a WARN line, an occurrence range), `line` (an INFO sensor line on the target node)
-    /// or `metric` (a `submissions_total` outcome arm on the target node). Control mode requires the sensor lines and arms silent.
-    private record Expectation(String kind, String name, int min, int max) {
-        boolean admits(long count) {
-            return count >= min && count <= max;
-        }
-    }
-
-    private static List<Expectation> expectations() {
-        try (InputStream in = Issue1117ReadinessTracerTest.class.getResourceAsStream(EXPECTED_WARNS)) {
-            if (in == null) {
-                throw new AssertionError("SETUP: the checked-in expected-WARN list " + EXPECTED_WARNS + " is missing");
-            }
-
-            return new String(in.readAllBytes(), StandardCharsets.UTF_8).lines()
-                                                                         .filter(line -> !line.startsWith("#") && !line.isBlank())
-                                                                         .map(Issue1117ReadinessTracerTest::expectation)
-                                                                         .toList();
-        } catch (IOException e) {
-            throw new AssertionError("SETUP: cannot read " + EXPECTED_WARNS, e);
-        }
-    }
-
-    private static Expectation expectation(String line) {
-        var match = Pattern.compile("^(warn|line|metric)\\s+(\\S+)\\s+(\\d+)\\.\\.(\\d+)").matcher(line);
-
-        if (!match.find()) {
-            throw new AssertionError("SETUP: unreadable expected-WARN entry: " + line);
-        }
-
-        return new Expectation(match.group(1), match.group(2), Integer.parseInt(match.group(3)), Integer.parseInt(match.group(4)));
-    }
-
     /// (b) under FSM2 and the expected-WARN lists (design 9.5 O6, 12 item 6): the sensors read what the fault should have caused and nothing else;
     /// no WARN of the deployment FSM loggers and no operator warning is outside the list.
     private List<String> fsm2Sensors(NodeId target) {
         var violations = new ArrayList<String>();
-        var expectations = expectations();
-        var warnLines = fsm2Logged.stream()
-                                  .filter(logged -> logged.level().isMoreSpecificThan(Level.WARN))
-                                  .map(Logged::message)
-                                  .toList();
+        var expectations = Fsm2Sensors.expectations(EXPECTED_WARNS);
+        var warnLines = sensors.warnLines();
         var targetNode = cluster.getNode(target.id()).unwrap();
 
-        System.out.printf("T1117 FSM2 WARN/ERROR lines=%d, sensor lines=%d%n", warnLines.size(), sensorLines(target, "write-").size());
+        System.out.printf("T1117 FSM2 WARN/ERROR lines=%d, sensor lines=%d%n", warnLines.size(), sensors.sensorLines(target.id(), "write-").size());
         warnLines.forEach(line -> System.out.println("T1117 warn: " + line));
         warnLines.stream()
-                 .filter(line -> expectations.stream().filter(e -> e.kind().equals("warn")).noneMatch(e -> Pattern.compile(e.name()).matcher(line).find()))
+                 .filter(line -> expectations.stream().filter(e -> e.kind().equals("warn")).noneMatch(e -> e.matches(line)))
                  .forEach(line -> violations.add("T(b) WARN not on the expected list: " + line));
         for (var entry : expectations) {
             var count = switch (entry.kind()) {
-                case "warn" -> warnLines.stream().filter(line -> Pattern.compile(entry.name()).matcher(line).find()).count();
-                case "line" -> sensorLines(target, entry.name()).size();
-                default -> (long) armCount(targetNode, entry.name());
+                case "warn" -> warnLines.stream().filter(entry::matches).count();
+                case "line" -> sensors.sensorLines(target.id(), entry.name()).size();
+                default -> (long) Fsm2Sensors.armCount(targetNode, entry.name());
             };
             var admits = !entry.kind().equals("warn") && !INJECT
                          ? count == 0
@@ -582,87 +543,6 @@ class Issue1117ReadinessTracerTest {
         }
 
         return violations;
-    }
-
-    private List<String> sensorLines(NodeId target, String name) {
-        return fsm2Logged.stream()
-                         .map(Logged::message)
-                         .filter(message -> message.contains(name) && message.contains("node " + target.id()))
-                         .toList();
-    }
-
-    private static double armCount(AetherNode node, String outcome) {
-        return node.deploymentWiring()
-                   .meters()
-                   .find("aether_deployment_fsm_submissions_total")
-                   .tags("fsm", "node", "outcome", outcome)
-                   .counters()
-                   .stream()
-                   .mapToDouble(counter -> counter.count())
-                   .sum();
-    }
-
-    private record Logged(Level level, String message) {}
-
-    private void installFsm2Capture() {
-        if (!FSM2) {
-            return;
-        }
-
-        var ctx = (LoggerContext) LogManager.getContext(false);
-        var configuration = ctx.getConfiguration();
-
-        for (var name : FSM2_LOGGERS) {
-            var existing = configuration.getLoggerConfig(name);
-            var config = name.equals(existing.getName())
-                         ? existing
-                         : new LoggerConfig(name, existing.getLevel(), true);
-
-            if (!name.equals(existing.getName())) {
-                configuration.addLogger(name, config);
-            }
-            var appender = new CapturingFsm2Appender(name, fsm2Logged);
-
-            appender.start();
-            config.addAppender(appender, Level.INFO, null);
-            fsm2Appenders.add(appender);
-        }
-        ctx.updateLoggers();
-    }
-
-    private void removeFsm2Capture() {
-        if (fsm2Appenders.isEmpty()) {
-            return;
-        }
-
-        var ctx = (LoggerContext) LogManager.getContext(false);
-
-        for (var appender : fsm2Appenders) {
-            ctx.getConfiguration().getLoggerConfig(appender.logger()).removeAppender(appender.getName());
-            appender.stop();
-        }
-        ctx.updateLoggers();
-        fsm2Appenders.clear();
-    }
-
-    private static final class CapturingFsm2Appender extends AbstractAppender {
-        private final String logger;
-        private final List<Logged> sink;
-
-        private CapturingFsm2Appender(String logger, List<Logged> sink) {
-            super("T1117Fsm2Capture-" + logger, (Filter) null, null, true, Property.EMPTY_ARRAY);
-            this.logger = logger;
-            this.sink = sink;
-        }
-
-        String logger() {
-            return logger;
-        }
-
-        @Override
-        public void append(LogEvent event) {
-            sink.add(new Logged(event.getLevel(), event.getMessage().getFormattedMessage()));
-        }
     }
 
     private static SliceState localState(AetherNode node, Artifact artifact) {
