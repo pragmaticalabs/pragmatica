@@ -105,8 +105,7 @@ class EmberSealedTierRetentionTripwireTest {
 
         var creator = cluster.allNodes().getFirst();
 
-        assertThat(creator.streamPartitionManager().createStream(StreamTripwireSupport.smallRingStream(STREAM, 1, RING_EVENTS, MAX_AGE_MS)).isSuccess())
-            .as("stream created").isTrue();
+        StreamTripwireSupport.createStream(creator, StreamTripwireSupport.smallRingStream(STREAM, 1, RING_EVENTS, MAX_AGE_MS));
 
         var owner = cluster.getNode(StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS).owner().id()).unwrap();
 

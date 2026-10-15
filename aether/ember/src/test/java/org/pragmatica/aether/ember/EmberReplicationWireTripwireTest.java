@@ -172,10 +172,7 @@ class EmberReplicationWireTripwireTest {
     private void bootCluster() {
         cluster = EmberTestPorts.startedCluster(StreamTripwireSupport.PORTS, this::threeNodes, START_BOUND);
         StreamTripwireSupport.awaitLeader(cluster);
-        assertThat(cluster.allNodes().getFirst()
-                          .streamPartitionManager()
-                          .createStream(StreamTripwireSupport.smallRingStream(STREAM, 1, 100_000L, 3_600_000L))
-                          .isSuccess()).as("stream created").isTrue();
+        StreamTripwireSupport.createStream(cluster.allNodes().getFirst(), StreamTripwireSupport.smallRingStream(STREAM, 1, 100_000L, 3_600_000L));
 
         var record = StreamTripwireSupport.awaitFullIsr(cluster, ENGINE_KEY, ISR_BUDGET_MS);
 

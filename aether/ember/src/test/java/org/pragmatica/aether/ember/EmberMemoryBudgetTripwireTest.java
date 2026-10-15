@@ -110,12 +110,8 @@ class EmberMemoryBudgetTripwireTest {
 
         var creator = cluster.allNodes().getFirst();
 
-        assertThat(creator.streamPartitionManager()
-                          .createStream(StreamConfig.streamConfig(engineKey(CONTROL), 4, RetentionPolicy.retentionPolicy(1_000, 64L * 1024 * 1024, 3_600_000L), "earliest"))
-                          .isSuccess()).as("control stream created").isTrue();
-        assertThat(creator.streamPartitionManager()
-                          .createStream(StreamConfig.streamConfig(engineKey(BIG), PARTITIONS, RetentionPolicy.retentionPolicy(), "earliest"))
-                          .isSuccess()).as("big stream created (the budget defers materialization, it does not refuse the create)").isTrue();
+        StreamTripwireSupport.createStream(creator, StreamConfig.streamConfig(engineKey(CONTROL), 4, RetentionPolicy.retentionPolicy(1_000, 64L * 1024 * 1024, 3_600_000L), "earliest"));
+        StreamTripwireSupport.createStream(creator, StreamConfig.streamConfig(engineKey(BIG), PARTITIONS, RetentionPolicy.retentionPolicy(), "earliest"));
     }
 
     /// Per node, the number of the stream's partitions whose ring is materialized there, once the count has stopped moving

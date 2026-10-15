@@ -114,10 +114,7 @@ class EmberCursorCheckpointLoadTripwireTest {
     private Measurement measure() {
         cluster = EmberTestPorts.startedCluster(StreamTripwireSupport.PORTS, this::threeNodes, START_BOUND);
         StreamTripwireSupport.awaitLeader(cluster);
-        assertThat(cluster.allNodes().getFirst()
-                          .streamPartitionManager()
-                          .createStream(StreamTripwireSupport.smallRingStream(STREAM, PARTITIONS, 100_000L, 3_600_000L))
-                          .isSuccess()).as("stream created").isTrue();
+        StreamTripwireSupport.createStream(cluster.allNodes().getFirst(), StreamTripwireSupport.smallRingStream(STREAM, PARTITIONS, 100_000L, 3_600_000L));
         IntStream.range(0, PARTITIONS).forEach(partition -> awaitPartitionReady(partition));
 
         var node = cluster.allNodes().getFirst();

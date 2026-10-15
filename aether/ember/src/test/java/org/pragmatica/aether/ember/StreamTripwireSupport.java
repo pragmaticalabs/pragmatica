@@ -60,6 +60,7 @@ final class StreamTripwireSupport {
                                                                         APP_HTTP_OFFSET);
     static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
     static final long LEADER_BUDGET_MS = 90_000L;
+    static final long CREATE_BUDGET_MS = 60_000L;
     static final String NAMESPACE = "ember";
     static final String VERSION = "1.0.0";
     static final int PARTITION = 0;
@@ -117,6 +118,16 @@ final class StreamTripwireSupport {
         }
 
         assertThat(cluster.getLeaderManagementPort().isPresent()).as("a leader is elected").isTrue();
+    }
+
+    /// Creates the stream through `node`'s partition manager, retrying while the cluster is still settling: a leader is elected
+    /// before consensus commits reliably ("Stream config consensus commit failed" for the first seconds).
+    static void createStream(AetherNode node, StreamConfig config) {
+        var last = new String[] {"never attempted"};
+
+        awaitUntil(() -> node.streamPartitionManager().createStream(config).onFailure(cause -> last[0] = cause.message()).isSuccess(),
+                   CREATE_BUDGET_MS,
+                   "stream " + config.name() + " created (last refusal: " + last[0] + ")");
     }
 
     static void awaitUntil(BooleanSupplier condition, long budgetMs, String what) {
