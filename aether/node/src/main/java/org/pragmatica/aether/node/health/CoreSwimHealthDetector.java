@@ -9,6 +9,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -121,6 +122,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// protocol is created, so a test can hold the detector in Starting or fail a start after a
     /// successful bind. Production never replaces it.
     private volatile Supplier<Result<Unit>> afterBind = Result::unitResult;
+    private final AtomicInteger transportCreations = new AtomicInteger();
 
     private record AnnounceJoinCall(NodeInfo self,
                                     String clusterName,
@@ -321,17 +323,39 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return start(none(), GossipEncryptor.none());
     }
 
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    /// When `stop()` already preceded the first start the detector is closed: no transport is built, no
+    /// port is bound, and the start resolves as a no-op success (logged). It must not fail: the caller
+    /// is stopping the node, and a failure would run `failNode`.
     public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
+        return isClosed()
+               ? refuseClosedStart()
+               : startOpen(sharedEventLoopGroup, gossipEncryptor);
+    }
+
+    private Promise<Unit> refuseClosedStart() {
+        context.dispatch(new SwimHealthEvents.StartRequested());
+        log.info("SWIM start refused: the detector is closed (stop() preceded start()); nothing bound");
+
+        return Promise.success(Unit.unit());
+    }
+
+    /// True once a `stop()` that preceded the first start has made the detector terminally stopped.
+    public boolean isClosed() {
+        return lifecycleState() instanceof SwimHealthState.Stopped(_, var closed) && closed;
+    }
+
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    private Promise<Unit> startOpen(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
         context.dispatch(new SwimHealthEvents.StartRequested());
         var swimPort = swimPort();
         var selfHost = findSelfHost();
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
 
-        return createTransport(sharedEventLoopGroup, gossipEncryptor).flatMap(transport -> createAndStartProtocol(transport,
-                                                                                                                  selfAddress,
-                                                                                                                  swimPort,
-                                                                                                                  gossipEncryptor))
+        return createTransport(sharedEventLoopGroup, gossipEncryptor).onSuccessRun(transportCreations::incrementAndGet)
+                              .flatMap(transport -> createAndStartProtocol(transport,
+                                                                           selfAddress,
+                                                                           swimPort,
+                                                                           gossipEncryptor))
                               .async()
                               .onSuccess(context::dispatch)
                               .onFailure(_ -> context.dispatch(new SwimHealthEvents.StartFailed()))
@@ -351,6 +375,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     public SwimHealthState lifecycleState() {
         return context.fsm()
                       .current();
+    }
+
+    /// How many transports start() has built: a refused start must leave this at zero.
+    int transportCreationsForTest() {
+        return transportCreations.get();
     }
 
     @Contract

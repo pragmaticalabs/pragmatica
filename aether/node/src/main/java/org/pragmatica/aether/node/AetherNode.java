@@ -8611,10 +8611,19 @@ public interface AetherNode extends ManageableNode {
 
         return swimHealthDetector.start(workerGroup, guarded)
                                  .onFailure(startOutcome::fail)
-                                 .onSuccessRun(announceJoinTrigger)
+                                 .onSuccessRun(() -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
                                  .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
                                                                             cause,
                                                                             failNode));
+    }
+
+    /// A start refused because `stop()` already closed the detector resolves as a no-op success (it must
+    /// not run `failNode`: in a single-JVM host a stale one could stop a same-id relaunch). There is no
+    /// protocol to announce for, so the announcement is skipped.
+    private static void announceUnlessClosed(CoreSwimHealthDetector swimHealthDetector, Runnable announceJoinTrigger) {
+        if (!swimHealthDetector.isClosed()) {
+            announceJoinTrigger.run();
+        }
     }
 
     /// #1308: the node's start outcome, given consensus formation and the outcome promise that

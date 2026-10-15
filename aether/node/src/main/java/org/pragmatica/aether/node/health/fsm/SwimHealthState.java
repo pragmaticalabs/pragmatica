@@ -38,12 +38,19 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
     Logger LOG = LoggerFactory.getLogger(SwimHealthState.class);
     SwimHealthContext ctx();
 
-    record Stopped(SwimHealthContext ctx) implements SwimHealthState {
+    /// `closed` latches ANY `stop()` that reaches an already-open `Stopped`. The case that matters is a
+    /// stop BEFORE the first start: the one stop of a node's life arrived early, nothing will send
+    /// another, and a later `StartRequested` would bind SWIM with nobody left to stop it. A closed
+    /// `Stopped` refuses `StartRequested`. A stop of a Running or Starting detector lands in the open
+    /// `Stopped`, so one stop followed by a start still restarts; a SECOND stop (stop, stop, start)
+    /// closes it, and nothing in production issues one: `AetherNode.stop()` calls it once.
+    record Stopped(SwimHealthContext ctx, boolean closed) implements SwimHealthState {
         @Override
         @Contract
         public void handle(SwimHealthEvents event, TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
             switch (event) {
-                case StartRequested _ -> tx.transitionTo(ctx.starting());
+                case StartRequested _ -> startOrRefuse(tx);
+                case StopRequested _ -> closeIfOpen(tx);
                 case PeerJoined pj -> tx.handle(() -> handleStoppedPeerJoined(pj.member()));
                 case PeerSuspect ps -> tx.handle(() -> ctx.reportHint(ps.member().nodeId(),
                                                                       HealthHint.SUSPECTED));
@@ -53,8 +60,32 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
                 case PeerConnected pc -> tx.handle(() -> ctx.reportHint(pc.peer(), HealthHint.HEALTHY));
                 case ReportHint rh -> tx.handle(() -> ctx.reportHint(rh.peer(), rh.hint()));
                 case ProtocolReady ready -> tx.handle(() -> stopOrphanedProtocol(ready));
-                case StopRequested _, LeaderChanged _, StartFailed _ -> tx.ignore();
+                case LeaderChanged _, StartFailed _ -> tx.ignore();
             }
+        }
+
+        private void startOrRefuse(TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
+            if (closed) {
+                tx.handle(Stopped::logStartRefused);
+
+                return;
+            }
+
+            tx.transitionTo(ctx.starting());
+        }
+
+        private void closeIfOpen(TransitionRequest<SwimHealthState, SwimHealthEvents> tx) {
+            if (closed) {
+                tx.ignore();
+
+                return;
+            }
+
+            tx.transitionTo(ctx.closed());
+        }
+
+        private static void logStartRefused() {
+            LOG.warn("SWIM start refused: stop() already reached this detector before its start, so the stop is terminal");
         }
     }
 
