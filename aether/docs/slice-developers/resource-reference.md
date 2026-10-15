@@ -1103,7 +1103,8 @@ public interface OrderProcessor {
 ```
 
 `MessageContext(String messageId, String topic, int partition, long offset)` — `messageId` is the
-publisher-assigned identity of the EVENT and is the key to deduplicate on; it survives dead-letter
+publisher-assigned identity of the EVENT and the key a subscriber-side guard can deduplicate on; nothing in the
+platform deduplicates on it for you (see the note on publish retries below). It survives dead-letter
 redrive. `partition` and `offset` locate *this delivery* and are not identities — a redelivery or a
 redrive can present different values for the same event, so never key on them.
 
@@ -1139,6 +1140,12 @@ one that names the logical event (e.g. `"order-42-placed"`); a blank key is refu
 **necessary** for a retry to be deduplicated, not sufficient: `[unverified: messageId is not yet
 delivered to subscribers — #1295]`, and because durable topics route events round-robin, a retry may
 land on a different partition from the first copy and be processed concurrently with it.
+
+**The key does not deduplicate on publish.** `publish(event, idempotencyKey)` only sets the event's message ID
+(`DurableTopicPublisher.publish(T, String)` calls `stream.publish(envelope(messageId, message))` with no lookup of
+prior keys), so publishing the same key twice appends two events with the same ID. Whether a subscriber collapses
+the pair depends on a subscriber-side guard you opt into (`IdempotencyMethodInterceptor`, or a projection's claim
+store), and no production claim store backs the projection guard yet (durable-pubsub-spec §8; tracked in #2201).
 
 ```java
 var key = "order-" + order.id() + "-placed";

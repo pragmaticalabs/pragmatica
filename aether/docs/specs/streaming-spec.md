@@ -66,7 +66,7 @@ Aether already has a pub/sub resource (`Publisher<T>` / `Subscriber`) for fire-a
 
 **Phase 2:** Replication (governor-push), persistent storage via AHSE (sealed segments → local disk → S3), strong consistency (Rabia path), log compaction. These are explicitly out of scope for Phase 1 but the Phase 1 design must not preclude them (see Section 17 of the exploratory spec and [AHSE spec](future/hierarchical-storage-spec.md) §8.1 for constraints).
 
-**Phase 3:** Transactional cursor commits (PostgreSQL), exactly-once consumer semantics, compound retention policies.
+**Phase 3:** Transactional cursor commits (PostgreSQL), exactly-once consumer semantics, compound retention policies. *Status (#2201): `PgTransactionalCursorCommit` exists but has no production caller; no stream path is exactly-once today, and "exactly-once" here names a goal, not a delivered guarantee. See `reference/known-limitations.md`.*
 
 ---
 
@@ -1837,7 +1837,7 @@ aether-stream (runtime implementation)
 
 ### Phase 3 (8-10 weeks)
 
-- Transactional cursor commits via PostgreSQL (exactly-once consumer semantics)
+- Transactional cursor commits via PostgreSQL (exactly-once consumer semantics) — *not wired in production (#2201); consumers are at-least-once today*
 - Log compaction (AHSE-native: compact blocks per key, store result as new block)
 - Compound retention policies
 - Cold-tier replay: consumers reading historical data served from AHSE disk/S3 tiers transparently (same API, higher latency)
