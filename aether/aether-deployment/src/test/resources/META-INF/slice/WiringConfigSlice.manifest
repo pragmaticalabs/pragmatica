@@ -1,0 +1,5 @@
+# Test fixture for the SliceRuntimeAdapter REGISTER_CONFIG step: a config-update section and the factory that receives its changes.
+slice.factory=org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapterTest$ConfigProbe
+reactive.count=1
+reactive.0.category=config-update
+reactive.0.config=database

@@ -1,0 +1,10 @@
+# Test fixture for the phase-3 SliceLegBuilders golden test (W-30): a topic subscription resolved from the manifest's topicName, and one
+# resolved from the slice's [topics.audit] config section.
+reactive.count=2
+reactive.0.category=subscription
+reactive.0.method=onOrder
+reactive.0.config=topics.orders
+reactive.0.topicName=orders
+reactive.1.category=subscription
+reactive.1.method=onAudit
+reactive.1.config=topics.audit

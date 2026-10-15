@@ -49,12 +49,16 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private final Object mutationLock = new Object();
     private final java.util.ArrayDeque<PendingNotification> notifications = new java.util.ArrayDeque<>();
 
-    private record PendingNotification(org.pragmatica.messaging.Message message, boolean replay) {}
+    private record PendingNotification(org.pragmatica.messaging.Message message, boolean replay, long revision) {}
 
     private boolean dispatching;
     private boolean collectingReplay;
     private int pendingNotifications;
     private long committedRevision;
+    /// The revision stamped on the notifications the running mutation publishes (guarded by the store monitor, like
+    /// [#committedRevision]). It is the `nextSlot` of the batch being applied, which [#committedRevision] only reaches AFTER the batch
+    /// has published; a mutation without a slot publishes at the unchanged [#committedRevision].
+    private long publishRevision;
     private final Map<K, V> storage = new ConcurrentHashMap<>();
     private final Serializer serializer;
     private final Deserializer deserializer;
@@ -70,6 +74,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// a live apply — e.g. the cluster-event aggregator suppresses re-publishing historical events
     /// during replay. Thread-scoped: a concurrent live apply on another thread reads false.
     private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    /// Per-thread revision stamp of the notification being dispatched on THIS thread; see [#notificationRevision()].
+    private final ThreadLocal<Long> dispatchedRevision = ThreadLocal.withInitial(() -> 0L);
 
     public KVStore(MessageRouter router, Serializer serializer, Deserializer deserializer) {
         this.router = router;
@@ -92,6 +98,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @Override
     public <R> List<R> processCommitted(Batch<KVCommand<K>> batch, long nextSlot) {
         return mutate(() -> {
+            publishRevision = nextSlot;
             List<R> results = processCommands(batch);
 
             committedRevision = nextSlot;
@@ -110,6 +117,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             T result;
 
             synchronized (this) {
+                publishRevision = committedRevision;
                 result = mutation.get();
             }
 
@@ -120,7 +128,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     private <T extends org.pragmatica.messaging.Message> void publish(T message) {
-        notifications.addLast(new PendingNotification(message, collectingReplay));
+        notifications.addLast(new PendingNotification(message, collectingReplay, publishRevision));
         pendingNotifications++;
     }
 
@@ -141,12 +149,15 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     private void dispatchNotification(PendingNotification notification) {
         var previous = replaying.get();
+        var previousRevision = dispatchedRevision.get();
 
         replaying.set(notification.replay());
+        dispatchedRevision.set(notification.revision());
         try {
             router.route(notification.message());
         } finally {
             replaying.set(previous);
+            dispatchedRevision.set(previousRevision);
             synchronized (this) {
                 pendingNotifications--;
             }
@@ -610,6 +621,19 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return replaying.get();
     }
 
+    /// The revision stamp of the notification being dispatched on THIS thread, 0 outside a dispatch (phase-3 design 4.4, W-10 (e)).
+    /// Notifications of a batch applied through [#processCommitted] carry that batch's `nextSlot` (never the [#committedRevision] field,
+    /// which reaches the slot only after the batch has published, so the field would stamp batch s with s-1 and a snapshot at r = s-1
+    /// would then drop batch s). A snapshot read at revision r under the store monitor contains every batch stamped at most r, so a
+    /// subscriber that enqueues `(revision, input)` can discard `revision <= r` and keep the rest. Mutations without a slot ([#process],
+    /// the replay burst, [#reset]) carry the unchanged [#committedRevision] (0 after a reset). Thread-scoped like [#isReplaying()].
+    ///
+    /// [guess: a thread-local accessor beside `isReplaying()` instead of a field on the notification records; it leaves every record
+    /// constructor and codec untouched, and the consumer that stamps reads it on the same thread, inside the dispatch.]
+    public long notificationRevision() {
+        return dispatchedRevision.get();
+    }
+
     /// Fire a synthetic `ValueRemove` for every key present in the last-replayed view but absent
     /// from current storage (vanished on a mid-life install).
     private void replayRemovedKeys() {
@@ -639,6 +663,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
 
     private Unit resetStorage() {
         committedRevision = 0;
+        publishRevision = 0;
         notifyRemoveAll();
         storage.clear();
         lastReplayedView.clear();
