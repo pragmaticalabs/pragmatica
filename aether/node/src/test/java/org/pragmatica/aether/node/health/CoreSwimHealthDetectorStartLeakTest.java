@@ -84,6 +84,24 @@ class CoreSwimHealthDetectorStartLeakTest {
             .isTrue();
     }
 
+    @Test
+    void stop_beforeStart_aLaterStartNeverLeavesThePortBound() throws Exception {
+        var swimPort = freeUdpPort();
+        var detector = detectorWithSwimPort(swimPort);
+
+        detector.stop();
+        detector.start(Option.none(), GossipEncryptor.none())
+                .await();
+
+        assertThat(detector.lifecycleState())
+            .as("a stop that beat the first start is terminal")
+            .isNotInstanceOf(SwimHealthState.Starting.class)
+            .isNotInstanceOf(SwimHealthState.Running.class);
+        assertThat(rebindable(swimPort))
+            .as("SWIM UDP %d must not stay bound after stop() preceded start()", swimPort)
+            .isTrue();
+    }
+
     private static Result<Unit> holdUntilReleased(CountDownLatch reached, CountDownLatch release) {
         reached.countDown();
 

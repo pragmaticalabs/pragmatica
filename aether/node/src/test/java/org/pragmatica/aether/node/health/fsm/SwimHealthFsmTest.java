@@ -209,6 +209,54 @@ class SwimHealthFsmTest {
     }
 
     @Nested
+    class StopBeforeStart {
+        /// A `stop()` that arrives before any `start()` used to be ignored in the initial Stopped state,
+        /// so a later `start()` moved to Starting and SWIM bound its UDP port with nothing left to stop it.
+        /// The early stop is terminal: the later start is refused and the detector never leaves the
+        /// stopped side (neither Starting nor Running).
+        @Test
+        void startRequested_afterStopBeforeStart_isRefused() {
+            buildHarness(true);
+
+            harness.dispatch(new SwimHealthEvents.StopRequested());
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+
+            assertThat(harness.state())
+                .as("a stop that beat the first start must not be undone by that start")
+                .isNotInstanceOf(SwimHealthState.Starting.class)
+                .isNotInstanceOf(SwimHealthState.Running.class);
+        }
+
+        /// The start already in flight when the refusal happens still produces a ProtocolReady; it must
+        /// be closed as an orphan, not adopted.
+        @Test
+        void protocolReady_afterStopBeforeStart_stopsTheOrphanAndStaysStopped() {
+            buildHarness(true);
+            var transport = new StubTransport();
+
+            harness.dispatch(new SwimHealthEvents.StopRequested());
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(), transport, GossipEncryptor.none()));
+
+            assertThat(harness.state()).isNotInstanceOf(SwimHealthState.Running.class);
+            assertThat(transport.stopped()).as("the late transport must be closed").isTrue();
+        }
+
+        /// Scope of the terminal stop: a stop of a RUNNING detector keeps the ordinary restart semantics.
+        @Test
+        void startRequested_afterStopOfRunningDetector_restarts() {
+            buildHarness(true);
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(), new StubTransport(), GossipEncryptor.none()));
+            harness.dispatch(new SwimHealthEvents.StopRequested());
+
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+
+            assertThat(harness.state()).isInstanceOf(SwimHealthState.Starting.class);
+        }
+    }
+
+    @Nested
     class HandledObservability {
         @Test
         void peerJoined_inRunning_recordsHandledNotIgnored() {
