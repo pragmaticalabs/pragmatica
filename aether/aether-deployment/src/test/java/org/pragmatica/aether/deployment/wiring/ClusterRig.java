@@ -100,7 +100,8 @@ final class ClusterRig implements AutoCloseable {
                                     SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
                                     MembershipConfig.membershipConfig().splitTimeout(),
                                     TimeSpan.timeSpan(30).seconds(),
-                                    ClusterTimeouts.clusterTimeouts().communityAbsence())
+                                    ClusterTimeouts.clusterTimeouts().communityAbsence(),
+                                    TimeSpan.timeSpan(5).seconds().plus(swim.period()))
                             .unwrap();
     }
 

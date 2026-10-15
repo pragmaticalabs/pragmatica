@@ -21,8 +21,12 @@ import org.pragmatica.lang.utils.Causes;
 /// - `workerRemoval` (`B_w`) = `workerSuspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER
 ///   + reannounceInterval + communityAbsence`;
 /// - `announcementFreshness` (`S_ann`) = `2 x reannounceInterval`;
-/// - `coreSuspicion` = `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER`, the upper bound of one SWIM suspicion
-///   window (R-2.14): how long a core must stay listed in this leader's core view to count as alive `[guess: one window, per the D-4 (ii) ruling]`.
+/// - `coreSuspicion` = `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER + suspicionLag`: the upper bound of one SWIM suspicion
+///   window (R-2.14) plus the lag between SWIM's verdict and the leader's view of it, i.e. how long a core must stay listed in this leader's core
+///   view to count as alive. SWIM arms `suspectTimeout x min(score + 1, lhmMaxScore) x min(max(1, ln(N + 1)), MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER)`,
+///   so the product is its maximum, reached from about 20 live members; with the product alone the margin there is 0, and the sampling lag
+///   (the core view is read every `SeamPoller.INTERVAL_MS`, the verdict itself takes up to one probe period to be reached) would sit outside both
+///   sides. `suspicionLag` is that lag, from its real sources (v-2204 F2, ruled s37).
 ///
 /// W5 on every path (v-2190 N3, CTO ruling 2026-10-14): a final class with a private constructor, so the `Result` factory below is the only
 /// way to build one and a non-positive window can never exist.
@@ -60,9 +64,10 @@ public final class AbsenceBounds {
                                                double clusterSizeWindowMultiplier,
                                                TimeSpan splitTimeout,
                                                TimeSpan reannounceInterval,
-                                               TimeSpan communityAbsence) {
+                                               TimeSpan communityAbsence,
+                                               TimeSpan suspicionLag) {
         var window = lhmMaxScore * clusterSizeWindowMultiplier;
-        var coreSuspicion = (long)(suspectTimeout.nanos() * window);
+        var coreSuspicion = (long)(suspectTimeout.nanos() * window) + suspicionLag.nanos();
         var coreRemoval = coreSuspicion + splitTimeout.nanos();
         var workerRemoval = (long)(workerSuspectTimeout.nanos() * window) + reannounceInterval.nanos() + communityAbsence.nanos();
 

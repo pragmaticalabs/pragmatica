@@ -91,17 +91,24 @@ class Fsm2DerivationsTest {
 
     /// H-2 (design 5.3.1, ruled with `coreMembers()` = MEMBER + SUSPECT): a SUSPECT core stays in the core view, so D-4 (ii)(b) is safe only if the
     /// window a core must stay continuously listed for, before it counts as alive again, is at least the longest suspicion window SWIM can arm. SWIM
-    /// scales the window by its local health multiplier, saturating at `lhmMaxScore` (not the base timeout): `suspectTimeout x lhmMaxScore`.
-    /// Pinned from the real SWIM configurations the node can run with, so a change to either side that breaks the inequality is red.
+    /// scales the window by its local health multiplier, saturating at `lhmMaxScore`, and by its cluster-size term, capped at
+    /// `MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER`: `suspectTimeout x lhmMaxScore x MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER`, a maximum SWIM reaches from about 20 live members, where a window equal to it has no margin; the seam sampling period and one probe period sit outside both sides, so the derived window adds them (v-2204 F2). Pinned from the SWIM configuration
+    /// the node builds from its own `timeouts.swim` (and `SwimConfig.DEFAULT`), so dropping either term from `AbsenceBounds` is red.
     @Test
     void theCoreSuspicionWindow_isAtLeastTheLongestScaledSwimSuspicion_forTheRealSwimConfigs() {
-        var configs = List.of(SwimConfig.DEFAULT, SwimConfig.fromTimeouts(TimeSpan.timeSpan(1).seconds(), TimeSpan.timeSpan(500).millis(), TimeSpan.timeSpan(3).seconds()));
+        var config = configuredWith(TimeSpan.timeSpan(30).seconds());
+        var timeouts = config.timeouts().swim();
+        var configs = List.of(SwimConfig.DEFAULT, SwimConfig.fromTimeouts(timeouts.period(), timeouts.probeTimeout(), timeouts.suspectTimeout()));
 
         for (var swim : configs) {
-            var window = Fsm2System.clusterSettings(configuredWith(TimeSpan.timeSpan(30).seconds()), PROCESS, swim, TimeSpan.timeSpan(15).seconds()).bounds().coreSuspicion();
-            var longestScaledSuspicion = swim.suspectTimeout().nanos() * swim.lhmMaxScore();
+            var window = Fsm2System.clusterSettings(config, PROCESS, swim, TimeSpan.timeSpan(15).seconds()).bounds().coreSuspicion();
+            // SwimProtocol arms suspectTimeout x min(score + 1, lhmMaxScore) x min(max(1, ln(N + 1)), MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER).
+            var longestScaledSuspicion = (long) (swim.suspectTimeout().nanos() * swim.lhmMaxScore() * SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER);
+            // The lag outside SWIM's own window: the core view is read every SeamPoller.INTERVAL_MS, and a verdict takes up to one probe period.
+            var lag = TimeSpan.timeSpan(SeamPoller.INTERVAL_MS).millis().nanos() + swim.period().nanos();
 
-            assertThat(window).as("window (ns) vs suspectTimeout x lhmMaxScore for " + swim).isGreaterThanOrEqualTo(longestScaledSuspicion);
+            assertThat(window).as("strictly above SWIM's longest window, at any cluster size, for " + swim).isGreaterThan(longestScaledSuspicion);
+            assertThat(window).as("and by at least the sampling lag plus one probe period, for " + swim).isGreaterThanOrEqualTo(longestScaledSuspicion + lag);
         }
     }
 
