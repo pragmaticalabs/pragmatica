@@ -84,6 +84,44 @@ class CoreSwimHealthDetectorStartLeakTest {
             .isTrue();
     }
 
+    @Test
+    void stop_beforeStart_aLaterStartNeverLeavesThePortBound() throws Exception {
+        var swimPort = freeUdpPort();
+        var detector = detectorWithSwimPort(swimPort);
+
+        detector.stop();
+        detector.start(Option.none(), GossipEncryptor.none())
+                .await();
+
+        assertThat(detector.lifecycleState())
+            .as("a stop that beat the first start is terminal")
+            .isNotInstanceOf(SwimHealthState.Starting.class)
+            .isNotInstanceOf(SwimHealthState.Running.class);
+        assertThat(rebindable(swimPort))
+            .as("SWIM UDP %d must not stay bound after stop() preceded start()", swimPort)
+            .isTrue();
+    }
+
+    /// The refusal happens before any transport exists: with the SWIM port HELD by this test, a start
+    /// that tried to bind would fail with a bind cause (the `isClosed()`-false mutation shows exactly that).
+    /// It succeeds as a no-op instead.
+    @Test
+    void start_afterStopBeforeStart_isRefusedWithoutBinding() throws Exception {
+        var swimPort = freeUdpPort();
+        var detector = detectorWithSwimPort(swimPort);
+        detector.stop();
+
+        try (var holder = new DatagramSocket(swimPort)) {
+            var started = detector.start(Option.none(), GossipEncryptor.none())
+                                  .await();
+
+            assertThat(started.isSuccess()).as("a refused start is a no-op success, got %s", started).isTrue();
+        }
+
+        assertThat(detector.isClosed()).isTrue();
+        assertThat(detector.transportCreationsForTest()).as("a refused start must not even build a transport").isZero();
+    }
+
     private static Result<Unit> holdUntilReleased(CountDownLatch reached, CountDownLatch release) {
         reached.countDown();
 
