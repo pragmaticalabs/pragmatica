@@ -156,11 +156,28 @@ public final class NodeFsmInterpreter extends FsmRuntime<NodeFsmInput, TimerId, 
         var submits = allSubmits.stream().filter(this::reachesConsensus).toList();
 
         if (!submits.isEmpty()) {
+            submits.forEach(this::countSubmitted);
             parts.submitter()
                  .submitBatch(submits.stream().flatMap(submit -> submit.commands()
                                                                        .stream()).toList())
                  .onSuccess(outcome -> submits.forEach(submit -> settle(submit, outcome)));
         }
+    }
+
+    /// A round is counted when it leaves for the engine, not when it settles: a clean deploy's row echo clears the write before its settlement is
+    /// stepped, so the settlement-side `accepted` arm never sees most rounds (E-01, v-2204 F1). `kind` separates a probe resubmission from the attempt.
+    private void countSubmitted(NodeFsmEffect.Submit submit) {
+        parts.sink()
+             .accept(new NodeFsmEffect.Metric("aether_deployment_fsm_submissions_total",
+                                              Map.of("fsm",
+                                                     "node",
+                                                     "kind",
+                                                     submit.probe() > 0
+                                                     ? "observed_probe"
+                                                     : "observed",
+                                                     "outcome",
+                                                     "submitted"),
+                                              1L));
     }
 
     /// The tracer's fault (T, phase-3 design 13.1) is consulted at the one point where a Submit becomes an `apply`: inert unless a test arms it,

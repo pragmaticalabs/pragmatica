@@ -123,6 +123,18 @@ final class Fsm2Sensors implements AutoCloseable {
                    .sum();
     }
 
+    /// Total of a `submissions_total` outcome arm of one FSM (`cluster` or `node`) of one node.
+    static double armCount(AetherNode node, String fsm, String outcome) {
+        return node.deploymentWiring()
+                   .meters()
+                   .find("aether_deployment_fsm_submissions_total")
+                   .tags("fsm", fsm, "outcome", outcome)
+                   .counters()
+                   .stream()
+                   .mapToDouble(counter -> counter.count())
+                   .sum();
+    }
+
     /// The checked-in list at `resource`.
     static List<Expectation> expectations(String resource) {
         try (InputStream in = Fsm2Sensors.class.getResourceAsStream(resource)) {

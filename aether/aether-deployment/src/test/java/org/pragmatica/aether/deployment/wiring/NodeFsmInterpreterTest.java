@@ -475,6 +475,26 @@ class NodeFsmInterpreterTest {
             }
         }
 
+        /// v-2204 F1: a round is counted when it leaves for the engine (`submitted`), the attempt and its probe resubmission apart. The settlement-side
+        /// `accepted` arm sees almost none of a clean deploy's rounds, because the row echo clears the write first.
+        @Test
+        void everySubmitThatLeavesForTheEngine_isCountedAtSubmission_attemptAndProbeApart() {
+            try (var rig = hungActiveWrite()) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitThat(() -> activeWrites(rig) == 1);
+                rig.settle();
+                var attempts = rig.submitted("observed");
+
+                rig.clock.advance(2_000);
+                rig.awaitThat(() -> activeWrites(rig) == 2);
+                rig.settle();
+
+                assertThat(attempts).as("the attempts counted so far").isGreaterThanOrEqualTo(1);
+                assertThat(rig.submitted("observed_probe")).as("the probe resubmission, counted apart").isEqualTo(1);
+                assertThat(rig.submitted("observed")).as("the attempt count does not move with the probe").isEqualTo(attempts);
+            }
+        }
+
         /// W-36 (a): a probe tick whose write has since been confirmed is superseded (its timer was cancelled) and never reaches `step`.
         @Test
         void aSupersededProbeTick_neverReachesStep() {
