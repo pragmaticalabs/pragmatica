@@ -5,10 +5,11 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.deployment.wiring.FsmTimers.TimerService;
@@ -112,6 +113,9 @@ public final class EngineMarkerGuard {
     private final OperatorWarningSink warnings;
     private final Consumer<String> exit;
     private final Map<String, Runnable> parked = new LinkedHashMap<>();
+    /// Serializes the actions; held while one runs, never by a thread that is only deciding.
+    private final ReentrantLock running = new ReentrantLock();
+    private List<Runnable> drained = List.of();
     private State state = State.WAITING;
     private boolean windowExpired;
 
@@ -162,21 +166,67 @@ public final class EngineMarkerGuard {
     /// is level-triggered: a later `Deactivate` supersedes a parked `Activate`). Parked actions run, in the order they were first parked, when
     /// the guard opens; a refused node drops them.
     @Contract
-    public synchronized void whenOpen(String name, Runnable action) {
-        if (state == State.OPEN) {
-            action.run();
-        } else if (state != State.REFUSED) {
-            parked.put(name, action);
+    public void whenOpen(String name, Runnable action) {
+        running.lock();
+        try {
+            runDrained();
+            if (admitted(name, action)) {
+                action.run();
+            }
+        } finally {
+            running.unlock();
         }
     }
 
     /// Reads the committed mirror and moves to the state it justifies. Idempotent; called on every notification of the three keys it depends on,
-    /// on a leader change, and when the window ends.
+    /// on a leader change, and when the window ends. It never waits for an action that is running: only the evaluation that opens the guard runs
+    /// what was parked, and only that one queues behind a running action.
     @Contract
-    public synchronized void evaluate() {
+    public void evaluate() {
+        if (decided()) {
+            running.lock();
+            try {
+                runDrained();
+            } finally {
+                running.unlock();
+            }
+        }
+    }
+
+    /// True when this evaluation opened the guard and there is parked work to run.
+    private synchronized boolean decided() {
         if (state != State.REFUSED) {
             decide(verdict());
         }
+
+        return ! drained.isEmpty();
+    }
+
+    /// Run or park, decided in one step. Actions themselves never run under the decision monitor.
+    private synchronized boolean admitted(String name, Runnable action) {
+        if (state == State.OPEN) {
+            return true;
+        }
+
+        if (state != State.REFUSED) {
+            parked.put(name, action);
+        }
+
+        return false;
+    }
+
+    private synchronized List<Runnable> takeDrained() {
+        var actions = drained;
+
+        drained = List.of();
+
+        return actions;
+    }
+
+    /// With `running` held: the actions that were parked when the guard opened run first, in the order they were first parked, so an action
+    /// admitted after the opening can never overtake an older parked one.
+    private void runDrained() {
+        takeDrained().forEach(Runnable::run);
     }
 
     private Verdict verdict() {
@@ -225,7 +275,7 @@ public final class EngineMarkerGuard {
         endWindow();
         if (state != State.OPEN) {
             state = State.OPEN;
-            runParked();
+            drain();
         }
     }
 
@@ -251,9 +301,13 @@ public final class EngineMarkerGuard {
     }
 
     @Contract
-    private synchronized void windowEnded() {
-        windowExpired = true;
+    private void windowEnded() {
+        markExpired();
         evaluate();
+    }
+
+    private synchronized void markExpired() {
+        windowExpired = true;
     }
 
     private void refuseIfExpired() {
@@ -279,11 +333,9 @@ public final class EngineMarkerGuard {
         windowExpired = false;
     }
 
-    private void runParked() {
-        var actions = new ArrayList<>(parked.values());
-
+    private void drain() {
+        drained = List.copyOf(parked.values());
         parked.clear();
-        actions.forEach(Runnable::run);
     }
 
     private Unit warn() {

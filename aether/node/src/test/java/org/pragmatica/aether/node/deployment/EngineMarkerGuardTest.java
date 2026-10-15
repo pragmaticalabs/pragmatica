@@ -8,7 +8,10 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -292,6 +295,65 @@ class EngineMarkerGuardTest {
             guard.evaluate();
 
             assertThat(activations).as("level-triggered: the latest wins").containsExactly("deactivate");
+        }
+    }
+
+    @Nested
+    class Actions {
+        /// A running action never makes a deciding thread wait: the guard sits on the default (LEGACY) path of every gated hook, and `evaluate`
+        /// is called from the KV dispatch, so it must not queue behind legacy work.
+        @Test
+        void evaluate_neverWaitsForARunningAction() throws Exception {
+            var guard = guard(DeploymentEngine.LEGACY);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var runner = Thread.ofPlatform().start(() -> guard.whenOpen("slow", () -> hold(entered, release)));
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            try {
+                CompletableFuture.runAsync(guard::evaluate).get(2, TimeUnit.SECONDS);
+            } finally {
+                release.countDown();
+                runner.join(5_000);
+            }
+        }
+
+        /// What was parked runs, in order, before anything admitted after the opening: the later action waits for the drain, however long the drain
+        /// takes.
+        @Test
+        void anActionAdmittedAfterTheOpening_neverOvertakesTheParkedOnes() throws Exception {
+            var guard = guard(DeploymentEngine.FSM2);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+
+            guard.whenOpen("first", () -> {
+                activations.add("parked-start");
+                hold(entered, release);
+                activations.add("parked-end");
+            });
+            marker = Option.some(FSM2_MARKER);
+            incarnation = true;
+            var opener = Thread.ofPlatform().start(guard::evaluate);
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            var later = Thread.ofPlatform().start(() -> guard.whenOpen("second", () -> activations.add("later")));
+
+            Thread.sleep(300);
+            assertThat(activations).as("the later action waits for the drain").containsExactly("parked-start");
+            release.countDown();
+            opener.join(5_000);
+            later.join(5_000);
+
+            assertThat(activations).containsExactly("parked-start", "parked-end", "later");
+        }
+
+        private void hold(CountDownLatch entered, CountDownLatch release) {
+            entered.countDown();
+            try {
+                release.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
