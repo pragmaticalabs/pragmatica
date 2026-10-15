@@ -240,4 +240,101 @@ class CloseAndOverrunProbeTest {
 
         await().atMost(Duration.ofSeconds(5)).until(() -> clock.armedCount() == 0);
     }
+
+    /// Design 7 (2c), the KV producer: a KV-sourced offer after Close is counted `result=closed` under its input's name.
+    @Test
+    void aKvOfferAfterClose_isCountedClosed() {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        probe.close();
+
+        assertThat(probe.deliverKv("late", 5L, false)).isFalse();
+        assertThat(probe.counts).contains("String:closed");
+    }
+
+    /// Design 7 (2c), the entry driver: an entry request after Close is counted `result=closed`.
+    @Test
+    void anEntryRequestAfterClose_isCountedClosed() {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        probe.close();
+
+        assertThat(probe.requestEntry(false)).isFalse();
+        assertThat(probe.counts).contains("EnterRequested:closed");
+    }
+
+    /// An unbounded op that returns stops its overrun watch, so no `deployment-localop-overrun` is logged for an op that finished.
+    @Test
+    void anUnboundedOpThatReturns_stopsItsOverrunWatch() {
+        var clock = new ManualTimerService();
+        var started = Collections.synchronizedList(new ArrayList<Promise<LocalOutcome>>());
+        var executor = LocalOpExecutor.localOpExecutor(op -> {
+            var promise = Promise.<LocalOutcome>promise();
+            started.add(promise);
+            return promise;
+        }, clock, NodeFsmTimings.nodeFsmTimings(), LocalOpExecutor.Counter.NONE);
+
+        executor.run(new NodeFsmEffect.LocalOp(1L, 10L, Option.some(ORDERS), LocalStep.LOAD, 0L, Option.none()), () -> 1L, _ -> {});
+        await().atMost(Duration.ofSeconds(5)).until(() -> started.size() == 1);
+        assertThat(clock.armedCount()).isEqualTo(1);
+
+        started.getFirst().succeed(LocalOutcome.done());
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> clock.armedCount() == 0);
+    }
+
+    /// N-7: a second `close()` after a first whose wait expired must not run the shutdown on its own (caller) thread while the consumer is alive.
+    @Test
+    void aSecondCloseAfterAnExpiredWait_neverShutsDownOnTheCaller_whileTheConsumerIsAlive() throws Exception {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        probe.deliver("block");
+        assertThat(probe.blocking.await(5, TimeUnit.SECONDS)).isTrue();
+
+        var first = Thread.ofPlatform().start(probe::close);
+
+        first.join(20_000);
+        assertThat(first.isAlive()).as("the first close returned after its bounded wait").isFalse();
+        assertThat(probe.closingRan).as("the consumer is still inside its input").isFalse();
+
+        var second = Thread.ofPlatform().start(probe::close);
+
+        await().during(Duration.ofSeconds(1)).atMost(Duration.ofSeconds(3)).until(() -> !probe.closingRan);
+        assertThat(probe.closings.get()).as("nothing shut down on the second caller").isZero();
+
+        probe.release.countDown();
+        second.join(15_000);
+
+        assertThat(second.isAlive()).isFalse();
+        await().atMost(Duration.ofSeconds(5)).until(() -> probe.closings.get() == 1);
+    }
+
+    /// N-8: two concurrent `close()` calls share one completion: both return once the consumer reaches Close, neither waits out the timeout,
+    /// and no stop timeout is logged.
+    @Test
+    void concurrentCloses_shareOneCompletion_andLogNoFalseStopTimeout() throws Exception {
+        try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+            var probe = new Probe(new ManualTimerService());
+
+            probe.start();
+            probe.deliver("block");
+            assertThat(probe.blocking.await(5, TimeUnit.SECONDS)).isTrue();
+
+            var first = Thread.ofPlatform().start(probe::close);
+            var second = Thread.ofPlatform().start(probe::close);
+
+            await().during(Duration.ofSeconds(1)).atMost(Duration.ofSeconds(3)).until(() -> first.isAlive() && second.isAlive());
+            probe.release.countDown();
+            first.join(3_000);
+            second.join(3_000);
+
+            assertThat(first.isAlive()).as("the first returned without waiting out the timeout").isFalse();
+            assertThat(second.isAlive()).as("so did the second").isFalse();
+            assertThat(logs.lines()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
+            assertThat(probe.closings.get()).isEqualTo(1);
+        }
+    }
 }

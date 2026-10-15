@@ -119,6 +119,13 @@ public final class FsmMailbox<I> {
                                  .or(false);
     }
 
+    /// True while a consumer thread exists and is alive, whether or not the mailbox is already closed.
+    public boolean consumerAlive() {
+        return Option.option(consumer)
+                     .map(Thread::isAlive)
+                     .or(false);
+    }
+
     /// True on the consumer thread (a confinement check for the state only that thread may touch).
     public boolean onConsumerThread() {
         return Thread.currentThread() == consumer;

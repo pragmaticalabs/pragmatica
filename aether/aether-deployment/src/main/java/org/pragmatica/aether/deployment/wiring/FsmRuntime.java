@@ -35,6 +35,9 @@ abstract class FsmRuntime<I, K, A> {
     private final FsmMailbox<FsmItem<I, K>> mailbox;
     private final FsmTimers<K, A> timers;
     private final AtomicBoolean shutDown = new AtomicBoolean();
+    private final AtomicBoolean closeRequested = new AtomicBoolean();
+    /// Counted down when the shutdown has run, by whoever ran it; every `close()` caller waits on this one completion.
+    private final CountDownLatch stopped = new CountDownLatch(1);
     private long watermark;
 
     FsmRuntime(String threadName, FsmTimers.TimerService clock) {
@@ -87,7 +90,7 @@ abstract class FsmRuntime<I, K, A> {
     /// its settlement arrives at a closed mailbox and is dropped, because no consumer remains to step it.
     @Contract
     public void close() {
-        if (mailbox.onConsumerThread() || !mailbox.running()) {
+        if (mailbox.onConsumerThread() || !mailbox.consumerAlive()) {
             shutdown();
         } else {
             requestShutdown();
@@ -129,27 +132,32 @@ abstract class FsmRuntime<I, K, A> {
               .onEmpty(() -> count("Timer", "dropped_superseded"));
     }
 
-    /// Once: on the consumer at `Close`, on the consumer as it exits after a `close()` whose wait expired, or on the caller when no consumer runs.
+    /// Once: on the consumer at `Close`, on the consumer as it exits after a `close()` whose wait expired, or on the caller when no consumer is
+    /// alive. Never on a caller while the consumer thread is alive: the timer map and the FSM state belong to the consumer.
     private void shutdown() {
         if (shutDown.compareAndSet(false, true)) {
             closing();
             timers.close();
+            stopped.countDown();
         }
     }
 
+    /// The first caller enqueues the `Close` marker; every caller waits on the same completion, so concurrent callers neither wait out the timeout
+    /// for a marker nobody will take nor log a stop timeout the first caller did not have.
+    ///
     /// FER: a wait that is interrupted is logged and `close` goes on to stop the consumer anyway; the guarantee is that `close` always
     /// returns, the cost is that timers may not have been cancelled by the consumer before it stops (the map is dropped with the runtime).
     private void requestShutdown() {
-        var done = new CountDownLatch(1);
-
-        if (mailbox.offer(new FsmItem.Close<>(done))) {
-            Result.lift(Causes::fromThrowable,
-                        () -> done.await(CLOSE_WAIT_SECONDS, TimeUnit.SECONDS))
-                  .onFailure(cause -> log.warn("Interrupted while closing {}: {}",
-                                               name,
-                                               cause.message()))
-                  .onSuccess(reached -> warnIfExpired(reached));
+        if (closeRequested.compareAndSet(false, true)) {
+            mailbox.offer(new FsmItem.Close<>(stopped));
         }
+
+        Result.lift(Causes::fromThrowable,
+                    () -> stopped.await(CLOSE_WAIT_SECONDS, TimeUnit.SECONDS))
+              .onFailure(cause -> log.warn("Interrupted while closing {}: {}",
+                                           name,
+                                           cause.message()))
+              .onSuccess(reached -> warnIfExpired(reached));
     }
 
     /// The wait is bounded (design 7, 2b): on expiry the consumer is still inside an input; it shuts down as it exits.

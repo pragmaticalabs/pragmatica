@@ -40,6 +40,10 @@ class ClusterFsmInterpreterTest {
                 rig.interpreter.activate();
                 rig.target(ORDERS, 1);
                 rig.target(BILLING, 1);
+                // Deterministic fixture: one input stamped above any snapshot the Rebuild can take is queued behind Activate.
+                var past = rig.applier.slot() + 1_000;
+
+                rig.interpreter.deliverKv(new ClusterInput.KvRemove(new org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey(AUDIT.base())), past, false);
                 rig.release();
                 rig.settle();
 
@@ -48,7 +52,11 @@ class ClusterFsmInterpreterTest {
 
                 assertThat(rebuild).as("Rebuild was stepped").isGreaterThan(0);
                 assertThat(order.get(rebuild + 1)).as("the Activate step that asked for it finishes next").isEqualTo("Activate");
-                assertThat(order.indexOf("KvPut")).as("no input of the new activation precedes the Rebuild").isGreaterThan(rebuild);
+                // The target puts are inside the snapshot and dropped; the goal puts may land after settle()'s barrier. The input stamped above the
+                // snapshot is stepped, and it is stepped after the Rebuild: both halves are asserted, so the check cannot pass vacuously.
+                assertThat(order).as("the queued input past the snapshot was stepped").contains("KvRemove");
+                assertThat(order.indexOf("KvRemove")).as("and only after the Rebuild").isGreaterThan(rebuild);
+                assertThat(order.subList(0, rebuild)).as("no input of the new activation precedes the Rebuild").doesNotContain("KvPut", "KvRemove");
                 assertThat(rig.snapshots.get()).isEqualTo(1);
             }
         }
