@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
@@ -80,7 +81,7 @@ final class Fsm2Harness implements AutoCloseable {
     private final boolean worker;
 
     /// Whether the cluster's engine marker is committed; false holds the guard closed (WAITING) until a test commits it.
-    final java.util.concurrent.atomic.AtomicBoolean markerCommitted = new java.util.concurrent.atomic.AtomicBoolean(true);
+    final AtomicBoolean markerCommitted = new AtomicBoolean(true);
 
     Fsm2Harness(DeploymentEngine engine, boolean worker) {
         this(engine, worker, true);

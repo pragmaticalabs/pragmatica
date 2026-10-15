@@ -6,11 +6,14 @@ package org.pragmatica.aether.deployment.wiring;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
 import org.pragmatica.aether.deployment.node.machine.LocalOutcome;
@@ -434,8 +437,8 @@ class NodeFsmInterpreterTest {
         /// W-36, the real-applier arm (spec NT-134 (b)): the original ACTIVE write and its probe resubmission both reach the REAL applier, in either
         /// order. The second is a fenced Put at a version already written: refused silently, so the node receives exactly one own `ObservedPut` for
         /// the ACTIVE row and the instance is ACTIVE once. Every submission is held and applied by hand, so the order is the test's.
-        @org.junit.jupiter.params.ParameterizedTest
-        @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+        @ParameterizedTest
+        @ValueSource(booleans = {true, false})
         void theOriginalAndItsProbe_appliedInEitherOrder_leaveOneRow_andOneOwnObservedPut(boolean originalFirst) {
             try (var rig = new NodeRig()) {
                 var real = rig.cluster.script;

@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
+import org.pragmatica.lang.Option;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -122,7 +123,7 @@ class Fsm2DeployE01Test {
                       .count();
     }
 
-    private org.pragmatica.lang.Option<SliceObservedValue> row(AetherNode node, Artifact artifact) {
+    private Option<SliceObservedValue> row(AetherNode node, Artifact artifact) {
         return leader().kvStore().getTyped(AetherKey.SliceObservedKey.sliceObservedKey(node.self(), artifact), SliceObservedValue.class);
     }
 

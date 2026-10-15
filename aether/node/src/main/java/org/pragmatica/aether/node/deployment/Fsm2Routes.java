@@ -41,6 +41,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.messaging.MessageRouter;
 
 
@@ -109,7 +110,7 @@ public final class Fsm2Routes {
 
     /// Registers every route on `builder`, in the order the families are listed (the order among handlers of one family is not load-bearing:
     /// each handler only enqueues).
-    @SuppressWarnings("JBCT-RET-01")
+    @Contract
     public void register(KVNotificationRouter.Builder<AetherKey, AetherValue> builder) {
         CLUSTER_PUT_FAMILIES.forEach(type -> registerPut(builder, type));
         CLUSTER_REMOVE_FAMILIES.forEach(type -> registerRemove(builder, type));
