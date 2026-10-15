@@ -56,7 +56,7 @@ class EmberWalFailStopNodeTripwireTest {
     private static final String GAUGE_REGEX = "(?im)^(?=.*wal)(?=.*(fail|stop)).*$";
     private static final Pattern WAL_FAIL_GAUGE = Pattern.compile(GAUGE_REGEX);
 
-    /// The matching sample lines (comment lines excluded) whose value is not zero: a gauge exposed at 0 from boot is not an alarm.
+    /// The matching sample lines (comment lines excluded) whose value is a finite non-zero number (NaN, infinity and unparsable values do not count): a gauge exposed at 0 from boot is not an alarm.
     private static boolean nonZeroGauge(String scrape) {
         return scrape.lines().filter(line -> !line.startsWith("#")).filter(line -> WAL_FAIL_GAUGE.matcher(line).find()).anyMatch(EmberWalFailStopNodeTripwireTest::isNonZero);
     }
@@ -65,9 +65,11 @@ class EmberWalFailStopNodeTripwireTest {
         var value = line.substring(line.lastIndexOf(' ') + 1);
 
         try {
-            return Double.parseDouble(value) != 0.0;
+            var parsed = Double.parseDouble(value);
+
+            return Double.isFinite(parsed) && parsed != 0.0;
         } catch (NumberFormatException e) {
-            return true;
+            return false;
         }
     }
     private static final String STREAM = "d01";
@@ -75,6 +77,7 @@ class EmberWalFailStopNodeTripwireTest {
 
     private EmberCluster cluster;
     private Path dataDir;
+    private String scrapeBeforeFailStop = "";
 
     @AfterEach
     void tearDown() {
@@ -89,7 +92,7 @@ class EmberWalFailStopNodeTripwireTest {
     void walFailStopOnTheOwner_tripwire_neitherMovesOwnershipNorShowsInTheMetrics() {
         var owner = failStopTheOwner();
         var ownerId = owner.self().id();
-        var scrapeBefore = scrape(owner);
+        var scrapeBefore = scrapeBeforeFailStop;
 
         assertThat(scrapeBefore).as("control: the scrape works and carries aether lines").containsPattern("(?m)^aether");
         assertThat(publishFails(owner)).as("control: the owner's partition is unwritable after the fail-stop").isTrue();
@@ -119,6 +122,7 @@ class EmberWalFailStopNodeTripwireTest {
     void walFailStopOnTheOwner_isGauged() {
         var owner = failStopTheOwner();
 
+        assertThat(nonZeroGauge(scrapeBeforeFailStop)).as("before-control: before the fail-stop no scrape line matching " + GAUGE_REGEX + " has a finite non-zero value (a gauge that is 1 from boot proves nothing)").isFalse();
         publishFails(owner);
         awaitUntil(() -> nonZeroGauge(scrape(owner)), WINDOW_MS, "a scrape line matching " + GAUGE_REGEX + " has a non-zero value");
     }
@@ -134,6 +138,7 @@ class EmberWalFailStopNodeTripwireTest {
 
         assertThat(router.publish(ENGINE_KEY, PARTITION, "before".getBytes(StandardCharsets.UTF_8), System.currentTimeMillis()).await(PUBLISH_BOUND).isSuccess())
             .as("control: the owner acknowledges before the fail-stop").isTrue();
+        scrapeBeforeFailStop = scrape(owner);
         closeWalChannel(owner);
 
         return owner;
