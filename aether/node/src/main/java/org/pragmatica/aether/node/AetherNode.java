@@ -372,6 +372,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
+import org.pragmatica.aether.node.health.SwimStartError;
 import org.pragmatica.aether.node.journal.TransitionJournal;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.Server;
@@ -8610,11 +8611,25 @@ public interface AetherNode extends ManageableNode {
         var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
 
         return swimHealthDetector.start(workerGroup, guarded)
-                                 .onFailure(startOutcome::fail)
                                  .onSuccessRun(announceJoinTrigger)
-                                 .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
-                                                                            cause,
-                                                                            failNode));
+                                 .onFailure(cause -> failUnlessClosed(swimHealthDetector.swimPort(),
+                                                                      cause,
+                                                                      startOutcome,
+                                                                      failNode));
+    }
+
+    /// A start refused because `stop()` already closed the detector is not a SWIM failure: the node is
+    /// being stopped, so it neither fails its start outcome nor runs `failNode` (production: halt) and
+    /// does not announce. Every other failure fails the outcome inline first, then runs `failNode`.
+    private static void failUnlessClosed(int swimPort, Cause cause, Promise<Unit> startOutcome, Runnable failNode) {
+        if (cause == SwimStartError.General.DETECTOR_CLOSED) {
+            LOG.info("SWIM start skipped on UDP port {}: the node was stopped before SWIM started", swimPort);
+
+            return;
+        }
+
+        startOutcome.fail(cause);
+        refuseToRunWithoutSwim(swimPort, cause, failNode);
     }
 
     /// #1308: the node's start outcome, given consensus formation and the outcome promise that

@@ -242,6 +242,38 @@ class SwimHealthFsmTest {
             assertThat(transport.stopped()).as("the late transport must be closed").isTrue();
         }
 
+        /// `closed` latches ANY stop that reaches an open Stopped, so a SECOND stop of a restarted-then-
+        /// stopped detector (stop, stop, start) also refuses the start. Nothing in production stops twice;
+        /// this pins the behaviour rather than leaving it implicit.
+        @Test
+        void startRequested_afterTwoStops_isRefused() {
+            buildHarness(true);
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+            harness.dispatch(new SwimHealthEvents.ProtocolReady(swimWithSeeds(), new StubTransport(), GossipEncryptor.none()));
+            harness.dispatch(new SwimHealthEvents.StopRequested());
+            harness.dispatch(new SwimHealthEvents.StopRequested());
+
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+
+            assertThat(harness.state()).isNotInstanceOf(SwimHealthState.Starting.class)
+                                       .isNotInstanceOf(SwimHealthState.Running.class);
+        }
+
+        /// A StartFailed arriving in the closed state (a start that was in flight) is ignored and must
+        /// not reopen the latch: the later start is still refused.
+        @Test
+        void startFailed_inClosed_isIgnoredAndTheLatchHolds() {
+            buildHarness(true);
+            harness.dispatch(new SwimHealthEvents.StopRequested());
+
+            harness.dispatch(new SwimHealthEvents.StartFailed());
+            harness.dispatch(new SwimHealthEvents.StartRequested());
+
+            assertThat(harness.state()).isInstanceOf(SwimHealthState.Stopped.class);
+            assertThat(harness.ignored().stream().map(e -> e.event()))
+                .anyMatch(SwimHealthEvents.StartFailed.class::isInstance);
+        }
+
         /// Scope of the terminal stop: a stop of a RUNNING detector keeps the ordinary restart semantics.
         @Test
         void startRequested_afterStopOfRunningDetector_restarts() {

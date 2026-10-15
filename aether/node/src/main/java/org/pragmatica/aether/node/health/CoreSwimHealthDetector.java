@@ -321,8 +321,28 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return start(none(), GossipEncryptor.none());
     }
 
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    /// Refuses with [SwimStartError.General#DETECTOR_CLOSED] when `stop()` already preceded the first start:
+    /// no transport is built and no port is bound. A caller that is stopping the node must treat that
+    /// refusal as "nothing to start", not as a SWIM failure.
     public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
+        return isClosed()
+               ? refuseClosedStart()
+               : startOpen(sharedEventLoopGroup, gossipEncryptor);
+    }
+
+    private Promise<Unit> refuseClosedStart() {
+        context.dispatch(new SwimHealthEvents.StartRequested());
+
+        return SwimStartError.General.DETECTOR_CLOSED.promise();
+    }
+
+    /// True once a `stop()` that preceded the first start has made the detector terminally stopped.
+    public boolean isClosed() {
+        return lifecycleState() instanceof SwimHealthState.Stopped(_, var closed) && closed;
+    }
+
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    private Promise<Unit> startOpen(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
         context.dispatch(new SwimHealthEvents.StartRequested());
         var swimPort = swimPort();
         var selfHost = findSelfHost();

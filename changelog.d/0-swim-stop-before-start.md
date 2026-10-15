@@ -9,3 +9,7 @@
   stop/start restart is unchanged; the only production start site is `AetherNode.startSwim`.
   [verified: `aether/node/src/test/java/org/pragmatica/aether/node/health/CoreSwimHealthDetectorStartLeakTest.java`,
   `aether/node/src/test/java/org/pragmatica/aether/node/health/fsm/SwimHealthFsmTest.java`]
+- `CoreSwimHealthDetector.start()` now short-circuits on a closed detector: no transport is built, no port is
+  bound, and it fails with `SwimStartError.General.DETECTOR_CLOSED`. `AetherNode.startSwim` treats that refusal as
+  "node is stopping": it does not fail the start outcome, does not run `failNode` (production: halt) and does not
+  announce. [verified: `aether/node/src/test/java/org/pragmatica/aether/node/AetherNodeStartSwimTest.java`]

@@ -38,11 +38,12 @@ public sealed interface SwimHealthState extends FsmState<SwimHealthState, SwimHe
     Logger LOG = LoggerFactory.getLogger(SwimHealthState.class);
     SwimHealthContext ctx();
 
-    /// `closed` latches a `stop()` that reached the detector while it was already stopped, which in
-    /// practice is a stop BEFORE the first start: the one stop of a node's life arrived early, nothing
-    /// will send another, and a later `StartRequested` would bind SWIM with nobody left to stop it.
-    /// A closed `Stopped` refuses `StartRequested`. A stop of a Running or Starting detector lands in
-    /// the open `Stopped`, so an ordinary stop/start restart still works.
+    /// `closed` latches ANY `stop()` that reaches an already-open `Stopped`. The case that matters is a
+    /// stop BEFORE the first start: the one stop of a node's life arrived early, nothing will send
+    /// another, and a later `StartRequested` would bind SWIM with nobody left to stop it. A closed
+    /// `Stopped` refuses `StartRequested`. A stop of a Running or Starting detector lands in the open
+    /// `Stopped`, so one stop followed by a start still restarts; a SECOND stop (stop, stop, start)
+    /// closes it, and nothing in production issues one: `AetherNode.stop()` calls it once.
     record Stopped(SwimHealthContext ctx, boolean closed) implements SwimHealthState {
         @Override
         @Contract
