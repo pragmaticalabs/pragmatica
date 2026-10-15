@@ -10,7 +10,9 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
@@ -18,12 +20,20 @@ import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.RepetitionInfo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.ProviderDefaults;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -81,6 +91,57 @@ class EmberSameIdentityRelaunchTest {
         if (cluster != null) {
             cluster.stop().await(STOP_BOUND);
         }
+    }
+
+
+    /// Auto-heal is not this class's subject, and a replacement core is a legitimate FOURTH voter with a fresh NodeId: the leader's
+    /// reconciler provisions one 15 s after a core's death whenever its first pass saw the full membership (a race against the
+    /// early kill), and that core plus btk-1 then commit the post-kill write that these tests read as "a refused or healed
+    /// process voted". So no process can be provisioned here. The counter records the attempts that were refused.
+    private final AtomicInteger refusedProvisions = new AtomicInteger();
+
+    private ComputeProvider refuseProvisioning(ComputeProvider delegate) {
+        return new ComputeProvider() {
+            @Override
+            public ProviderDefaults providerDefaults() {
+                return delegate.providerDefaults();
+            }
+
+            @Override
+            public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+                refusedProvisions.incrementAndGet();
+
+                return EnvironmentError.capacityUnavailable("", new IllegalStateException("provisioning is blocked: auto-heal is not this test's subject")).promise();
+            }
+
+            @Override
+            public Promise<Unit> terminate(InstanceId id) {
+                return delegate.terminate(id);
+            }
+
+            @Override
+            public Promise<List<InstanceInfo>> listInstances() {
+                return delegate.listInstances();
+            }
+
+            @Override
+            public Promise<InstanceInfo> instanceStatus(InstanceId id) {
+                return delegate.instanceStatus(id);
+            }
+        };
+    }
+
+    /// The electorate precondition: the live processes AND the survivor's MEMBER records are exactly `expected`. Without it the
+    /// post-kill write proves nothing about WHICH processes voted.
+    private void requireElectorate(AetherNode survivor, Set<String> expected) {
+        assertThat(cluster.allNodes().stream().map(node -> node.self().id()).collect(Collectors.toSet())).as("the live processes").isEqualTo(expected);
+        assertThat(survivor.membershipFsm()
+                           .memberStates()
+                           .entrySet()
+                           .stream()
+                           .filter(entry -> "Member".equals(entry.getValue()))
+                           .map(entry -> entry.getKey().id())
+                           .collect(Collectors.toSet())).as("the survivor's MEMBER records").isEqualTo(expected);
     }
 
     @Test
@@ -145,7 +206,7 @@ class EmberSameIdentityRelaunchTest {
     @Test
     @Timeout(480)
     void partitionedLiveProcess_sameToken_healsAndRestoresQuorum() {
-        cluster = EmberTestPorts.startedCluster(PORTS, basePort -> emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk"), START_BOUND);
+        cluster = EmberTestPorts.startedCluster(PORTS, this::clusterWithoutAutoHeal, START_BOUND);
         var survivor = cluster.getNode("btk-1").unwrap();
         var partitioned = cluster.getNode("btk-3").unwrap();
         var partitionedId = partitioned.self();
@@ -159,6 +220,7 @@ class EmberSameIdentityRelaunchTest {
         awaitCondition("the same process, same token, heals back to MEMBER on the survivor",
                        () -> "Member".equals(survivor.membershipFsm().memberStates().get(partitionedId)));
 
+        requireElectorate(survivor, Set.of("btk-1", "btk-2", "btk-3"));
         assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
 
         assertThat(write(survivor, "after-heal").isSuccess())
@@ -185,6 +247,14 @@ class EmberSameIdentityRelaunchTest {
         return true;
     }
 
+    private EmberCluster clusterWithoutAutoHeal(int basePort) {
+        var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
+
+        built.withComputeProviderDecorator(this::refuseProvisioning);
+
+        return built;
+    }
+
     private static void awaitCondition(String what, java.util.function.BooleanSupplier condition) {
         var deadline = System.currentTimeMillis() + HEAL_BOUND_MS;
 
@@ -198,7 +268,7 @@ class EmberSameIdentityRelaunchTest {
 
     private void relaunchedProcessNeverRestoresQuorum(boolean sameAddress) {
         var basePort = EmberTestPorts.freeBase(PORTS);
-        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
+        cluster = clusterWithoutAutoHeal(basePort);
         assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
         var survivor = cluster.getNode("btk-1").unwrap();
 
@@ -238,6 +308,7 @@ class EmberSameIdentityRelaunchTest {
             .as("#1558: a refused identity exits with its own code, distinct from a drain's")
             .isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));
 
+        requireElectorate(survivor, Set.of("btk-1", "btk-2"));
         assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
 
         assertThat(write(survivor, "after-kill").isSuccess())
