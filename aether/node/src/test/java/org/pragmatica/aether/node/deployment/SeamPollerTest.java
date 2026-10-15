@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
 import org.pragmatica.consensus.NodeId;
@@ -112,6 +113,59 @@ class SeamPollerTest {
         poller().poll();
 
         assertThat(refreshed.get(0).coreView()).isEqualTo(Option.some(Set.of(SELF, PEER)));
+    }
+
+    /// Every field of the sample comes from its OWN source (v-2204 V04): eight distinct suppliers, eight distinct values, each read back from its field.
+    @Test
+    void sample_readsEachFieldFromItsOwnSource() {
+        var countedSet = Set.of(SELF);
+        var readySet = Set.of(PEER);
+        var drainingSet = Set.of(OTHER);
+        var supersededSet = Set.of(SELF, OTHER);
+        var sources = Map.of(PEER, "source-of-peer");
+        var policies = Map.of("c1", CommunityPlacement.communityPlacement("c1", 3, List.of(new CommunityPlacement.Location("hetzner", Option.none(), 0, 1))).unwrap());
+        var poller = SeamPoller.seamPoller(new SeamPoller.Sources(() -> countedSet,
+                                                                  () -> readySet,
+                                                                  () -> drainingSet,
+                                                                  () -> Option.some(Set.of(SELF, PEER)),
+                                                                  () -> Option.some(Set.of(PEER, OTHER)),
+                                                                  () -> supersededSet,
+                                                                  () -> sources,
+                                                                  () -> policies,
+                                                                  () -> Set.of(SELF),
+                                                                  node -> 0L),
+                                           sink,
+                                           clock);
+        var seams = poller.sample();
+
+        assertThat(seams.countedCores()).isEqualTo(countedSet);
+        assertThat(seams.ready()).isEqualTo(readySet);
+        assertThat(seams.draining()).isEqualTo(drainingSet);
+        assertThat(seams.coreView()).isEqualTo(Option.some(Set.of(SELF, PEER)));
+        assertThat(seams.localAlive()).isEqualTo(Option.some(Set.of(PEER, OTHER)));
+        assertThat(seams.superseded()).isEqualTo(supersededSet);
+        assertThat(seams.memberSource()).isEqualTo(sources);
+        assertThat(seams.communityPolicies()).isEqualTo(policies);
+    }
+
+    /// `MembershipInputs` delivers the input FIRST and samples behind it (review M1; v-2204 V06): a sample that already lacks a node must never be
+    /// queued ahead of that node's removal.
+    @Test
+    void aMembershipInput_isDeliveredBeforeTheSampleBehindIt() {
+        var order = Collections.synchronizedList(new ArrayList<String>());
+        var poller = SeamPoller.seamPoller(new SeamPoller.Sources(() -> {
+            order.add("sample");
+
+            return Set.of(SELF);
+        }, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Map::of, Set::of, node -> 0L), sink, clock);
+        var inputs = MembershipInputs.membershipInputs(input -> order.add("deliver:" + input.getClass().getSimpleName()),
+                                                       AdmissionSeam.admissionSeam(node -> 0L, node -> 0L),
+                                                       poller);
+
+        inputs.onNodeJoined(new MembershipDecision.NodeJoined(PEER, List.of(SELF, PEER), 1L, HlcTimestamp.ZERO));
+        inputs.onNodeRemoved(new MembershipDecision.NodeRemoved(PEER, List.of(SELF), 2L, HlcTimestamp.ZERO));
+
+        assertThat(order).containsExactly("deliver:NodeJoined", "sample", "deliver:NodeRemoved", "sample");
     }
 
     /// A sample and its delivery are one step: a slow sample cannot be delivered behind the newer one taken while it was running.

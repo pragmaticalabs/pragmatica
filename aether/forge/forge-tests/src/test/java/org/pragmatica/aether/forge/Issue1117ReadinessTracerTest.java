@@ -488,8 +488,9 @@ class Issue1117ReadinessTracerTest {
         return states;
     }
 
-    /// The node's SERVING SURFACE (spec O1 ruling): ACTIVE while the slice's bridge is registered with the node's invocation handler, otherwise the
-    /// state of the node FSM's own record of the instance (or none).
+    /// The node's SERVING SURFACE (spec O1 ruling, the s36 `know:` ruling): ACTIVE while the slice's bridge is registered with the node's invocation
+    /// handler AND its routes are published on the node's route publisher (the scenario slice declares routes, so a missing publication is a missing
+    /// surface); otherwise the state of the node FSM's own record of the instance (or none).
     private Map<String, SliceState> servingSurfaces(Artifact artifact) {
         var states = new TreeMap<String, SliceState>();
 
@@ -500,8 +501,15 @@ class Issue1117ReadinessTracerTest {
         return states;
     }
 
+    private static boolean routesPublished(AetherNode node, Artifact artifact) {
+        return node.appHttpServer()
+                   .httpRoutePublisher()
+                   .map(publisher -> publisher.getSliceRouter(artifact).isPresent())
+                   .or(false);
+    }
+
     private static SliceState servingSurface(AetherNode node, Artifact artifact) {
-        if (node.invocationHandler().localSlice(artifact).isPresent()) {
+        if (node.invocationHandler().localSlice(artifact).isPresent() && routesPublished(node, artifact)) {
             return SliceState.ACTIVE;
         }
 

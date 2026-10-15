@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -28,9 +29,13 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.serialization.FrameworkCodecs;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -96,6 +101,37 @@ class DeploymentWiringBootTest {
 
         assertThat(system.nodeInterpreter().deliver(new NodeFsmInput.QuorumDisappeared())).as("the node's stop closed the node FSM").isFalse();
         assertThat(system.clusterInterpreter().deliver(new ClusterInput.Flush())).as("and the cluster FSM").isFalse();
+    }
+
+    /// v-2204 F4: the collaborators `AetherNode` hands the FSM2 system are the node's real ones. An absent route publisher or invoker makes
+    /// PUBLISH_ROUTES report done and publish nothing, and a swallowed router makes every event the FSMs raise vanish: none of these showed in a cluster
+    /// run, because the scenario slices have no routes.
+    @Test
+    @Timeout(value = 180, unit = SECONDS)
+    void fsm2Node_handsTheSystemItsRealRoutePublisher_invoker_andRouter() {
+        var router = MessageRouter.DelegateRouter.delegate();
+
+        node = AetherNode.aetherNode(minimalConfig(tempDir).withDeploymentEngine(DeploymentEngine.FSM2),
+                                     router,
+                                     NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()),
+                                     () -> {})
+                         .onFailure(cause -> fail("boot must succeed: " + cause.message()))
+                         .unwrap();
+        node.start().await(timeSpan(30).seconds()).onFailure(cause -> fail("start() must succeed: " + cause.message()));
+        var collaborators = node.deploymentWiring().system().unwrap().collaborators();
+
+        assertThat(collaborators.adapter().routePublisher().isPresent()).as("the node's HttpRoutePublisher").isTrue();
+        assertThat(collaborators.adapter().invokerFacade().isPresent()).as("the node's slice invoker").isTrue();
+        assertThat(collaborators.adapter().invocationHandler()).as("the node's invocation handler").isNotNull();
+
+        var received = new CopyOnWriteArrayList<Message>();
+        var probe = MessageRouter.mutable();
+
+        probe.addRoute(ClusterStateNotification.class, received::add);
+        router.replaceDelegate(probe);
+        collaborators.translator().events().accept(ClusterStateNotification.passive());
+
+        assertThat(received).as("the translator's events reach the node's router").hasSize(1);
     }
 
     /// The two engines never share a binding target for a branch point: every FSM2 row for a legacy hook is a counted drop, and no LEGACY row

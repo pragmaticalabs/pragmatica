@@ -9,6 +9,8 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -31,13 +33,19 @@ class FsmWarningCatalogueTest {
     private static final Path DEPLOYMENT = Path.of("..", "aether-deployment", "src", "main", "java", "org", "pragmatica", "aether", "deployment");
     private static final List<Path> FSM_SOURCES = List.of(DEPLOYMENT.resolve("cluster").resolve("fsm2"), DEPLOYMENT.resolve("node").resolve("machine"));
     private static final Pattern RAISED = Pattern.compile("(?:ctx\\.warn|ctx\\.warnResolved|refuse|new (?:Cluster|NodeFsm)Effect\\.Warn(?:Resolved)?)\\([^\"]*?\"([a-z0-9]+(?:-[a-z0-9]+)+)\"");
-    private static final Pattern CONSTANT = Pattern.compile("String\\s+(?:AWAITING_TARGET|DEFERRAL_ENDED|BOOT_TOKEN_ABSENT)\\s*=\\s*\"([a-z0-9]+(?:-[a-z0-9]+)+)\"");
+    /// Any kebab-case string constant, and (separately) a warn site, whose next 240 characters name the constant: a constant is a raised code when a
+    /// warn site names it, whatever the constant is called (v-2204 N2: the list of three names this replaced hid a fourth).
+    private static final Pattern CONSTANT = Pattern.compile("String\\s+([A-Z][A-Z0-9_]*)\\s*=\\s*\"([a-z0-9]+(?:-[a-z0-9]+)+)\"");
+    private static final Pattern WARN_SITE = Pattern.compile("(?:ctx\\.warn|ctx\\.warnResolved|refuse|new (?:Cluster|NodeFsm)Effect\\.Warn(?:Resolved)?)\\(");
+    private static final Pattern IDENTIFIER = Pattern.compile("\\b[A-Z][A-Z0-9_]+\\b");
 
     /// The codes the sources under `roots` raise, and the number of files read.
     private record Scan(Set<String> codes, long files) {}
 
     private static Scan scan(List<Path> roots) {
         var codes = new TreeSet<String>();
+        var constants = new HashMap<String, String>();
+        var namedAtWarnSites = new HashSet<String>();
         long files = 0;
 
         for (var root : roots) {
@@ -47,12 +55,18 @@ class FsmWarningCatalogueTest {
                     var text = Files.readString(file);
 
                     RAISED.matcher(text).results().forEach(match -> codes.add(match.group(1)));
-                    CONSTANT.matcher(text).results().forEach(match -> codes.add(match.group(1)));
+                    CONSTANT.matcher(text).results().forEach(match -> constants.put(match.group(1), match.group(2)));
+                    WARN_SITE.matcher(text)
+                             .results()
+                             .forEach(site -> IDENTIFIER.matcher(text.substring(site.end(), Math.min(text.length(), site.end() + 240)))
+                                                        .results()
+                                                        .forEach(name -> namedAtWarnSites.add(name.group())));
                 }
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
         }
+        namedAtWarnSites.stream().filter(constants::containsKey).forEach(name -> codes.add(constants.get(name)));
 
         return new Scan(codes, files);
     }
@@ -81,6 +95,14 @@ class FsmWarningCatalogueTest {
         assertThat(code.code()).isEqualTo("deployment-engine-mismatch");
         assertThat(code.subsystem()).isEqualTo("deployment");
         assertThat(code.level()).isEqualTo(WarningLevel.WARNING);
+    }
+
+    /// The positive control for constants: a warn site naming a constant with a name the scan has never heard of is found.
+    @Test
+    void aPlantedConstant_namedAtAWarnSite_isFound(@TempDir Path temp) throws IOException {
+        Files.writeString(temp.resolve("Planted.java"), "class Planted { static final String SOME_NEW_CODE = \"planted-new-constant\"; void f(Ctx ctx) { ctx.warn(SOME_NEW_CODE, \"x\", \"y\"); } }");
+
+        assertThat(scan(List.of(temp)).codes()).containsExactly("planted-new-constant");
     }
 
     /// The positive control: a planted raise of a code no catalogue entry has is found by the same scan.

@@ -154,4 +154,18 @@ class WiringArchitectureTest {
     void anFsm2SideTarget_hasNoAllowListEntry() {
         assertThat(allowlist().keySet()).noneMatch(entry -> entry.toLowerCase().matches(".*(node|cluster)fsminterpreter.*|.*enginemarkerguard.*"));
     }
+
+    /// N14 (v-2204 F8, text-level by design): the 5 s level-heal's consensus predicate is the node's own `runtimeReady(clusterNode)` at the assembly
+    /// site, the one every other readiness check uses. A behavioural pin needs a node that drops its genuine ACTIVE edge, which no harness offers; this
+    /// reddens the one-token change (`() -> false`, a constant, another predicate) that nothing else sees.
+    @Test
+    void theLevelHealsConsensusPredicate_isTheNodesRuntimeReady() throws IOException {
+        var source = Files.readString(MAIN.resolve(Path.of("org", "pragmatica", "aether", "node", "AetherNode.java")), StandardCharsets.UTF_8);
+        var call = source.indexOf("deploymentWiring.activationDriver(");
+
+        assertThat(call).as("the assembly site calls activationDriver").isGreaterThanOrEqualTo(0);
+        assertThat(source.substring(call, call + 120)).as("with the node's runtimeReady as the consensus predicate")
+                                                      .matches("(?s)deploymentWiring\\.activationDriver\\(\\s*\\(\\) -> runtimeReady\\(clusterNode\\),.*");
+        assertThat(source.indexOf("deploymentWiring.activationDriver(", call + 1)).as("and only there").isEqualTo(-1);
+    }
 }

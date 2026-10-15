@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
+import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapter;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -121,6 +122,22 @@ class Fsm2SystemTest {
                 harness.awaitThat(() -> activeNode(harness));
 
                 assertThat(harness.count("QuorumEstablished", "applied", "node")).as("the genuine entry was stepped, not replaced by the heal").isEqualTo(1.0);
+            }
+        }
+
+        /// A genuine PASSIVE edge supersedes an entry parked behind a closed guard: the node must not enter on opening, because the quorum it was
+        /// to enter is gone (v-2204 V08).
+        @Test
+        void aPassiveEdge_replacesAParkedEntry_soTheNodeDoesNotEnterWhenTheGuardOpens() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false).assembled()) {
+                harness.router.route(ClusterStateNotification.active());
+                harness.router.route(ClusterStateNotification.passive());
+
+                harness.markerCommitted.set(true);
+                harness.guard.evaluate();
+
+                await().during(Duration.ofMillis(400)).atMost(Duration.ofSeconds(3)).until(() -> !activeNode(harness));
+                assertThat(harness.count("QuorumEstablished", "applied", "node")).as("the parked entry was replaced, never stepped").isZero();
             }
         }
 
@@ -267,6 +284,21 @@ class Fsm2SystemTest {
             }
         }
 
+        /// Stopping the system stops the local-op executor with it: a step offered afterwards is neither run nor settled (v-2204 V16).
+        @Test
+        void stop_closesTheLocalOpExecutor_soALaterStepIsNeitherRunNorSettled() throws InterruptedException {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
+                var system = harness.system.unwrap();
+                var settled = new CopyOnWriteArrayList<NodeFsmInput.LocalOpSettled>();
+
+                system.stop();
+                system.localOps().run(new NodeFsmEffect.LocalOp(1L, 10L, Option.some(ORDERS), LocalStep.LOAD, 5_000L, Option.none()), () -> 1L, settled::add);
+                Thread.sleep(400);
+
+                assertThat(settled).as("a closed executor runs nothing").isEmpty();
+            }
+        }
+
         @Test
         void underLegacy_theLegacyDeactivationRuns() {
             try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
@@ -349,6 +381,20 @@ class Fsm2SystemTest {
                 harness.leaderPut(AetherKey.DeploymentEngineKey.deploymentEngineKey(), new AetherValue.DeploymentEngineValue(DeploymentEngine.FSM2, Fsm2Harness.SELF, 1L));
 
                 assertThat(harness.guard.isOpen()).as("the marker key's commit opened it").isTrue();
+            }
+        }
+
+        /// B20: the guard re-reads when the incarnation key commits (an incarnation with no marker is a pre-phase-3 cluster, v-2204 V17).
+        @Test
+        void theCommittedIncarnationKey_triggersTheGuard() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false).assembled()) {
+                harness.commitLeader();
+                assertThat(harness.guard.state()).isEqualTo(EngineMarkerGuard.State.WAITING);
+
+                harness.incarnationOnly = true;
+                harness.leaderPut(AetherKey.ClusterIncarnationKey.clusterIncarnationKey(), AetherValue.ClusterIncarnationValue.genesis("lineage", "id"));
+
+                assertThat(harness.guard.state()).as("the incarnation's commit moved it off WAITING").isIn(EngineMarkerGuard.State.MISMATCH_UNTIMED, EngineMarkerGuard.State.MISMATCH_WINDOW);
             }
         }
 

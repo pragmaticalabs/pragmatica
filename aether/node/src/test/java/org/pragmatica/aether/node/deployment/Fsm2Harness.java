@@ -94,6 +94,8 @@ final class Fsm2Harness implements AutoCloseable {
     final AtomicInteger samples = new AtomicInteger();
     /// The engine the committed marker names; the configured engine unless a test commits a different one.
     volatile DeploymentEngine markerEngine;
+    /// An incarnation is committed while the marker is not (a pre-phase-3 cluster), when the marker is otherwise withheld.
+    volatile boolean incarnationOnly;
     /// The timer service the interpreters and the seam cadence use; the shared scheduler unless a test substitutes a manual one.
     private FsmTimers.TimerService clock = FsmTimers.sharedScheduler();
     /// Whether the cluster's engine marker is committed; false holds the guard closed (WAITING) until a test commits it.
@@ -104,17 +106,38 @@ final class Fsm2Harness implements AutoCloseable {
     }
 
     Fsm2Harness(DeploymentEngine engine, boolean worker, boolean markerCommitted) {
+        this(engine, worker, markerCommitted, false);
+    }
+
+    /// The wiring built the way `AetherNode` builds it: through the production factory, which binds the store's own stamp accessors and builds the
+    /// guard over the store's committed mirror. The guard then opens only when the engine marker and the incarnation are really committed.
+    static Fsm2Harness production(DeploymentEngine engine) {
+        return new Fsm2Harness(engine, false, true, true);
+    }
+
+    private Fsm2Harness(DeploymentEngine engine, boolean worker, boolean markerCommitted, boolean production) {
         this.markerCommitted.set(markerCommitted);
         this.markerEngine = engine;
         this.engine = engine;
         this.worker = worker;
         cluster.script = commands -> Promise.success(commitAll(commands));
-        this.guard = openGuard(engine);
-        this.wiring = DeploymentWiring.deploymentWiring(engine,
-                                                        worker,
-                                                        registry,
-                                                        guard,
-                                                        new DeploymentWiring.Node(SELF, store::notificationRevision, store::isReplaying, bootTokens::tokenOf));
+        if (production) {
+            this.wiring = DeploymentWiring.deploymentWiring(configFor(engine),
+                                                            worker,
+                                                            store,
+                                                            bootTokens,
+                                                            registry,
+                                                            OperatorWarningSink.handingOffTo(warnings::add),
+                                                            () -> exits.add("exit"));
+            this.guard = wiring.guard();
+        } else {
+            this.guard = openGuard(engine);
+            this.wiring = DeploymentWiring.deploymentWiring(engine,
+                                                            worker,
+                                                            registry,
+                                                            guard,
+                                                            new DeploymentWiring.Node(SELF, store::notificationRevision, store::isReplaying, bootTokens::tokenOf));
+        }
     }
 
     /// A guard whose marker matches the engine, so it is open (the gate's own rows are `EngineMarkerGuardTest`'s).
@@ -129,7 +152,7 @@ final class Fsm2Harness implements AutoCloseable {
 
             @Override
             public boolean incarnationPresent() {
-                return markerCommitted.get();
+                return markerCommitted.get() || incarnationOnly;
             }
 
             @Override
@@ -174,24 +197,28 @@ final class Fsm2Harness implements AutoCloseable {
         return this;
     }
 
+    private static AetherNodeConfig configFor(DeploymentEngine engine) {
+        return AetherNodeConfig.builder()
+                               .self(SELF)
+                               .coreNodes(List.of())
+                               .managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
+                               .sliceConfig(SliceConfig.sliceConfig())
+                               .artifactRepo(DHTConfig.FULL)
+                               .coreMax(3)
+                               .appHttp(AppHttpConfig.appHttpConfig())
+                               .tls(Option.none())
+                               .quicTls(TlsConfig.selfSignedMutual())
+                               .certificateProvider(Option.none())
+                               .configProvider(Option.none())
+                               .environment(Option.none())
+                               .managementHttpProtocol(HttpProtocol.H1)
+                               .storageConfig(Map.of())
+                               .build()
+                               .withDeploymentEngine(engine);
+    }
+
     private Fsm2System.Collaborators collaborators() {
-        var config = AetherNodeConfig.builder()
-                                     .self(SELF)
-                                     .coreNodes(List.of())
-                                     .managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
-                                     .sliceConfig(SliceConfig.sliceConfig())
-                                     .artifactRepo(DHTConfig.FULL)
-                                     .coreMax(3)
-                                     .appHttp(AppHttpConfig.appHttpConfig())
-                                     .tls(Option.none())
-                                     .quicTls(TlsConfig.selfSignedMutual())
-                                     .certificateProvider(Option.none())
-                                     .configProvider(Option.none())
-                                     .environment(Option.none())
-                                     .managementHttpProtocol(HttpProtocol.H1)
-                                     .storageConfig(Map.of())
-                                     .build()
-                                     .withDeploymentEngine(engine);
+        var config = configFor(engine);
 
         return new Fsm2System.Collaborators(config,
                                             new ProcessIncarnation(1L, SELF_TOKEN),

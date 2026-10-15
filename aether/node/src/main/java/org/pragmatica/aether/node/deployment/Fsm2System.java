@@ -91,6 +91,7 @@ public final class Fsm2System {
     private final LocalOpExecutor localOps;
     private final AtomicLong quorumSequence = new AtomicLong();
     private final NodeId self;
+    private final Collaborators collaborators;
 
     private Fsm2System(NodeFsmInterpreter node,
                        ClusterFsmInterpreter cluster,
@@ -99,8 +100,10 @@ public final class Fsm2System {
                        EffectTranslator translator,
                        EngineMarkerGuard guard,
                        LocalOpExecutor localOps,
-                       NodeId self) {
+                       NodeId self,
+                       Collaborators collaborators) {
         this.self = self;
+        this.collaborators = collaborators;
         this.node = node;
         this.cluster = cluster;
         this.seams = seams;
@@ -121,6 +124,14 @@ public final class Fsm2System {
                                                                        config.protocol().applyTimeout()));
     }
 
+    /// The lag between SWIM's verdict and the leader's view of it, outside SWIM's own window: the core view is sampled every
+    /// `SeamPoller.INTERVAL_MS`, and SWIM reaches a verdict on a probe period (v-2204 F2).
+    static TimeSpan suspicionLag(SwimConfig swim) {
+        return TimeSpan.timeSpan(SeamPoller.INTERVAL_MS)
+                       .millis()
+                       .plus(swim.period());
+    }
+
     /// The cluster FSM's settings: the atomicity and sizing the node is configured with, the absence bounds derived from the SWIM and
     /// membership terms, the reconcile tick from `[timeouts.deployment]`, the process the correlation ids are qualified by, and the lost-write
     /// backstop after the consensus `applyTimeout` (`submissionExpiry = applyTimeout + 5 s`, MQ-7).
@@ -138,7 +149,8 @@ public final class Fsm2System {
                                           SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
                                           splitTimeout,
                                           REANNOUNCE_INTERVAL,
-                                          config.timeouts().cluster().communityAbsence())
+                                          config.timeouts().cluster().communityAbsence(),
+                                          suspicionLag(swim))
                                   .unwrap();
         var sizing = config.deploymentDefaults().communitySizing();
 
@@ -210,7 +222,8 @@ public final class Fsm2System {
                               translator,
                               c.guard(),
                               localOps,
-                              c.config().self());
+                              c.config().self(),
+                              c);
     }
 
     private static SeamPoller.Sink pollerSink(ClusterFsmInterpreter cluster) {
@@ -256,6 +269,16 @@ public final class Fsm2System {
 
     public MembershipInputs membership() {
         return membership;
+    }
+
+    /// The executor of the node FSM's local steps (stopped with the system), for a test that reads that stop closed it.
+    public LocalOpExecutor localOps() {
+        return localOps;
+    }
+
+    /// What the system was built from, so a test can read that the node handed it its real route publisher, invoker and router (v-2204 F4).
+    public Collaborators collaborators() {
+        return collaborators;
     }
 
     // -- lifecycle ---------------------------------------------------------------------------------------------------
