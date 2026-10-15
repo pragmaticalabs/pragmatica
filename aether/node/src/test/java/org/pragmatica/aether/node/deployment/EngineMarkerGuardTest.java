@@ -216,6 +216,54 @@ class EngineMarkerGuardTest {
             assertThat(exits).isEmpty();
         }
 
+        /// A second look at the same mismatch inside the window changes nothing: the window is measured from the first observation, so the node does
+        /// not exit before it ends and does not WARN again.
+        @Test
+        void aRepeatedEvaluation_insideTheWindow_neitherRefusesNorWarnsAgain() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.some(LEGACY_MARKER);
+            incarnation = true;
+            guard.evaluate();
+            clock.advance(WINDOW_MS / 2);
+            guard.evaluate();
+
+            assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
+            assertThat(exits).isEmpty();
+            assertThat(mismatchWarnings()).hasSize(1);
+
+            clock.advance(WINDOW_MS / 2);
+
+            assertThat(guard.state()).isEqualTo(State.REFUSED);
+            assertThat(exits).hasSize(1);
+        }
+
+        /// A mismatch that cleared and came back is a NEW window: the exit armed for the first one was cancelled when it cleared, so it cannot cut
+        /// the second short.
+        @Test
+        void aMismatchThatClearsAndReturns_startsANewWindow_theOldExitIsGone() {
+            var guard = guard(DeploymentEngine.FSM2);
+
+            marker = Option.some(LEGACY_MARKER);
+            incarnation = true;
+            guard.evaluate();
+            clock.advance(WINDOW_MS / 2);
+            marker = Option.some(FSM2_MARKER);
+            guard.evaluate();
+            clock.advance(100);
+            marker = Option.some(LEGACY_MARKER);
+            guard.evaluate();
+
+            clock.advance(WINDOW_MS / 2 - 100);
+
+            assertThat(exits).as("the first window's deadline passed; the second one is still running").isEmpty();
+            assertThat(guard.state()).isEqualTo(State.MISMATCH_WINDOW);
+
+            clock.advance(WINDOW_MS / 2 + 100);
+
+            assertThat(exits).as("the second window ended").hasSize(1);
+        }
+
         /// MT-24 / MT-30: a node that wins an election with a mismatching marker writes nothing before it exits. Its activation is parked, then
         /// dropped with the refusal.
         @Test

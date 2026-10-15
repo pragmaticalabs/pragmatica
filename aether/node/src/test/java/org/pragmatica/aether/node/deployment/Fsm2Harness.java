@@ -90,6 +90,12 @@ final class Fsm2Harness implements AutoCloseable {
     private final DeploymentEngine engine;
     private final boolean worker;
 
+    /// How many times the seam poller has sampled the cluster's counted cores (one per sample).
+    final AtomicInteger samples = new AtomicInteger();
+    /// The engine the committed marker names; the configured engine unless a test commits a different one.
+    volatile DeploymentEngine markerEngine;
+    /// The timer service the interpreters and the seam cadence use; the shared scheduler unless a test substitutes a manual one.
+    private FsmTimers.TimerService clock = FsmTimers.sharedScheduler();
     /// Whether the cluster's engine marker is committed; false holds the guard closed (WAITING) until a test commits it.
     final AtomicBoolean markerCommitted = new AtomicBoolean(true);
 
@@ -99,6 +105,7 @@ final class Fsm2Harness implements AutoCloseable {
 
     Fsm2Harness(DeploymentEngine engine, boolean worker, boolean markerCommitted) {
         this.markerCommitted.set(markerCommitted);
+        this.markerEngine = engine;
         this.engine = engine;
         this.worker = worker;
         cluster.script = commands -> Promise.success(commitAll(commands));
@@ -116,7 +123,7 @@ final class Fsm2Harness implements AutoCloseable {
             @Override
             public Option<DeploymentEngineValue> marker() {
                 return markerCommitted.get()
-                       ? Option.some(new DeploymentEngineValue(configured, SELF, 1L))
+                       ? Option.some(new DeploymentEngineValue(markerEngine, SELF, 1L))
                        : Option.none();
             }
 
@@ -134,6 +141,19 @@ final class Fsm2Harness implements AutoCloseable {
         guard.evaluate();
 
         return guard;
+    }
+
+    /// Substitutes the timer service; before `assembled()`.
+    Fsm2Harness withClock(FsmTimers.TimerService timers) {
+        clock = timers;
+
+        return this;
+    }
+
+    private Set<NodeId> countedCores() {
+        samples.incrementAndGet();
+
+        return Set.of(SELF, PEER);
     }
 
     /// Builds the route table and the system the way `assembleNode` does, then starts the consumers.
@@ -184,7 +204,7 @@ final class Fsm2Harness implements AutoCloseable {
                                             Set::of,
                                             selfReady::incrementAndGet,
                                             new EffectTranslator.Targets(SELF, events::add, () -> OperatorWarningSink.handingOffTo(warnings::add), registry, _ -> {}),
-                                            new SeamPoller.Sources(() -> Set.of(SELF, PEER),
+                                            new SeamPoller.Sources(this::countedCores,
                                                                    () -> Set.of(SELF, PEER),
                                                                    Set::of,
                                                                    () -> Option.some(Set.of(SELF, PEER)),
@@ -196,7 +216,7 @@ final class Fsm2Harness implements AutoCloseable {
                                                                    bootTokens::tokenOf),
                                             AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L),
                                             guard,
-                                            FsmTimers.sharedScheduler());
+                                            clock);
     }
 
     /// A slice store whose loads fail: enough for a local op to run and be counted as failed.

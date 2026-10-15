@@ -6,6 +6,7 @@ package org.pragmatica.aether.node.deployment;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Nested;
@@ -157,6 +158,22 @@ class Fsm2SystemTest {
             }
         }
 
+        /// Review M1 wired: every membership input is followed by a fresh sample, so a sample that already lacks a node is appended behind that
+        /// node's removal. One sample per input, for a join and for a removal.
+        @Test
+        void aJoin_andARemoval_areEachFollowedByOneSample() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
+                harness.awaitThat(() -> harness.samples.get() >= 1);
+                var before = harness.samples.get();
+
+                harness.router.route(new MembershipDecision.NodeJoined(Fsm2Harness.PEER, List.of(Fsm2Harness.SELF, Fsm2Harness.PEER), 1L, HlcTimestamp.ZERO));
+                assertThat(harness.samples.get()).as("a sample after the join").isEqualTo(before + 1);
+
+                harness.router.route(new MembershipDecision.NodeRemoved(Fsm2Harness.PEER, List.of(Fsm2Harness.SELF), 2L, HlcTimestamp.ZERO));
+                assertThat(harness.samples.get()).as("a sample after the removal").isEqualTo(before + 2);
+            }
+        }
+
         /// W-14 / W-33 wired: the seam poller's samples reach the cluster interpreter, coalesced, and a token learned later is reported once.
         @Test
         void theSeamPoller_deliversSamples_andProcessKnownOnce() {
@@ -234,6 +251,22 @@ class Fsm2SystemTest {
             assertThat(system.nodeInterpreter().deliver(new NodeFsmInput.QuorumDisappeared())).isFalse();
         }
 
+        /// W-14: the 5 s sampling cadence stops with the system; a tick armed before the stop never samples after it.
+        @Test
+        void stop_cancelsTheSeamCadence() {
+            var clock = new ManualClock();
+
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).withClock(clock).assembled()) {
+                harness.awaitThat(() -> harness.samples.get() >= 1);
+                harness.system.onPresent(Fsm2System::stop);
+                var before = harness.samples.get();
+
+                clock.advance(SeamPoller.INTERVAL_MS * 3);
+
+                assertThat(harness.samples.get()).as("no sample after stop").isEqualTo(before);
+            }
+        }
+
         @Test
         void underLegacy_theLegacyDeactivationRuns() {
             try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false).assembled()) {
@@ -247,6 +280,103 @@ class Fsm2SystemTest {
 
                 assertThat(legacy).hasValue(1);
                 assertThat(harness.system.isPresent()).isFalse();
+            }
+        }
+    }
+
+    // -- the wiring's own bindings -------------------------------------------------------------------------------------------
+    @Nested
+    class Bindings {
+        /// B17: the apply record is written under FSM2 and not under LEGACY; the answer is the engine's, not a constant.
+        @Test
+        void theApplyRecord_isOnUnderFsm2_andOffUnderLegacy() {
+            try (var fsm2 = new Fsm2Harness(DeploymentEngine.FSM2, false); var legacy = new Fsm2Harness(DeploymentEngine.LEGACY, false)) {
+                assertThat(fsm2.wiring.applyRecords()).isTrue();
+                assertThat(legacy.wiring.applyRecords()).isFalse();
+            }
+        }
+
+        /// B6: a one-time legacy registration runs under LEGACY and not under FSM2 (where the `SelfReady` effect drives the signal instead).
+        @Test
+        void aLegacyRegistration_runsUnderLegacyOnly() {
+            var legacyRuns = new AtomicInteger();
+            var fsm2Runs = new AtomicInteger();
+
+            try (var fsm2 = new Fsm2Harness(DeploymentEngine.FSM2, false); var legacy = new Fsm2Harness(DeploymentEngine.LEGACY, false)) {
+                legacy.wiring.legacyBinding("B6.test", legacyRuns::incrementAndGet);
+                fsm2.wiring.legacyBinding("B6.test", fsm2Runs::incrementAndGet);
+            }
+
+            assertThat(legacyRuns).hasValue(1);
+            assertThat(fsm2Runs).as("MT-14: the legacy registration never runs under FSM2").hasValue(0);
+        }
+
+        /// B2, B3, B4, B7: a legacy activation hook runs only while the engine marker guard is open. A LEGACY node whose cluster committed an FSM2
+        /// marker is mismatched, so the hook parks and runs, once and with the latest event, when the guard opens.
+        @Test
+        void aGatedLegacyHook_isParkedWhileTheGuardIsClosed_andRunsWithTheLatestEventWhenItOpens() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.LEGACY, false)) {
+                var seen = new CopyOnWriteArrayList<String>();
+                var hook = harness.wiring.legacyGated("B2.test", (String event) -> seen.add(event));
+                var runnableRuns = new AtomicInteger();
+                var runnable = harness.wiring.legacyGated("B3.test", runnableRuns::incrementAndGet);
+
+                harness.markerEngine = DeploymentEngine.FSM2;
+                harness.guard.evaluate();
+                hook.accept("first");
+                hook.accept("second");
+                runnable.run();
+
+                assertThat(seen).as("closed: nothing ran").isEmpty();
+                assertThat(runnableRuns).hasValue(0);
+
+                harness.markerEngine = DeploymentEngine.LEGACY;
+                harness.guard.evaluate();
+
+                assertThat(seen).as("level-triggered: the latest event, once").containsExactly("second");
+                assertThat(runnableRuns).hasValue(1);
+            }
+        }
+
+        /// B20: the guard re-reads the marker when the marker key commits.
+        @Test
+        void theCommittedMarkerKey_triggersTheGuard() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false).assembled()) {
+                harness.commitLeader();
+                assertThat(harness.guard.isOpen()).as("both keys absent: waiting").isFalse();
+
+                harness.markerCommitted.set(true);
+                harness.leaderPut(AetherKey.DeploymentEngineKey.deploymentEngineKey(), new AetherValue.DeploymentEngineValue(DeploymentEngine.FSM2, Fsm2Harness.SELF, 1L));
+
+                assertThat(harness.guard.isOpen()).as("the marker key's commit opened it").isTrue();
+            }
+        }
+
+        /// B20: the guard re-reads the marker on a leader edge.
+        @Test
+        void aLeaderEdge_triggersTheGuard() {
+            try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false).assembled()) {
+                assertThat(harness.guard.isOpen()).isFalse();
+
+                harness.markerCommitted.set(true);
+                harness.router.route(LeaderNotification.leaderChange(Option.some(Fsm2Harness.PEER), false));
+
+                assertThat(harness.guard.isOpen()).isTrue();
+            }
+        }
+
+        /// B20: the wiring reads the marker once when it starts, so a marker committed before the routes existed is not missed.
+        @Test
+        void startingTheWiring_readsAnAlreadyCommittedMarker() {
+            var harness = new Fsm2Harness(DeploymentEngine.FSM2, false, false);
+
+            try (harness) {
+                assertThat(harness.guard.isOpen()).isFalse();
+                harness.markerCommitted.set(true);
+
+                harness.assembled();
+
+                assertThat(harness.guard.isOpen()).as("the boot read").isTrue();
             }
         }
     }

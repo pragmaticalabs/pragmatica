@@ -10,7 +10,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
@@ -108,6 +112,47 @@ class SeamPollerTest {
         poller().poll();
 
         assertThat(refreshed.get(0).coreView()).isEqualTo(Option.some(Set.of(SELF, PEER)));
+    }
+
+    /// A sample and its delivery are one step: a slow sample cannot be delivered behind the newer one taken while it was running.
+    @Test
+    void poll_isAtomic_aSlowSampleIsNotDeliveredBehindANewerOne() throws InterruptedException {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var calls = new AtomicInteger();
+        Supplier<Set<NodeId>> slowFirst = () -> sampleSlowFirst(calls, entered, release);
+        var poller = SeamPoller.seamPoller(new SeamPoller.Sources(slowFirst, Set::of, Set::of, coreView::get, localAlive::get, Set::of, Map::of, Map::of, Set::of, node -> 0L), sink, clock);
+        var older = Thread.ofPlatform().start(poller::poll);
+
+        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        var newer = Thread.ofPlatform().start(poller::poll);
+
+        Thread.sleep(300);
+        release.countDown();
+        older.join(5_000);
+        newer.join(5_000);
+
+        assertThat(refreshed).hasSize(2);
+        assertThat(refreshed.getLast().countedCores()).as("the newest sample is the last delivered").containsExactlyInAnyOrder(SELF, PEER);
+    }
+
+    private static Set<NodeId> sampleSlowFirst(AtomicInteger calls, CountDownLatch entered, CountDownLatch release) {
+        if (calls.getAndIncrement() > 0) {
+            return Set.of(SELF, PEER);
+        }
+
+        entered.countDown();
+        awaitQuietly(release);
+
+        return Set.of(SELF);
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Test

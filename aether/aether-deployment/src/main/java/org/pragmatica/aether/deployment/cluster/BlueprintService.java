@@ -692,16 +692,13 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Option<AppBlueprintValue> priorActiveBlueprint(ExpandedBlueprint expanded) {
-        return Option.option(expanded.loadOrder().isEmpty()
-                             ? null
-                             : expanded.loadOrder().getFirst())
+        return Option.from(expanded.loadOrder().stream().findFirst())
                      .map(slice -> slice.artifact()
                                         .base())
                      .flatMap(base -> store.get(AetherKey.SliceTargetKey.sliceTargetKey(base)))
                      .filter(AetherValue.SliceTargetValue.class::isInstance)
                      .map(AetherValue.SliceTargetValue.class::cast)
                      .map(AetherValue.SliceTargetValue::currentVersion)
-                     .filter(prior -> !prior.equals(expanded.id().artifact().version()))
                      .flatMap(prior -> committedBlueprint(BlueprintId.blueprintId(expanded.id()
                                                                                           .base()
                                                                                           .withVersion(prior))));

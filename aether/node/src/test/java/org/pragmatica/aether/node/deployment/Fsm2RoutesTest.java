@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -90,9 +91,17 @@ class Fsm2RoutesTest {
 
         /// `hop` runs the stamp read; the identity is the production behaviour (the dispatching thread), a mutant moves it elsewhere.
         Rig(UnaryOperator<Supplier<Long>> hop) {
+            this(hop, null);
+        }
+
+        /// `replaying` stands in for the store's replay flag when given: a test sets it on the committing thread, as the store does for a replayed
+        /// notification, so a route that reads it elsewhere reads `false`.
+        Rig(UnaryOperator<Supplier<Long>> hop, BooleanSupplier replaying) {
             var routes = Fsm2Routes.fsm2Routes(new Fsm2Routes.Targets(SELF,
                                                                       () -> hop.apply(store::notificationRevision).get(),
-                                                                      store::isReplaying,
+                                                                      replaying == null
+                                                                      ? store::isReplaying
+                                                                      : replaying,
                                                                       tokens::tokenOf,
                                                                       (input, revision, replay) -> node.add(new Delivered<>(input, revision, replay)),
                                                                       (input, revision, replay) -> cluster.add(new Delivered<>(input, revision, replay))));
@@ -338,6 +347,31 @@ class Fsm2RoutesTest {
 
             assertThat(rig.node).extracting(Delivered::revision).containsExactly(1L, 2L, 3L);
             assertThat(rig.node).extracting(Delivered::replay).containsOnly(false);
+        }
+
+        /// Obligation 1, every route: the cluster puts and removes of every family, the committed leader, and the node routes all read the slot AND
+        /// the replay flag inside the dispatch. The flag is set on the committing thread, as the store sets it for a replayed notification; a route that
+        /// read either value after a hop would deliver `0` / `false` here.
+        @Test
+        void everyRoute_readsTheSlotAndTheReplayFlag_insideTheDispatch() {
+            var replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
+            var rig = new Rig(read -> read, replaying::get);
+
+            replaying.set(true);
+            samples().values().forEach(key -> rig.put(key, HARMLESS));
+            samples().values().forEach(rig::remove);
+            rig.putLeader(new LeaderValue(SELF, 9L));
+            rig.put(SliceDesiredKey.sliceDesiredKey(SELF, ORDERS), desired());
+            rig.put(SliceObservedKey.sliceObservedKey(PEER, ORDERS), observed(1L));
+            rig.remove(SliceDesiredKey.sliceDesiredKey(SELF, ORDERS));
+            rig.remove(SliceObservedKey.sliceObservedKey(PEER, ORDERS));
+
+            assertThat(rig.cluster).as("cluster inputs delivered").hasSizeGreaterThan(30);
+            assertThat(rig.node).as("node inputs delivered").hasSizeGreaterThanOrEqualTo(4);
+            assertThat(rig.cluster).extracting(Delivered::revision).as("cluster slots").allMatch(revision -> revision > 0L);
+            assertThat(rig.node).extracting(Delivered::revision).as("node slots").allMatch(revision -> revision > 0L);
+            assertThat(rig.cluster).extracting(Delivered::replay).as("cluster replay flags").containsOnly(true);
+            assertThat(rig.node).extracting(Delivered::replay).as("node replay flags").containsOnly(true);
         }
 
         /// MT: a handler that moves the stamp read to another thread reads the dispatch-scoped stamp outside the dispatch, which is `0`. The

@@ -240,6 +240,44 @@ class BlueprintApplyRecordTest {
         assertThat(node.batches).as("no retry of a record that already did its job").hasSize(1);
     }
 
+    /// A terminal outcome that describes ANOTHER attempt is not this attempt's closure: only the outcome of this attempt means the apply did its job.
+    @Test
+    void aTerminalOutcomeOfAnotherAttempt_isNotThisAttemptsClosure() {
+        var node = new Node();
+
+        node.drop = command -> command.key() instanceof AetherKey.DeploymentApplyKey;
+        node.after = index -> {
+            if (index == 0) {
+                store.process(store.createBatch(List.of(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(ID),
+                                                                            DeploymentOutcomeValue.succeeded(2L, outcomeVersion(), "an-earlier-attempt")))));
+            }
+        };
+
+        var result = BlueprintService.blueprintService(node, store, repository, true).publish(DSL).await();
+
+        assertThat(result.isFailure()).as("the other attempt's SUCCEEDED does not confirm this publish").isTrue();
+    }
+
+    /// A newer publish owns the id: the blueprint now carries its attempt, so this attempt's record is superseded, not missing, and is not retried.
+    @Test
+    void aNewerPublishOfTheId_supersedesThisAttempt_andIsNotRetried() {
+        var node = new Node();
+
+        node.drop = command -> command.key() instanceof AetherKey.DeploymentApplyKey;
+        node.after = index -> {
+            if (index == 0) {
+                var mine = store.get(BLUEPRINT).map(v -> (AppBlueprintValue) v).unwrap();
+
+                store.process(store.createBatch(List.of(new KVCommand.Put<>(BLUEPRINT, new AppBlueprintValue(mine.blueprint(), mine.registerOnly(), "a-newer-attempt")))));
+            }
+        };
+
+        var result = BlueprintService.blueprintService(node, store, repository, true).publish(DSL).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(node.batches).as("superseded: no retry").hasSize(1);
+    }
+
     private long outcomeVersion() {
         return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(ID)).map(v -> ((DeploymentOutcomeValue) v).outcomeVersion() + 1).or(1L);
     }

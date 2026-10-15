@@ -278,6 +278,20 @@ class ClusterFsmInterpreterTest {
             }
         }
 
+        /// CI-15b through the production interpreter: the token the seam learned reaches the node's admission, and the join process keeps the
+        /// boot incarnation it had.
+        @Test
+        void processKnown_carriesTheLearnedToken_toTheNodesAdmission() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+
+                assertThat(rig.interpreter.processKnown(ClusterRig.CORE_2, 0x77L)).isTrue();
+                rig.settle();
+
+                assertThat(model(rig).admission(ClusterRig.CORE_2).map(admission -> admission.process().bootToken())).isEqualTo(Option.some(0x77L));
+            }
+        }
+
         /// W-33: a `SeamsRefreshed.coreView` reaches the FSM's liveness clock. With no view at `Rebuild`, the clock starts when a sample
         /// that lists the core arrives, and the same window then completes.
         @Test
