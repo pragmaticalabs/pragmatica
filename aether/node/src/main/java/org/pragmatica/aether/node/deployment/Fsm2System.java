@@ -5,6 +5,7 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
@@ -12,6 +13,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.AbsenceBounds;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterFsm;
+import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
 import org.pragmatica.aether.deployment.cluster.fsm2.Settings;
 import org.pragmatica.aether.deployment.cluster.fsm2.Timing;
 import org.pragmatica.aether.deployment.node.machine.NodeFsm;
@@ -72,7 +74,7 @@ public final class Fsm2System {
                                 Supplier<ClusterNode<KVCommand<AetherKey>>> cluster,
                                 BootTokens bootTokens,
                                 SliceRuntimeAdapter.Collaborators adapter,
-                                Supplier<java.util.Set<Artifact>> loaded,
+                                Supplier<Set<Artifact>> loaded,
                                 Runnable selfReady,
                                 EffectTranslator.Targets translator,
                                 SeamPoller.Sources seamSources,
@@ -142,7 +144,7 @@ public final class Fsm2System {
 
         return Settings.settings(config.self(),
                                  config.atomicity(),
-                                 java.util.Set.of(),
+                                 Set.of(),
                                  bounds)
                        .withTiming(Timing.DEFAULT.withTick(config.timeouts()
                                                                  .deployment()
@@ -214,7 +216,7 @@ public final class Fsm2System {
     private static SeamPoller.Sink pollerSink(ClusterFsmInterpreter cluster) {
         return new SeamPoller.Sink() {
             @Override
-            public boolean seamsRefreshed(org.pragmatica.aether.deployment.cluster.fsm2.Seams seams) {
+            public boolean seamsRefreshed(Seams seams) {
                 return cluster.refreshSeams(seams);
             }
 
@@ -234,7 +236,7 @@ public final class Fsm2System {
             poller = value;
         }
 
-        org.pragmatica.aether.deployment.cluster.fsm2.Seams sample() {
+        Seams sample() {
             return poller.sample();
         }
     }

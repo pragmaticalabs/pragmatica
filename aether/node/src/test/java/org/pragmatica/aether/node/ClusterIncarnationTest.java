@@ -12,6 +12,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -74,7 +75,7 @@ class ClusterIncarnationTest {
                                            () -> 1_760_000_000_000L);
     }
 
-    private static java.util.function.Supplier<String> nextTransactionId() {
+    private static Supplier<String> nextTransactionId() {
         var counter = new AtomicInteger();
 
         return () -> "mint-test-" + counter.incrementAndGet();

@@ -10,11 +10,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
 import org.pragmatica.aether.deployment.node.machine.LocalOutcome;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
@@ -303,18 +305,18 @@ class NodeFsmInterpreterTest {
     /// target unanswered and lets the probe through: that is the whole of why T is green on FSM2.
     @Nested
     class TracerFault {
-        @org.junit.jupiter.api.AfterEach
+        @AfterEach
         void disarm() {
-            org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.disarm();
+            ActivationWriteFault.disarm();
         }
 
         @Test
         void theFirstActiveSubmission_isLeftUnanswered_andTheProbeResubmissionCommitsIt() {
             try (var rig = new NodeRig()) {
-                org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.arm(SELF, ORDERS);
+                ActivationWriteFault.arm(SELF, ORDERS);
 
                 rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
-                rig.awaitThat(() -> org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.unansweredSubmissions() == 1);
+                rig.awaitThat(() -> ActivationWriteFault.unansweredSubmissions() == 1);
                 rig.settle();
 
                 assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).as("the first ACTIVE submission never reached consensus").isZero();
@@ -324,20 +326,20 @@ class NodeFsmInterpreterTest {
                 rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
 
                 assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).as("the probe resubmission got through, once").isEqualTo(1);
-                assertThat(org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.unansweredSubmissions()).as("and was not itself taken").isEqualTo(1);
+                assertThat(ActivationWriteFault.unansweredSubmissions()).as("and was not itself taken").isEqualTo(1);
             }
         }
 
         @Test
         void disarmed_everyActiveSubmissionReachesConsensus() {
-            org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.arm(SELF, ORDERS);
-            org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.disarm();
+            ActivationWriteFault.arm(SELF, ORDERS);
+            ActivationWriteFault.disarm();
 
             try (var rig = new NodeRig()) {
                 rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
                 rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
 
-                assertThat(org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault.unansweredSubmissions()).isZero();
+                assertThat(ActivationWriteFault.unansweredSubmissions()).isZero();
                 assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).isEqualTo(1);
             }
         }
@@ -442,7 +444,7 @@ class NodeFsmInterpreterTest {
         void theOriginalAndItsProbe_appliedInEitherOrder_leaveOneRow_andOneOwnObservedPut(boolean originalFirst) {
             try (var rig = new NodeRig()) {
                 var real = rig.cluster.script;
-                var held = new java.util.concurrent.CopyOnWriteArrayList<List<KVCommand<AetherKey>>>();
+                var held = new CopyOnWriteArrayList<List<KVCommand<AetherKey>>>();
 
                 rig.cluster.script = commands -> {
                     if (observedActive(commands)) {

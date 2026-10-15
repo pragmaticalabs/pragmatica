@@ -5,21 +5,27 @@
 package org.pragmatica.aether.node.deployment;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
+import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.deployment.wiring.SliceRuntimeAdapter;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -144,8 +150,8 @@ class Fsm2SystemTest {
             try (var harness = new Fsm2Harness(DeploymentEngine.FSM2, false).assembled()) {
                 harness.bootTokens.admit(Fsm2Harness.PEER, 55L);
 
-                harness.router.route(new MembershipDecision.NodeJoined(Fsm2Harness.PEER, java.util.List.of(Fsm2Harness.SELF, Fsm2Harness.PEER), 1L, HlcTimestamp.ZERO));
-                harness.router.route(new MembershipDecision.NodeRemoved(Fsm2Harness.PEER, java.util.List.of(Fsm2Harness.SELF), 2L, HlcTimestamp.ZERO));
+                harness.router.route(new MembershipDecision.NodeJoined(Fsm2Harness.PEER, List.of(Fsm2Harness.SELF, Fsm2Harness.PEER), 1L, HlcTimestamp.ZERO));
+                harness.router.route(new MembershipDecision.NodeRemoved(Fsm2Harness.PEER, List.of(Fsm2Harness.SELF), 2L, HlcTimestamp.ZERO));
 
                 harness.awaitThat(() -> stepped(harness, "cluster", "NodeJoined") == 1 && stepped(harness, "cluster", "NodeRemoved") == 1);
             }
@@ -218,14 +224,14 @@ class Fsm2SystemTest {
             harness.wiring.deactivateCluster(() -> {
                 legacy.incrementAndGet();
 
-                return org.pragmatica.lang.Promise.unitPromise();
+                return Promise.unitPromise();
             });
             assertThat(legacy).as("B13: the FSM2 stop does not run the legacy deactivation").hasValue(0);
-            assertThat(system.clusterInterpreter().deliver(new org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Flush())).as("closed").isFalse();
+            assertThat(system.clusterInterpreter().deliver(new ClusterInput.Flush())).as("closed").isFalse();
 
             harness.close();
 
-            assertThat(system.nodeInterpreter().deliver(new org.pragmatica.aether.deployment.node.machine.NodeFsmInput.QuorumDisappeared())).isFalse();
+            assertThat(system.nodeInterpreter().deliver(new NodeFsmInput.QuorumDisappeared())).isFalse();
         }
 
         @Test
@@ -236,7 +242,7 @@ class Fsm2SystemTest {
                 harness.wiring.deactivateCluster(() -> {
                     legacy.incrementAndGet();
 
-                    return org.pragmatica.lang.Promise.unitPromise();
+                    return Promise.unitPromise();
                 });
 
                 assertThat(legacy).hasValue(1);
@@ -296,11 +302,11 @@ class Fsm2SystemTest {
                 harness.commitLeader();
                 enterQuorum(harness);
 
-                harness.put(org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()),
-                            org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
-                harness.leaderPut(org.pragmatica.aether.slice.kvstore.AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.SELF, ORDERS),
-                                  new org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue(org.pragmatica.aether.slice.kvstore.AetherValue.SliceGoal.ACTIVE,
-                                                                                                        new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(3L, 1L),
+                harness.put(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()),
+                            AetherValue.SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+                harness.leaderPut(AetherKey.SliceDesiredKey.sliceDesiredKey(Fsm2Harness.SELF, ORDERS),
+                                  new AetherValue.SliceDesiredValue(AetherValue.SliceGoal.ACTIVE,
+                                                                                                        new AetherValue.Generation(3L, 1L),
                                                                                                         1L));
 
                 harness.awaitThat(() -> !harness.registry.find("aether_deployment_fsm_localops_total").counters().isEmpty());
@@ -321,23 +327,23 @@ class Fsm2SystemTest {
         return harness.count(input, "dropped_revision", "node");
     }
 
-    private static org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue observed() {
+    private static AetherValue.SliceObservedValue observed() {
         return observed(1L);
     }
 
-    private static org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue observed2() {
+    private static AetherValue.SliceObservedValue observed2() {
         return observed(2L);
     }
 
-    private static org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue observed(long version) {
-        return new org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue(org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.ACTIVE,
+    private static AetherValue.SliceObservedValue observed(long version) {
+        return new AetherValue.SliceObservedValue(AetherValue.SliceObservedState.ACTIVE,
                                                                                       version,
-                                                                                      new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(1L, 1L),
-                                                                                      new org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation(1L, 5L),
+                                                                                      new AetherValue.Generation(1L, 1L),
+                                                                                      new AetherValue.ProcessIncarnation(1L, 5L),
                                                                                       Option.none(),
                                                                                       false,
                                                                                       0,
-                                                                                      java.util.List.of(),
+                                                                                      List.of(),
                                                                                       1L);
     }
 }

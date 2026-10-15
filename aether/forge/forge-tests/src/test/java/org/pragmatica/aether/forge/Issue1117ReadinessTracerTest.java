@@ -35,6 +35,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.consensus.NodeId;
@@ -481,7 +482,7 @@ class Issue1117ReadinessTracerTest {
         for (var node : cluster.allNodes()) {
             states.put(node.self().id(),
                        store.getTyped(SliceObservedKey.sliceObservedKey(node.self(), artifact), SliceObservedValue.class)
-                            .map(row -> SliceState.valueOf(row.state() == org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.UNLOADED
+                            .map(row -> SliceState.valueOf(row.state() == AetherValue.SliceObservedState.UNLOADED
                                                            ? "UNLOADING"
                                                            : row.state().name()))
                             .or((SliceState) null));
@@ -510,7 +511,7 @@ class Issue1117ReadinessTracerTest {
         return node.deploymentWiring()
                    .system()
                    .flatMap(system -> system.nodeInterpreter().model().instance(artifact).observed())
-                   .map(row -> SliceState.valueOf(row.state() == org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.UNLOADED
+                   .map(row -> SliceState.valueOf(row.state() == AetherValue.SliceObservedState.UNLOADED
                                                   ? "UNLOADING"
                                                   : row.state().name()))
                    .or((SliceState) null);

@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation;
 import org.pragmatica.consensus.NodeId;
@@ -58,7 +59,7 @@ class Fsm2DerivationsTest {
                                .storageConfig(Map.of())
                                .backupConfig(Option.none())
                                .membership(Option.none())
-                               .streaming(org.pragmatica.aether.config.StreamingConfig.streamingConfig())
+                               .streaming(StreamingConfig.streamingConfig())
                                .protocol(protocol)
                                .build();
     }

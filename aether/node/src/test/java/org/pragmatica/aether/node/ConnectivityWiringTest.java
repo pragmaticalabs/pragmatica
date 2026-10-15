@@ -161,7 +161,7 @@ class ConnectivityWiringTest {
                                           new ClusterIncarnation.Mint(() -> "lineage-a",
                                                                       () -> "id-a",
                                                                       () -> "mint-test",
-                                                                      org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine.LEGACY,
+                                                                      AetherValue.DeploymentEngine.LEGACY,
                                                                       PEER,
                                                                       () -> 1L))
                           .unwrap()
@@ -187,8 +187,8 @@ class ConnectivityWiringTest {
     /// The leader the genesis mint's transaction is witnessed by.
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void commitLeader() {
-        applyBatch(List.of(new KVCommand.Put(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
-                                             new org.pragmatica.cluster.state.kvstore.LeaderValue(PEER, 0L))));
+        applyBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE,
+                                             new LeaderValue(PEER, 0L))));
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

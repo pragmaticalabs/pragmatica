@@ -87,6 +87,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.resource.ResourceCodecsSliceApi;
 import org.pragmatica.aether.slice.stream.StreamCodecsSliceApi;
 import org.pragmatica.cluster.state.kvstore.KvstoreCodecs;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
@@ -243,7 +244,7 @@ final class BackupFixtures {
                        new Fixture(ClusterIncarnationKey.clusterIncarnationKey(),
                                    ClusterIncarnationValue.clusterIncarnationValue("01K4ZT9Q6W3X8Y2B7C5D1E0F9G", 3, "01K4ZTA0000000000000000000")),
                        new Fixture(DeploymentEngineKey.deploymentEngineKey(),
-                                   new DeploymentEngineValue(DeploymentEngine.FSM2, org.pragmatica.consensus.NodeId.nodeId("node-1").unwrap(), 1_700_000_000_000L)),
+                                   new DeploymentEngineValue(DeploymentEngine.FSM2, NodeId.nodeId("node-1").unwrap(), 1_700_000_000_000L)),
                        new Fixture(ScheduledTaskPauseKey.scheduledTaskPauseKey("orders.cleanup",
                                                                                artifact("org.example:orders-slice:1.2.3"),
                                                                                MethodName.methodName("purgeExpired")

@@ -15,13 +15,16 @@ import java.util.Map;
 import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -86,7 +89,7 @@ class Fsm2RoutesTest {
         }
 
         /// `hop` runs the stamp read; the identity is the production behaviour (the dispatching thread), a mutant moves it elsewhere.
-        Rig(java.util.function.UnaryOperator<Supplier<Long>> hop) {
+        Rig(UnaryOperator<Supplier<Long>> hop) {
             var routes = Fsm2Routes.fsm2Routes(new Fsm2Routes.Targets(SELF,
                                                                       () -> hop.apply(store::notificationRevision).get(),
                                                                       store::isReplaying,
@@ -202,7 +205,7 @@ class Fsm2RoutesTest {
             var to = text.indexOf(until, from);
             var section = text.substring(from, to);
 
-            return Pattern.compile("case (?:AetherKey\\.)?(\\w+Key)\\b").matcher(section).results().map(match -> match.group(1)).collect(java.util.stream.Collectors.toCollection(TreeSet::new)).stream().toList();
+            return Pattern.compile("case (?:AetherKey\\.)?(\\w+Key)\\b").matcher(section).results().map(match -> match.group(1)).collect(Collectors.toCollection(TreeSet::new)).stream().toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -306,7 +309,7 @@ class Fsm2RoutesTest {
         void targetsAndRoutings_reachTheNodeFsm_putAndRemove() {
             var rig = new Rig();
             var version = ORDERS.version();
-            var other = org.pragmatica.aether.artifact.Version.version("2.0.0").unwrap();
+            var other = Version.version("2.0.0").unwrap();
 
             rig.put(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()), SliceTargetValue.sliceTargetValue(version, 3, 1));
             rig.remove(AetherKey.SliceTargetKey.sliceTargetKey(ORDERS.base()));

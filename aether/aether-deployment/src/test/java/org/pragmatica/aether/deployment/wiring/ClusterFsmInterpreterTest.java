@@ -4,14 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.wiring;
 
+import java.lang.reflect.RecordComponent;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
 import org.pragmatica.aether.deployment.cluster.fsm2.RoutedEvent;
+import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -195,20 +202,20 @@ class ClusterFsmInterpreterTest {
     /// W-12 (the production caller of `offerCoalescing`, M1, MT-13b) and W-33 (the interpreter half of the seam tests, D-4 (ii), G-3, G-4).
     @Nested
     class SeamDelivery {
-        private static final org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation P1 = new org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation(1L, 0x0AL);
+        private static final AetherValue.ProcessIncarnation P1 = new AetherValue.ProcessIncarnation(1L, 0x0AL);
 
         private long coreSuspicionMs() {
             return ClusterRig.bounds().coreSuspicion() / 1_000_000L + 1_000L;
         }
 
-        private org.pragmatica.aether.deployment.cluster.fsm2.Seams withCoreView(java.util.Set<org.pragmatica.consensus.NodeId> view) {
-            return org.pragmatica.aether.deployment.cluster.fsm2.Seams.UNWIRED
-                    .withCountedCores(java.util.Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3))
-                    .withReady(java.util.Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3))
-                    .withCoreView(org.pragmatica.lang.Option.some(view));
+        private Seams withCoreView(Set<NodeId> view) {
+            return Seams.UNWIRED
+                    .withCountedCores(Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3))
+                    .withReady(Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3))
+                    .withCoreView(Option.some(view));
         }
 
-        private org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel model(ClusterRig rig) {
+        private ClusterModel model(ClusterRig rig) {
             return ((ClusterState.Active) rig.interpreter.state()).model();
         }
 
@@ -225,9 +232,9 @@ class ClusterFsmInterpreterTest {
                 rig.awaitThat(() -> rig.countOf("Flush") == flushes + 1);
                 var before = rig.countOf("SeamsRefreshed");
 
-                rig.interpreter.refreshSeams(withCoreView(java.util.Set.of(SELF, ClusterRig.CORE_2)));
+                rig.interpreter.refreshSeams(withCoreView(Set.of(SELF, ClusterRig.CORE_2)));
                 rig.interpreter.deliver(new ClusterInput.NodeRemoved(ClusterRig.CORE_2));
-                rig.interpreter.refreshSeams(withCoreView(java.util.Set.of(SELF)));
+                rig.interpreter.refreshSeams(withCoreView(Set.of(SELF)));
                 rig.release();
                 rig.settle();
 
@@ -244,7 +251,7 @@ class ClusterFsmInterpreterTest {
 
             rig.close();
 
-            assertThat(rig.interpreter.refreshSeams(withCoreView(java.util.Set.of(SELF)))).isFalse();
+            assertThat(rig.interpreter.refreshSeams(withCoreView(Set.of(SELF)))).isFalse();
             assertThat(rig.metric("SeamsRefreshed", "closed")).isEqualTo(1);
         }
 
@@ -254,11 +261,11 @@ class ClusterFsmInterpreterTest {
         void theRebuildSeed_neverSupersedesADepartedRecord_onlyAFullWindowAfterRebuildDoes() {
             try (var rig = new ClusterRig()) {
                 assertThat(ClusterInput.Snapshot.class.getRecordComponents())
-                        .extracting(java.lang.reflect.RecordComponent::getName)
+                        .extracting(RecordComponent::getName)
                         .as("the snapshot has no joined seed (the membership view is not a seed)")
                         .doesNotContain("joined", "inherited", "members");
                 rig.departed(ClusterRig.CORE_2, P1);
-                rig.supplied = withCoreView(java.util.Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3));
+                rig.supplied = withCoreView(Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3));
 
                 rig.activate();
 
@@ -278,11 +285,11 @@ class ClusterFsmInterpreterTest {
             try (var rig = new ClusterRig()) {
                 rig.departed(ClusterRig.CORE_2, P1);
                 rig.activate();
-                assertThat(model(rig).seams().coreView()).isEqualTo(org.pragmatica.lang.Option.none());
+                assertThat(model(rig).seams().coreView()).isEqualTo(Option.none());
 
-                rig.interpreter.refreshSeams(withCoreView(java.util.Set.of(SELF, ClusterRig.CORE_2)));
+                rig.interpreter.refreshSeams(withCoreView(Set.of(SELF, ClusterRig.CORE_2)));
                 rig.settle();
-                assertThat(model(rig).seams().coreView()).as("the sample reached the model").isEqualTo(org.pragmatica.lang.Option.some(java.util.Set.of(SELF, ClusterRig.CORE_2)));
+                assertThat(model(rig).seams().coreView()).as("the sample reached the model").isEqualTo(Option.some(Set.of(SELF, ClusterRig.CORE_2)));
                 assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).isTrue();
 
                 rig.clock.advance(coreSuspicionMs());
@@ -297,7 +304,7 @@ class ClusterFsmInterpreterTest {
         @Test
         void theCoreViewAtRebuild_isInTheModelBeforeTheFirstReconcile() {
             try (var rig = new ClusterRig()) {
-                var view = withCoreView(java.util.Set.of(SELF, ClusterRig.CORE_2));
+                var view = withCoreView(Set.of(SELF, ClusterRig.CORE_2));
 
                 rig.supplied = view;
                 rig.activate();
@@ -318,11 +325,11 @@ class ClusterFsmInterpreterTest {
                 var puts = rig.countOf("KvPut");
 
                 rig.target(ORDERS, 1);
-                rig.interpreter.refreshSeams(org.pragmatica.aether.deployment.cluster.fsm2.Seams.UNWIRED.withLocalAlive(org.pragmatica.lang.Option.some(java.util.Set.of(SELF))));
+                rig.interpreter.refreshSeams(Seams.UNWIRED.withLocalAlive(Option.some(Set.of(SELF))));
                 rig.settle();
 
                 assertThat(rig.countOf("KvPut")).as("the committed fact was stepped").isGreaterThan(puts);
-                assertThat(model(rig).seams().localAlive()).as("the localAlive sample was stepped").isEqualTo(org.pragmatica.lang.Option.some(java.util.Set.of(SELF)));
+                assertThat(model(rig).seams().localAlive()).as("the localAlive sample was stepped").isEqualTo(Option.some(Set.of(SELF)));
             }
         }
     }

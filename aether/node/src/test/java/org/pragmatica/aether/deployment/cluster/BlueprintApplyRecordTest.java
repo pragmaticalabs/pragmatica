@@ -24,6 +24,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
@@ -191,7 +192,7 @@ class BlueprintApplyRecordTest {
     /// Otherwise the blueprint of the committed target's prior version.
     @Test
     void aNewVersion_capturesTheBlueprintOfTheCommittedTargetsPriorVersion() {
-        var prior = AppBlueprintValue.appBlueprintValue(org.pragmatica.aether.slice.blueprint.ExpandedBlueprint.expandedBlueprint(PRIOR_ID, List.of()));
+        var prior = AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(PRIOR_ID, List.of()));
 
         store.process(store.createBatch(List.of(new KVCommand.Put<>(AetherKey.AppBlueprintKey.appBlueprintKey(PRIOR_ID), prior))));
         store.process(store.createBatch(List.of(new KVCommand.Put<>(AetherKey.SliceTargetKey.sliceTargetKey(SLICE.base()),

@@ -4,10 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.deployment;
 
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -17,7 +19,11 @@ import java.util.function.Consumer;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.ByteBuf;
+import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
@@ -30,9 +36,13 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
+import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.aether.deployment.wiring.FsmTimers;
@@ -91,7 +101,7 @@ final class Fsm2Harness implements AutoCloseable {
         this.markerCommitted.set(markerCommitted);
         this.engine = engine;
         this.worker = worker;
-        cluster.script = commands -> org.pragmatica.lang.Promise.success(commitAll(commands));
+        cluster.script = commands -> Promise.success(commitAll(commands));
         this.guard = openGuard(engine);
         this.wiring = DeploymentWiring.deploymentWiring(engine,
                                                         worker,
@@ -149,17 +159,17 @@ final class Fsm2Harness implements AutoCloseable {
                                      .self(SELF)
                                      .coreNodes(List.of())
                                      .managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
-                                     .sliceConfig(org.pragmatica.aether.config.SliceConfig.sliceConfig())
-                                     .artifactRepo(org.pragmatica.dht.DHTConfig.FULL)
+                                     .sliceConfig(SliceConfig.sliceConfig())
+                                     .artifactRepo(DHTConfig.FULL)
                                      .coreMax(3)
-                                     .appHttp(org.pragmatica.aether.config.AppHttpConfig.appHttpConfig())
+                                     .appHttp(AppHttpConfig.appHttpConfig())
                                      .tls(Option.none())
-                                     .quicTls(org.pragmatica.net.tcp.TlsConfig.selfSignedMutual())
+                                     .quicTls(TlsConfig.selfSignedMutual())
                                      .certificateProvider(Option.none())
                                      .configProvider(Option.none())
                                      .environment(Option.none())
-                                     .managementHttpProtocol(org.pragmatica.aether.config.HttpProtocol.H1)
-                                     .storageConfig(java.util.Map.of())
+                                     .managementHttpProtocol(HttpProtocol.H1)
+                                     .storageConfig(Map.of())
                                      .build()
                                      .withDeploymentEngine(engine);
 
@@ -180,8 +190,8 @@ final class Fsm2Harness implements AutoCloseable {
                                                                    () -> Option.some(Set.of(SELF, PEER)),
                                                                    () -> Option.some(Set.of(SELF, PEER)),
                                                                    Set::of,
-                                                                   java.util.Map::of,
-                                                                   java.util.Map::of,
+                                                                   Map::of,
+                                                                   Map::of,
                                                                    () -> Set.of(SELF, PEER),
                                                                    bootTokens::tokenOf),
                                             AdmissionSeam.admissionSeam(bootTokens::tokenOf, _ -> 0L),
@@ -190,11 +200,11 @@ final class Fsm2Harness implements AutoCloseable {
     }
 
     /// A slice store whose loads fail: enough for a local op to run and be counted as failed.
-    private static org.pragmatica.aether.slice.SliceStore failingStore() {
-        return (org.pragmatica.aether.slice.SliceStore) java.lang.reflect.Proxy.newProxyInstance(Fsm2Harness.class.getClassLoader(),
-                                                                                               new Class<?>[]{org.pragmatica.aether.slice.SliceStore.class},
+    private static SliceStore failingStore() {
+        return (SliceStore) Proxy.newProxyInstance(Fsm2Harness.class.getClassLoader(),
+                                                                                               new Class<?>[]{SliceStore.class},
                                                                                                (_, method, _) -> method.getName().equals("loadSlice")
-                                                                                                                 ? org.pragmatica.lang.utils.Causes.cause("no slice store in this rig").promise()
+                                                                                                                 ? Causes.cause("no slice store in this rig").promise()
                                                                                                                  : Option.none());
     }
 

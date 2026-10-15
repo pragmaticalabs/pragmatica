@@ -29,11 +29,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.swim.SwimConfig;
@@ -171,21 +173,21 @@ final class ClusterRig implements AutoCloseable {
     }
 
     /// A committed DEPARTED record for `node` naming `process`, written the way the leader writes it: one `LeaderTransaction`.
-    ClusterRig departed(NodeId node, org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation process) {
+    ClusterRig departed(NodeId node, AetherValue.ProcessIncarnation process) {
         var key = AetherKey.NodeDepartureKey.nodeDepartureKey(node);
         var value = new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED,
                                                        1L,
                                                        process,
-                                                       org.pragmatica.lang.Option.some(AetherValue.DepartureCause.NODE_REMOVED),
+                                                       Option.some(AetherValue.DepartureCause.NODE_REMOVED),
                                                        START_WALL);
 
-        applier.commit(List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction<>(key,
+        applier.commit(List.of(new KVCommand.LeaderTransaction<>(key,
                                                                                                       "departed-" + node.id(),
                                                                                                       LEADER,
                                                                                                       List.of(),
-                                                                                                      List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Mutation<>(key,
-                                                                                                                                                                              org.pragmatica.lang.Option.none(),
-                                                                                                                                                                              org.pragmatica.lang.Option.some(value))))));
+                                                                                                      List.of(new KVCommand.Mutation<>(key,
+                                                                                                                                                                              Option.none(),
+                                                                                                                                                                              Option.some(value))))));
 
         return this;
     }

@@ -8,7 +8,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -65,34 +70,34 @@ class ActivationWriteFaultTest {
     }
 
     // -- the FSM2 submission point ------------------------------------------------------------------------------------------
-    private static java.util.List<org.pragmatica.cluster.state.kvstore.KVCommand<org.pragmatica.aether.slice.kvstore.AetherKey>> write(NodeId node,
+    private static List<KVCommand<AetherKey>> write(NodeId node,
                                                                                                                                          Artifact artifact,
-                                                                                                                                         org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState state) {
-        var key = org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey.sliceObservedKey(node, artifact);
-        var row = new org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue(state,
+                                                                                                                                         AetherValue.SliceObservedState state) {
+        var key = AetherKey.SliceObservedKey.sliceObservedKey(node, artifact);
+        var row = new AetherValue.SliceObservedValue(state,
                                                                                         1L,
-                                                                                        new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(1L, 1L),
-                                                                                        new org.pragmatica.aether.slice.kvstore.AetherValue.ProcessIncarnation(1L, 5L),
-                                                                                        org.pragmatica.lang.Option.none(),
+                                                                                        new AetherValue.Generation(1L, 1L),
+                                                                                        new AetherValue.ProcessIncarnation(1L, 5L),
+                                                                                        Option.none(),
                                                                                         false,
                                                                                         0,
-                                                                                        java.util.List.of(),
+                                                                                        List.of(),
                                                                                         1L);
 
-        return java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Put<>(key, row));
+        return List.of(new KVCommand.Put<>(key, row));
     }
 
     @Test
     void fsm2_neverArmed_answersEverySubmission() {
-        var active = org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.ACTIVE;
+        var active = AetherValue.SliceObservedState.ACTIVE;
 
         assertThat(ActivationWriteFault.leavesUnansweredFsm2(NODE, ARTIFACT, 1, 0, write(NODE, ARTIFACT, active))).isFalse();
     }
 
     @Test
     void fsm2_armed_takesOnlyTheFirstOwnActiveSubmission_notItsProbe() {
-        var active = org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.ACTIVE;
-        var loaded = org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState.LOADED;
+        var active = AetherValue.SliceObservedState.ACTIVE;
+        var loaded = AetherValue.SliceObservedState.LOADED;
 
         ActivationWriteFault.arm(NODE, ARTIFACT);
 

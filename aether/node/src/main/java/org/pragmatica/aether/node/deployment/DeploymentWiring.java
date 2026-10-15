@@ -38,6 +38,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
 
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 
 
@@ -223,7 +224,7 @@ public final class DeploymentWiring {
         return _ -> dropCounter(point).increment();
     }
 
-    private io.micrometer.core.instrument.Counter dropCounter(String point) {
+    private Counter dropCounter(String point) {
         return registry.counter("aether_deployment_fsm2_dropped_total", "point", point);
     }
 
