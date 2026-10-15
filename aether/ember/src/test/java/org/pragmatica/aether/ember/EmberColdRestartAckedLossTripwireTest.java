@@ -92,6 +92,7 @@ class EmberColdRestartAckedLossTripwireTest {
         if (cluster != null) {
             assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped")).isEqualTo("stopped");
         }
+        StreamTripwireSupport.deleteTree(baseDir);
     }
 
     private record Outcome(List<String> ownerServes, List<String> returnedNodeHolds, boolean acknowledgedRecordsStillOnReturnedNodesDisk) {}

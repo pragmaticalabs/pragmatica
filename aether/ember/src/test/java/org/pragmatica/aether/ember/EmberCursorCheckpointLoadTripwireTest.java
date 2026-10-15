@@ -73,6 +73,7 @@ class EmberCursorCheckpointLoadTripwireTest {
         if (cluster != null) {
             assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped")).isEqualTo("stopped");
         }
+        StreamTripwireSupport.deleteTree(dataDir);
     }
 
     private record Measurement(double baselineSlotsPerSecond, double activeSlotsPerSecond, int pairs, long delivered, int committedCheckpoints) {

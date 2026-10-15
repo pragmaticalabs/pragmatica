@@ -66,6 +66,7 @@ class EmberForwardLaneTripwireTest {
         if (cluster != null) {
             assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped")).isEqualTo("stopped");
         }
+        StreamTripwireSupport.deleteTree(dataDir);
     }
 
     private record Round(long drops, long smallReceived, long bigReceived) {}

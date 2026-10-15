@@ -206,6 +206,20 @@ final class StreamTripwireSupport {
         return built;
     }
 
+    /// Removes a test's data directory after its cluster has stopped; best effort, a leftover is only disk.
+    @SuppressWarnings("JBCT-EX-01")
+    static void deleteTree(Path directory) {
+        if (directory == null) {
+            return;
+        }
+
+        try (var walk = Files.walk(directory)) {
+            walk.sorted(java.util.Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+        } catch (IOException e) {
+            // best effort: the directory is under the temp root and a stray file costs nothing but space
+        }
+    }
+
     /// As [#threeNodes(int, String, Path)] with the node-default streaming configuration except `reshuffleConcurrency`: for a
     /// test about something other than the pacing of replica materialization (default 2 slots, each held through a 20 s
     /// source wait on an empty partition), which otherwise decides how long the test waits.

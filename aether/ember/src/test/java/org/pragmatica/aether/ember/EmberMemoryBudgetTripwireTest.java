@@ -66,6 +66,7 @@ class EmberMemoryBudgetTripwireTest {
         if (cluster != null) {
             assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped")).isEqualTo("stopped");
         }
+        StreamTripwireSupport.deleteTree(dataDir);
     }
 
     @Test
