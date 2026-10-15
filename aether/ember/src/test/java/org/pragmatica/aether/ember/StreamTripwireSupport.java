@@ -31,7 +31,9 @@ import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -123,11 +125,21 @@ final class StreamTripwireSupport {
     /// Creates the stream through `node`'s partition manager, retrying while the cluster is still settling: a leader is elected
     /// before consensus commits reliably ("Stream config consensus commit failed" for the first seconds).
     static void createStream(AetherNode node, StreamConfig config) {
-        var last = new String[] {"never attempted"};
+        var deadline = System.currentTimeMillis() + CREATE_BUDGET_MS;
+        var last = "never attempted";
 
-        awaitUntil(() -> node.streamPartitionManager().createStream(config).onFailure(cause -> last[0] = cause.message()).isSuccess(),
-                   CREATE_BUDGET_MS,
-                   "stream " + config.name() + " created (last refusal: " + last[0] + ")");
+        while (System.currentTimeMillis() < deadline) {
+            var result = StreamCreateOutcome.tolerateAlreadyExists(node.streamPartitionManager().createStream(config));
+
+            if (result.isSuccess()) {
+                return;
+            }
+
+            last = result.fold(Cause::message, _ -> "");
+            sleepQuietly(500L);
+        }
+
+        throw new AssertionError("stream " + config.name() + " was not created within " + CREATE_BUDGET_MS + "ms; last refusal: " + last);
     }
 
     static void awaitUntil(BooleanSupplier condition, long budgetMs, String what) {
@@ -221,10 +233,15 @@ final class StreamTripwireSupport {
 
     /// The committed ownership record for partition 0 once all three nodes agree on it and its ISR holds all three.
     static StreamPartitionOwnershipValue awaitFullIsr(EmberCluster cluster, String engineKey, long budgetMs) {
+        return awaitIsr(cluster, engineKey, 3, budgetMs);
+    }
+
+    /// As [#awaitFullIsr] for an in-sync set of `size` members (a stream declared with a replication factor below three).
+    static StreamPartitionOwnershipValue awaitIsr(EmberCluster cluster, String engineKey, int size, long budgetMs) {
         var deadline = System.currentTimeMillis() + budgetMs;
 
         while (System.currentTimeMillis() < deadline) {
-            var record = committedRecord(cluster, engineKey, PARTITION).filter(value -> value.isrVersion() > 0 && value.isr().size() == 3);
+            var record = committedRecord(cluster, engineKey, PARTITION).filter(value -> value.isrVersion() > 0 && value.isr().size() == size);
 
             if (record.isPresent()) {
                 return record.unwrap();
@@ -233,7 +250,7 @@ final class StreamTripwireSupport {
             sleepQuietly(250L);
         }
 
-        throw new AssertionError("no committed ISR of three for " + engineKey + " within " + budgetMs + "ms; last: " + committedRecord(cluster, engineKey, PARTITION));
+        throw new AssertionError("no committed ISR of " + size + " for " + engineKey + " within " + budgetMs + "ms; last: " + committedRecord(cluster, engineKey, PARTITION));
     }
 
     static Option<StreamPartitionOwnershipValue> committedRecord(EmberCluster cluster, String engineKey, int partition) {
