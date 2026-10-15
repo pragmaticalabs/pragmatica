@@ -119,6 +119,7 @@ class CoreSwimHealthDetectorStartLeakTest {
         }
 
         assertThat(detector.isClosed()).isTrue();
+        assertThat(detector.transportCreationsForTest()).as("a refused start must not even build a transport").isZero();
     }
 
     private static Result<Unit> holdUntilReleased(CountDownLatch reached, CountDownLatch release) {

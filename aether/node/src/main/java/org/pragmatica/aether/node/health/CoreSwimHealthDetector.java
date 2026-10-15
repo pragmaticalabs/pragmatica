@@ -9,6 +9,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -121,6 +122,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     /// protocol is created, so a test can hold the detector in Starting or fail a start after a
     /// successful bind. Production never replaces it.
     private volatile Supplier<Result<Unit>> afterBind = Result::unitResult;
+    private final AtomicInteger transportCreations = new AtomicInteger();
 
     private record AnnounceJoinCall(NodeInfo self,
                                     String clusterName,
@@ -349,10 +351,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         var selfHost = findSelfHost();
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
 
-        return createTransport(sharedEventLoopGroup, gossipEncryptor).flatMap(transport -> createAndStartProtocol(transport,
-                                                                                                                  selfAddress,
-                                                                                                                  swimPort,
-                                                                                                                  gossipEncryptor))
+        return createTransport(sharedEventLoopGroup, gossipEncryptor).onSuccessRun(transportCreations::incrementAndGet)
+                              .flatMap(transport -> createAndStartProtocol(transport,
+                                                                           selfAddress,
+                                                                           swimPort,
+                                                                           gossipEncryptor))
                               .async()
                               .onSuccess(context::dispatch)
                               .onFailure(_ -> context.dispatch(new SwimHealthEvents.StartFailed()))
@@ -372,6 +375,11 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     public SwimHealthState lifecycleState() {
         return context.fsm()
                       .current();
+    }
+
+    /// How many transports start() has built: a refused start must leave this at zero.
+    int transportCreationsForTest() {
+        return transportCreations.get();
     }
 
     @Contract
