@@ -118,6 +118,8 @@ public final class EngineMarkerGuard {
     private List<Runnable> drained = List.of();
     private State state = State.WAITING;
     private boolean windowExpired;
+    /// The window a timer belongs to: a timer whose body was already running when its window was cancelled must not end a later window.
+    private long windowGeneration;
 
     private Runnable cancelWindow = () -> {};
 
@@ -297,17 +299,19 @@ public final class EngineMarkerGuard {
         state = State.MISMATCH_WINDOW;
         windowExpired = false;
         warn();
-        cancelWindow = clock.schedule(this::windowEnded, windowMs);
+        var generation = ++windowGeneration;
+
+        cancelWindow = clock.schedule(() -> windowEnded(generation), windowMs);
     }
 
     @Contract
-    private void windowEnded() {
-        markExpired();
+    private void windowEnded(long generation) {
+        markExpired(generation);
         evaluate();
     }
 
-    private synchronized void markExpired() {
-        windowExpired = true;
+    private synchronized void markExpired(long generation) {
+        windowExpired = windowExpired || generation == windowGeneration;
     }
 
     private void refuseIfExpired() {

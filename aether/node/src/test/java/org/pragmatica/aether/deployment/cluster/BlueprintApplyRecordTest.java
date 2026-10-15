@@ -280,6 +280,25 @@ class BlueprintApplyRecordTest {
         assertThat(node.batches).as("superseded: no retry").hasSize(1);
     }
 
+    /// R-4.1.2 on the confirmation retry: a same-id republish whose apply record misses its first batch is retried; the retried record's `previous` must still be the
+    /// blueprint the republish overwrote (R-4.1.2), not the republish itself.
+    @Test
+    void aRetriedRecord_keepsThePreviousThePublishOverwrote() {
+        var node = new Node();
+        var service = BlueprintService.blueprintService(node, store, repository, true);
+
+        service.publish(DSL).await();
+        var first = store.get(BLUEPRINT).map(v -> (AppBlueprintValue) v).unwrap();
+        var firstBatches = node.batches.size();
+
+        node.drop = command -> command.key() instanceof AetherKey.DeploymentApplyKey && node.batches.size() == firstBatches + 1;
+        service.publish(DSL).await();
+        var second = store.get(BLUEPRINT).map(v -> (AppBlueprintValue) v).unwrap();
+
+        assertThat(node.batches.size()).as("the record was retried").isGreaterThan(firstBatches + 1);
+        assertThat(apply().map(DeploymentApplyValue::previous)).as("R-4.1.2 on the retry").isEqualTo(Option.some(Option.some(first)));
+    }
+
     private long outcomeVersion() {
         return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(ID)).map(v -> ((DeploymentOutcomeValue) v).outcomeVersion() + 1).or(1L);
     }

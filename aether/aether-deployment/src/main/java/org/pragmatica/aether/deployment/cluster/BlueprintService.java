@@ -646,16 +646,18 @@ class BlueprintServiceInstance implements BlueprintService {
                                                          String artifactCoords,
                                                          boolean registerOnly) {
         var attemptId = newAttemptId();
+        var record = applyRecord(expanded, attemptId);
         var commands = buildAllCommands(expanded,
                                         streamBindingsPut(expanded.id(), bindings.bound()),
                                         migrations,
                                         artifactCoords,
                                         registerOnly,
-                                        attemptId);
+                                        attemptId,
+                                        record);
 
         return cluster.apply(commands)
                       .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0))
-                      .flatMap(stored -> confirmApplyRecord(stored, attemptId, 0))
+                      .flatMap(stored -> confirmApplyRecord(stored, attemptId, record, 0))
                       .map(stored -> PublishedBlueprint.publishedBlueprint(stored,
                                                                            bindings.rejected(),
                                                                            bindings.warnings()));
@@ -706,8 +708,13 @@ class BlueprintServiceInstance implements BlueprintService {
 
     /// The existing re-read, extended to the apply record: it landed (this attempt's record is committed), or it already did its job (the apply
     /// closed: this attempt's terminal outcome is committed), or a newer publish owns the id. Anything else is retried, bounded, then reported.
-    private Promise<ExpandedBlueprint> confirmApplyRecord(ExpandedBlueprint expanded, String attemptId, int attempt) {
-        if (!recordsApply || applyRecordSettled(expanded.id(), attemptId)) {
+    /// A retry re-applies the record the publish batch carried: `previous` is what the publish overwrote, and re-deriving it now would read the
+    /// blueprint this publish just committed.
+    private Promise<ExpandedBlueprint> confirmApplyRecord(ExpandedBlueprint expanded,
+                                                          String attemptId,
+                                                          Option<KVCommand<AetherKey>> record,
+                                                          int attempt) {
+        if (record.isEmpty() || applyRecordSettled(expanded.id(), attemptId)) {
             return Promise.success(expanded);
         }
 
@@ -715,8 +722,9 @@ class BlueprintServiceInstance implements BlueprintService {
             return APPLY_RECORD_NOT_CONFIRMED.apply(expanded.id().asString()).promise();
         }
 
-        return cluster.apply(List.<KVCommand<AetherKey>> of(applyRecordPut(expanded, attemptId)))
-                      .flatMap(_ -> confirmApplyRecord(expanded, attemptId, attempt + 1));
+        return record.map(put -> cluster.apply(List.of(put))
+                                        .flatMap(_ -> confirmApplyRecord(expanded, attemptId, record, attempt + 1)))
+                     .or(Promise.success(expanded));
     }
 
     private boolean applyRecordSettled(BlueprintId id, String attemptId) {
@@ -777,7 +785,8 @@ class BlueprintServiceInstance implements BlueprintService {
                                                         Map<String, List<MigrationEntry>> migrations,
                                                         String artifactCoords,
                                                         boolean registerOnly,
-                                                        String attemptId) {
+                                                        String attemptId,
+                                                        Option<KVCommand<AetherKey>> record) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
         commands.add(buildBlueprintPutCommand(expanded, registerOnly, attemptId));
@@ -799,7 +808,7 @@ class BlueprintServiceInstance implements BlueprintService {
         commands.add(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
                                startedOutcome(expanded.id(), attemptId)));
         // Q8 (FSM2 only): the open apply, and what a rollback restores, ride the same batch.
-        applyRecord(expanded, attemptId).onPresent(commands::add);
+        record.onPresent(commands::add);
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -1311,12 +1320,13 @@ class BlueprintServiceInstance implements BlueprintService {
         // blueprint, so no node can see a slice target without its bindings — the ordering
         // `StreamAddressError` rests on when it treats missing bindings as fatal rather than retryable.
         var batch = new ArrayList<KVCommand<AetherKey>>(List.of(command, outcomeStart, streamBindings));
+        var record = applyRecord(expanded, attemptId);
 
-        applyRecord(expanded, attemptId).onPresent(batch::add);
+        record.onPresent(batch::add);
 
         return cluster.apply(batch)
                       .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0))
-                      .flatMap(stored -> confirmApplyRecord(stored, attemptId, 0));
+                      .flatMap(stored -> confirmApplyRecord(stored, attemptId, record, 0));
     }
 
     private Promise<Unit> removeFromStore(AetherKey.AppBlueprintKey key) {
