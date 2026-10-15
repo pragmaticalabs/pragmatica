@@ -5958,6 +5958,14 @@ POST /api/v1/streams/groups/join
 Registers a consumer in a consumer group on the given stream. Idempotent — re-joining the same
 `(groupId, consumerId)` pair refreshes the binding.
 
+**What this does and does not do (#2201).** Join and leave maintain the group's member list and rewrite one
+assignment record per partition (`ConsumerGroupKey`, round-robin over the members, written by the leader's
+`ConsumerGroupCoordinator`). Nothing in the stream read path consults those records
+(`ConsumerGroupRegistry.partitionsFor` and `assignmentsFor` have no production caller), so a join or leave does
+not change which events any consumer receives. Declarative `[streams.X]` consumers do not use this API at all
+(see "Which node consumes which partition" below). The response lists the group's members (`consumerId`,
+`nodeId`), not partitions.
+
 **Request:**
 ```json
 {
@@ -5979,7 +5987,7 @@ aether streams consumer-group join <group> <stream> --consumer-id <id> [--partit
   "groupId": "orders-workers",
   "streams": {
     "orders": [
-      {"consumerId": "worker-1", "partitions": [0, 1, 2, 3]}
+      {"consumerId": "worker-1", "nodeId": "<node-id>"}
     ]
   }
 }
@@ -6020,8 +6028,8 @@ GET /api/v1/streams/groups/{id}
 
 **Auth:** ALL_AUTHENTICATED
 
-Returns the per-stream consumer assignments for the given group. The response covers
-every stream the group is bound to.
+Returns the per-stream members of the given group (`consumerId` and the `nodeId` that registered it). The
+response covers every stream the group is bound to. It does not list partitions: see the note under Join Consumer Group.
 
 **CLI:**
 ```bash
@@ -6034,8 +6042,8 @@ aether streams consumer-group status <group> [<stream>]
   "groupId": "orders-workers",
   "streams": {
     "orders": [
-      {"consumerId": "worker-1", "partitions": [0, 1]},
-      {"consumerId": "worker-2", "partitions": [2, 3]}
+      {"consumerId": "worker-1", "nodeId": "<node-id>"},
+      {"consumerId": "worker-2", "nodeId": "<node-id>"}
     ]
   }
 }

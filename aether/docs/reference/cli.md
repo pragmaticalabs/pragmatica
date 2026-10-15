@@ -1704,7 +1704,8 @@ aether streams delete orders:order-events:1.0.0 --force
 
 Register a consumer in a consumer group on the given stream. `--consumer-id` is the unique
 identifier of the consumer within the group. `--partitions N` (default `1`) is the partition
-count the consumer expects to be assigned to.
+count the coordinator spreads its assignment records over. This records membership only: no stream read
+consults those records, so joining does not change which events a consumer receives (#2201).
 
 ```bash
 aether streams consumer-group join orders-workers orders --consumer-id worker-1 --partitions 4
@@ -1720,7 +1721,7 @@ aether streams consumer-group leave orders-workers orders --consumer-id worker-1
 
 ### `aether streams consumer-group status <group> [<stream>]`
 
-Show the per-stream consumer assignments for the given group. The optional `<stream>`
+Show the per-stream members of the given group (consumer id and node, no partitions). The optional `<stream>`
 positional is informational — the server-side `/api/streams/groups/{id}` returns the full
 multi-stream group status.
 
