@@ -118,6 +118,10 @@ class EntityCheckpointTripwireTest {
         var fold = cutAfterCheckpointOverUncommittedZ();
 
         assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        var filed = substrate.loadCheckpoint(KEYSPACE, PARTITION).await().unwrap().unwrap();
+
+        assertThat(filed.throughOffset()).as("control: the checkpoint claims the committed position").isEqualTo(1L);
+        assertThat(EntityFoldSnapshot.decode(filed.snapshot()).unwrap().state()).as(ENABLE_11 + " (the snapshot holds z above its claim)").containsKey("z");
         assertThat(fold.get(PARTITION, "j").isPresent()).as("control: j is committed and survived").isTrue();
         assertThat(fold.get(PARTITION, "z").isPresent()).as(ENABLE_11).isTrue();
     }
@@ -142,7 +146,6 @@ class EntityCheckpointTripwireTest {
         var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
 
         assertThat(candidate.throughOffset()).as("control: the claim is the committed position").isEqualTo(1L);
-        assertThat(EntityFoldSnapshot.decode(candidate.snapshot()).unwrap().state()).as("control: the snapshot runs ahead of its claim").containsKey("z");
         assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, candidate.throughOffset(), candidate.snapshot(), candidate.lineage()).await().isSuccess()).isTrue();
         assertThat(manager.appendRecovered(arc, PARTITION, 2L, record("y", 9), 5L, E2).isFailure()).as("control: a divergence at offset 2").isTrue();
         assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut removes the uncommitted tail").isTrue();
