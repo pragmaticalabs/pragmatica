@@ -2978,7 +2978,7 @@ aether storage snapshot content
 ### `aether storage retention`
 
 Show the per-partition tri-floor retention view (#634-3/4):
-[`GET /api/storage/retention`](management-api.md#get-apistorageretention). LOCAL — WAL, ring, and
+[`GET /api/storage/retention`](management-api.md#get-apiv1storageretention). LOCAL — WAL, ring, and
 segment offsets describe the node you query; the `checkpointFloor` comes from replicated KV, so it
 agrees everywhere.
 
@@ -3005,7 +3005,7 @@ Management API section linked above.
 records in `[checkpointFloor + 1, coveredFrom - 1]` are on no local source, so a fold here would
 refuse. Recovery: restore the missing range from a replica that still holds it (re-replication via
 partition backfill); if no replica holds it, accept the documented loss and re-baseline the
-checkpoint — see the [operator recovery action](management-api.md#get-apistorageretention). The flag
+checkpoint — see the [operator recovery action](management-api.md#get-apiv1storageretention). The flag
 clears on the next read after local sources again cover `checkpoint + 1`. A periodic watch re-checks
 every 5 minutes and raises the `retention-invariant` alert (severity `CRITICAL`) once per
 newly-violated partition — see `aether alerts active`.
