@@ -2224,15 +2224,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             commands.add(new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue));
             commands.addAll(extraCommands);
 
-            return ctx.cluster()
-                      .apply(commands)
-                      .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                      .map(_ -> sliceKey)
-                      .onSuccess(_ -> log.debug("State+refs update succeeded: {} -> {} (+{} extras)",
-                                                sliceKey.artifact(),
-                                                value.state(),
-                                                extraCommands.size()))
-                      .orElse(() -> retryConsensusBatch(sliceKey, value, extraCommands, attempt));
+            return submitStateWrite(sliceKey,
+                                    value.state(),
+                                    attempt,
+                                    commands).timeout(CONSENSUS_OPERATION_TIMEOUT)
+                                   .map(_ -> sliceKey)
+                                   .onSuccess(_ -> log.debug("State+refs update succeeded: {} -> {} (+{} extras)",
+                                                             sliceKey.artifact(),
+                                                             value.state(),
+                                                             extraCommands.size()))
+                                   .orElse(() -> retryConsensusBatch(sliceKey, value, extraCommands, attempt));
         }
 
         private Promise<SliceNodeKey> retryConsensusBatch(SliceNodeKey sliceKey,
@@ -2315,14 +2316,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var nodeArtifactValue = nodeArtifactValueFor(sliceKey.artifact(), value);
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
 
-            return ctx.cluster()
-                      .apply(List.of(putArtifact))
-                      .timeout(CONSENSUS_OPERATION_TIMEOUT)
-                      .map(_ -> sliceKey)
-                      .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
-                                                sliceKey.artifact(),
-                                                value.state()))
-                      .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
+            return submitStateWrite(sliceKey,
+                                    value.state(),
+                                    attempt,
+                                    List.of(putArtifact)).timeout(CONSENSUS_OPERATION_TIMEOUT)
+                                   .map(_ -> sliceKey)
+                                   .onSuccess(_ -> log.debug("State update succeeded: {} -> {}",
+                                                             sliceKey.artifact(),
+                                                             value.state()))
+                                   .orElse(() -> retryConsensusOperation(sliceKey, value, attempt));
         }
 
         private Promise<SliceNodeKey> retryConsensusOperation(SliceNodeKey sliceKey,
@@ -2343,6 +2345,21 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       attempt + 1);
 
             return updateSliceStateWithRetry(sliceKey, value, attempt + 1);
+        }
+
+        /// The one submission point of this node's own slice-state writes. [ActivationWriteFault] is a TEST-ONLY fault,
+        /// inert unless a test arms it (#1117 tracer): an armed submission is never handed to consensus and the promise
+        /// never resolves, which is what an unanswered submission looks like to the caller's timeout and retry.
+        private <R> Promise<List<R>> submitStateWrite(SliceNodeKey sliceKey,
+                                                      SliceState state,
+                                                      int attempt,
+                                                      List<KVCommand<AetherKey>> commands) {
+            if (ActivationWriteFault.leavesUnanswered(ctx.self(), sliceKey.artifact(), state, attempt)) {
+                return Promise.promise();
+            }
+
+            return ctx.cluster()
+                      .apply(commands);
         }
 
         private Promise<Unit> applyWithRetry(List<KVCommand<AetherKey>> commands, int attempt) {

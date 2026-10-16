@@ -658,7 +658,11 @@ public interface SystemTags {
         pin(table, 2158, "org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause");
         // the observed slice state of the deployment rewrite, with the tombstone the live SliceState lacks (spec 1.6.2) -- scanned free on 2026-10-12
         pin(table, 2159, "org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedState");
-        // ---- 2160..16383 RESERVED ----
+        // the engine marker of the deployment rewrite (phase-3 design 8.2) -- scanned free across every origin branch on 2026-10-15
+        pin(table, 2160, "org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentEngineKey");
+        pin(table, 2161, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngineValue");
+        pin(table, 2162, "org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine");
+        // ---- 2163..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

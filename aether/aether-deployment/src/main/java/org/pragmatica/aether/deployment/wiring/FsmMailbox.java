@@ -45,6 +45,9 @@ public final class FsmMailbox<I> {
     private final Object coalescing = new Object();
     private volatile Thread consumer;
     private volatile boolean closed;
+    /// Set under the monitor [#start()] holds, once [#retireIfConsumerless()] has judged that no consumer exists: a later `start()` must not
+    /// create one that would run beside the caller's own shutdown (N-10).
+    private boolean retired;
 
     private FsmMailbox(String name, Consumer<? super I> handler, Runnable onStop) {
         this.name = name;
@@ -67,7 +70,7 @@ public final class FsmMailbox<I> {
     /// Starts the consumer thread: a daemon platform thread, so a node that is torn down without a `close()` cannot hold the JVM open.
     @Contract
     public synchronized void start() {
-        if (Option.option(consumer).isEmpty() && !closed) {
+        if (Option.option(consumer).isEmpty() && !closed && !retired) {
             var thread = new Thread(this::run, name);
 
             thread.setDaemon(true);
@@ -119,11 +122,16 @@ public final class FsmMailbox<I> {
                                  .or(false);
     }
 
-    /// True while a consumer thread exists and is alive, whether or not the mailbox is already closed.
-    public boolean consumerAlive() {
+    /// Decides, atomically with [#start()], whether the caller may run the consumer's work itself: `true` when no consumer thread is alive and
+    /// none can appear (never started, now barred from starting; or started and exited), `false` while one is alive. `start()` holds the same
+    /// monitor across creating and starting its thread, so a thread this method sees is already started: `isAlive` is false only once it has
+    /// exited, never merely because `start()` has not reached it yet (N-10).
+    public synchronized boolean retireIfConsumerless() {
+        retired = retired || Option.option(consumer).isEmpty();
+
         return Option.option(consumer)
-                     .map(Thread::isAlive)
-                     .or(false);
+                     .map(thread -> !thread.isAlive())
+                     .or(true);
     }
 
     /// True on the consumer thread (a confinement check for the state only that thread may touch).

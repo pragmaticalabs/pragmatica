@@ -4,21 +4,23 @@
 # <name> is the input record's simple class name (NodeFsm.inputCounted, ClusterFsm.counted).
 # An input missing from this run is a dead wire. An amendment is a visible diff with a reason.
 #
-# Format: <fsm> <input>   # reason
+# Amended 2026-10-15 (first boot run, PR C): the assertion is `result="applied" > 0` by default; a line marked `any` asserts the input REACHED the
+# FSM under any result label (applied or dropped*), because in this scenario it can only arrive in a state that drops it. `any` still proves the wire.
+#
+# Format: <fsm> <input> [any]   # reason
 
 node QuorumEstablished     # genuine ACTIVE -> consumer snapshot -> entry (NI-1)
 node DesiredPut            # the leader's goal for this node, own-node filter (NI-2)
 node ObservedPut           # the node's own committed rows echo back (NI-3); confirms its writes
 node TargetPut             # the committed target (NI-4)
-node TimerFired            # WRITE_CONFIRM / WRITE_PROBE / CHAIN_BOUND / ACTIVATING_CHECK (NI-7)
-node WriteSettled          # the Submitter's settlement (NI-8)
+node WriteSettled any      # a clean deploy: the echo of the row beats the settlement, so the node FSM drops it (measured result=dropped); the Submitter's settlement (NI-8)
 node LocalOpSettled        # the activation chain's local steps (NI-8)
 
 cluster Activate           # LeaderChange(self) (CI-1)
 cluster Rebuild            # the first input after Activate (R-3.1.6)
 cluster KvPut              # blueprint, target, desired, observed, outcome rows (CI-2..12)
-cluster LeaderObserved     # the only source of viewSequence (CI-16)
-cluster NodeJoined         # core admission with admission(n) (CI-8)
+cluster LeaderObserved any # genesis commits the LeaderValue before Activate (measured result=dropped_dormant); the only source of viewSequence (CI-16)
+cluster NodeJoined any     # genesis admissions precede Activate (measured result=dropped_dormant); core admission with admission(n) (CI-8)
 cluster SeamsRefreshed     # SeamPoller sample incl. coreView (CI-15)
 cluster Timer              # POST_ACTIVATION, TICK, RECONCILE (CI-13)
 cluster WriteSettled       # the leader's transaction settlement (CI-14)
@@ -26,7 +28,8 @@ cluster Reconcile          # coalesced reconcile pass
 cluster Flush              # end of drain: the intents become transactions
 
 # Not reached by T / E-01 and therefore NOT required (each is a component left unwired in this tracer, or needs a scenario this run lacks):
-# node: QuorumDisappeared (no quorum loss), RoutingPut/RoutingRemove/TargetRemove (no rolling update, no undeploy),
+# node: TimerFired (a clean deploy cancels every write timer before it fires; the probe/confirm firing is T's fault-injected arm and the WriteProbe unit tests),
+#       QuorumDisappeared (no quorum loss), RoutingPut/RoutingRemove/TargetRemove (no rolling update, no undeploy),
 #       DesiredRemove, ObservedRemove (no removal), ConfigChanged (no config section registered), ReconcileActivation (only while Dormant)
 # cluster: Deactivate (until stop), WorkerJoin, WorkerLeave (cores only), NodeRemoved, SelfShutdown, NodeDraining, ProcessKnown (tokens known at first sample),
 #          WitnessStale (no leader change mid-write), KvRemove

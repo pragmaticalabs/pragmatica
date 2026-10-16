@@ -350,6 +350,18 @@ class SliceRuntimeAdapterTest {
         assertThat(publisher.calls).isEmpty();
     }
 
+    /// `UNWIRED_STEPS` and the step switch are two lists (v-2204 N5): for every step, `wired(step)` holds exactly when running it does not fail as
+    /// unwired. A step added to one list and not the other is red.
+    @Test
+    void wiredSteps_areExactlyTheStepsTheAdapterRuns() {
+        for (var step : LocalStep.values()) {
+            var outcome = run(step);
+            var failedAsUnwired = outcome instanceof LocalOutcome.Failed && messageOf(outcome).equals("unwired in phase 3 tracer: " + step);
+
+            assertThat(SliceRuntimeAdapter.wired(step)).as(step.name()).isEqualTo(!failedAsUnwired);
+        }
+    }
+
     @Test
     void aStepWithoutAnArtifact_failsLoudly() {
         var outcome = adapter(true).run(new NodeFsmEffect.LocalOp(1, 0, Option.none(), LocalStep.NOTIFY_CONFIG, 0, Option.some("database.pool"))).await().unwrap();

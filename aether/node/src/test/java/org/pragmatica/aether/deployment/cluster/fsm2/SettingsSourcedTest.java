@@ -242,14 +242,14 @@ class SettingsSourcedTest {
         assertThat(settings.bounds()).isEqualTo(bounds());
     }
 
-    // Red when: the derived bounds move: the suspicion window (R-2.14: suspectTimeout x lhmMaxScore x 3), the removal bound on top of it (255 s), the
+    // Red when: the derived bounds move: the suspicion window (R-2.14: suspectTimeout x lhmMaxScore x 3, plus the 6 s lag), the removal bound on top of it (261 s), the
     // worker removal bound (170 s) and the announcement freshness (60 s) at the real defaults; or the factory scrambles its arguments.
     @Test
     void absenceBounds_deriveTheSuspicionWindow_andTheBoundsOnTopOfIt() {
         var bounds = bounds();
 
-        assertThat(ms(bounds.coreSuspicion())).as("10 s x 8 x 3").isEqualTo(240_000L);
-        assertThat(ms(bounds.coreRemoval())).as("B_rm = the window + splitTimeout").isEqualTo(255_000L);
+        assertThat(ms(bounds.coreSuspicion())).as("10 s x 8 x 3 + the lag (5 s sampling + 1 s probe period)").isEqualTo(246_000L);
+        assertThat(ms(bounds.coreRemoval())).as("B_rm = the window + splitTimeout").isEqualTo(261_000L);
         assertThat(ms(bounds.workerRemoval())).as("B_w").isEqualTo(170_000L);
         assertThat(ms(bounds.announcementFreshness())).as("S_ann").isEqualTo(60_000L);
         var built = AbsenceBounds.absenceBounds(1L, 2L, 3L, 4L).unwrap();
@@ -331,7 +331,8 @@ class SettingsSourcedTest {
                                         3.0,
                                         TimeSpan.timeSpan(15).seconds(),
                                         TimeSpan.timeSpan(30).seconds(),
-                                        TimeSpan.timeSpan(60).seconds())
+                                        TimeSpan.timeSpan(60).seconds(),
+                                        TimeSpan.timeSpan(0).seconds())
                                 .isFailure()).as("a zero suspect timeout derives a zero window").isTrue();
     }
 

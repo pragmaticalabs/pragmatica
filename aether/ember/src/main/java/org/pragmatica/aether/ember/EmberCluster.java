@@ -48,6 +48,7 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ParticipationMarker;
@@ -252,6 +253,10 @@ public final class EmberCluster {
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
     /// Exposed to tests via [#currentClusterSecret].
     private final AtomicReference<byte[]> clusterSecret = new AtomicReference<>(generateClusterSecret());
+
+    /// The deployment engine every node of this cluster is constructed with (phase-3 design 8.2); LEGACY unless a test says otherwise. The
+    /// committed engine marker, minted by the first leader, then makes the choice cluster-wide.
+    private final AtomicReference<DeploymentEngine> deploymentEngine = new AtomicReference<>(DeploymentEngine.LEGACY);
 
     /// #715 — the [AetherNodeConfig] object actually passed to the most recently constructed node's
     /// constructor. Captured from the real `config` value itself, never mirrored independently at
@@ -488,6 +493,13 @@ public final class EmberCluster {
     @Contract
     public void withStreamingConfig(StreamingConfig config) {
         streamingConfig.set(config);
+    }
+
+    /// Phase-3 design 8.2 — construct every node of this cluster with `engine`. MUST be called before [#start]. Harness-scoped: the engine
+    /// has no TOML key in phase 3.
+    @Contract
+    public void withDeploymentEngine(DeploymentEngine engine) {
+        deploymentEngine.set(engine);
     }
 
     /// #715 — override this instance's cluster QUIC/SWIM identity secret. MUST be called before
@@ -1558,7 +1570,7 @@ public final class EmberCluster {
         // in-process node derives its bootstrap admin key exactly as a production node does rather
         // than falling back to a random one. An Ember harness that diverged here would be a fixture
         // encoding different behaviour from the code it exists to exercise.
-        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8)));
+        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8))).withDeploymentEngine(deploymentEngine.get());
 
         lastNodeConfig.set(Option.some(config));
         // Single-JVM hosting: when this node would exit (drain complete, or its identity refused by the

@@ -29,11 +29,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.swim.SwimConfig;
@@ -65,6 +67,10 @@ final class ClusterRig implements AutoCloseable {
     private volatile String gatedInput = "";
     /// The committed leader changes without the FSM hearing of it yet: the window the pre-submit self-check exists for.
     volatile boolean muteLeaderNotifications;
+    /// The seams the next `Rebuild` reads; the default is a three-core roster with no `coreView`.
+    volatile Seams supplied;
+    /// The seams the model held at the end of its last `Rebuild` step.
+    volatile Seams atRebuild;
 
     ClusterRig() {
         var settings = Settings.settings(SELF, DeploymentAtomicity.ALL_OR_NOTHING, Set.of(), bounds());
@@ -94,19 +100,25 @@ final class ClusterRig implements AutoCloseable {
                                     SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
                                     MembershipConfig.membershipConfig().splitTimeout(),
                                     TimeSpan.timeSpan(30).seconds(),
-                                    ClusterTimeouts.clusterTimeouts().communityAbsence())
+                                    ClusterTimeouts.clusterTimeouts().communityAbsence(),
+                                    TimeSpan.timeSpan(5).seconds().plus(swim.period()))
                             .unwrap();
     }
 
     private Seams seams() {
         snapshots.incrementAndGet();
 
-        return Seams.UNWIRED.withCountedCores(Set.of(SELF, CORE_2, CORE_3)).withReady(Set.of(SELF, CORE_2, CORE_3));
+        return supplied != null
+               ? supplied
+               : Seams.UNWIRED.withCountedCores(Set.of(SELF, CORE_2, CORE_3)).withReady(Set.of(SELF, CORE_2, CORE_3));
     }
 
     private void stepped(String fsm, String input, long nanos) {
         stepThreads.add(Thread.currentThread().getName());
         stepped.add(input);
+        if (input.equals("Rebuild") && interpreter.state() instanceof ClusterState.Active active) {
+            atRebuild = active.model().seams();
+        }
 
         if (input.equals(gatedInput)) {
             await().atMost(Duration.ofSeconds(10)).until(() -> gate.getCount() == 0);
@@ -157,6 +169,26 @@ final class ClusterRig implements AutoCloseable {
     /// A target of `instances` for `artifact`: the leader places goals for it.
     ClusterRig target(Artifact artifact, int instances) {
         applier.put(new SliceTargetKey(artifact.base()), SliceTargetValue.sliceTargetValue(artifact.version(), instances, 1));
+
+        return this;
+    }
+
+    /// A committed DEPARTED record for `node` naming `process`, written the way the leader writes it: one `LeaderTransaction`.
+    ClusterRig departed(NodeId node, AetherValue.ProcessIncarnation process) {
+        var key = AetherKey.NodeDepartureKey.nodeDepartureKey(node);
+        var value = new AetherValue.NodeDepartureValue(AetherValue.DepartureState.DEPARTED,
+                                                       1L,
+                                                       process,
+                                                       Option.some(AetherValue.DepartureCause.NODE_REMOVED),
+                                                       START_WALL);
+
+        applier.commit(List.of(new KVCommand.LeaderTransaction<>(key,
+                                                                                                      "departed-" + node.id(),
+                                                                                                      LEADER,
+                                                                                                      List.of(),
+                                                                                                      List.of(new KVCommand.Mutation<>(key,
+                                                                                                                                                                              Option.none(),
+                                                                                                                                                                              Option.some(value))))));
 
         return this;
     }

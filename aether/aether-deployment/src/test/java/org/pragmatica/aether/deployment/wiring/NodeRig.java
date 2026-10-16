@@ -180,6 +180,19 @@ final class NodeRig implements AutoCloseable {
         }
     }
 
+    /// The rounds counted at submission (`submissions_total{fsm=node, kind, outcome=submitted}`), one per Submit that left for the engine.
+    long submitted(String kind) {
+        synchronized (sunk) {
+            return sunk.stream()
+                       .filter(NodeFsmEffect.Metric.class::isInstance)
+                       .map(NodeFsmEffect.Metric.class::cast)
+                       .filter(m -> m.name().equals("aether_deployment_fsm_submissions_total"))
+                       .filter(m -> kind.equals(m.labels().get("kind")) && "submitted".equals(m.labels().get("outcome")))
+                       .mapToLong(NodeFsmEffect.Metric::delta)
+                       .sum();
+        }
+    }
+
     long metric(String input, String result) {
         synchronized (sunk) {
             return sunk.stream()

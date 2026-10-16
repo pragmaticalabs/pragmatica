@@ -1540,6 +1540,21 @@ public sealed interface AetherValue {
         }
     }
 
+    /// The deployment engine a cluster runs (phase-3 design 8.2). `LEGACY` is the default of every node; `FSM2` is the rewrite.
+    @Codec
+    enum DeploymentEngine {
+        LEGACY,
+        FSM2,
+        /// Wire sentinel required of every `@Codec` enum; not an engine a leader mints.
+        UNKNOWN
+    }
+
+    /// The engine marker, under [AetherKey.DeploymentEngineKey] (phase-3 design 8.2, H-5): `engine` is the engine the minting leader was
+    /// configured with, `mintedBy` and `mintedAt` name that leader (the committed `LeaderValue` at refusal time may name a later one, so a
+    /// refusal reads the writer from here). [LeaderAuthorized]: the only writer is the lineage mint's `LeaderTransaction`, which expects the
+    /// incarnation key and this key both absent, so either both commit or neither does.
+    record DeploymentEngineValue(DeploymentEngine engine, NodeId mintedBy, long mintedAt) implements AetherValue, LeaderAuthorized {}
+
     /// The cluster's lineage and incarnation, under [AetherKey.ClusterIncarnationKey] (#1529 part 1).
     /// `lineageId` names the cluster's history across cold restarts; `incarnation` counts those restarts
     /// and dominates any per-incarnation counter (a consensus revision restarts with the cluster).

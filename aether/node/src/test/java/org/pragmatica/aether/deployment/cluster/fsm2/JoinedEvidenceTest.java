@@ -181,8 +181,8 @@ class JoinedEvidenceTest {
         run(w, SUSPICION_MS - 2_000L);
         assertThat(w.counts(N)).as("before the window ends").isFalse();
         assertThat(w.h.submits(SubmitKind.ADMISSION)).isEmpty();
-        w.h.advance(4_000L);
-        assertThat(admitsAt(w, N, E + 1)).as("the window is complete").isTrue();
+        w.h.advance(TICK_MS);
+        assertThat(admitsAt(w, N, E + 1)).as("the window is complete (the verdict is taken on the next tick)").isTrue();
         assertThat(epochOf(w, N)).isEqualTo(Option.some(E + 1));
         assertThat(w.counts(N)).isTrue();
     }
@@ -1025,7 +1025,7 @@ class JoinedEvidenceTest {
 
         runKeeping(w, SUSPICION_MS - 2_000L, ORDERS);
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
-        runKeeping(w, 2_000L, ORDERS);
+        runKeeping(w, TICK_MS, ORDERS);
         var admissions = w.h.submits(SubmitKind.ADMISSION);
 
         assertThat(admissions).as("precondition: J8's write is in flight").hasSize(1);
