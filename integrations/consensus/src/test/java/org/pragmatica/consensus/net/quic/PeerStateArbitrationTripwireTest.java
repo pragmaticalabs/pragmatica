@@ -27,10 +27,10 @@ import static org.mockito.Mockito.when;
 /// pair decide independently, from local phase age and a local receipt clock, which of two live links survives.
 /// [PeerState] is the real class here — no QUIC, no network — and each "end" is one instance.
 ///
-/// The cell space is the one the CTO's model enumerated (`t/evidence/lane-m/model.py`): the link dialed by the lower
+/// The cell space is the one the assessment's model enumerated: the link dialed by the lower
 /// id (X) or by the higher id (Y) is the incumbent at each end, the second attach arrives `age` after it (0.1, 0.6,
 /// 2, 5, 10 s), and the peer was or was not heard from just before. 4 x 5 x 2 per end, 400 pairs of ends. The cells
-/// are not weighted by how often production presents them: 1b-link shows several are unreachable on a healthy LAN
+/// are not weighted by how often production presents them: the second review shows several are unreachable on a healthy LAN
 /// (a handshake slower than 500 ms after the QUIC connect is needed), so the count is a measure of the rule, not a
 /// frequency.
 ///

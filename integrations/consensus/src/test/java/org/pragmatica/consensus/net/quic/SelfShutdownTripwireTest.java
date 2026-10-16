@@ -30,13 +30,13 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 
 /// Tripwire pair for A-01 (cluster T assessment, rc4 `7c786db0d3`), transport half: `QuicClusterNetwork.stop()` calls
 /// `processViewChange(SHUTDOWN, self.id())`, but `processViewChange` returns first for the self id, so the
-/// `TransportObservation.SelfShutdown` the SHUTDOWN branch builds is never routed. 1b-link CONFIRMED, with a second,
+/// `TransportObservation.SelfShutdown` the SHUTDOWN branch builds is never routed. A second review confirmed it, with a second,
 /// independent kill in `AetherNode.stop()` (the router is quiesced before the network stops): the wiring half is
 /// `TransportWiringTripwireEmberTest`.
 ///
-/// Fork for the overhaul spec: delete `SelfShutdown` (1b-link: the real self-departure signal is
+/// Fork for the overhaul: delete `SelfShutdown` (second review: the real self-departure signal is
 /// `ClusterStateNotification.passive()`, delivered before the quiesce) or re-source it from the stop path before
-/// `router.quiesce()`. This pair covers the second option; if the spec deletes the type, delete the pair with it.
+/// `router.quiesce()`. This pair covers the second option; if the overhaul deletes the type, delete the pair with it.
 @Timeout(60)
 class SelfShutdownTripwireTest {
     private static final NodeId SELF = new NodeId("selfshutdown-node");
@@ -71,7 +71,7 @@ class SelfShutdownTripwireTest {
             .isEmpty();
     }
 
-    @Disabled("A-01: enable if the overhaul re-sources SelfShutdown from the stop path; delete the pair if the spec removes the type. "
+    @Disabled("A-01: enable if the overhaul re-sources SelfShutdown from the stop path; delete the pair if the overhaul removes the type. "
               + "Today red: no SelfShutdown is routed on a graceful stop.")
     @Test
     void stop_routesOneSelfShutdownForTheStoppingNode() {

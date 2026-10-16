@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// see `QuicReconnectObservationControlTest` for the producer side). `LeaderManager.peerReconnected` has an empty
 /// body, and the leader FSM stores its topology by replacement from the last event, so the follower keeps a live,
 /// reconnected leader out of its view and keeps "suspecting" it until some unrelated topology event replaces the view
-/// (1b-link: deposing needs a majority of the electorate to doubt; the effect is a stale follower plus a standing
+/// (second review: deposing needs a majority of the electorate to doubt; the effect is a stale follower plus a standing
 /// pre-vote retry loop, not a lone deposition).
 ///
 /// Level: the real FSM, context and pre-vote of one follower (the construction of `LeaderPreVoteTest`), fed the two

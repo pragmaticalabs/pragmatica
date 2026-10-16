@@ -32,7 +32,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 
 /// Tripwire pairs for C-03 (cluster T assessment, rc4 `7c786db0d3`): the offline buffer of a peer that is not
 /// connected but is still a listed member is bounded by frame COUNT only (10,000), and a frame's expiry is checked
-/// only when a drain runs at attach, so nothing purges it while the peer stays away. 1b-perf-ops corrected the
+/// only when a drain runs at attach, so nothing purges it while the peer stays away. the second review corrected the
 /// magnitude (the lane's 640 MB assumed 64 KiB frames; content chunks default to 4 MiB) and left the mechanism
 /// CONFIRMED.
 ///

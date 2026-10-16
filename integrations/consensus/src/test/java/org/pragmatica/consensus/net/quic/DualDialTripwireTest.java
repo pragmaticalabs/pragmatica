@@ -32,8 +32,8 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 /// Tripwire pair for M-02 (cluster T assessment, rc4 `7c786db0d3`): `ConnectionDirection` and the `ClusterNetwork`
 /// contract say each pair has exactly one initiator, but a peer that was CONNECTED and is now EVICTED bypasses the
 /// 60 s higher-id grace (`previouslyConnectedNowEvicted`, #491), so after a link loss BOTH ends dial on their next
-/// reconcile tick. 1b-link: the dual dial is real; the lane's "normal path" is REFUTED (it needs both ticks inside one
-/// handshake time, 0.1 to 1 percent of link losses on a LAN, more on a lossy one).
+/// reconcile tick. The dual dial is real but it is not the normal path: it needs both ticks inside one handshake time
+/// (0.1 to 1 percent of link losses on a LAN, more on a lossy one).
 ///
 /// Level: two real [QuicClusterNetwork]s, the real reconciler on a fake clock, each end seeded with the other as
 /// EVICTED-after-CONNECTED. A topology lookup is the reconciler's proxy for "a dial was dispatched" (it happens only
@@ -41,7 +41,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 ///
 /// The real assertion states the single-dialer contract. If the overhaul instead keeps dual dial and makes the
 /// arbitration safe, delete this pair and rely on the link-arbitration pair (`PeerStateArbitrationTripwireTest`);
-/// that fork is an owner/spec decision (`[guess]` which way the spec goes).
+/// that fork is a design decision (`[guess]` which way the overhaul goes).
 @Timeout(60)
 class DualDialTripwireTest {
     private static final NodeId LOW = new NodeId("aaa-low");
