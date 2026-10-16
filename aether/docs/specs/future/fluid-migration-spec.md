@@ -696,10 +696,10 @@ aether cluster status --provider gcp
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/cluster/migrate` | Start migration (body: migration config JSON) |
-| `GET` | `/api/v1/cluster/migrate/status` | Get current migration status |
-| `POST` | `/api/v1/cluster/migrate/rollback` | Initiate rollback |
-| `POST` | `/api/v1/cluster/migrate/pause` | Pause migration (finish current step, hold) |
-| `POST` | `/api/v1/cluster/migrate/resume` | Resume paused migration |
+| `GET` | `/api/v1/cluster/migrate/status` | Get current migration status (proposed; not implemented) |
+| `POST` | `/api/v1/cluster/migrate/rollback` | Initiate rollback (proposed; not implemented) |
+| `POST` | `/api/v1/cluster/migrate/pause` | Pause migration (finish current step, hold) (proposed; not implemented) |
+| `POST` | `/api/v1/cluster/migrate/resume` | Resume paused migration (proposed; not implemented) |
 | `GET` | `/api/v1/nodes?provider={id}` | List nodes filtered by provider |
 
 ---

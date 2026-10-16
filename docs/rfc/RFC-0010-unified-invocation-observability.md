@@ -149,7 +149,7 @@ Adapted from RFC-0009 for the unified model:
 ### Depth Configuration Endpoints
 
 - `GET /api/v1/observability/depth` — current depth configuration (default + per-method overrides)
-- `PUT /api/v1/observability/depth` — update depth thresholds
+- `POST /api/v1/observability/depth` — update depth thresholds
 
 ### Runtime Configuration
 

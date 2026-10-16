@@ -1279,7 +1279,7 @@ public final class ClusterConfigRoutes implements RouteSource {
             Route.get("/api/v1/cluster/status").toJson(this::getClusterStatus),
             Route.post("/api/v1/cluster/scale").withBody(...).to(this::scale).asJson(),
             Route.post("/api/v1/cluster/upgrade").withBody(...).to(this::startUpgrade).asJson(),
-            Route.get("/api/v1/cluster/upgrade").withPath(aString()).to(this::getUpgrade).asJson()
+            Route.get("/api/v1/upgrade/status").toJson(this::getUpgrade)
         );
     }
 }

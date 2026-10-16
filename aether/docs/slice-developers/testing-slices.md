@@ -182,7 +182,7 @@ Deployment goes through the blueprint HTTP API on the leader's management port â
 @Test
 void cluster_deploysSlice_acrossNodes() {
     var leaderPort = cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort());
-    // POST /api/v1/blueprints/{id} with the blueprint body, then poll /api/v1/nodes/status
+    // POST /api/v1/blueprints with the blueprint body, then poll /api/v1/nodes/status
     // for SliceState.ACTIVE across the target instance count â€” see SliceDeploymentTest.java
     // for the full request/response shapes and polling pattern.
 }

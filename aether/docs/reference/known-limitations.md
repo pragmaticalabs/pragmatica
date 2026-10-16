@@ -20,7 +20,7 @@ Each entry below is a **deliberate boundary with a rationale**, not an apology. 
 | Streams and durable entities | Seven stated limits: a lagging consumer stalls on `CursorExpired`; sealed-tier retention is node-wide 24 h; sealing writes one segment per evicted event; default memory budget fits ~50 partition rings per node; replication is unbatched; a retried entity `update` that missed its barrier applies twice; the transactional cursor path is unwired | Found by a source audit at `acd3357ccc`; fixed by one spec-first overhaul, not patches — see below | #2201 |
 | No-majority network cut | A cut that leaves no group of cores with a majority halted every core in cuts of 20, 25 and 30 s halted every core (five cores, every core isolated, Ember in-process; longer cuts were not run); consensus state is memory-only and is lost | Terminal removal of a fenced node plus memory-only consensus; recovery is the backup restore | [runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted) |
 | Re-running `bootstrap` with a live cluster's name | A fresh bootstrap refuses when the registry, a local bootstrap state or (cloud sources only) a labelled provider instance shows the name; SSH and Docker hosts, a cluster known only to another workstation, and two concurrent bootstraps are outside the check | The check reads three sources before the first phase and takes no lock; there is no override flag | #2213 |
-| Dashboard against a real node | Most panels come up empty: the dashboard calls unversioned `/api/...` paths and the node serves `/api/v1` only; Forge serves the unversioned paths, so the dashboard is fully functional there | The dashboard client has not been migrated to `/api/v1`; the router has no alias for old paths (versioning spec §2.2) | #300 (rc6) |
+| Dashboard against a real node | The panels fed only by REST are empty: the dashboard calls unversioned `/api/...` paths and the node serves `/api/v1` only. Panels fed by the WebSockets (`/ws/status`, `/ws/dashboard`, `/ws/events`, served unversioned) get data. Forge serves a subset of the unversioned paths | The dashboard client has not been migrated to `/api/v1`; the router has no alias for old paths (versioning spec §2.2) | #300 (rc6) |
 
 ## Release maturity — rc series toward GA
 
@@ -182,25 +182,29 @@ Two related corrections made with this section: a topic `idempotencyKey` is the 
 
 **History.** Before 1.0.0-rc4 a fresh bootstrap did not check any of this and ran over the live cluster's local state and registry entry; the check shipped in 1.0.0-rc4 (#2213).
 
-## Dashboard against a real node — most panels come up empty
+## Dashboard against a real node — REST-fed panels are empty
 
-**The limit (1.0.0-rc4).** The built-in dashboard (`/dashboard` on a node) calls unversioned `/api/...` paths. A real node's router serves `/api/v1` only (`ManagementRoute.API_BASE`, `ManagementRoute.java:452`), and the versioning spec says old paths return 404 (`management-api-versioning-spec.md` §2.2: no aliases, no dual-serving). Forge serves the unversioned paths, so the dashboard is fully functional there; the limit is the dashboard against a real node.
+**The limit (1.0.0-rc4).** The built-in dashboard (`/dashboard` on a node) calls unversioned `/api/...` paths over REST. A real node's router serves `/api/v1` only (`ManagementRoute.API_BASE`, `ManagementRoute.java:452`), and the versioning spec says old paths return 404 (`management-api-versioning-spec.md` §2.2: no aliases, no dual-serving). The three WebSocket endpoints the dashboard also uses, `/ws/status`, `/ws/dashboard` and `/ws/events`, are served unversioned (`ManagementServer.java:529-531`, `666-668`) and are not affected. So what a panel shows depends on whether it is fed by a WebSocket, by REST, or both. Health works: `app.js:234` probes `/api/v1/health`.
 
-**What works and what does not.** The health banner works: `app.js:234` probes `/api/v1/health`. The panels below read through unversioned paths and stay empty (`aether/dashboard/src/main/resources/dashboard/js/`):
-- Cluster status and slice list (`app.js:262`, `app.js:272`); the auth-posture probe in `index.html:37` and `index.html:63` also uses an unversioned path.
-- Events (`stores/events.js:44`); alerts and thresholds (`stores/alerts.js:32-64`).
-- Deployments, routes and slice status (`stores/deployments.js:59`, `:66`); deploy strategies and A/B tests (`stores/strategies.js:25`, `:29`).
-- Topology (`stores/topology.js:28`); governors and topology (`stores/governors.js:16`, `:20`); desired topology (`stores/desiredtopology.js:19`).
-- Requests and traces (`stores/requests.js:19-40`); observability depth (`stores/observability.js:9-63`).
-- Storage (`stores/storage.js:9-27`); streams (`stores/streams.js:12`); schema (`stores/schema.js:17`, `:50`).
-- Controller config, TTM status and log levels (`stores/cluster.js:167-194`).
-- The Forge-only load and chaos controls (`stores/forge.js`) have no counterpart on a real node.
+**Panel by panel against a real node** (store files under `aether/dashboard/src/main/resources/dashboard/js/stores/`; WebSocket routing in `aether/dashboard/src/main/resources/dashboard/js/app.js:123-165`, connections in `aether/dashboard/src/main/resources/dashboard/js/lib/ws-manager.js:11-13`; the pushed fields are built in `DashboardMetricsPublisher.java` and `ManagementServer.java:799-812`). Of the 15 stores, 5 are fed by WebSocket, 5 are mixed, 4 are REST-only and 1 is Forge-only.
+- **WebSocket-fed (5), get data:** metrics and entry points (`metrics.js:86-110`, from `aggregates`, `invocations`, `nodeMetrics`); topology graph (`topology.js:14`, `topology` field); governors and cluster topology (`governors.js:6-12`); deploy strategies, canaries, blue/green and A/B tests (`strategies.js:13-21`); streams list (`streams.js:5-9`). Their REST refreshes (`topology.js:28`, `governors.js:16`, `strategies.js:25`, `streams.js:12`) 404 and are redundant.
+- **Mixed (5), WebSocket data but something is missing:**
+  - Cluster header, nodes, leader, uptime (`cluster.js:63-164`): WebSocket-fed; the Controller config, TTM status and log levels (`cluster.js:167`, `:173`, `:184`, `:189`, `:194`) are REST-only and empty, and saving them fails.
+  - Slices (`deployments.js:15-43`): WebSocket-fed. The routes table (`deployments.js:44-55`) is filled once, from `INITIAL_STATE` only (`DashboardMetricsPublisher.java:217`; `METRICS_UPDATE` carries no routes), and its REST refresh (`deployments.js:66`) 404s, so it does not change until the page reconnects.
+  - Schema (`schema.js:10-14`): the datasource table is WebSocket-fed; Retry (`schema.js:50`) is REST and fails.
+  - Alerts (`alerts.js:10-29`, `:74-86`): live `ALERT`/`ALERT_RESOLVED` pushes and the thresholds in `INITIAL_STATE` arrive; the REST refresh of active and history (`alerts.js:32`, `:36`), and saving or deleting a threshold (`alerts.js:42`, `:60`, `:64`) 404. The dashboard never sends `GET_HISTORY`, so the alert history list depends on a server push [unverified: whether the node pushes `HISTORY` without being asked].
+  - Events (`events.js:24-37`, fed by `/ws/events`): new events arrive; the REST backfill and polling (`events.js:44`) 404, so events from before the page connected are missing [unverified: whether `/ws/events` replays history on connect].
+- **REST-only (4), empty:** invocation metrics, slow calls, traces and trace stats (`requests.js:19`, `:26`, `:33`, `:40`); observability depth (`observability.js:9`, `:29`, `:44`, `:63`); storage (`storage.js:9`, `:13`, `:20`, `:27`); desired topology (`desiredtopology.js:19`).
+- **Forge-only (1):** the load and chaos controls and Forge detection (`forge.js:11`, `:48-106`) have no counterpart on a real node.
+- **Auth posture** probe (`index.html:37`, `:63`, `:100`) uses an unversioned REST path, so the dashboard logs "Auth posture undetermined".
 
-**How a failure shows.** The client logs one console warning per endpoint instead of an error toast (`RestClient._reportFailure`, `lib/rest-client.js:45`); further 404s on that endpoint are suppressed, so the panels are empty without an on-screen error.
+**How a REST failure shows.** The client logs one console warning per endpoint and suppresses further 404s on it; there is no error toast (`RestClient._reportFailure`, `aether/dashboard/src/main/resources/dashboard/js/lib/rest-client.js:45`). A REST-fed panel is empty with no on-screen error.
 
-**What to do.** Use the CLI (`aether ...`) or the `/api/v1` REST endpoints ([management-api.md](management-api.md)) against a real node. Use the dashboard on Forge (port 8888).
+**On Forge.** Forge serves a subset of the dashboard's REST paths, not all of them (`forge-api` `StatusRoutes`, `DeploymentRoutes`, `TopologyRoutes`, `AlertProxyRoutes`, `ObservabilityProxyRoutes`, `ChaosRoutes`, `LoadRoutes`). Served: `/api/nodes/status`, `/api/events`, `/api/forge/status`, `/api/slices/status`, `/api/slices/topology`, `/api/alerts/active`, `/api/alerts/history`, `/api/traces`, `/api/traces/stats`, `/api/observability/depth`, `/api/chaos/*`, `/api/load/*`. Not served, so those panels 404 on Forge too: `/api/slices`, `/api/routes`, `/api/deploy`, `/api/ab-tests`, `/api/thresholds` (Forge has `/api/alerts/thresholds`), `/api/cluster/governors`, `/api/cluster/topology`, `/api/cluster/config`, `/api/cluster/storage`, `/api/controller/config`, `/api/ttm/status`, `/api/logging/levels`, `/api/schema/status`, `/api/schema/retry/{datasource}`, `/api/storage`, `/api/storage/{name}`, `/api/storage/snapshot/{name}`, `/api/streams`, `/api/invocations/metrics`, `/api/invocations/metrics/slow` (20 paths). Forge also serves the three WebSocket endpoints (`ForgeServer.java:800-802`) [unverified: what fields Forge's WebSocket frames carry, and the write and delete route shapes of `/api/observability/depth` and `/api/load/rate`].
 
-**Tracking.** #300, scheduled for rc6.
+**What to do.** Use the CLI (`aether ...`) or the `/api/v1` REST endpoints ([management-api.md](management-api.md)) against a real node. Treat the REST-only panels as unavailable; read WebSocket-fed panels as live and the mixed ones as above.
+
+**Tracking.** #300, milestone rc6, open (checked with `gh`, 2026-10-16).
 
 ## Consistency and durability boundaries
 

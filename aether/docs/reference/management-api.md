@@ -48,8 +48,8 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 |-------------------|-------------|----------|
 | Blueprint management | ADMIN | `POST /api/v1/blueprints`, `DELETE /api/v1/blueprints/{id}` |
 | Node shutdown | ADMIN | `POST /api/v1/nodes/shutdown/{id}` |
-| Log level changes | ADMIN | `PUT /api/v1/logging/levels` |
-| Observability depth | ADMIN | `PUT /api/v1/observability/depth` |
+| Log level changes | ADMIN | `POST /api/v1/logging/levels` |
+| Observability depth | ADMIN | `POST /api/v1/observability/depth` |
 | Observability config (write) | ADMIN | `POST`/`DELETE /api/v1/observability/config` |
 | Blueprint deploy (from artifact) | OPERATOR | `POST /api/v1/blueprints/deploy` |
 | Blueprint validate | ADMIN | `POST /api/v1/blueprints/validate` |
@@ -459,7 +459,7 @@ The four community events are derived from committed records, so every node obse
 them, not every node. Delivery is the owner-gated contract of `guarantees.md` row 14b: at-least-once across an ownership handover (a raise
 on both sides appears twice, with distinct `eventId`s), and dropped and counted while ownership is unresolvable. They record what the core
 can see. A worker that loses the core fences itself locally and writes nothing, so no `-> DISSOLVED` event exists for
-that case; see [`GET /api/v1/cluster/communities`](#get-apiv1v1clustercommunities) for how that boundary looks.
+that case; see [`GET /api/v1/cluster/communities`](#get-apiv1clustercommunities) for how that boundary looks.
 
 `GENERATION_CHANGED` no longer exists (#722). It was documented and consumer-wired but never produced: the
 v1 spec's leader-resident reconciler that would have emitted it was never built, and the epoch the cluster
@@ -797,10 +797,10 @@ Publish (apply) a blueprint definition. The request body is the raw blueprint **
 
 `rejectedStreamBindings` (#1336) appears only when the publish accepted the blueprint WITHOUT binding one
 or more `[streams.*]` declarations — it is **omitted when empty**, so read it as absent-or-list. Shape and
-rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1v1blueprintsdeploy). `warnings` (#1564) follows
+rules: see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy). `warnings` (#1564) follows
 the same absent-or-list rule; see the same section.
 
-> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1v1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1v1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
+> **`"applied"` means accepted, not deployed.** This response is written before allocation runs, and it is never updated with the outcome. `targetInstances`/`activeInstances`/`failedInstances` are a live snapshot of the deployment map taken at response time — typically all-zero for a fresh publish, since nothing has had time to activate yet. `statusUrl` points directly at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid); poll it for progress. If a blueprint stays `PENDING` past its expected time, fetch [`GET /api/v1/events`](#get-apiv1events) and match `details.artifact` yourself for `DEPLOYMENT_FAILED` to see the per-node failure reason (`details.reason`) and when it happened — under the default `ALL_OR_NOTHING` mode a failure rolls back the whole blueprint and removes it from the KV store entirely, but `statusUrl` now answers with the durable terminal outcome (`FAILED`/`ROLLED_BACK`, `cause`, `failingSlices`) rather than `404` (#759 Phase 2); the event feed is still the timeline of what happened on which node, not a replacement for that summary.
 
 ### GET /api/v1/blueprints
 
@@ -1017,7 +1017,7 @@ terminal removal it loses the partition when that many nodes die), `confirmation
 (losing any one replica refuses writes) and `confirmation-factor-owner-only` (`confirmation_factor = 1`: the
 owner's death loses records it acknowledged but had not replicated). Each is also logged at WARN on the
 node that handled the publish. The cluster event for the LOUD warnings is not emitted yet (it is wired by
-#1617). The same key is returned by [`POST /api/v1/blueprints`](#post-apiv1v1blueprints) and
+#1617). The same key is returned by [`POST /api/v1/blueprints`](#post-apiv1blueprints) and
 `POST /api/v1/blueprints/publish`.
 
 #1336 — **`rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
@@ -1026,7 +1026,7 @@ the `rule` it failed and the diagnostic. **Omitted when every declaration bound*
 `[]`. The other declarations are bound as usual; a slice that uses a
 rejected alias fails to load naming that alias (`UnboundStreamAlias`), and this list is where the
 operator learns why, at the point where it is actionable. The same shape is returned by
-[`POST /api/v1/blueprints`](#post-apiv1v1blueprints) and `POST /api/v1/blueprints/publish`. Rules
+[`POST /api/v1/blueprints`](#post-apiv1blueprints) and `POST /api/v1/blueprints/publish`. Rules
 whose violation leaves nothing to bind refuse the publish outright with **`422`**; the error body is the
 usual problem document, whose `detail` is the text `Stream resource validation failed (N errors):` followed
 by one `[rule] field — message` line per failure (not the structured triples above): a `resources.toml` that does not parse
@@ -1056,7 +1056,7 @@ checked in this priority order:
 
 `targetInstances`/`activeInstances`/`failedInstances` are the same live snapshot used to derive
 `status`. `statusUrl` (`{id}` percent-encoded, since blueprint ids are artifact-shaped) always
-points at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1v1blueprintsstatusid) — this is the endpoint
+points at [`GET /api/v1/blueprints/status/{id}`](#get-apiv1blueprintsstatusid) — this is the endpoint
 the CLI's `aether blueprints deploy --wait` polls (`DeploymentWait`) until it reports `DEPLOYED`.
 Under the default `ALL_OR_NOTHING` mode a deterministic failure rolls back the whole blueprint and
 removes its KV entry outright, so the `deployed`/`degraded`/`pending` status this call derived from
@@ -2222,7 +2222,7 @@ readiness.
   instance under-reports its real disk footprint by the entire WAL. Every other instance reports
   `null` rather than a zero that would read as "has a WAL, currently empty".
 - `wal.totalBytes`: sum of live WAL bytes across every stream partition on this node — derived from
-  the same snapshot as [`GET /api/v1/storage/retention`](#get-apiv1v1storageretention)'s `walTotalBytes`,
+  the same snapshot as [`GET /api/v1/storage/retention`](#get-apiv1storageretention)'s `walTotalBytes`,
   so the two surfaces always agree.
 - `wal.walPartitions`: number of partitions on this node that currently have a WAL.
 
@@ -4084,7 +4084,7 @@ Serves the built-in cluster monitoring dashboard (static HTML/JS/CSS files).
 
 Open in browser: `http://localhost:8080/dashboard`
 
-Against a real node (not Forge) most dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--most-panels-come-up-empty).
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
 
 ---
 
@@ -5022,7 +5022,7 @@ can be attributed to a blueprint that carries no owner, so holding it would be a
 Datasource names are **cluster-global** — the default `schema/V001__*.sql` layout yields the name
 `database` for every blueprint, and all of them resolve it against the same node-global config
 section. That is why a publish claiming a datasource another blueprint already migrates is refused
-at deploy time (see [`POST /api/v1/blueprints/deploy`](#post-apiv1v1blueprintsdeploy)) rather than
+at deploy time (see [`POST /api/v1/blueprints/deploy`](#post-apiv1blueprintsdeploy)) rather than
 namespaced per blueprint.
 
 Recovery from a `FAILED` **or `PENDING`** hold: `POST /api/v1/schema/retry/{datasource}` (`FAILED`
@@ -5032,7 +5032,7 @@ or `PENDING` -> `PENDING` -> `COMPLETED`; #724 widened the guard to accept a dat
 blueprint. The leader also emits a `SCHEMA_ACTIVATION_BLOCKED` audit entry naming the datasource,
 the owning blueprint, and the held slices when it observes a `FAILED` record. The currently held
 slices for any blocking record are also visible on demand via `heldSlices` on
-[`GET /api/v1/schema/status/{datasource}`](#get-apiv1v1schemastatusdatasource) (#760) — no need to wait
+[`GET /api/v1/schema/status/{datasource}`](#get-apiv1schemastatusdatasource) (#760) — no need to wait
 for the audit entry or read DEBUG logs. **Log cadence:** the node log emits one `WARN` when a
 slice first enters (or its blocking record changes) a schema hold and one `WARN` when the hold
 clears; re-observations of an unchanged hold log at `DEBUG`, so a long-running hold does not
@@ -6524,6 +6524,6 @@ successful reconfiguration. Workers report their local engine state, not a clust
 Dashboard WebSocket connections to a worker receive `INCOMPLETE_CLUSTER_VIEW` with
 `completeClusterView=false` and close immediately after upgrade. Connect the dashboard to a core.
 
-Against a real node (not Forge) most dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--most-panels-come-up-empty).
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
 Worker HTTP reads of `/api/v1/metrics`, `/api/v1/metrics/history` and `/api/v1/nodes/metrics`
 are forwarded to a core; local diagnostics retain their explicitly local scope.

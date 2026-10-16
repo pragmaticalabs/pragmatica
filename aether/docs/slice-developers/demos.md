@@ -47,15 +47,12 @@ Aether's distributed capabilities. It provides:
 │                                                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │  ForgeApiHandler          │  StaticFileHandler                   │
-│  /api/status              │  /index.html                         │
-│  /api/kill/{nodeId}       │  /dashboard.js                       │
-│  /api/crash/{nodeId}      │  /style.css                          │
-│  /api/add-node            │                                      │
-│  /api/rolling-restart     │                                      │
-│  /api/load/set/{rate}     │                                      │
-│  /api/load/ramp           │                                      │
+│  /api/nodes/status        │  /index.html                         │
+│  /api/nodes/metrics       │  /dashboard.js                       │
+│  /api/forge/status        │  /style.css                          │
+│  /api/chaos/*             │                                      │
+│  /api/load/*              │                                      │
 │  /api/events              │                                      │
-│  /api/reset-metrics       │                                      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -362,7 +359,7 @@ After starting, access these endpoints:
 | node-4 | http://localhost:8084 | http://localhost:8084/dashboard |
 | node-5 | http://localhost:8085 | http://localhost:8085/dashboard |
 
-Against a real node (not Forge) most dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--most-panels-come-up-empty).
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
 
 ### Step-by-Step Demo
 
@@ -409,7 +406,7 @@ Shows slice distribution across nodes.
 
 Navigate to http://localhost:8081/dashboard for real-time metrics.
 
-Against a real node (not Forge) most dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--most-panels-come-up-empty).
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
 
 **6. Clean up:**
 
