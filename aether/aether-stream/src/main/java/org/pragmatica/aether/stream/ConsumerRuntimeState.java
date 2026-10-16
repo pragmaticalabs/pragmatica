@@ -1563,16 +1563,18 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return failedPass(state, missing);
     }
 
-    /// The episode is recorded only AFTER its warning is raised, and a cancel that landed meanwhile is rechecked, as
-    /// [#reportEscape] does: a cancel's hook that runs before the record finds no episode and raises nothing ahead of the
-    /// warning, and the recheck then ends it, exactly once, whichever of the two gets there first. Episodes are opened only
-    /// by the consumer's single drain pass; the cancel hook is the one concurrent closer.
+    /// The episode is recorded only AFTER its warning is raised, so a cancel's hook never raises the recovery ahead of it:
+    /// the opener first CLAIMS the episode (the hook sees a claim as "no episode yet" and raises nothing), warns, then
+    /// publishes the offset. A publish that finds the cancel hook already ran means the opener owes the recovery itself, and
+    /// raises it, exactly once. The cancel is sticky in the same word, so a pass that was already in flight when the consumer
+    /// was cancelled cannot claim a new episode, and two passes cannot both claim one (#2211 round 5).
     @Contract
     private void openHoleEpisode(ConsumerKey key, ConsumerState state, SegmentError.SealedRangeMissing missing) {
-        warnSealedRangeMissing(key, missing);
-        state.openHoleEpisode(missing.fromOffset());
-        if (state.isCancelled()) {
-            endHoleEpisode(key, state, HoleEnd.CANCELLED);
+        if (state.claimHoleEpisode()) {
+            warnSealedRangeMissing(key, missing);
+            if (!state.publishHoleEpisode(missing.fromOffset())) {
+                raiseHoleEnd(key, missing.fromOffset(), HoleEnd.CANCELLED);
+            }
         }
     }
 
@@ -1639,19 +1641,18 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// sealed history raises one pair by design. Nothing is raised per poll.
     @Contract
     private void trackBehindRing(ConsumerKey key, ConsumerState state, boolean fromTier) {
-        if (fromTier && !state.isBehindRing()) {
+        if (fromTier && state.claimBehindRing()) {
             openBehindRingEpisode(key, state);
         } else if (!fromTier && state.leaveBehindRing()) {
             raiseBackInRing(key, "a read was served from the ring again");
         }
     }
 
-    /// Recorded only AFTER the warning is raised, with the cancel rechecked, for the reason [#openHoleEpisode] gives.
+    /// Claimed, then warned, then published, for the reason [#openHoleEpisode] gives.
     @Contract
     private void openBehindRingEpisode(ConsumerKey key, ConsumerState state) {
         warnBehindRing(key, state.cursor());
-        state.enterBehindRing();
-        if (state.isCancelled() && state.leaveBehindRing()) {
+        if (!state.publishBehindRing()) {
             raiseBackInRing(key, "the consumer was cancelled while behind it");
         }
     }
@@ -1687,11 +1688,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// reported too (owner rule: every operator-facing condition gets a recovery), as [#endEscapeRunOnCancel] does.
     @Contract
     private void endEpisodesOnCancel(ConsumerKey key, ConsumerState state) {
-        if (state.leaveBehindRing()) {
+        if (state.cancelBehindRing()) {
             raiseBackInRing(key, "the consumer was cancelled while behind it");
         }
 
-        endHoleEpisode(key, state, HoleEnd.CANCELLED);
+        raiseHoleEnd(key, state.cancelHoleEpisode(), HoleEnd.CANCELLED);
     }
 
     /// #1873 (KIP-320): the owner replaced the lineage this consumer's cursor belongs to (a restart without a WAL, a
@@ -2116,6 +2117,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     static final class ConsumerState {
         private static final long CHECKPOINT_EVENT_THRESHOLD = 1000;
         static final long NO_HOLE = -1L;
+        static final long HOLE_OPENING = -2L;
+        static final long HOLE_CANCELLED = -3L;
+        static final int RING_NONE = 0;
+        static final int RING_OPENING = 1;
+        static final int RING_OPEN = 2;
+        static final int RING_CANCELLED = 3;
 
         private final ConsumerConfig config;
         private final ConsumerCallback callback;
@@ -2164,10 +2171,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicLong escapeRunStartMs = new AtomicLong(0L);
         private final AtomicLong escapeBackoffUntilMs = new AtomicLong(0L);
         private final AtomicBoolean escapeRunReported = new AtomicBoolean(false);
-        /// #2201 C-16: a `stream-consumer-behind-ring` episode is open (a read was served from the sealed tier and none from
-        /// the ring since).
-        private final AtomicBoolean behindRing = new AtomicBoolean(false);
-        /// #2201 C-16: the offset of the open `stream-consumer-sealed-range-missing` episode, or [#NO_HOLE].
+        /// #2201 C-16: the `stream-consumer-behind-ring` episode: NONE, OPENING (claimed, its warning not yet raised), OPEN (a
+        /// read was served from the sealed tier and none from the ring since), or CANCELLED (sticky: no episode opens again).
+        private final AtomicInteger behindRing = new AtomicInteger(RING_NONE);
+        /// #2201 C-16: the offset of the open `stream-consumer-sealed-range-missing` episode, or [#NO_HOLE], [#HOLE_OPENING]
+        /// (claimed, its warning not yet raised) or [#HOLE_CANCELLED] (sticky: no episode opens again).
         private final AtomicLong holeEpisodeAt = new AtomicLong(NO_HOLE);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
@@ -2285,34 +2293,58 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return holeEpisodeAt.get();
         }
 
-        /// Records the hole episode at `holeAt`. Only the drain pass opens one.
-        @Contract
-        void openHoleEpisode(long holeAt) {
-            holeEpisodeAt.set(holeAt);
+        /// Whether this call claimed the right to open a hole episode: false while another opener holds the claim, while one
+        /// is open, and for good once the consumer was cancelled.
+        boolean claimHoleEpisode() {
+            return holeEpisodeAt.get() == NO_HOLE && holeEpisodeAt.compareAndSet(NO_HOLE, HOLE_OPENING);
         }
 
-        /// Ends the hole episode; its offset, or [#NO_HOLE] when none was open. Called on every successful read, so the
-        /// common case (no episode) is a plain volatile read, not a write.
+        /// Records the claimed episode at `holeAt`, after its warning was raised. False when the cancel hook ran meanwhile: the
+        /// caller then owes the recovery.
+        boolean publishHoleEpisode(long holeAt) {
+            return holeEpisodeAt.compareAndSet(HOLE_OPENING, holeAt);
+        }
+
+        /// Ends the open hole episode; its offset, or [#NO_HOLE] when none was open (a claim whose warning is not yet raised is
+        /// not open). Called on every successful read, so the common case (no episode) is a plain volatile read, not a write.
         long endHoleEpisode() {
-            return holeEpisodeAt.get() == NO_HOLE
-                   ? NO_HOLE
-                   : holeEpisodeAt.getAndSet(NO_HOLE);
+            var open = holeEpisodeAt.get();
+
+            return open >= 0 && holeEpisodeAt.compareAndSet(open, NO_HOLE)
+                   ? open
+                   : NO_HOLE;
         }
 
-        boolean isBehindRing() {
-            return behindRing.get();
+        /// The cancel hook's close: the offset of the open episode, or [#NO_HOLE]; either way no episode opens again.
+        long cancelHoleEpisode() {
+            var previous = holeEpisodeAt.getAndSet(HOLE_CANCELLED);
+
+            return previous >= 0
+                   ? previous
+                   : NO_HOLE;
         }
 
-        /// Records a behind-the-ring episode. Only the drain pass opens one.
-        @Contract
-        void enterBehindRing() {
-            behindRing.set(true);
+        /// Whether this call claimed the right to open a behind-the-ring episode: false while another opener holds the claim,
+        /// while one is open, and for good once the consumer was cancelled. Called on every read served from the tier.
+        boolean claimBehindRing() {
+            return behindRing.get() == RING_NONE && behindRing.compareAndSet(RING_NONE, RING_OPENING);
         }
 
-        /// Whether this call closed a behind-the-ring episode. Called on every read served from the ring, so the common case
-        /// (no episode) is a plain volatile read.
+        /// Records the claimed episode, after its warning was raised. False when the cancel hook ran meanwhile: the caller
+        /// then owes the recovery.
+        boolean publishBehindRing() {
+            return behindRing.compareAndSet(RING_OPENING, RING_OPEN);
+        }
+
+        /// Whether this call closed an open behind-the-ring episode. Called on every read served from the ring, so the common
+        /// case (no episode) is a plain volatile read.
         boolean leaveBehindRing() {
-            return behindRing.get() && behindRing.compareAndSet(true, false);
+            return behindRing.get() == RING_OPEN && behindRing.compareAndSet(RING_OPEN, RING_NONE);
+        }
+
+        /// The cancel hook's close: whether an episode was open; either way no episode opens again.
+        boolean cancelBehindRing() {
+            return behindRing.getAndSet(RING_CANCELLED) == RING_OPEN;
         }
 
         /// Monotonic (#1238): a late retry or dead-letter completion, or a stored cursor fetched after
