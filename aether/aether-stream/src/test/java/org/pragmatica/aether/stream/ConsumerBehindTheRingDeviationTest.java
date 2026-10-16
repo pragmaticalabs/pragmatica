@@ -79,7 +79,10 @@ class ConsumerBehindTheRingDeviationTest {
             default -> ring(List.of(), E1);
         });
 
-        awaitUntil(() -> delivered.size() >= 10, "drained 0..9 with no wake-up");
+        // The strand check is the delivery count: with D-1 removed nothing re-drives the drain after the first short tier
+        // read and this times out. The warnings reach the sink on its own hand-off thread, after the delivery that follows
+        // them on the drain, so the wait also covers the episode's close before the exact sequence is asserted.
+        awaitUntil(() -> delivered.size() >= 10 && codes().size() >= 2, "drained 0..9 with no wake-up, and the episode closed");
         assertThat(delivered).containsExactly(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L);
         assertThat(codes()).containsExactly(STREAM_CONSUMER_BEHIND_RING, STREAM_CONSUMER_BACK_IN_RING);
     }
@@ -174,7 +177,8 @@ class ConsumerBehindTheRingDeviationTest {
 
         awaitUntil(() -> delivered.size() >= 5, "delivered 0..4 from the ring");
         wakeOnce();
-        awaitUntil(() -> delivered.contains(9L), "delivered past the reset");
+        awaitUntil(() -> delivered.contains(9L) && !warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED).isEmpty(),
+                   "delivered past the reset, and its warning handed off");
         assertThat(delivered).containsExactly(0L, 1L, 2L, 3L, 4L, 8L, 9L);
         assertThat(epochAtEight.get()).isEqualTo(E2);
         assertThat(warningsOf(STREAM_CONSUMER_SEALED_RANGE_RESTORED)).singleElement()
