@@ -156,7 +156,7 @@ When `aether cluster bootstrap` runs against a cluster TOML containing `credenti
 
 Consequence: **every cluster node holds a copy of the cloud API token on disk.**
 
-Why: any core node may become the consensus leader at any time. The leader is the only node that calls `ComputeProvider.provision()` to grow the cluster on a `/api/cluster/scale` request. If only the operator machine held the token, leader-failover would silently disable runtime auto-scaling. Distributing the token to every node keeps the scale path leader-failover safe.
+Why: any core node may become the consensus leader at any time. The leader is the only node that calls `ComputeProvider.provision()` to grow the cluster on a `/api/v1/cluster/scale` request. If only the operator machine held the token, leader-failover would silently disable runtime auto-scaling. Distributing the token to every node keeps the scale path leader-failover safe.
 
 Trade-off: compromise of any single cluster node leaks the cloud API token. The blast radius depends on how the token is scoped (see provider sections below). Mitigations:
 - **Use a dedicated project/account for the cluster** so a leaked token is contained.

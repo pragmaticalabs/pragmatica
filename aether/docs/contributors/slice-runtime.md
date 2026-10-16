@@ -430,7 +430,7 @@ Then attach IDE debugger to port 5005.
 Enable in production (with caution):
 
 ```bash
-curl -X POST http://localhost:5150/api/controller/config -H "Content-Type: application/json" -d '{"logLevel": "DEBUG"}'
+curl -X POST http://localhost:5150/api/v1/controller/config -H "Content-Type: application/json" -d '{"logLevel": "DEBUG"}'
 ```
 
 ### Request Tracing

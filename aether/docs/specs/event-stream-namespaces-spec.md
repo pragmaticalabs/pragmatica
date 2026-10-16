@@ -28,7 +28,7 @@ Define how streams in Aether are addressed, versioned, access-controlled, and li
 - Reference-counted lifecycle: streams exist only while they have a reference
 - Reserved system namespace for framework-internal streams (`system:*`), with admin-gated reads and no external write path
 - Configuration surface (`resources.toml`) extended with minimal syntax
-- `/api/streams/...` URL shape using path segments
+- `/api/v1/streams/...` URL shape using path segments
 
 **Non-goals (RC1):**
 
@@ -131,7 +131,7 @@ The `system` namespace is reserved for framework-internal streams.
 ### 6.1. Rules
 
 - **Closed write path, enforced at compile time.** Two publisher SPIs exist: `StreamPublisher<T>` (resolved by the slice runtime, available to apps) and `FrameworkStreamPublisher<T>` (sealed, resolved only by framework-internal injection). The `system:*` namespace is reachable **only** through `FrameworkStreamPublisher`. App slice code cannot obtain a publisher for system streams — the API surface does not expose one. This makes the framework-vs-app boundary a compile-time invariant rather than a runtime check.
-- **HTTP write path closed.** `POST /api/streams/system/...` returns `405 Method Not Allowed` regardless of authenticated role. Even ADMIN cannot inject events into system streams via HTTP. Operators who need to test event flow use a non-system namespace.
+- **HTTP write path closed.** `POST /api/v1/streams/system/...` returns `405 Method Not Allowed` regardless of authenticated role. Even ADMIN cannot inject events into system streams via HTTP. Operators who need to test event flow use a non-system namespace.
 - **Read access is open in RC1.** Subscribing to `system:*` from a slice is unrestricted. HTTP read routes follow the standard role buckets in §12. Fine-grained read RBAC (per-namespace gating) is deferred to issue #205.
 - **Registration is driven by the framework at bootstrap**, not by blueprint deploy. The cluster creates and holds references to system streams for its entire lifetime.
 - **Lifecycle.** System streams live as long as the cluster runs. The framework's producer reference is always held (§8), so reference count never drops to zero.
@@ -259,7 +259,7 @@ A reference is held by any of:
 2. **Framework system stream.** For system streams, the framework holds one persistent reference per registered stream for the cluster's lifetime. The framework producer reference never releases while the cluster runs.
 3. **Durable consumer group.** A consumer group record persisted in the registry holds a reference whether or not any consumer is currently connected, and whether or not any slice instance is currently ACTIVE. Removing the group (via `aether stream group delete` or HTTP DELETE — see §8.6, §12) releases its reference.
 
-Operator inspection paths (`aether stream tail`, `aether stream peek`, `GET /api/streams/.../tail`) are **read-only queries and do not hold references**. Operators who need data preserved past slice undeploy create an explicit durable consumer group first (see §8.4).
+Operator inspection paths (`aether stream tail`, `aether stream peek`, `GET /api/v1/streams/.../tail`) are **read-only queries and do not hold references**. Operators who need data preserved past slice undeploy create an explicit durable consumer group first (see §8.4).
 
 Liveness criterion: slice ACTIVE state is the single source of truth for refs from sources #1. The cluster's existing slice lifecycle FSM (DOWNLOADING → LOADING → STARTING → ACTIVE → UNLOADING → UNLOADED → FAILED), already tracked via consensus-replicated `SliceNodeValue` writes, drives all increment/decrement operations. No separate heartbeat protocol or TCP-keepalive logic is required.
 
@@ -338,7 +338,7 @@ Stream addresses are resolved by the streaming subsystem's name-mapper at each a
 Resolution is **pin-at-subscribe**:
 
 - For a **durable consumer group**, the resolved version is stored in the consumer group's registry entry. Reconnects re-attach to the same version regardless of whether newer versions have been registered.
-- For an **anonymous tail** (no consumer group — e.g., `/api/streams/.../tail` HTTP streaming, WebSocket subscribers), the version is resolved per-connection and **frozen for the connection's lifetime**. Once a tail is connected on version V, it receives V's events for as long as the connection stays open, even if a newer version is registered mid-stream. To pick up the newer version, the client disconnects and reconnects; the new connection's `latest` resolution may yield the newer version. The server does not push cutover messages or close connections in response to new-version registration.
+- For an **anonymous tail** (no consumer group — e.g., `/api/v1/streams/.../tail` HTTP streaming, WebSocket subscribers), the version is resolved per-connection and **frozen for the connection's lifetime**. Once a tail is connected on version V, it receives V's events for as long as the connection stays open, even if a newer version is registered mid-stream. To pick up the newer version, the client disconnects and reconnects; the new connection's `latest` resolution may yield the newer version. The server does not push cutover messages or close connections in response to new-version registration.
 - To advance a durable consumer group to a newer version, the operator creates a new consumer group at the new version. The old group remains on the old version until it is removed.
 
 ### 9.4. Registration
@@ -462,7 +462,7 @@ The parser rejects:
 
 ## 12. HTTP API shape
 
-URL shape: `/api/streams/{namespace}/{stream}[/{version}]`
+URL shape: `/api/v1/streams/{namespace}/{stream}[/{version}]`
 
 - Namespace is a single path segment; its internal `.`, `_`, and `-` characters are legal in URL path segments and pass through unescaped.
 - Stream is a single path segment.
@@ -476,40 +476,40 @@ Role bindings reference the existing management-API role model (`VIEWER` < `OPER
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/streams` | List streams. Query: `?namespace=<ns>&limit=N&cursor=X` |
-| GET | `/api/streams/{ns}/{stream}` | List versions of a stream |
-| GET | `/api/streams/{ns}/{stream}/{version}` | Stream metadata: refcount, partition_count, retention, registered_at |
-| GET | `/api/streams/{ns}/{stream}/latest` | Resolve to highest registered version per §9.2 |
-| GET | `/api/streams/{ns}/{stream}/{version}/tail` | Tail subscription. SSE for HTTP/2; WebSocket for bidirectional. Frozen-at-connect per §9.3 |
-| GET | `/api/streams/{ns}/{stream}/{version}/groups` | List durable consumer groups for this version |
+| GET | `/api/v1/streams` | List streams. Query: `?namespace=<ns>&limit=N&cursor=X` |
+| GET | `/api/v1/streams/{ns}/{stream}` | List versions of a stream |
+| GET | `/api/v1/streams/{ns}/{stream}/{version}` | Stream metadata: refcount, partition_count, retention, registered_at |
+| GET | `/api/v1/streams/{ns}/{stream}/latest` | Resolve to highest registered version per §9.2 |
+| GET | `/api/v1/streams/{ns}/{stream}/{version}/tail` | Tail subscription. SSE for HTTP/2; WebSocket for bidirectional. Frozen-at-connect per §9.3 |
+| GET | `/api/v1/streams/{ns}/{stream}/{version}/groups` | List durable consumer groups for this version |
 
-#### Write routes — `OPERATOR_AND_ABOVE` (existing `/api/streams` mutation default)
+#### Write routes — `OPERATOR_AND_ABOVE` (existing `/api/v1/streams` mutation default)
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/streams/{ns}/{stream}/{version}/publish` | Publish a single event |
-| POST | `/api/streams/{ns}/{stream}/{version}/publish-batch` | Batch publish; body is an array of events |
-| POST | `/api/streams/{ns}/{stream}/{version}/groups` | Create durable consumer group; body specifies group name + initial position |
-| DELETE | `/api/streams/{ns}/{stream}/{version}/groups/{group}` | Remove durable consumer group; releases its reference (may cascade to stream deletion if last ref) |
+| POST | `/api/v1/streams/{ns}/{stream}/{version}/publish` | Publish a single event |
+| POST | `/api/v1/streams/{ns}/{stream}/{version}/publish-batch` | Batch publish; body is an array of events |
+| POST | `/api/v1/streams/{ns}/{stream}/{version}/groups` | Create durable consumer group; body specifies group name + initial position |
+| DELETE | `/api/v1/streams/{ns}/{stream}/{version}/groups/{group}` | Remove durable consumer group; releases its reference (may cascade to stream deletion if last ref) |
 
 #### Destructive routes — `ADMIN_ONLY` (override)
 
 | Method | Path | Purpose |
 |---|---|---|
-| DELETE | `/api/streams/{ns}/{stream}/{version}` | Force-purge a specific version. Mirrors §8.6 CLI `aether stream delete` |
+| DELETE | `/api/v1/streams/{ns}/{stream}/{version}` | Force-purge a specific version. Mirrors §8.6 CLI `aether stream delete` |
 
-`RoutePermissionRegistry` requires a DELETE-specific override under the `/api/streams` prefix to elevate this route from the prefix's default `OPERATOR_AND_ABOVE` to `ADMIN_ONLY`. The `groups/{group}` DELETE remains at `OPERATOR_AND_ABOVE`.
+`RoutePermissionRegistry` requires a DELETE-specific override under the `/api/v1/streams` prefix to elevate this route from the prefix's default `OPERATOR_AND_ABOVE` to `ADMIN_ONLY`. The `groups/{group}` DELETE remains at `OPERATOR_AND_ABOVE`.
 
 ### 12.2. `system:*` HTTP behavior
 
 The closed-write principle from §6.1 extends to HTTP: any HTTP write attempt against `system:*` returns **`405 Method Not Allowed`** regardless of authenticated role:
 
 ```
-POST   /api/streams/system/cluster-events/1.0.0/publish        → 405
-POST   /api/streams/system/cluster-events/1.0.0/publish-batch  → 405
-POST   /api/streams/system/cluster-events/1.0.0/groups         → 405  # groups are write paths
-DELETE /api/streams/system/cluster-events/1.0.0                → 405  # framework-only lifecycle
-DELETE /api/streams/system/cluster-events/1.0.0/groups/X       → 405
+POST   /api/v1/streams/system/cluster-events/1.0.0/publish        → 405
+POST   /api/v1/streams/system/cluster-events/1.0.0/publish-batch  → 405
+POST   /api/v1/streams/system/cluster-events/1.0.0/groups         → 405  # groups are write paths
+DELETE /api/v1/streams/system/cluster-events/1.0.0                → 405  # framework-only lifecycle
+DELETE /api/v1/streams/system/cluster-events/1.0.0/groups/X       → 405
 ```
 
 Read routes against `system:*` follow the standard role buckets (`ALL_AUTHENTICATED` for GET). Operators who want to test event flow use a non-system namespace.
@@ -539,12 +539,12 @@ Both share the framework's internal stream fan-out. The choice is per-connection
 ### 12.5. Examples
 
 ```
-GET    /api/streams/system/cluster-events/1.0.0                 # metadata
-GET    /api/streams/system/cluster-events/1.0.0/tail            # tail (SSE or WS)
-GET    /api/streams/com.example.myapp/orders                    # list versions of orders
-GET    /api/streams/com.example.myapp/orders/latest             # latest metadata
-POST   /api/streams/com.example.myapp/orders/1.0.0/publish      # publish (OPERATOR)
-DELETE /api/streams/com.example.myapp/orders/1.0.0              # force-purge (ADMIN)
+GET    /api/v1/streams/system/cluster-events/1.0.0                 # metadata
+GET    /api/v1/streams/system/cluster-events/1.0.0/tail            # tail (SSE or WS)
+GET    /api/v1/streams/com.example.myapp/orders                    # list versions of orders
+GET    /api/v1/streams/com.example.myapp/orders/latest             # latest metadata
+POST   /api/v1/streams/com.example.myapp/orders/1.0.0/publish      # publish (OPERATOR)
+DELETE /api/v1/streams/com.example.myapp/orders/1.0.0              # force-purge (ADMIN)
 ```
 
 Access control per §10 (slice level — open in RC1) and §12.1 (route level — existing role model) apply at their respective layers.
@@ -630,7 +630,7 @@ Implementation: validation is composed via `Result.all(<check1>, <check2>, ...)`
 
 Failures are reported through three channels, all derived from the same composite error:
 
-- **HTTP deploy API** (`/api/blueprint/deploy`): structured error in response body, listing each failing field path with the specific cause. Existing `/api/blueprint/validate` (`BLUEPRINT_VALIDATE` route) uses the same shape; the deploy route reuses that shape.
+- **HTTP deploy API** (`/api/v1/blueprints/deploy`): structured error in response body, listing each failing field path with the specific cause. Existing `/api/v1/blueprints/validate` (`BLUEPRINT_VALIDATE` route) uses the same shape; the deploy route reuses that shape.
 - **CLI** (`aether blueprints deploy`): human-formatted error block on stderr; non-zero exit code.
 - **AuditLog**: every rejection logged with the failing field paths, the principal that attempted the deploy, and the blueprint identifier.
 

@@ -106,7 +106,7 @@ confidence_threshold = 0.7
 java -XX:+ExitOnOutOfMemoryError -jar target/aether-node.jar
 
 # Check TTM status
-curl -s http://localhost:8080/api/ttm/status | jq .
+curl -s http://localhost:8080/api/v1/ttm/status | jq .
 ```
 
 Expected response:
@@ -224,7 +224,7 @@ python -c "import torch; print(f'PyTorch {torch.__version__}')"
 From a running Aether cluster:
 ```bash
 # Export last 2 hours of metrics (leader node)
-curl -s http://leader:8080/api/ttm/training-data > metrics.json
+curl -s http://leader:8080/api/v1/ttm/training-data > metrics.json
 ```
 
 **Minimum data**: 2+ hours (120 data points). **Recommended**: 24+ hours for production models.
@@ -232,7 +232,7 @@ curl -s http://leader:8080/api/ttm/training-data > metrics.json
 To collect over time:
 ```bash
 # Cron job: collect every hour, append to CSV
-0 * * * * curl -s http://leader:8080/api/ttm/training-data >> /data/metrics-$(date +\%Y\%m\%d).json
+0 * * * * curl -s http://leader:8080/api/v1/ttm/training-data >> /data/metrics-$(date +\%Y\%m\%d).json
 ```
 
 ### Step 3: Generate Synthetic Data (Alternative)
@@ -340,7 +340,7 @@ cp ttm-aether.onnx /path/to/node/models/
 # Expected: "Warm-up inference complete"
 
 # Verify via API
-curl -s http://localhost:8080/api/ttm/status | jq .state
+curl -s http://localhost:8080/api/v1/ttm/status | jq .state
 # Expected: "RUNNING"
 ```
 
@@ -375,8 +375,8 @@ make clean              # Remove generated files
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/ttm/status` | GET | Current state, model info, last prediction |
-| `/api/ttm/training-data` | GET | Export metrics for retraining |
+| `/api/v1/ttm/status` | GET | Current state, model info, last prediction |
+| `/api/v1/ttm/training-data` | GET | Export metrics for retraining |
 | `/metrics` | GET | Prometheus-compatible metrics |
 
 ### Example Prometheus Queries
@@ -425,7 +425,7 @@ Timeline from startup:
 ### When to Retrain
 
 - Workload patterns change significantly
-- Prediction accuracy drops (check `/api/ttm/status` for forecast confidence)
+- Prediction accuracy drops (check `/api/v1/ttm/status` for forecast confidence)
 - New features added to FeatureIndex (schema version change)
 
 ### Retraining Workflow

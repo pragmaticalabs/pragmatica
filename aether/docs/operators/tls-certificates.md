@@ -186,7 +186,7 @@ the current key first, then fall back to the previous key.
 ### Management API
 
 ```
-GET /api/certificates
+GET /api/v1/certificates
 ```
 
 Response:
@@ -224,11 +224,11 @@ When no certificate provider is configured, the response returns:
 aether certs status
 ```
 
-This fetches and displays the `/api/certificates` endpoint output for the connected node.
+This fetches and displays the `/api/v1/certificates` endpoint output for the connected node.
 
 ### Cluster-Level Status
 
-The `GET /api/cluster/status` endpoint includes certificate information aggregated across the
+The `GET /api/v1/cluster/status` endpoint includes certificate information aggregated across the
 cluster:
 
 ```json
@@ -246,7 +246,7 @@ cluster:
 continue to work until they are closed or time out.
 
 **Resolution:**
-1. Check renewal scheduler status: `GET /api/certificates` -- look for `renewalStatus: "FAILED"`
+1. Check renewal scheduler status: `GET /api/v1/certificates` -- look for `renewalStatus: "FAILED"`
 2. Check logs for `CertificateRenewalScheduler` errors
 3. If auto-generating, verify `cluster_secret` is set and consistent across all nodes
 4. Replace the node (`POST /api/v1/nodes/replace/<node-id>`) -- the replacement starts under a new

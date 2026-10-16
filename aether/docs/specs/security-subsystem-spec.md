@@ -1098,7 +1098,7 @@ interface AuditSink { Promise<Unit> record(AuditEvent e); }     // append-only
 **Worked example — Policy + Audit together (a gated, audited material access).**
 
 ```
-operator → POST /api/keys/{id}/rotate              (management plane)
+operator → POST /api/v1/keys/{id}/rotate   (proposed; no such route)              (management plane)
   → runtime authenticates the API key → Principal{ api-key:ops-7 }, SecurityContext{ role=OPERATOR }
   → PolicyEngine.evaluate(principal, Action("key.rotate"), ResourceRef("kek", id))
         → OPERATOR in the *management* scope permits key.rotate → Allow()

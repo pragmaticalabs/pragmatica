@@ -134,10 +134,10 @@ ControllerConfig.controllerConfig(
 
 ```bash
 # View current config
-curl http://localhost:8080/api/controller/config
+curl http://localhost:8080/api/v1/controller/config
 
 # Update config
-curl -X POST http://localhost:8080/api/controller/config \
+curl -X POST http://localhost:8080/api/v1/controller/config \
   -H "Content-Type: application/json" \
   -d '{
     "cpuScaleUpThreshold": 0.75,

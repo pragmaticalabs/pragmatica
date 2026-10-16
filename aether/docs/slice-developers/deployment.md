@@ -361,7 +361,7 @@ VERSION="1.0.0"
 curl -X PUT "${AETHER_URL}/repository/${GROUP_PATH}/${ARTIFACT}/${VERSION}/${ARTIFACT}-${VERSION}.jar" \
   --data-binary @target/${ARTIFACT}-${VERSION}.jar
 
-curl -X POST "${AETHER_URL}/api/blueprint" \
+curl -X POST "${AETHER_URL}/api/v1/blueprints" \
   -H "Content-Type: application/toml" \
   --data-binary @target/blueprint.toml
 ```
@@ -412,7 +412,7 @@ VERSION="1.0.0"
 curl -X PUT "${AETHER_URL}/repository/${GROUP_PATH}/${ARTIFACT}/${VERSION}/${ARTIFACT}-${VERSION}.jar" \
   --data-binary @target/${ARTIFACT}-${VERSION}.jar
 
-curl -X POST "${AETHER_URL}/api/blueprint" \
+curl -X POST "${AETHER_URL}/api/v1/blueprints" \
   -H "Content-Type: application/toml" \
   --data-binary @target/blueprint.toml
 ```
@@ -569,7 +569,7 @@ org.example\:pricing-engine\:api=2.1.0
 ### Check Deployed Slices
 
 ```bash
-curl http://localhost:5150/api/blueprints
+curl http://localhost:5150/api/v1/blueprints
 ```
 
 Response:
@@ -624,7 +624,7 @@ mvn verify && ./deploy-prod.sh
 2. Or use the Management API to apply a previous blueprint version:
 ```bash
 # Re-apply the previous blueprint pointing to the older artifact version
-curl -X POST "${AETHER_PROD_URL}/api/blueprint" \
+curl -X POST "${AETHER_PROD_URL}/api/v1/blueprints" \
   -H "Content-Type: application/toml" \
   --data-binary @target/blueprint-v1.0.0.toml
 ```

@@ -48,8 +48,8 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 |-------------------|-------------|----------|
 | Blueprint management | ADMIN | `POST /api/v1/blueprints`, `DELETE /api/v1/blueprints/{id}` |
 | Node shutdown | ADMIN | `POST /api/v1/nodes/shutdown/{id}` |
-| Log level changes | ADMIN | `PUT /api/v1/logging/levels` |
-| Observability depth | ADMIN | `PUT /api/v1/observability/depth` |
+| Log level changes | ADMIN | `POST /api/v1/logging/levels` |
+| Observability depth | ADMIN | `POST /api/v1/observability/depth` |
 | Observability config (write) | ADMIN | `POST`/`DELETE /api/v1/observability/config` |
 | Blueprint deploy (from artifact) | OPERATOR | `POST /api/v1/blueprints/deploy` |
 | Blueprint validate | ADMIN | `POST /api/v1/blueprints/validate` |
@@ -1066,7 +1066,7 @@ outcome (`overallStatus`, `cause`, `failingSlices`) instead of `404` (#759 Phase
 still only treats `DEPLOYED` as complete — a rolled-back deployment exits with `TIMEOUT` by design
 (see `DeploymentWait`'s own header), not by reading the failure — so a caller that needs the reason
 either polls `statusUrl` directly after `--wait` gives up, or watches
-[`GET /api/events`](#get-apievents) for `DEPLOYMENT_FAILED`, matched against `details.artifact`
+[`GET /api/v1/events`](#get-apiv1events) for `DEPLOYMENT_FAILED`, matched against `details.artifact`
 yourself (see the `DEPLOYMENT_FAILED` discussion above), which gives the per-node timeline that
 `statusUrl`'s summary does not.
 
@@ -4084,6 +4084,8 @@ Serves the built-in cluster monitoring dashboard (static HTML/JS/CSS files).
 
 Open in browser: `http://localhost:8080/dashboard`
 
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
+
 ---
 
 ## WebSocket Endpoints
@@ -6521,5 +6523,7 @@ successful reconfiguration. Workers report their local engine state, not a clust
 
 Dashboard WebSocket connections to a worker receive `INCOMPLETE_CLUSTER_VIEW` with
 `completeClusterView=false` and close immediately after upgrade. Connect the dashboard to a core.
+
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
 Worker HTTP reads of `/api/v1/metrics`, `/api/v1/metrics/history` and `/api/v1/nodes/metrics`
 are forwarded to a core; local diagnostics retain their explicitly local scope.

@@ -4,7 +4,7 @@ Zero-downtime deployments with multiple strategies, health monitoring, and autom
 
 ## Overview
 
-Aether provides a unified deployment system through a single `aether deploy` command and `/api/deploy` REST endpoint. Four strategies are available:
+Aether provides a unified deployment system through a single `aether deploy` command and `/api/v1/deploy` REST endpoint. Four strategies are available:
 
 | Strategy | Flag | Use Case |
 |----------|------|----------|
@@ -220,11 +220,11 @@ aether deploy org.example:my-slice:2.0.0 --rolling --cleanup GRACE_PERIOD
 
 ## REST API
 
-All deployment operations use the unified `/api/deploy` endpoint:
+All deployment operations use the unified `/api/v1/deploy` endpoint:
 
 ```bash
 # Start deployment
-curl -X POST http://localhost:8080/api/deploy \
+curl -X POST http://localhost:8080/api/v1/deploy \
   -H "Content-Type: application/json" \
   -d '{
     "artifactBase": "org.example:my-slice",
@@ -236,22 +236,19 @@ curl -X POST http://localhost:8080/api/deploy \
   }'
 
 # List active deployments
-curl http://localhost:8080/api/deploy
+curl http://localhost:8080/api/v1/deploy
 
 # Get deployment status
-curl http://localhost:8080/api/deploy/<id>
-
-# Get health metrics
-curl http://localhost:8080/api/deploy/<id>/health
+curl http://localhost:8080/api/v1/deploy/<id>
 
 # Promote
-curl -X POST http://localhost:8080/api/deploy/<id>/promote
+curl -X POST http://localhost:8080/api/v1/deploy/promote/<id>
 
 # Rollback
-curl -X POST http://localhost:8080/api/deploy/<id>/rollback
+curl -X POST http://localhost:8080/api/v1/deploy/rollback/<id>
 
 # Complete
-curl -X POST http://localhost:8080/api/deploy/<id>/complete
+curl -X POST http://localhost:8080/api/v1/deploy/complete/<id>
 ```
 
 ## Best Practices

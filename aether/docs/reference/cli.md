@@ -181,7 +181,7 @@ Nodes:
 #### nodes resolve
 
 Resolve a single node to its cluster-transport `host:port` and probe its reachability. Wraps
-`GET /api/nodes/endpoint/{id}`. The address is printed regardless of reachability; the exit code
+`GET /api/v1/nodes/endpoint/{id}`. The address is printed regardless of reachability; the exit code
 reports the probe result, so the command doubles as a connectivity check in scripts.
 
 ```bash
@@ -205,7 +205,7 @@ Use `--format value --field address` to extract just the `host:port` for piping.
 #### nodes live
 
 Show the unified live-node view — each known node's transport address, role, SWIM liveness, and
-reported work-state in one table. Wraps `GET /api/nodes/live` (served from any core node).
+reported work-state in one table. Wraps `GET /api/v1/nodes/live` (served from any core node).
 
 ```bash
 aether nodes live
@@ -269,7 +269,7 @@ aether slices --state LOADED+ACTIVE
 
 #### slices status
 
-Show the aggregate slice state breakdown across the cluster — counts by lifecycle state, per-slice rollup. Wraps `GET /api/slices/status`.
+Show the aggregate slice state breakdown across the cluster — counts by lifecycle state, per-slice rollup. Wraps `GET /api/v1/slices/status`.
 
 ```bash
 aether slices status
@@ -277,7 +277,7 @@ aether slices status
 
 #### slices topology
 
-Show the slice topology — the per-slice governor mapping across the cluster (which node currently owns each slice's governor assignment). Wraps `GET /api/slices/topology`.
+Show the slice topology — the per-slice governor mapping across the cluster (which node currently owns each slice's governor assignment). Wraps `GET /api/v1/slices/topology`.
 
 ```bash
 aether slices topology
@@ -285,7 +285,7 @@ aether slices topology
 
 #### slices config
 
-Show the effective configuration view for a loaded slice with per-key layer attribution. Wraps `GET /api/slices/config/{id}`.
+Show the effective configuration view for a loaded slice with per-key layer attribution. Wraps `GET /api/v1/slices/config/{id}`.
 
 ```bash
 aether slices config <artifact>
@@ -407,7 +407,7 @@ Metrics:
     org.example:order:1.0.0  node-2  1156ms  SUCCESS
 ```
 
-Variants (wrap `/api/metrics/*` REST routes):
+Variants (wrap `/api/v1/metrics/*` REST routes):
 
 ```bash
 # Prometheus-format scrape (text/plain exposition)
@@ -652,7 +652,7 @@ aether blueprints delete order-system:1.0.0 -f
 # Deploy from artifact coordinates
 aether blueprints deploy org.example:my-app:1.0.0
 
-# Publish a blueprint already present in the repository (POST /api/blueprints/publish)
+# Publish a blueprint already present in the repository (POST /api/v1/blueprints/publish)
 aether blueprints publish org.example:my-app:1.0.0
 
 # Upload a blueprint JAR and deploy it
@@ -1722,7 +1722,7 @@ aether streams consumer-group leave orders-workers orders --consumer-id worker-1
 ### `aether streams consumer-group status <group> [<stream>]`
 
 Show the per-stream members of the given group (consumer id and node, no partitions). The optional `<stream>`
-positional is informational — the server-side `/api/streams/groups/{id}` returns the full
+positional is informational — the server-side `/api/v1/streams/groups/{id}` returns the full
 multi-stream group status.
 
 ```bash
@@ -1794,7 +1794,7 @@ See [Management API — Rebuild Projection](management-api.md#rebuild-projection
 
 The `aether stream` command group (singular) operates on **namespaced** streams addressed by a
 fully-qualified `namespace:stream:version` triple (version is `MAJOR.MINOR.PATCH`). It wraps the
-namespaced `/api/streams/*` route surface. This is distinct from the legacy `aether streams`
+namespaced `/api/v1/streams/*` route surface. This is distinct from the legacy `aether streams`
 (plural) commands above, which use flat single-name addressing.
 
 Exit codes: `0` success, `1` error, `2` validation, `3` user-cancelled, `4` not-found,
@@ -1854,7 +1854,7 @@ core-4    SYNCING    240        no
 
 Show per-node stream hydration state — the memory/placement observability sensor for placement-aware-stream-hydration (#265). Renders a per-stream table (each stream's `DECLARED` partition count, `RINGS` materialized locally, `DEFERRED` held-but-not-yet-materialized partitions, `FLOOR-BYTES` reserved, `OVER-CEIL` whether the committed config is over the per-stream partition ceiling, and the node's `OWNER`/`REPLICA`/`NONE` placement-role tally) and surfaces the per-node budget fields (`totalAllocatedBytes`, `maxTotalBytes`, `overBudget`, `deferredPartitions`), the partition-cap fields (`perStreamCeiling`, `clusterAggregateGuard`, `currentAggregatePartitionSlots`, `aggregateHeadroom`, `configOverCeilingStreams`), and the reshuffle-lifecycle fields (`releaseCandidates`, `releasedPartitionsSinceBoot`, `materializeQueueDepth` — increment 5) in `--format json`. Answered by the STREAMING-capable node from its own `StreamPartitionManager` — a PER-NODE view, not leader-forwarded.
 
-Materialization is placement-gated: `RINGS` drops below `DECLARED` on non-replicas and `REPLICA`/`NONE` are non-zero off-owner. Per §6 a follower that cannot admit a held partition's floor NO LONGER over-subscribes — it holds the partition metadata-only and counts it under `DEFERRED` until budget frees, when the deferred-retry hook materializes it. Partition caps (§7, increment 4) are admission control: a create over the per-stream ceiling (`1024`) or the cluster aggregate guard (`100 × nodes × maxDeclaredReplicas`) is rejected pre-commit; a follower observing an over-ceiling committed config flags it under `OVER-CEIL` / `configOverCeilingStreams` (never rejecting — the budget machinery is the memory backstop). The reshuffle lifecycle (§5/§14.2, increment 5) releases a ring on confirmed role loss (catch-up-gated + flap-debounced, freeing memory + budget while keeping the WAL) — `releaseCandidates` counts partitions debouncing toward release, `releasedPartitionsSinceBoot` the running release total, and `materializeQueueDepth` the partitions paced behind the `reshuffle_concurrency = 2` slot limit (system streams drain first). This command is how that memory win, any budget pressure, cap headroom, and reshuffle pacing are observed. Wraps `GET /api/streams/hydration`.
+Materialization is placement-gated: `RINGS` drops below `DECLARED` on non-replicas and `REPLICA`/`NONE` are non-zero off-owner. Per §6 a follower that cannot admit a held partition's floor NO LONGER over-subscribes — it holds the partition metadata-only and counts it under `DEFERRED` until budget frees, when the deferred-retry hook materializes it. Partition caps (§7, increment 4) are admission control: a create over the per-stream ceiling (`1024`) or the cluster aggregate guard (`100 × nodes × maxDeclaredReplicas`) is rejected pre-commit; a follower observing an over-ceiling committed config flags it under `OVER-CEIL` / `configOverCeilingStreams` (never rejecting — the budget machinery is the memory backstop). The reshuffle lifecycle (§5/§14.2, increment 5) releases a ring on confirmed role loss (catch-up-gated + flap-debounced, freeing memory + budget while keeping the WAL) — `releaseCandidates` counts partitions debouncing toward release, `releasedPartitionsSinceBoot` the running release total, and `materializeQueueDepth` the partitions paced behind the `reshuffle_concurrency = 2` slot limit (system streams drain first). This command is how that memory win, any budget pressure, cap headroom, and reshuffle pacing are observed. Wraps `GET /api/v1/streams/hydration`.
 
 ```bash
 aether stream hydration
@@ -1876,7 +1876,7 @@ system:cluster-events:1.0.0   1         1      0         2660352         false  
 ### `aether stream tail <namespace:stream:version> [options]`
 
 Tail events from a stream version. Tailing is **polling-based** (paginated GETs against
-`/api/streams/events/...`); each event payload is printed on its own stdout line. Press Ctrl-C to
+`/api/v1/streams/{ns}/{stream}/{ver}/events`); each event payload is printed on its own stdout line. Press Ctrl-C to
 stop. A streaming SSE/WebSocket subscription is **deferred to issue #212**.
 
 ```bash
@@ -1953,7 +1953,7 @@ reserved for framework topics.
 Unlike streams, pub/sub is an in-process, declaration-driven delivery mechanism: there is **no
 `aether topic` CLI command group** and **no topic management HTTP route**. Operators inspect topic
 wiring (publishers, subscribers, and their resolved `namespace:topic:version` addresses) through the
-topology graph — `GET /api/slices/topology` and the dashboard topology view — where pub→sub edges
+topology graph — `GET /api/v1/slices/topology` and the dashboard topology view — where pub→sub edges
 are matched on the resolved canonical address.
 
 ---
@@ -2270,8 +2270,8 @@ Example output (`--format json`):
 ### `aether cluster communities`
 
 Show worker communities: lifecycle state (`FORMING` / `ACTIVE` / `DEGRADED` / `DISSOLVED`), target size,
-roster and the leader's live-member count. Wraps `GET /api/cluster/communities`, or
-`GET /api/cluster/communities/{id}` when an id is given.
+roster and the leader's live-member count. Wraps `GET /api/v1/cluster/communities`, or
+`GET /api/v1/cluster/communities/{id}` when an id is given.
 
 ```bash
 aether cluster communities
@@ -2284,7 +2284,7 @@ see `GET /api/v1/cluster/communities` in the management API reference.
 
 ### `aether cluster governors`
 
-Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/cluster/governors`.
+Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/v1/cluster/governors`.
 
 ```bash
 aether cluster governors
@@ -2292,7 +2292,7 @@ aether cluster governors
 
 ### `aether cluster provisioning`
 
-Show leader provisioning diagnostics — why a core-membership deficit is or is not being filled (configured vs counted-core membership, effective capacity, deficit, the arm + reached-full-membership latches, quorum safety, deficit-run age, the precise suppression reason, the provisioning circuit-breaker state, and the most recent provisioning failure). Surfaced only on the leader that owns a Cluster Topology Manager; against any other node it returns a `leader: false` body with zeroed counters and an explanatory reason. Wraps `GET /api/cluster/provisioning`.
+Show leader provisioning diagnostics — why a core-membership deficit is or is not being filled (configured vs counted-core membership, effective capacity, deficit, the arm + reached-full-membership latches, quorum safety, deficit-run age, the precise suppression reason, the provisioning circuit-breaker state, and the most recent provisioning failure). Surfaced only on the leader that owns a Cluster Topology Manager; against any other node it returns a `leader: false` body with zeroed counters and an explanatory reason. Wraps `GET /api/v1/cluster/provisioning`.
 
 ```bash
 aether cluster provisioning
@@ -2307,7 +2307,7 @@ aether cluster provisioning --format json
 
 ### `aether cluster membership`
 
-Show the queried node's membership diagnostics — the responding node's authoritative membership-FSM lifecycle view plus its quorum-loss self-drain readiness. Renders a per-peer table (each tracked peer's FSM state, role, incarnation, and whether it is in the strict `Member`-only quorum set and the counted `Member`+`Suspect` set) followed by the summary counts (strict member count, quorum threshold, below-threshold flag, armed latch). Use to diagnose SWIM-under-concurrent-loss — per survivor, which peers are SUSPECT/DEAD and whether this node's self-drain window is armed and below threshold. **Per-node local view** (not leader-forwarded) — target a specific node (`-c <host>`) to read its view. Wraps `GET /api/cluster/membership`.
+Show the queried node's membership diagnostics — the responding node's authoritative membership-FSM lifecycle view plus its quorum-loss self-drain readiness. Renders a per-peer table (each tracked peer's FSM state, role, incarnation, and whether it is in the strict `Member`-only quorum set and the counted `Member`+`Suspect` set) followed by the summary counts (strict member count, quorum threshold, below-threshold flag, armed latch). Use to diagnose SWIM-under-concurrent-loss — per survivor, which peers are SUSPECT/DEAD and whether this node's self-drain window is armed and below threshold. **Per-node local view** (not leader-forwarded) — target a specific node (`-c <host>`) to read its view. Wraps `GET /api/v1/cluster/membership`.
 
 Since #590 the response also carries `coreAbsence` — the **community tier's** fence, alongside the core tier's. It answers "is this node about to dissolve because it has lost the core", with `remainingMs` counting down to the local dissolve. Like the quorum-loss summary fields, it lives at the response root, so it is shown by `--format json` rather than in the per-peer table:
 
@@ -2344,7 +2344,7 @@ strict=2  threshold=3  below=true  armed=true
 
 ### `aether cluster ownership`
 
-Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-INC`/`EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-INC`/`HW-TERM`/`HW-CTR`, and `FENCED`; the cluster incarnation leads each epoch, #1529). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/ownership/{domain}`.
+Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-INC`/`EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-INC`/`HW-TERM`/`HW-CTR`, and `FENCED`; the cluster incarnation leads each epoch, #1529). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/v1/ownership/{domain}`.
 
 The `<domain>` argument is one of `community` (governor ownership — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Any other value is rejected with an error.
 
@@ -2375,7 +2375,7 @@ orders:1  core-2  1          7           1          1       8        0       tru
 
 ### `aether cluster journal`
 
-Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/cluster/journal`.
+Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/v1/cluster/journal`.
 
 **Per-node scope:** the journal is local to the node serving the request — target a specific node (`-c <host>`) to read its view (e.g. the leader's view AND the victim's view during a chaos window).
 
@@ -2495,7 +2495,7 @@ aether cluster generation
 # Partitions:         2
 ```
 
-JSON output returns the full snapshot shape exposed by `GET /api/cluster/generation`.
+JSON output returns the full snapshot shape exposed by `GET /api/v1/cluster/generation`.
 
 ### `aether cluster await-quiesced`
 
@@ -2741,7 +2741,7 @@ aether cluster rotate-key [--grace-period <duration>] [--role <role>] [--key-id 
 
 Generates new key, pushes to cluster, marks old key REVOKED with grace period, updates local `~/.aether/clusters/<name>/api-key`.
 
-The key to retire is chosen by reading each record's own `status` in `GET /api/cluster/keys`, so
+The key to retire is chosen by reading each record's own `status` in `GET /api/v1/cluster/keys`, so
 listing order never decides which credential is revoked. With exactly one `ACTIVE` key the command
 retires it and names it in the output. With several, it refuses and lists the candidates — re-run
 with `--key-id` naming the one to retire. A key listing that cannot be read fails the rotation
@@ -2830,7 +2830,7 @@ Management API reference for the refusals).
 
 ### `aether ttm status`
 
-Show the foundation-model / TTM (training & model) runtime status. Wraps `GET /api/ttm/status`.
+Show the foundation-model / TTM (training & model) runtime status. Wraps `GET /api/v1/ttm/status`.
 
 ```bash
 aether ttm status
@@ -2838,7 +2838,7 @@ aether ttm status
 
 ### `aether ttm training-data`
 
-Show the foundation-model / TTM training-data snapshot. Wraps `GET /api/ttm/training-data`.
+Show the foundation-model / TTM training-data snapshot. Wraps `GET /api/v1/ttm/training-data`.
 
 ```bash
 aether ttm training-data
@@ -2852,7 +2852,7 @@ aether ttm training-data
 
 Show the active DHT replication map — which keys live on which nodes under
 the current replication factor. Operator-facing inspection. Wraps
-`GET /api/dht/replication-map`.
+`GET /api/v1/dht/replication-map`.
 
 Options:
 - `-l`, `--limit N` — max entries to return (default 100, capped at 10000).
@@ -2877,7 +2877,7 @@ node and union the results.
 
 Show this node's durable-entity checkpoint progress (#345 I3).
 
-Reads `GET /api/entity/checkpoints`, which is LOCAL — each node checkpoints only the partitions it folds,
+Reads `GET /api/v1/entity/checkpoints`, which is LOCAL — each node checkpoints only the partitions it folds,
 so this reports the node you queried. Point `--node` / the management endpoint at a specific node to see
 that node's view.
 
@@ -2910,7 +2910,7 @@ Output is the endpoint's JSON, pretty-printed:
 
 Show durable-entity keyspaces with their hosting node sets (#634-3).
 
-Reads [`GET /api/entity/keyspaces`](management-api.md#entity-keyspaces-hosting-view). Assembled from
+Reads [`GET /api/v1/entity/keyspaces`](management-api.md#entity-keyspaces-hosting-view). Assembled from
 replicated KV, so any caught-up node answers identically — no need to sweep ports (unlike
 `checkpoints` above, which is per-node).
 
@@ -2932,15 +2932,15 @@ node). Full schema in the Management API section linked above.
 
 Inspect and snapshot the node's Hierarchical Storage Engine instances (#207) — the
 content-addressed block stores backing content, artifact, and stream storage.
-Wraps the [`/api/storage`](management-api.md#storage-hierarchical-storage-engine)
+Wraps the [`/api/v1/storage`](management-api.md#storage-hierarchical-storage-engine)
 Management-API surface.
 
 ### `aether storage list [--node <id>]`
 
 List storage instances with their tier utilisation and readiness. By default
 returns the **cluster-wide** rollup (per-instance totals + a per-node breakdown,
-via the leader, `GET /api/cluster/storage`). With `--node <id>` it returns a single
-node's local view (`GET /api/storage`).
+via the leader, `GET /api/v1/cluster/storage`). With `--node <id>` it returns a single
+node's local view (`GET /api/v1/storage`).
 
 Options:
 - `--node <id>` — target a specific node's local storage view instead of the cluster rollup.
@@ -2954,8 +2954,8 @@ aether storage list --format json
 ### `aether storage status <name> [--node <id>]`
 
 Show one named instance's tier topology, snapshot marker, and readiness. By default
-returns the cluster-wide per-node breakdown (`GET /api/cluster/storage/{name}`);
-with `--node <id>` it returns that node's local detail (`GET /api/storage/{name}`).
+returns the cluster-wide per-node breakdown (`GET /api/v1/cluster/storage/{name}`);
+with `--node <id>` it returns that node's local detail (`GET /api/v1/storage/{name}`).
 
 Options:
 - `--node <id>` — target a specific node's local view instead of the cluster rollup.
@@ -2968,7 +2968,7 @@ aether storage status content --node node-1
 ### `aether storage snapshot <name>`
 
 Force an immediate metadata snapshot of the named instance
-(`POST /api/storage/snapshot/{name}`). Prints the epoch and timestamp of the
+(`POST /api/v1/storage/snapshot/{name}`). Prints the epoch and timestamp of the
 snapshot just taken. Routed to the `STORAGE` task-group owner.
 
 ```bash
@@ -2978,7 +2978,7 @@ aether storage snapshot content
 ### `aether storage retention`
 
 Show the per-partition tri-floor retention view (#634-3/4):
-[`GET /api/storage/retention`](management-api.md#get-apiv1storageretention). LOCAL — WAL, ring, and
+[`GET /api/v1/storage/retention`](management-api.md#get-apiv1storageretention). LOCAL — WAL, ring, and
 segment offsets describe the node you query; the `checkpointFloor` comes from replicated KV, so it
 agrees everywhere.
 
