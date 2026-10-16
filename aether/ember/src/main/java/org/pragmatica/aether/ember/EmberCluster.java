@@ -10,7 +10,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -778,6 +780,7 @@ public final class EmberCluster {
         // #727 review B2: BEFORE the stops and the clear that follows them, while `nodes` and
         // `nodeInfos` still hold the attempt. Moving this below the stops empties the snapshot.
         captureStartFailure(startFailures);
+        var registered = registeredNow();
         var stopPromises = nodes.values()
                                 .stream()
                                 .map(node -> node.stop()
@@ -785,7 +788,7 @@ public final class EmberCluster {
                                                  .recover(_ -> Unit.unit()))
                                 .toList();
 
-        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+        return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
                                this::clearClusterStateOnFailure,
                                cause::promise);
     }
@@ -939,6 +942,7 @@ public final class EmberCluster {
         // #727 review B2: same reason as in `abortStart` — this path also clears the registries
         // before the caller sees the failure, so the snapshot must be taken here, not after.
         captureStartFailure(startFailures);
+        var registered = registeredNow();
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
                                                     .map(node -> node.stop()
@@ -947,7 +951,7 @@ public final class EmberCluster {
                                                     .or(Promise.success(Unit.unit())))
                                     .toList();
 
-        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+        return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
                                this::clearClusterStateOnFailure,
                                () -> failed.getFirst()
                                            .failure()
@@ -973,11 +977,44 @@ public final class EmberCluster {
         log.info("Stopping Ember cluster");
         rollingRestartTask.cancel();
         rollingRestartActive.set(false);
+        var registered = registeredNow();
         var stopPromises = nodes.values().stream().map(EmberCluster::submitStop).toList();
 
-        return clearThenSettle(Promise.allOf(stopPromises).mapToUnit(),
+        return clearThenSettle(settledWithLateArrivals(stopPromises, registered),
                                this::clearClusterState,
                                Promise::unitPromise);
+    }
+
+    /// The nodes in the registry right now, by identity: what a teardown is about to stop.
+    private Set<AetherNode> registeredNow() {
+        var registered = Collections.newSetFromMap(new IdentityHashMap<AetherNode, Boolean>());
+
+        registered.addAll(nodes.values());
+
+        return registered;
+    }
+
+    /// The teardown's stops, then the stop of every node the registry gained AFTER `registered` was taken. `relaunchNode` and
+    /// auto-heal put nodes into the registry while an abort or a stop is already running; the clear that follows used to drop such a
+    /// node without stopping it, leaving its QUIC, management and app-HTTP sockets bound until the JVM exited (the harness-only
+    /// leak behind the SameIdentityRelaunch port exhaustion). Harness-scoped: a production process exits instead.
+    private Promise<Unit> settledWithLateArrivals(List<Promise<Unit>> stopPromises, Set<AetherNode> registered) {
+        return Promise.allOf(stopPromises)
+                      .mapToUnit()
+                      .flatMap(_ -> stopLateArrivals(registered));
+    }
+
+    private Promise<Unit> stopLateArrivals(Set<AetherNode> registered) {
+        var late = nodes.values()
+                        .stream()
+                        .filter(node -> !registered.contains(node))
+                        .map(EmberCluster::submitStop)
+                        .map(stop -> stop.recover(_ -> Unit.unit()))
+                        .toList();
+
+        return late.isEmpty()
+               ? Promise.success(Unit.unit())
+               : Promise.allOf(late).mapToUnit();
     }
 
     /// Run one node's stop OFF the caller's thread so [`#NODE_TIMEOUT`] can actually see it (#929).
