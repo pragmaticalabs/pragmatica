@@ -59,6 +59,7 @@ class InboundDispatchTripwireTest {
 
     private final List<QuicClusterNetwork> networks = new ArrayList<>();
     private final List<String> delivered = new CopyOnWriteArrayList<>();
+    private final List<String> consumerThreads = new CopyOnWriteArrayList<>();
     private final CountDownLatch handlerEntered = new CountDownLatch(1);
     private final CountDownLatch releaseHandler = new CountDownLatch(1);
 
@@ -73,6 +74,7 @@ class InboundDispatchTripwireTest {
 
     /// The consumer under test: a marker starting with "block" parks the calling thread until released.
     private void onProbe(LaneProbe probe) {
+        consumerThreads.add(Thread.currentThread().getName());
         if (probe.marker().startsWith("block")) {
             handlerEntered.countDown();
             awaitQuietly(releaseHandler);
@@ -185,5 +187,29 @@ class InboundDispatchTripwireTest {
     @Test
     void blockedLoop_doesNotMakeTheSweepEvictLivePeers() {
         assertThat(livePeersSurviveABlockPastTheTtl()).as("live peers still CONNECTED after the sweep").isTrue();
+    }
+
+    /// Name of the thread a router consumer ran on for an ordinary (non-blocking) frame.
+    private String consumerThreadForAnOrdinaryFrame() {
+        var triangle = connectedTriangle();
+
+        triangle.a().send(B, LaneProbe.laneProbe(A, StreamType.CONSENSUS, "plain-1"));
+        awaitTrue(() -> delivered.contains("plain-1"), AWAIT, "an ordinary frame is delivered");
+
+        return consumerThreads.getLast();
+    }
+
+    @Test
+    void routerConsumer_runsOnTheNettyEventLoopThread_ofTheAcceptingConnection() {
+        assertThat(consumerThreadForAnOrdinaryFrame())
+            .as("TRIPWIRE U-009 (inventory): the consumer runs inline on a Netty event-loop thread (C-01/C-02). Consumers now run "
+                + "off the I/O loop. Delete this tripwire and enable routerConsumer_doesNotRunOnANettyEventLoopThread.")
+            .contains("EventLoop");
+    }
+
+    @Disabled("U-009/C-02: enable when router consumers no longer run on the I/O loop. Today red: the consumer thread is a Netty event loop.")
+    @Test
+    void routerConsumer_doesNotRunOnANettyEventLoopThread() {
+        assertThat(consumerThreadForAnOrdinaryFrame()).as("thread running the router consumer").doesNotContain("EventLoop");
     }
 }
