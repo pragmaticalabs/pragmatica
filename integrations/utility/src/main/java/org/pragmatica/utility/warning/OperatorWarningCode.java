@@ -290,19 +290,20 @@ public enum OperatorWarningCode {
                                  "stream-consumer",
                                  WarningLevel.INFO,
                                  STREAM_CONSUMER_BEHIND_RING),
-    /// A stream consumer's position was reclaimed by retention before the group read it, so its cursor was moved forward
-    /// to the earliest retained offset and the reclaimed range will never be delivered (#2201 C-16; the single exception to
+    /// A stream consumer's position is no longer held by its partition's owner (reclaimed by retention) and the group had not
+    /// read it, so its cursor was moved forward to the earliest offset the owner holds and the range will never be delivered (#2201 C-16; the single exception to
     /// redelivery-never-skip, owner ruling Q9). CRITICAL (Q11): the group lost records it was configured to receive. Raised
     /// once per expiry, never per poll; a point event with no recovery, like [#STREAM_CONSUMER_REWOUND]: the skip is done
     /// and nothing later undoes it. The message names the group, the partition, the skipped range and its count.
     STREAM_CONSUMER_CURSOR_EXPIRED("stream-consumer-cursor-expired", "stream-consumer", WarningLevel.CRITICAL),
     /// A stream consumer waits at an offset that no sealed segment holds while a later offset is sealed: a hole in the
     /// sealed range, above what retention reclaimed (#2201 C-16). The cursor does not move; the group retries with the poll
-    /// backoff until the range is repaired, or retention reclaims past it and it becomes a
-    /// [#STREAM_CONSUMER_CURSOR_EXPIRED]. Raised once per `(group, partition, offset)`. The message names the range.
+    /// backoff until the range is repaired. Retention never reclaims at or above a hole (its bound stops at the contiguous
+    /// sealed watermark), so an unfilled hole holds the group. Raised once per `(group, partition, offset)`. The message
+    /// names the range.
     STREAM_CONSUMER_SEALED_RANGE_MISSING("stream-consumer-sealed-range-missing", "stream-consumer", WarningLevel.WARNING),
     /// The recovery of a [#STREAM_CONSUMER_SEALED_RANGE_MISSING], same subject: a later read from that offset succeeded,
-    /// retention reclaimed past the hole, or the consumer was cancelled while waiting at it (the message says which).
+    /// the cursor moved off it, or the consumer was cancelled while waiting at it (the message says which).
     STREAM_CONSUMER_SEALED_RANGE_RESTORED("stream-consumer-sealed-range-restored",
                                           "stream-consumer",
                                           WarningLevel.INFO,

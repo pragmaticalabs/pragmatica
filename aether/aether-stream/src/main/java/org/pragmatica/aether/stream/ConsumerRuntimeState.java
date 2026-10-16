@@ -1502,8 +1502,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return cause.promise();
     }
 
-    /// #2201 C-16: retention reclaimed the records at the cursor before the group read them, so they no longer exist and
-    /// the group moves forward to the earliest retained offset; waiting would stall it forever, silently. This is the
+    /// #2201 C-16: the partition's owner no longer holds the records at the cursor (in its ring or its sealed tier; the
+    /// expected cause is retention reclaiming them before the group read them), so the group moves forward to the earliest
+    /// offset the owner still holds; waiting would stall it forever, silently. The trigger is what the serving node holds,
+    /// not a proof of retention: a tier holding nothing at or above the cursor expires at the ring tail the same way (CTO
+    /// ruling on v-2211 N-1: the traced failover, catch-up and restart paths found no gap where the owner lacks a range that
+    /// exists elsewhere). This is the
     /// single carve-out of `865e181df5` (redelivery, never skip), recorded by the owner's ruling `e3aa3b9b94` (Q9 A): the
     /// reclaimed range is never delivered, and the skip is raised as `stream-consumer-cursor-expired` (CRITICAL, Q11 A) naming
     /// the range. Not a rewind: no rewind epoch is minted and the owner epoch is unchanged. The move is made only from the
@@ -1531,9 +1535,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                operatorWarnings,
                                OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
                                consumerSubject(key) + "@" + earliest,
-                               "Consumer group {} on {}[{}] skipped {} records at offsets [{}, {}): retention reclaimed them before "
-                              + "the group read them. Its cursor moved forward from {} to {}, the earliest retained offset; those "
-                              + "records will not be delivered",
+                               "Consumer group {} on {}[{}] skipped {} records at offsets [{}, {}): they are no longer held by this "
+                              + "partition's owner (reclaimed by retention) and the group had not read them. Its cursor moved "
+                              + "forward from {} to {}, the earliest offset the owner holds; those records will not be delivered",
                                key.groupId(),
                                key.streamName(),
                                key.partition(),
@@ -1546,8 +1550,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     /// #2201 C-16: the cursor is inside a hole of the sealed range, above what retention reclaimed. The range may be about to
     /// land (a seal in flight, a repair), so the cursor does not move: the pass fails with the poll backoff, and the operator
-    /// is told once per `(group, partition, offset)`. The episode ends when a read succeeds, or when retention reclaims past
-    /// the hole and the cursor moves forward ([#forwardReset]).
+    /// is told once per `(group, partition, offset)`. The episode ends when a read from the offset succeeds, when the cursor
+    /// moves off it (a rewind, or [#forwardReset] if the tier comes to answer `CursorExpired` there), or at cancel. Retention
+    /// never reclaims at or above a hole: its bound is capped at the contiguous sealed watermark, which stops below the hole
+    /// (`RetentionEnforcer.findExpiredSegments`), so an unfilled hole holds the group until the range is repaired.
     private Promise<Boolean> waitAtHole(ConsumerKey key, ConsumerState state, SegmentError.SealedRangeMissing missing) {
         if (state.holeEpisodeAt() != missing.fromOffset()) {
             endHoleEpisode(key, state, HoleEnd.MOVED);
@@ -1578,7 +1584,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                holeSubject(key, missing.fromOffset()),
                                "Consumer group {} on {}[{}] waits at offset {}: offsets [{}, {}] are in no sealed segment while "
                               + "offset {} is sealed (a hole in the sealed range). The cursor does not move; the group retries "
-                              + "until the range is repaired or retention reclaims past it",
+                              + "until the range is repaired (retention does not reclaim past a hole)",
                                key.groupId(),
                                key.streamName(),
                                key.partition(),
@@ -1591,7 +1597,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// How a `stream-consumer-sealed-range-missing` episode ended; its recovery message says which.
     enum HoleEnd {
         READ("a read from that offset succeeded"),
-        RECLAIMED("retention reclaimed past it and the cursor moved forward"),
+        RECLAIMED("the tier answered the offset as reclaimed and the cursor moved forward"),
         MOVED("the cursor moved off it"),
         CANCELLED("the consumer was cancelled while waiting at it");
         private final String text;

@@ -143,7 +143,7 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 
 **Symptoms:** a CRITICAL `OPERATOR_WARNING` whose `details.code` is `stream-consumer-cursor-expired`; `details.subject` is `stream[partition]/group@offset`.
 
-**Cause:** the group's cursor pointed at records that retention had already reclaimed from the sealed tier. The records no longer exist, so the group was moved forward once to the earliest retained offset and the range was not delivered. This is the one case in which a declarative consumer skips records; the move was checkpointed at once.
+**Cause:** the group's cursor pointed at records that the partition's owner no longer holds in its ring or sealed tier (reclaimed by retention, the expected cause; the warning reports what the owner holds, not why). The records are gone from the owner, so the group was moved forward once to the earliest retained offset and the range was not delivered. This is the one case in which a declarative consumer skips records; a checkpoint of the new cursor was requested at once, so a restart resumes there once it persists.
 
 **Actions:**
 
@@ -161,8 +161,8 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 
 1. Read the message: it names the group, the partition and the missing range `[from, to]`.
 2. Wait briefly: a range whose seal was still in flight lands on its own, and the group resumes.
-3. If it persists, treat it as a defect report (#1234) and escalate. There is no operator command to repair a hole in place. The partition's WAL still holds the range, since WAL truncation never passes a hole `[design intent — unverified: no run has exercised a hole on a cluster]`. If nothing fills it, the group resumes only when retention reclaims past the hole; it then skips the range and `stream-consumer-cursor-expired` follows.
-4. `stream-consumer-sealed-range-restored` (INFO, same subject) confirms the end: a read from that offset succeeded, retention reclaimed past it, or the consumer was cancelled.
+3. If it persists, treat it as a defect report (#1234) and escalate. There is no operator command to repair a hole in place. The partition's WAL still holds the range, since WAL truncation never passes a hole `[design intent — unverified: no run has exercised a hole on a cluster]`. If nothing fills it, the group does not resume on its own: retention never reclaims at or above a hole (its bound stops at the contiguous sealed watermark, which stops below the hole), so the hole is never turned into a skip.
+4. `stream-consumer-sealed-range-restored` (INFO, same subject) confirms the end: a read from that offset succeeded, the cursor moved off it (a rewind), or the consumer was cancelled.
 
 ### Stream Consumer Behind the Ring (`stream-consumer-behind-ring`)
 
@@ -174,6 +174,7 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 
 1. None if `stream-consumer-back-in-ring` (INFO, same subject) follows: the group caught up.
 2. If it persists, the group is slower than the stream; add capacity before retention reaches its position, or it will skip records (`stream-consumer-cursor-expired`).
+3. A group on a node that does not hold the partition reads through the owner, and learns whether it read the tier from the owner's ring tail as the owner reports it just after the read. A read served from the ring at its very edge while the ring evicted can therefore raise a spurious `stream-consumer-behind-ring` / `stream-consumer-back-in-ring` pair, and a group that keeps reading at the ring's edge can raise such a pair again on later reads. A pair that closes at once on such a group is this edge, not lag.
 
 ### High Latency
 

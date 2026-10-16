@@ -32,7 +32,8 @@ import static org.pragmatica.lang.Result.success;
 /// - The tier's own failures pass through unchanged: `CursorExpired(fromOffset, earliestRetained)` for an offset retention
 ///   reclaimed (the tier names its next sealed offset), [SegmentError.SealedRangeMissing] for a hole above the sealed
 ///   watermark, and a storage cause for an unreadable tier. Telling them apart is the consumer's business.
-/// - With no tier wired the offset is gone as far as this node can tell: `CursorExpired` at the ring tail.
+/// - With no tier wired, or a tier that holds nothing at or above `fromOffset`, the offset is gone as far as this node can
+///   tell: `CursorExpired` at the ring tail (the ring read's own answer).
 public sealed interface SealedTierFallback permits TierFallback {
     Promise<List<RawEvent>> read(String streamName, int partition, long fromOffset, int maxEvents);
 

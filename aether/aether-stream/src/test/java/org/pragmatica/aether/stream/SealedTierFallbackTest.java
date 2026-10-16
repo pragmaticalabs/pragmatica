@@ -99,6 +99,8 @@ class SealedTierFallbackTest {
         publish(4);
         replication.handleAck(replicateAck(peer, STREAM, PARTITION, 0));
         tier.seal(STREAM, PARTITION, 0, 1);
+        awaitReleasedBySealer(0L);
+        awaitReleasedBySealer(1L);
 
         assertThat(visible()).as("control: only offset 0 is acknowledged").isZero();
         assertThat(offsets(fallback().read(STREAM, PARTITION, 0, 10))).as("stops AT visible").containsExactly(0L);
@@ -166,6 +168,18 @@ class SealedTierFallbackTest {
             manager.publishLocal(STREAM, PARTITION, SealedTierFixture.payload(offset), 1_000L + offset)
                    .onFailure(cause -> fail("publish: " + cause.message()));
         }
+    }
+
+    /// The sealer hands evicted offsets to its sink asynchronously, and until it lets one go the fallback answers
+    /// `SealInFlight` for it (pinned by [#read_offsetTheSealerRetains_isSealInFlight]); reading before that made this test
+    /// fail about once in a hundred runs.
+    private void awaitReleasedBySealer(long offset) {
+        var deadline = System.currentTimeMillis() + 5_000L;
+
+        while (manager.sealInFlight(STREAM, PARTITION, offset) && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(manager.sealInFlight(STREAM, PARTITION, offset)).as("control: the sealer released offset %d", offset).isFalse();
     }
 
     private long visible() {
