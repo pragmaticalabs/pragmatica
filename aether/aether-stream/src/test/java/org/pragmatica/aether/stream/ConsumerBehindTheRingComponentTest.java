@@ -202,6 +202,22 @@ class ConsumerBehindTheRingComponentTest {
         }
     }
 
+    /// B5 on the tier path: a copy that is not the owner and has not been compared with its owner holds back what it has at
+    /// and above the committed epoch's start; that holds for the events its tier serves below the ring as for the ring's.
+    @Test
+    void unverifiedReplica_holdsBackTierEventsFromTheEpochStart_asItDoesRingEvents() {
+        tier.seal(STREAM, PARTITION, 0, 19);
+        manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        manager.ownerEpochSource((_, _) -> E2);
+        manager.epochStarts((_, _, _) -> Option.some(5L));
+
+        var read = manager.readServingTiered(STREAM, PARTITION, 2L, 10, Epoch.ZERO).await().unwrap();
+
+        assertThat(read.fromTier()).isTrue();
+        assertThat(read.events()).extracting(OffHeapRingBuffer.RawEvent::offset).as("nothing at or above the epoch start 5")
+                                 .containsExactly(2L, 3L, 4L);
+    }
+
     private final AtomicReference<StreamPartitionManager> assigneeManager = new AtomicReference<>();
 
     private StreamReadRouter assigneeOf(StreamPartitionManager owner) {
