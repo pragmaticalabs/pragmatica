@@ -13,6 +13,7 @@ import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
@@ -62,7 +63,7 @@ sealed interface BootstrapExistingClusterGuard {
         static Probes probes() {
             return new Probes(ClusterRegistry::load,
                               BootstrapStatePersistence::read,
-                              BootstrapExistingClusterGuard::listLabelledInstances);
+                              listingVia(ProviderResolver::resolveCloudCompute));
         }
     }
 
@@ -159,12 +160,20 @@ sealed interface BootstrapExistingClusterGuard {
         return new BootstrapError.ExistingClusterCheckFailed(name.value(), check, cause);
     }
 
+    /// The provider lookup is the seam: a test hands in a fake provider and reads the label map this guard sends.
+    static Fn2<Result<List<InstanceInfo>>, SourceProfile, ClusterName> listingVia(Fn1<Result<ComputeProvider>, SourceProfile> providers) {
+        return (source, name) -> listLabelledInstances(providers, source, name);
+    }
+
     /// One page is enough: this asks only whether ANY instance carries the label, so the first page of the
     /// provider's label-filtered listing answers it (a non-empty page is a refusal, however many more there are).
     @TerminalOperation
-    private static Result<List<InstanceInfo>> listLabelledInstances(SourceProfile source, ClusterName name) {
-        return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> compute.listInstances(Map.of(CLUSTER_LABEL,
-                                                                                                            name.value()))
-                                                                                      .await(timeSpan(LIST_TIMEOUT_SECONDS).seconds()));
+    private static Result<List<InstanceInfo>> listLabelledInstances(Fn1<Result<ComputeProvider>, SourceProfile> providers,
+                                                                    SourceProfile source,
+                                                                    ClusterName name) {
+        return providers.apply(source)
+                        .flatMap(compute -> compute.listInstances(Map.of(CLUSTER_LABEL,
+                                                                         name.value()))
+                                                   .await(timeSpan(LIST_TIMEOUT_SECONDS).seconds()));
     }
 }

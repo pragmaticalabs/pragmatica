@@ -25,12 +25,15 @@ import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -158,6 +161,80 @@ class BootstrapExistingClusterGuardTest {
         }
     }
 
+    /// Every cloud source is asked, not only the last one reduced over: a live cluster may sit behind any of them.
+    /// The filter the guard sends the provider is the whole of check 3: a blanked value matches nothing and
+    /// every other test (which replaces the provider call) stays green. Goes through the real default wiring
+    /// (`listingVia`) with a recording provider.
+    @Nested
+    class LabelSent {
+        @Test
+        void refuseExisting_asksTheProviderForTheClusterLabelAndName() {
+            var asked = new ArrayList<Map<String, String>>();
+            var provider = new RecordingProvider(asked);
+            var probes = new Probes(registryIn(home),
+                                    stateIn(home),
+                                    BootstrapExistingClusterGuard.listingVia(_ -> Result.success(provider)));
+
+            var cause = refusal(cloudConfig(name), probes);
+
+            assertThat(cause).isInstanceOf(ClusterConfigError.ClusterAlreadyExists.class);
+            assertThat(asked).as("exactly one filtered listing, key aether-cluster, value the cluster name")
+                      .containsExactly(Map.of("aether-cluster", name.value()));
+        }
+    }
+
+    private static final class RecordingProvider implements ComputeProvider {
+        private final List<Map<String, String>> asked;
+
+        RecordingProvider(List<Map<String, String>> asked) {
+            this.asked = asked;
+        }
+
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return Causes.cause("unused").promise();
+        }
+
+        @Override public Promise<Unit> terminate(InstanceId instanceId) {
+            return Causes.cause("unused").promise();
+        }
+
+        @Override public Promise<List<InstanceInfo>> listInstances() {
+            return Causes.cause("unfiltered listing must not be used").promise();
+        }
+
+        @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+            asked.add(tagFilter);
+
+            return Promise.success(List.of(instance()));
+        }
+
+        @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return Causes.cause("unused").promise();
+        }
+    }
+
+    @Nested
+    class EverySource {
+        @Test
+        void refuseExisting_refuses_whenOnlyTheFirstCloudSourceListsAnInstance() {
+            assertThat(refusalNamingSource("cloud-a")).isInstanceOf(ClusterConfigError.ClusterAlreadyExists.class);
+        }
+
+        @Test
+        void refuseExisting_refuses_whenOnlyTheLastCloudSourceListsAnInstance() {
+            assertThat(refusalNamingSource("cloud-b")).isInstanceOf(ClusterConfigError.ClusterAlreadyExists.class);
+        }
+
+        private Cause refusalNamingSource(String holder) {
+            var probes = new Probes(registryIn(home),
+                                    stateIn(home),
+                                    (source, cluster) -> Result.success(source.name().value().equals(holder)
+                                                                        ? List.of(instance())
+                                                                        : List.<InstanceInfo>of()));
+            return refusal(cloudConfigWithSources(name, "cloud-a", "cloud-b"), probes);
+        }
+    }
+
     @Nested
     class NewName {
         @Test
@@ -227,6 +304,39 @@ class BootstrapExistingClusterGuardTest {
             assertThat(reaped).as("the refused run must not reach the cleanup that reaps this ledger").isEmpty();
             assertThat(Files.readAllBytes(stateFile)).as("the live ledger and its secret are not overwritten").isEqualTo(bytesBefore);
             assertThat(snapshot(stateFile.getParent())).isEqualTo(dirBefore);
+        }
+    }
+
+    /// `--resume` continues a bootstrap whose state exists by definition, so it must never meet the guard.
+    @Nested
+    class ResumeIsUnaffected {
+        private Function<BootstrapState, Result<Unit>> originalHook;
+
+        @BeforeEach
+        void silenceCleanup() {
+            originalHook = ClusterBootstrapOrchestrator.cleanupHook();
+            ClusterBootstrapOrchestrator.setCleanupHook(_ -> Result.unitResult());
+        }
+
+        @AfterEach
+        @SuppressWarnings("JBCT-EX-01")
+        void restoreAndRemove() throws IOException {
+            ClusterBootstrapOrchestrator.setCleanupHook(originalHook);
+            Files.deleteIfExists(BootstrapStatePersistence.statePath(name));
+            Files.deleteIfExists(BootstrapStatePersistence.AETHER_DIR.resolve(name.value()));
+        }
+
+        @Test
+        void bootstrap_resumeOverExistingState_isNotRefusedAsAnExistingCluster() {
+            var state = BootstrapState.initialState(name, "some-other-config-hash", "2026-10-16T00:00:00Z")
+                                      .withClusterSecret("live-cluster-secret");
+            assertThat(BootstrapStatePersistence.save(state).isSuccess()).isTrue();
+
+            var cause = ClusterBootstrapOrchestrator.bootstrap(forgeConfig(name), true, false)
+                                                    .fold(c -> c, _ -> Assertions.<Cause>fail("expected the hash mismatch"));
+
+            assertThat(cause).isNotInstanceOf(ClusterConfigError.ClusterAlreadyExists.class);
+            assertThat(cause.message()).contains("Config has changed");
         }
     }
 
@@ -316,8 +426,20 @@ class BootstrapExistingClusterGuardTest {
         return config(cluster, "forge-1", SourceType.FORGE);
     }
 
+    private static ClusterBootstrapConfig cloudConfigWithSources(ClusterName cluster, String... sourceNames) {
+        var sources = new java.util.LinkedHashMap<String, SourceProfile>();
+        for (var sourceName : sourceNames) {
+            sources.put(sourceName, sourceProfile(sourceName, SourceType.CLOUD));
+        }
+        return config(cluster, sources);
+    }
+
     private static ClusterBootstrapConfig config(ClusterName cluster, String sourceName, SourceType type) {
-        var source = SourceProfile.sourceProfile(sourceNameOrDefault(sourceName),
+        return config(cluster, Map.of(sourceName, sourceProfile(sourceName, type)));
+    }
+
+    private static SourceProfile sourceProfile(String sourceName, SourceType type) {
+        return SourceProfile.sourceProfile(sourceNameOrDefault(sourceName),
                                                  type,
                                                  Option.empty(),
                                                  Option.empty(),
@@ -337,11 +459,13 @@ class BootstrapExistingClusterGuardTest {
                                                                                   Option.empty(),
                                                                                   "default")),
                                                  List.of());
+    }
 
+    private static ClusterBootstrapConfig config(ClusterName cluster, Map<String, SourceProfile> sources) {
         return ClusterBootstrapConfig.clusterBootstrapConfig("1.0.0",
                                                              ClusterIdentity.clusterIdentity(cluster.value(), "1.0.0").unwrap(),
                                                              CoreTopology.defaultCoreTopology(),
-                                                             Map.of(sourceName, source),
+                                                             sources,
                                                              Map.of(),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
                                                              OperationsConfig.defaultOperationsConfig(),
