@@ -97,7 +97,9 @@ class ConsumerBehindTheRingDeviationTest {
             default -> ring(List.of(), E1);
         });
 
-        awaitUntil(() -> delivered.size() >= 4 && codes().contains(STREAM_CONSUMER_BACK_IN_RING), "drained 7..10 after the reset");
+        awaitUntil(() -> delivered.size() >= 4 && codes().contains(STREAM_CONSUMER_BACK_IN_RING)
+                         && !warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED).isEmpty(),
+                   "drained 7..10 after the reset, and the expiry handed off");
         assertThat(delivered).containsExactly(7L, 8L, 9L, 10L);
         assertThat(warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED)).hasSize(1);
     }
@@ -199,7 +201,10 @@ class ConsumerBehindTheRingDeviationTest {
             default -> ring(List.of(), E1);
         });
 
-        awaitUntil(() -> delivered.contains(7L) && !warningsOf(STREAM_CONSUMER_SEALED_RANGE_RESTORED).isEmpty(), "reset past the hole");
+        // The expiry is the last warning of the sequence and reaches the sink on its hand-off thread, after the delivery that
+        // follows the reset: the codes are read only once it has been handed off.
+        awaitUntil(() -> delivered.contains(7L) && !warningsOf(STREAM_CONSUMER_CURSOR_EXPIRED).isEmpty(),
+                   "reset past the hole, and its expiry handed off");
         assertThat(codes()).containsSubsequence(STREAM_CONSUMER_SEALED_RANGE_MISSING,
                                                 STREAM_CONSUMER_SEALED_RANGE_RESTORED,
                                                 STREAM_CONSUMER_CURSOR_EXPIRED);
@@ -316,7 +321,8 @@ class ConsumerBehindTheRingDeviationTest {
 
         runtime.close();
 
-        awaitUntil(() -> count(STREAM_CONSUMER_SEALED_RANGE_RESTORED) == count(STREAM_CONSUMER_SEALED_RANGE_MISSING)
+        awaitUntil(() -> count(STREAM_CONSUMER_BEHIND_RING) >= 2
+                         && count(STREAM_CONSUMER_SEALED_RANGE_RESTORED) == count(STREAM_CONSUMER_SEALED_RANGE_MISSING)
                          && count(STREAM_CONSUMER_BACK_IN_RING) == count(STREAM_CONSUMER_BEHIND_RING),
                    "every episode closed");
         assertThat(count(STREAM_CONSUMER_SEALED_RANGE_MISSING)).isEqualTo(2);

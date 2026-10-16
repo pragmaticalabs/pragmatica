@@ -55,6 +55,7 @@ class ConsumerRewoundEventTest {
     @Test
     void exactBoundary_raisesOneConsumerRewoundWarning_namingTheGroupTheEpochAndTheOffsets() throws InterruptedException {
         run(new StreamError.EpochDiverged(E2, 1L, 1L));
+        awaitWarning();
 
         assertThat(delivered).as("control: the consumer re-read the new lineage").contains("1:new-1");
         assertThat(warnings).hasSize(1);
@@ -97,7 +98,7 @@ class ConsumerRewoundEventTest {
         }));
         subscribe();
         keepWaking(() -> delivered.contains("1:new-1"));
-        Thread.sleep(200);
+        awaitWarning();
 
         assertThat(delivered).as("re-read from the conservative bound").contains("0:new-0", "1:new-1");
         assertThat(warnings).hasSize(1);
@@ -169,6 +170,15 @@ class ConsumerRewoundEventTest {
         subscribe();
         keepWaking(() -> delivered.contains("1:new-1"));
         Thread.sleep(200);
+    }
+
+    /// The warning reaches the sink on its hand-off thread, after the delivery that follows it: a fixed sleep only hopes.
+    private void awaitWarning() throws InterruptedException {
+        var deadline = System.currentTimeMillis() + 10_000L;
+
+        while (warnings.isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
     }
 
     private StreamConsumerRuntime runtime(StreamConsumerRuntime.PartitionReader owner) {
