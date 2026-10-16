@@ -279,6 +279,34 @@ public enum OperatorWarningCode {
     /// epoch below the consumer's cursor. The records the group processed above that offset are gone from the log and the
     /// records now at those offsets are delivered; the message names the group, the partition and the offsets.
     STREAM_CONSUMER_REWOUND("stream-consumer-rewound", "stream-consumer", WarningLevel.WARNING),
+    /// A stream consumer's cursor is below its partition's ring tail, so its reads are served from the sealed tier (#2201
+    /// C-16, owner ruling Q10): raised once per `(group, partition)` episode, when a read first needs the tier. A new group
+    /// that starts at `earliest` on a stream with sealed history raises one episode by design. The message names the group,
+    /// the partition and the cursor.
+    STREAM_CONSUMER_BEHIND_RING("stream-consumer-behind-ring", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_BEHIND_RING], same subject: a read was served from the ring again, or the
+    /// consumer was cancelled while behind it (the message says which).
+    STREAM_CONSUMER_BACK_IN_RING("stream-consumer-back-in-ring",
+                                 "stream-consumer",
+                                 WarningLevel.INFO,
+                                 STREAM_CONSUMER_BEHIND_RING),
+    /// A stream consumer's position was reclaimed by retention before the group read it, so its cursor was moved forward
+    /// to the earliest retained offset and the reclaimed range will never be delivered (#2201 C-16; the single exception to
+    /// redelivery-never-skip, owner ruling Q9). CRITICAL (Q11): the group lost records it was configured to receive. Raised
+    /// once per expiry, never per poll; a point event with no recovery, like [#STREAM_CONSUMER_REWOUND]: the skip is done
+    /// and nothing later undoes it. The message names the group, the partition, the skipped range and its count.
+    STREAM_CONSUMER_CURSOR_EXPIRED("stream-consumer-cursor-expired", "stream-consumer", WarningLevel.CRITICAL),
+    /// A stream consumer waits at an offset that no sealed segment holds while a later offset is sealed: a hole in the
+    /// sealed range, above what retention reclaimed (#2201 C-16). The cursor does not move; the group retries with the poll
+    /// backoff until the range is repaired, or retention reclaims past it and it becomes a
+    /// [#STREAM_CONSUMER_CURSOR_EXPIRED]. Raised once per `(group, partition, offset)`. The message names the range.
+    STREAM_CONSUMER_SEALED_RANGE_MISSING("stream-consumer-sealed-range-missing", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_SEALED_RANGE_MISSING], same subject: a later read from that offset succeeded,
+    /// retention reclaimed past the hole, or the consumer was cancelled while waiting at it (the message says which).
+    STREAM_CONSUMER_SEALED_RANGE_RESTORED("stream-consumer-sealed-range-restored",
+                                          "stream-consumer",
+                                          WarningLevel.INFO,
+                                          STREAM_CONSUMER_SEALED_RANGE_MISSING),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.

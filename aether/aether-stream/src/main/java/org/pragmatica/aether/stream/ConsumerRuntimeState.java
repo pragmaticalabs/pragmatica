@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
+import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions;
@@ -384,6 +385,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private void detachWithoutFlush(ConsumerKey key, ConsumerState state) {
         state.cancel();
         endEscapeRunOnCancel(key, state);
+        endEpisodesOnCancel(key, state);
         removePushListener(key, state);
     }
 
@@ -430,6 +432,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             consumers.forEach((key, state) -> {
                 state.cancel();
                 endEscapeRunOnCancel(key, state);
+                endEpisodesOnCancel(key, state);
             });
             consumers.clear();
         }
@@ -1427,18 +1430,32 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                            ConsumerState state,
                                            StreamPartitionManager.EpochRead read) {
         state.adoptOwnerEpoch(read.ownerEpoch());
+        endHoleEpisode(key, state, HoleEnd.READ);
+        trackBehindRing(key, state, read.fromTier());
 
-        return pollSucceeded(key, state, read.events());
+        return pollSucceeded(key, state, read.events(), moreBehindTheRing(read));
+    }
+
+    /// #2201 C-16: a read served from the sealed tier can be short without the consumer being caught up: the tier stops at
+    /// the end of a contiguous run (before a hole), at the visible bound, or after a sealed prefix whose ring continuation
+    /// failed. A cursor below the ring tail always has the ring above it, so a tier read that delivered something continues
+    /// the drain like a full batch; otherwise a push consumer would wait there for the next append. An empty tier read does
+    /// not continue (nothing is visible yet; the next advance wakes it).
+    private static boolean moreBehindTheRing(StreamPartitionManager.EpochRead read) {
+        return read.fromTier() && !read.events()
+                                       .isEmpty();
     }
 
     private Promise<Boolean> pollSucceeded(ConsumerKey key,
                                            ConsumerState state,
-                                           List<OffHeapRingBuffer.RawEvent> events) {
+                                           List<OffHeapRingBuffer.RawEvent> events,
+                                           boolean moreBehindTheRing) {
         endEscapeRun(key, state);
         state.adjustPollInterval(!events.isEmpty());
 
         return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH)
-                            .onSuccess(batchFull -> commitRewoundCatchUp(key, state, batchFull));
+                            .onSuccess(batchFull -> commitRewoundCatchUp(key, state, batchFull || moreBehindTheRing))
+                            .map(batchFull -> batchFull || moreBehindTheRing);
     }
 
     /// #1333 (review MEDIUM): a consumer resumed under a REWOUND epoch replays to the head, and a clean
@@ -1463,14 +1480,191 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// each on its own virtual thread. The declarative path (#488) can enter that window legitimately:
     /// HRW can name this node OWNER of a partition whose ring is still materializing, so the poll path
     /// is reachable before the push listener exists.
+    ///
+    /// #2201 C-16: a read below the ring tail that the sealed tier could not serve has three named outcomes. In flight
+    /// (`SealInFlight`) is transient by design: a failed pass, no operator event. Reclaimed (`CursorExpired`) moves the
+    /// cursor forward ([#forwardReset]). A hole (`SealedRangeMissing`) is waited at and the operator is told ([#waitAtHole]).
+    /// Every other cause, an unreadable tier included, is a failed pass: the consumer never resets on a cause it cannot
+    /// name.
     private Promise<Boolean> pollFailed(ConsumerKey key, ConsumerState state, Cause cause) {
-        if (cause instanceof StreamError.EpochDiverged diverged) {
-            return rewind(key, state, diverged);
-        }
+        return switch (cause) {
+            case StreamError.EpochDiverged diverged -> rewind(key, state, diverged);
+            case StreamError.CursorExpired expired -> forwardReset(key, state, expired);
+            case SegmentError.SealedRangeMissing missing -> waitAtHole(key, state, missing);
+            case SegmentError.SealInFlight inFlight -> failedPass(state, inFlight);
+            default -> failedPass(state, cause);
+        };
+    }
 
+    private static Promise<Boolean> failedPass(ConsumerState state, Cause cause) {
         state.adjustPollInterval(false);
 
         return cause.promise();
+    }
+
+    /// #2201 C-16: retention reclaimed the records at the cursor before the group read them, so they no longer exist and
+    /// the group moves forward to the earliest retained offset; waiting would stall it forever, silently. This is the
+    /// single carve-out of `865e181df5` (redelivery, never skip), recorded by the owner's ruling `e3aa3b9b94` (Q9 A): the
+    /// reclaimed range is never delivered, and the skip is raised as `stream-consumer-cursor-expired` (CRITICAL, Q11 A) naming
+    /// the range. Not a rewind: no rewind epoch is minted and the owner epoch is unchanged. The move is made only from the
+    /// offset the failed read was issued at, so a rewind or an epoch re-seek that moved the cursor meanwhile wins and the
+    /// stale expiry is a failed pass. The new cursor is checkpointed at once (I-10), so a restart or a failover resumes at it
+    /// instead of at the reclaimed offset, which would expire and be raised again.
+    private Promise<Boolean> forwardReset(ConsumerKey key, ConsumerState state, StreamError.CursorExpired expired) {
+        var requested = expired.requestedOffset();
+        var earliest = expired.tailOffset();
+
+        if (!state.resetForward(requested, earliest)) {
+            return failedPass(state, expired);
+        }
+
+        endHoleEpisode(key, state, HoleEnd.RECLAIMED);
+        warnCursorExpired(key, requested, earliest);
+        requestCheckpoint(key, state);
+
+        return Promise.success(true);
+    }
+
+    @Contract
+    private void warnCursorExpired(ConsumerKey key, long requested, long earliest) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
+                               consumerSubject(key) + "@" + earliest,
+                               "Consumer group {} on {}[{}] skipped {} records at offsets [{}, {}): retention reclaimed them before "
+                              + "the group read them. Its cursor moved forward from {} to {}, the earliest retained offset; those "
+                              + "records will not be delivered",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               earliest - requested,
+                               requested,
+                               earliest,
+                               requested,
+                               earliest);
+    }
+
+    /// #2201 C-16: the cursor is inside a hole of the sealed range, above what retention reclaimed. The range may be about to
+    /// land (a seal in flight, a repair), so the cursor does not move: the pass fails with the poll backoff, and the operator
+    /// is told once per `(group, partition, offset)`. The episode ends when a read succeeds, or when retention reclaims past
+    /// the hole and the cursor moves forward ([#forwardReset]).
+    private Promise<Boolean> waitAtHole(ConsumerKey key, ConsumerState state, SegmentError.SealedRangeMissing missing) {
+        var previous = state.openHoleEpisode(missing.fromOffset());
+
+        if (previous != missing.fromOffset()) {
+            raiseHoleEnd(key, previous, HoleEnd.MOVED);
+            warnSealedRangeMissing(key, missing);
+        }
+
+        return failedPass(state, missing);
+    }
+
+    @Contract
+    private void warnSealedRangeMissing(ConsumerKey key, SegmentError.SealedRangeMissing missing) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
+                               holeSubject(key, missing.fromOffset()),
+                               "Consumer group {} on {}[{}] waits at offset {}: offsets [{}, {}] are in no sealed segment while "
+                              + "offset {} is sealed (a hole in the sealed range). The cursor does not move; the group retries "
+                              + "until the range is repaired or retention reclaims past it",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               missing.fromOffset(),
+                               missing.fromOffset(),
+                               missing.nextSealedOffset() - 1,
+                               missing.nextSealedOffset());
+    }
+
+    /// How a `stream-consumer-sealed-range-missing` episode ended; its recovery message says which.
+    enum HoleEnd {
+        READ("a read from that offset succeeded"),
+        RECLAIMED("retention reclaimed past it and the cursor moved forward"),
+        MOVED("the cursor moved off it"),
+        CANCELLED("the consumer was cancelled while waiting at it");
+        private final String text;
+        HoleEnd(String text) {
+            this.text = text;
+        }
+    }
+
+    @Contract
+    private void endHoleEpisode(ConsumerKey key, ConsumerState state, HoleEnd end) {
+        raiseHoleEnd(key, state.endHoleEpisode(), end);
+    }
+
+    @Contract
+    private void raiseHoleEnd(ConsumerKey key, long holeAt, HoleEnd end) {
+        if (holeAt == ConsumerState.NO_HOLE) {
+            return;
+        }
+
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
+                               holeSubject(key, holeAt),
+                               "Consumer group {} on {}[{}] no longer waits at the hole at offset {}: {}",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               holeAt,
+                               end.text);
+    }
+
+    private static String holeSubject(ConsumerKey key, long holeAt) {
+        return consumerSubject(key) + "@" + holeAt;
+    }
+
+    /// #2201 C-16, owner ruling Q10 A: `stream-consumer-behind-ring` means literally that a read needed the sealed tier
+    /// because the cursor is below the ring tail. One WARNING per `(group, partition)` episode, at the first read served from
+    /// the tier, and one INFO recovery at the first read served from the ring again. A new `earliest` group on a stream with
+    /// sealed history raises one pair by design. Nothing is raised per poll.
+    @Contract
+    private void trackBehindRing(ConsumerKey key, ConsumerState state, boolean fromTier) {
+        if (fromTier && state.enterBehindRing()) {
+            warnBehindRing(key, state.cursor());
+        } else if (!fromTier && state.leaveBehindRing()) {
+            raiseBackInRing(key, "a read was served from the ring again");
+        }
+    }
+
+    @Contract
+    private void warnBehindRing(ConsumerKey key, long cursor) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_BEHIND_RING,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] is behind the ring: its cursor {} is below the partition's ring tail, "
+                              + "so its reads are served from the sealed tier until it catches up",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               cursor);
+    }
+
+    @Contract
+    private void raiseBackInRing(ConsumerKey key, String reason) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_BACK_IN_RING,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] is no longer behind the ring: {}",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               reason);
+    }
+
+    /// A consumer cancelled while behind the ring or waiting at a hole would leave that alert open for good, so its end is
+    /// reported too (owner rule: every operator-facing condition gets a recovery), as [#endEscapeRunOnCancel] does.
+    @Contract
+    private void endEpisodesOnCancel(ConsumerKey key, ConsumerState state) {
+        if (state.leaveBehindRing()) {
+            raiseBackInRing(key, "the consumer was cancelled while behind it");
+        }
+
+        endHoleEpisode(key, state, HoleEnd.CANCELLED);
     }
 
     /// #1873 (KIP-320): the owner replaced the lineage this consumer's cursor belongs to (a restart without a WAL, a
@@ -1893,6 +2087,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     static final class ConsumerState {
         private static final long CHECKPOINT_EVENT_THRESHOLD = 1000;
+        static final long NO_HOLE = -1L;
 
         private final ConsumerConfig config;
         private final ConsumerCallback callback;
@@ -1941,6 +2136,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicLong escapeRunStartMs = new AtomicLong(0L);
         private final AtomicLong escapeBackoffUntilMs = new AtomicLong(0L);
         private final AtomicBoolean escapeRunReported = new AtomicBoolean(false);
+        /// #2201 C-16: a `stream-consumer-behind-ring` episode is open (a read was served from the sealed tier and none from
+        /// the ring since).
+        private final AtomicBoolean behindRing = new AtomicBoolean(false);
+        /// #2201 C-16: the offset of the open `stream-consumer-sealed-range-missing` episode, or [#NO_HOLE].
+        private final AtomicLong holeEpisodeAt = new AtomicLong(NO_HOLE);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
         /// #654: detail of the most recent cursor commit failure for this consumer, cleared on the
@@ -2042,6 +2242,34 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         void rewindTo(long resumeAt, Epoch newEpoch) {
             cursor.set(resumeAt);
             ownerEpoch = newEpoch;
+        }
+
+        /// #2201 C-16: the one place the cursor jumps FORWARD past records it never delivered: from `requested`, the offset the
+        /// failed read was issued at, to `earliest`, the earliest retained offset. Refused (false) when the cursor is no longer
+        /// at `requested` (a rewind or a re-seek moved it after the read was issued) or when `earliest` is not above it. The
+        /// rewind epoch and the owner epoch are untouched.
+        boolean resetForward(long requested, long earliest) {
+            return earliest > requested && cursor.compareAndSet(requested, earliest);
+        }
+
+        /// Opens the hole episode at `holeAt`; the offset of the episode it replaces, or [#NO_HOLE].
+        long openHoleEpisode(long holeAt) {
+            return holeEpisodeAt.getAndSet(holeAt);
+        }
+
+        /// Ends the hole episode; its offset, or [#NO_HOLE] when none was open.
+        long endHoleEpisode() {
+            return holeEpisodeAt.getAndSet(NO_HOLE);
+        }
+
+        /// Whether this call opened a behind-the-ring episode.
+        boolean enterBehindRing() {
+            return behindRing.compareAndSet(false, true);
+        }
+
+        /// Whether this call closed a behind-the-ring episode.
+        boolean leaveBehindRing() {
+            return behindRing.compareAndSet(true, false);
         }
 
         /// Monotonic (#1238): a late retry or dead-letter completion, or a stored cursor fetched after

@@ -139,6 +139,42 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 2. Bring the missing replica node back. When the leader sees it live it is unfenced, the owner expands it once it has caught up, and `STREAM_ISR_RESTORED` follows.
 3. If the replica is gone for good, replace the node; the replacement joins the ISR after backfill. To tolerate the loss of one replica without refusing writes, declare `confirmation_factor` below `replication_factor`. On a running stream lowering `confirmation_factor` is not applied (durability only increases online; a committed lowering raises `STREAM_CONFIG_CHANGE_NOT_APPLIED`): restore the replicas, or re-create the stream.
 
+### Stream Consumer Skipped Reclaimed Records (`stream-consumer-cursor-expired`)
+
+**Symptoms:** a CRITICAL `OPERATOR_WARNING` whose `details.code` is `stream-consumer-cursor-expired`; `details.subject` is `stream[partition]/group@offset`.
+
+**Cause:** the group's cursor pointed at records that retention had already reclaimed from the sealed tier. The records no longer exist, so the group was moved forward once to the earliest retained offset and the range was not delivered. This is the one case in which a declarative consumer skips records; the move was checkpointed at once.
+
+**Actions:**
+
+1. Read the message: it names the group, the partition, the skipped range `[from, to)` and its count. Nothing reopens the range; the warning has no recovery event.
+2. If the records matter, replay that range from its source into the stream.
+3. Stop it recurring: raise the stream's retention, or give the group more capacity so it keeps up. A group that falls behind the ring first raises `stream-consumer-behind-ring`; acting on that is the early warning.
+
+### Stream Consumer Waiting at a Hole (`stream-consumer-sealed-range-missing`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-consumer-sealed-range-missing`; the group delivers nothing past one offset.
+
+**Cause:** the offset is in no sealed segment while a later offset is sealed, and retention did not reclaim it: a hole in the sealed range. The group never skips a hole; it re-reads with the poll backoff.
+
+**Actions:**
+
+1. Read the message: it names the group, the partition and the missing range `[from, to]`.
+2. Wait briefly: a range whose seal was still in flight lands on its own, and the group resumes.
+3. If it persists, treat it as a defect report (#1234) and escalate. There is no operator command to repair a hole in place. The partition's WAL still holds the range, since WAL truncation never passes a hole `[design intent — unverified: no run has exercised a hole on a cluster]`. If nothing fills it, the group resumes only when retention reclaims past the hole; it then skips the range and `stream-consumer-cursor-expired` follows.
+4. `stream-consumer-sealed-range-restored` (INFO, same subject) confirms the end: a read from that offset succeeded, retention reclaimed past it, or the consumer was cancelled.
+
+### Stream Consumer Behind the Ring (`stream-consumer-behind-ring`)
+
+**Symptoms:** a WARNING `OPERATOR_WARNING` with `details.code` `stream-consumer-behind-ring`, subject `stream[partition]/group`.
+
+**Cause:** the group's cursor is below the partition's in-memory ring, so it reads from the sealed tier (slower, still complete). A new group that starts at `earliest` on a stream with sealed history raises it once by design.
+
+**Actions:**
+
+1. None if `stream-consumer-back-in-ring` (INFO, same subject) follows: the group caught up.
+2. If it persists, the group is slower than the stream; add capacity before retention reaches its position, or it will skip records (`stream-consumer-cursor-expired`).
+
 ### High Latency
 
 **Symptoms:** Slow response times, `method.*.duration.avg` metrics elevated
