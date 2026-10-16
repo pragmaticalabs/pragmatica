@@ -221,7 +221,7 @@ Put the section in the source's `node_config` (`[source.<name>.node_config.backu
    git -C /data/backups/kv-backup rev-parse kv-backup
    git ls-remote git@backups.example.com:ops/cluster-a-kv.git refs/heads/kv-backup
    ```
-   The two hashes are equal when everything committed has been pushed. A change to declared state is flushed within about 5 s, so compare after a quiet moment.
+   The two hashes are equal when everything committed has been pushed. On nodes started by `aether cluster bootstrap` in container mode the host directory `/opt/aether/backups` is bind-mounted at `path`, so on the host the repository is `/opt/aether/backups/kv-backup`. A change to declared state is flushed within about 5 s, so compare after a quiet moment.
 3. Test the restore on a scratch cluster before production ([backup-recovery](backup-recovery.md)).
 
 ## Deployment Checklist
