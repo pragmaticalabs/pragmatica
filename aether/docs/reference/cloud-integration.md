@@ -161,7 +161,7 @@ Why: any core node may become the consensus leader at any time. The leader is th
 Trade-off: compromise of any single cluster node leaks the cloud API token. The blast radius depends on how the token is scoped (see provider sections below). Mitigations:
 - **Use a dedicated project/account for the cluster** so a leaked token is contained.
 - **Restrict the token's permissions** where the provider supports it (AWS IAM, GCP service-account roles, Azure RBAC).
-- **Rotate the token periodically.** Rotation requires re-running `aether cluster bootstrap` against the existing cluster (or re-pushing per-node TOML out-of-band) so every node receives the new value.
+- **Rotate the token periodically.** Rotation means re-pushing the per-node TOML (`/etc/aether/aether-config.toml`, `[cloud.credentials]`) to every node out-of-band. Do not re-run `aether cluster bootstrap` for this: a fresh bootstrap against an existing cluster name is refused (see [Existing cluster name](cli.md#aether-cluster-bootstrap)).
 - **Restrict file system access** to `/etc/aether/aether-config.toml` (mode `0600`, owned by the aether process user).
 
 For higher-security deployments, configure a `[cloud.secrets]` backend (e.g., Vault, AWS Secrets Manager) and reference the credential via `${secrets:hcloud/api_token}` instead of `${env:...}`. With a secrets backend, only nodes that can authenticate to the secrets backend resolve the actual token at runtime; the per-node TOML carries the placeholder only.
@@ -180,7 +180,7 @@ Provider name: `hetzner`
 |-----|----------|-------------|
 | `api_token` | Yes | Hetzner Cloud API token |
 
-> **Hetzner-specific security note.** Hetzner Cloud tokens are project-scoped and grant **full read+write access** to every resource in the project (servers, networks, firewalls, SSH keys, load balancers, billing-affecting actions). Hetzner does not currently expose finer-grained scopes (e.g., read-only or compute-only). Per the [Credential Propagation to Nodes](#credential-propagation-to-nodes) section, this token is written to each cluster node's local `aether-config.toml` so the consensus leader can auto-provision new nodes during scale-up. **Use a dedicated Hetzner project per Aether cluster** so a leaked node-side token cannot affect unrelated infrastructure. Token rotation is done in the Hetzner Console; after issuing a new token, re-run `aether cluster bootstrap` (or re-push per-node TOML) to propagate the new value.
+> **Hetzner-specific security note.** Hetzner Cloud tokens are project-scoped and grant **full read+write access** to every resource in the project (servers, networks, firewalls, SSH keys, load balancers, billing-affecting actions). Hetzner does not currently expose finer-grained scopes (e.g., read-only or compute-only). Per the [Credential Propagation to Nodes](#credential-propagation-to-nodes) section, this token is written to each cluster node's local `aether-config.toml` so the consensus leader can auto-provision new nodes during scale-up. **Use a dedicated Hetzner project per Aether cluster** so a leaked node-side token cannot affect unrelated infrastructure. Token rotation is done in the Hetzner Console; after issuing a new token, re-push the per-node TOML to every node out-of-band to propagate the new value (a fresh `aether cluster bootstrap` against the existing cluster name is refused; see [Existing cluster name](cli.md#aether-cluster-bootstrap)).
 
 #### Compute
 

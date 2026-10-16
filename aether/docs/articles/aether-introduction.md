@@ -121,7 +121,7 @@ Aether isn't magic--it's careful engineering applied to problems that have been 
 
 At its core, Aether uses the Rabia consensus protocol--a crash-fault-tolerant algorithm that ensures all nodes agree on cluster state without requiring a persistent event log. When you change a blueprint or deploy a new slice version, that change propagates through consensus. Every node sees the same state.
 
-This matters because it means there's no split-brain scenario where different parts of your cluster think different things are true. The cluster either agrees, or it doesn't proceed. Simple.
+This matters because a change commits only when a majority of the core nodes agrees, so two disconnected parts of your cluster cannot both commit conflicting cluster state. The cluster either agrees, or it doesn't proceed. The price is on the other side of the same rule: if a network event leaves no group of nodes with a majority for long enough, every core node shuts itself down, and the cluster state that lived only in memory is gone unless you configured a backup (see [known limitations](../reference/known-limitations.md#no-majority-network-cut-halts-every-core)).
 
 The consensus layer powers a distributed key-value store that holds all cluster metadata: blueprints, slice states, endpoint registrations, and configuration. When you issue a command through the CLI, it becomes a proposal that nodes vote on. Once consensus is reached, the change takes effect atomically across the cluster.
 

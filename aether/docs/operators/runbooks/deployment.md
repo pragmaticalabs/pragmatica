@@ -196,6 +196,34 @@ boot token). Each node is replaced under a **new** NodeId, one at a time:
    curl -k https://node1:8080/health
    ```
 
+## Production prerequisite: `[backup]` with a remote
+
+A multi-core production cluster must configure `[backup]` with a `remote` **before** it takes production traffic. Backup is off by default in rc4.
+
+**Why.** Consensus state lives in memory on the cores only. A core process that dies does not return under its old NodeId (the cluster refuses it while any peer remembers the old process), so if every core exits (for example a network cut that leaves no group with a majority — measured: cuts of 20, 25 and 30 s halted every core on five cores with every core isolated, Ember in-process; longer cuts not run — [No-majority partition](incident-response.md#no-majority-partition--every-core-halted)), blueprints, slice targets, API keys, cluster and stream configuration are gone. The leader's git backup of that declared state is the only thing a whole-cluster recovery restores from. With a `remote`, a recovery reads it from there; without one, it reads the local repository of whichever node leads the cold start, which needs that node's disk and may be older than another node's (`BACKUP_RESTORE_SOURCE_LOCAL`). The backup holds declared state only: entity state and acknowledged stream records are not recovered ([backup-recovery](backup-recovery.md)).
+
+**Configure.**
+
+```toml
+[backup]
+enabled = true
+path = "/data/backups"
+remote = "git@backups.example.com:ops/cluster-a-kv.git"
+```
+
+Put the section in the source's `node_config` (`[source.<name>.node_config.backup]`) so seeds and replacement cores boot with it, and give the node's user credentials for the remote: git never prompts, so a remote that needs credentials the process does not hold fails.
+
+**Check that it is pushing.** The leader pushes; check on the current leader.
+
+1. The leader logs `BACKUP_PUSH_FAILING` (WARN) when commits have been queued for 60 s without reaching the remote, and `BACKUP_RECOVERED` (INFO) when it is current again. It is a log line, not a cluster event: alert on it in your log pipeline. `[mechanism: BackupWarning.operatorWarningCode routes only restore, fork and config-missing codes to cluster events; KvBackupService.java:772-775]`
+2. Compare the leader's local head with the remote's, as the node's user:
+   ```bash
+   git -C /data/backups/kv-backup rev-parse kv-backup
+   git ls-remote git@backups.example.com:ops/cluster-a-kv.git refs/heads/kv-backup
+   ```
+   The two hashes are equal when everything committed has been pushed. On nodes started by `aether cluster bootstrap` in container mode the host directory `/opt/aether/backups` is bind-mounted at `path`, so on the host the repository is `/opt/aether/backups/kv-backup`. A change to declared state is flushed within about 5 s, so compare after a quiet moment.
+3. Test the restore on a scratch cluster before production ([backup-recovery](backup-recovery.md)).
+
 ## Deployment Checklist
 
 ### Pre-Deployment
@@ -203,6 +231,7 @@ boot token). Each node is replaced under a **new** NodeId, one at a time:
 - [ ] New version tested in staging
 - [ ] Rollback plan documented
 - [ ] Monitoring alerts configured
+- [ ] Multi-core production cluster: `[backup]` with a `remote` configured, `BACKUP_PUSH_FAILING` alerted on, restore tested (see above)
 
 ### During Deployment
 - [ ] Cluster health verified

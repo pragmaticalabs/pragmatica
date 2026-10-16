@@ -20,6 +20,12 @@ fast-forward — never forced.
   old `state.toml` path was removed by #1533); the KV backup is the only thing a whole-cluster restart
   restores from.
 
+> **Production prerequisite.** A multi-core production cluster should configure `[backup]` with a `remote`
+> before it takes traffic: after a total core loss (see
+> [No-majority partition](incident-response.md#no-majority-partition--every-core-halted)) the backup is the
+> only recovery source for declared state, and without a remote it needs the old leader's disk. How to
+> configure it and check that it is pushing: [deployment](deployment.md#production-prerequisite-backup-with-a-remote).
+
 ## Restarting a whole cluster — a regular start, then the restore
 
 A whole-cluster restart is a **regular cluster start with a fresh set of core nodes** (new NodeIds, the

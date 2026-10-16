@@ -4084,6 +4084,8 @@ Serves the built-in cluster monitoring dashboard (static HTML/JS/CSS files).
 
 Open in browser: `http://localhost:8080/dashboard`
 
+Against a real node (not Forge) most dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--most-panels-come-up-empty).
+
 ---
 
 ## WebSocket Endpoints
@@ -6521,5 +6523,7 @@ successful reconfiguration. Workers report their local engine state, not a clust
 
 Dashboard WebSocket connections to a worker receive `INCOMPLETE_CLUSTER_VIEW` with
 `completeClusterView=false` and close immediately after upgrade. Connect the dashboard to a core.
+
+Against a real node (not Forge) most dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](known-limitations.md#dashboard-against-a-real-node--most-panels-come-up-empty).
 Worker HTTP reads of `/api/v1/metrics`, `/api/v1/metrics/history` and `/api/v1/nodes/metrics`
 are forwarded to a core; local diagnostics retain their explicitly local scope.

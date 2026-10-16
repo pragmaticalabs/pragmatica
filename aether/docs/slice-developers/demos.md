@@ -362,6 +362,8 @@ After starting, access these endpoints:
 | node-4 | http://localhost:8084 | http://localhost:8084/dashboard |
 | node-5 | http://localhost:8085 | http://localhost:8085/dashboard |
 
+Against a real node (not Forge) most dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--most-panels-come-up-empty).
+
 ### Step-by-Step Demo
 
 **1. Start the cluster:**
@@ -406,6 +408,8 @@ Shows slice distribution across nodes.
 **5. Open dashboard:**
 
 Navigate to http://localhost:8081/dashboard for real-time metrics.
+
+Against a real node (not Forge) most dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--most-panels-come-up-empty).
 
 **6. Clean up:**
 
