@@ -556,7 +556,7 @@ behavior, and this note records the history:
   surface at all — it fetched the slice list and substring-matched the
   BLUEPRINT coordinates against it, which cannot match the derived SLICE
   artifacts, so it emitted a hardcoded "PENDING" forever. Fixed by polling
-  `GET /api/blueprints/status/{id}` (`overallStatus`), which the node derives
+  `GET /api/v1/blueprints/status/{id}` (`overallStatus`), which the node derives
   from the same replicated DeploymentMap that backs `slices status`. Covered
   by unit tests in both directions; NOT yet re-run against a live cluster, so
   Stage 4 keeps the caveat scoped to pre-fix builds.

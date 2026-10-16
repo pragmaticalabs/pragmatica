@@ -57,7 +57,7 @@ aether cluster scale --role core --count 7
 aether cluster scale --source hetzner-eu --role core --count 7
 ```
 
-This issues `POST /api/cluster/scale` against the leader. The desired count for that `(source, role)` is written to KV-Store, which triggers a reconciliation pass. If the new size is greater than the current healthy node count, CTM calls `ComputeProvider.provision()` for each missing node; if smaller, it drains and terminates the surplus.
+This issues `POST /api/v1/cluster/scale` against the leader. The desired count for that `(source, role)` is written to KV-Store, which triggers a reconciliation pass. If the new size is greater than the current healthy node count, CTM calls `ComputeProvider.provision()` for each missing node; if smaller, it drains and terminates the surplus.
 
 Omitting `--source` when several sources declare the role is refused rather than guessed — the response names the candidates. Quorum safety is checked against the resulting **cluster-wide** core total, not the per-source count, so scaling one core source to 1 is accepted when another source carries 2.
 
@@ -70,7 +70,7 @@ aether status --format json | jq '.cluster.coreCount, .cluster.nodes | length'
 
 The leader must hold valid cloud credentials at runtime. This requires:
 
-1. **`[cloud]` section present in each node's `aether-config.toml`.** The `aether cluster bootstrap` workflow generates this automatically. If a node was deployed by other means, confirm the section exists — without it, `lifecycleManager.isCloudManaged()` is false on that node and any `/api/cluster/scale` request that elects it as leader will log `"no ComputeProvider, cannot auto-provision"` and silently no-op.
+1. **`[cloud]` section present in each node's `aether-config.toml`.** The `aether cluster bootstrap` workflow generates this automatically. If a node was deployed by other means, confirm the section exists — without it, `lifecycleManager.isCloudManaged()` is false on that node and any `/api/v1/cluster/scale` request that elects it as leader will log `"no ComputeProvider, cannot auto-provision"` and silently no-op.
 
 2. **`[cloud.credentials]` populated with a valid API token.** See [`reference/cloud-integration.md`](../../reference/cloud-integration.md#credential-propagation-to-nodes) for the credential-propagation model. **The literal API token is written to `aether-config.toml` on every cluster node.** Any node compromise leaks the cloud-provider token. Use a dedicated cloud project per cluster, restrict file system permissions on `aether-config.toml`, and rotate tokens periodically.
 

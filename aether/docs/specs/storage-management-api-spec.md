@@ -12,7 +12,7 @@ New file: `aether/node/src/main/java/org/pragmatica/aether/api/routes/StorageRou
 
 Implements `RouteSource`. Receives `Supplier<AetherNode>` (same pattern as `StatusRoutes`, `StreamRoutes`). AetherNode must expose `Map<String, StorageFactory.StorageSetup>` via a new accessor.
 
-### GET /api/storage
+### GET /api/v1/storage
 
 List all storage instances on this node.
 
@@ -37,7 +37,7 @@ List all storage instances on this node.
 }
 ```
 
-### GET /api/storage/{name}
+### GET /api/v1/storage/{name}
 
 Detailed status of one instance.
 
@@ -88,9 +88,9 @@ Force a metadata snapshot on this node.
 
 ## 2. Per-Cluster Routes
 
-These reuse the existing `fetchFromNode` fan-out pattern used by `/api/cluster/*` routes. The connected node broadcasts to all peers, collects responses, and merges.
+These reuse the existing `fetchFromNode` fan-out pattern used by `/api/v1/cluster/*` routes. The connected node broadcasts to all peers, collects responses, and merges.
 
-### GET /api/cluster/storage
+### GET /api/v1/cluster/storage
 
 All storage instances across all nodes, aggregated.
 
@@ -119,7 +119,7 @@ All storage instances across all nodes, aggregated.
 }
 ```
 
-### GET /api/cluster/storage/{name}
+### GET /api/v1/cluster/storage/{name}
 
 One instance across all nodes.
 
@@ -180,10 +180,10 @@ record ClusterStorageDetailResponse(String name, int nodeCount, long totalUsedBy
 Add `StorageCommand` to `AetherCli.java` following the `StreamCommand` pattern (picocli `@Command` with subcommands).
 
 ```
-aether storage list                           # GET /api/cluster/storage
-aether storage list --node <nodeId>           # GET /api/storage (on specified node)
-aether storage status <name>                  # GET /api/cluster/storage/{name}
-aether storage status <name> --node <nodeId>  # GET /api/storage/{name} (on specified node)
+aether storage list                           # GET /api/v1/cluster/storage
+aether storage list --node <nodeId>           # GET /api/v1/storage (on specified node)
+aether storage status <name>                  # GET /api/v1/cluster/storage/{name}
+aether storage status <name> --node <nodeId>  # GET /api/v1/storage/{name} (on specified node)
 aether storage snapshot <name>                # POST /api/storage/{name}/snapshot (on connected node)
 aether storage snapshot <name> --node <nodeId># POST on specified node
 ```
@@ -224,8 +224,8 @@ Snapshot triggered: artifacts epoch=43
 
 - [ ] `aether/node/src/main/java/org/pragmatica/aether/api/routes/StorageRoutes.java`
 - [ ] Implements `RouteSource`, receives `Supplier<AetherNode>`
-- [ ] Per-node routes: GET `/api/storage`, GET `/api/storage/{name}`, POST `/api/storage/{name}/snapshot`
-- [ ] Cluster routes: GET `/api/cluster/storage`, GET `/api/cluster/storage/{name}` -- fan out to all nodes via existing broadcast mechanism, merge results
+- [ ] Per-node routes: GET `/api/v1/storage`, GET `/api/v1/storage/{name}`, POST `/api/storage/{name}/snapshot`
+- [ ] Cluster routes: GET `/api/v1/cluster/storage`, GET `/api/v1/cluster/storage/{name}` -- fan out to all nodes via existing broadcast mechanism, merge results
 
 ### ManagementServer Wiring
 
@@ -242,11 +242,11 @@ Snapshot triggered: artifacts epoch=43
 
 | Route | Minimum Role |
 |-------|-------------|
-| GET /api/storage | VIEWER |
-| GET /api/storage/{name} | VIEWER |
+| GET /api/v1/storage | VIEWER |
+| GET /api/v1/storage/{name} | VIEWER |
 | POST /api/storage/{name}/snapshot | OPERATOR |
-| GET /api/cluster/storage | VIEWER |
-| GET /api/cluster/storage/{name} | VIEWER |
+| GET /api/v1/cluster/storage | VIEWER |
+| GET /api/v1/cluster/storage/{name} | VIEWER |
 
 Register in `RoutePermissionRegistry`.
 

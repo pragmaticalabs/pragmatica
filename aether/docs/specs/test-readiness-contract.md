@@ -14,8 +14,8 @@ The contract codifies what each definition actually measures, when to use it, an
 
 A cluster is **ready** when ALL of the following hold simultaneously:
 
-1. **Generation snapshot is converged** — `/api/cluster/generation` reports `core.members[]` with cardinality `≥ expected` (default `expected = NODE_COUNT`). The seed-node lifecycle write bug is fixed — `ClusterDeploymentState.handleNodeAdded` now plants a `JOINING` `NodeLifecycleKey` for seed nodes, so the initial leader's own entry is present from cluster bootstrap; see §6.
-2. **Leader is elected** — `/api/nodes/status` reports `cluster.leaderId` ≠ `"none"` and ≠ empty.
+1. **Generation snapshot is converged** — `/api/v1/cluster/generation` reports `core.members[]` with cardinality `≥ expected` (default `expected = NODE_COUNT`). The seed-node lifecycle write bug is fixed — `ClusterDeploymentState.handleNodeAdded` now plants a `JOINING` `NodeLifecycleKey` for seed nodes, so the initial leader's own entry is present from cluster bootstrap; see §6.
+2. **Leader is elected** — `/api/v1/nodes/status` reports `cluster.leaderId` ≠ `"none"` and ≠ empty.
 3. **Active-core floor is met** — `/api/v1/cluster/topology` reports `coreCount ≥ expected - 1`. (The `expected-1` floor tolerates one node lagging the consensus write of `ON_DUTY` while the rest of the cluster is operational — bounds the RC2 `MembershipView` convergence lag.)
 
 Properties (1)–(3) describe the cluster's *self-view* — the consensus plane's authoritative record of cluster shape. The contract is purely cluster-side; no per-node port probing. (An earlier revision added a Property 4 that iterated `MGMT_PORT..MGMT_PORT+N-1` calling `/health/ready` per port, but it broke under CTM auto-heal: replacement nodes are provisioned at ports outside that fixed range, so post-chaos tests cascaded with phantom "node X not ready" failures even though the cluster was operationally healthy. Tests that need per-node readiness verification should probe `/health/ready` directly with the appropriate port list.)
@@ -56,7 +56,7 @@ Two endpoints expose what looks like a "node count" but measure different things
 
 ### 2.1 `cluster_member_count` (generation snapshot)
 
-Source: `/api/cluster/generation` → count of entries in `core.members[]`.
+Source: `/api/v1/cluster/generation` → count of entries in `core.members[]`.
 
 Semantic: every node the cluster knows about, including:
 - nodes in `JOINING` state (not yet ON_DUTY)
@@ -112,7 +112,7 @@ Four endpoints expose health information. Each has a distinct semantic.
 | `GET /health/live` | 200 if JVM is responding; never 5xx for liveness-only check | `{"status": "UP"\|"DOWN", "nodeId", "state", "ready"}` | In-memory NodeState ∈ {STARTING, JOINING, ACTIVE, DRAINING, STOPPED} | Liveness probe (k8s livenessProbe). "Is the process alive?" |
 | `GET /health/ready` | 200 if ready to accept new work; 503 if not ready | `{"status": "UP"\|"DOWN", "nodeId", "state", "ready", "components[]"}` | Composite: consensus + quorum + routes + lifecycle | Readiness probe (k8s readinessProbe). "Should the load balancer send me traffic?" |
 | `GET /api/v1/health` | 200 always (returns body even if unhealthy) | `{"status": "healthy"\|"unhealthy", "ready", "quorum", "nodeCount", "connectedPeers", ...}` | Aggregated node + cluster view | Legacy direct check; use before LB available. Operator dashboard. |
-| `GET /api/nodes/status` | 200 always | Full cluster overview (see `StatusResponse` in `ManagementApiResponses.java`) | Composite: KV ∪ MembershipView ∪ topology ∪ leader | Cluster-wide topology query; "who's the leader?", "what's the cluster shape?" |
+| `GET /api/v1/nodes/status` | 200 always | Full cluster overview (see `StatusResponse` in `ManagementApiResponses.java`) | Composite: KV ∪ MembershipView ∪ topology ∪ leader | Cluster-wide topology query; "who's the leader?", "what's the cluster shape?" |
 
 ### 3.1 When to use which
 
@@ -122,13 +122,13 @@ Question: **"Should THIS node receive new traffic?"** → `/health/ready`. Retur
 
 Question: **"Is the WHOLE CLUSTER operational?"** → `/api/v1/health`. Aggregated. Use when you don't want to construct a per-node fan-out.
 
-Question: **"Who's the leader / how many members / what's the topology?"** → `/api/nodes/status`. Full picture, not a probe; use for orchestration logic.
+Question: **"Who's the leader / how many members / what's the topology?"** → `/api/v1/nodes/status`. Full picture, not a probe; use for orchestration logic.
 
 ### 3.2 What NOT to do
 
 - ❌ Don't use `/api/v1/health` as a per-node readiness probe (it's aggregated; doesn't tell you if THIS node is ready)
 - ❌ Don't use `/health/live` to decide whether to send traffic (a draining node is alive but should not receive new requests)
-- ❌ Don't use `/api/nodes/status` for liveness probes (it's expensive — full KV + MembershipView + topology join)
+- ❌ Don't use `/api/v1/nodes/status` for liveness probes (it's expensive — full KV + MembershipView + topology join)
 - ❌ Don't use `/health/ready` to count nodes (it returns one node's view, not a cluster cardinality)
 
 ---
@@ -173,14 +173,14 @@ For test authors. Lookup table.
 | Is THIS node's JVM up? | `/health/live` (§3) | Cheap probe |
 | Should THIS node receive traffic? | `/health/ready` (§3) | Returns 503 if not |
 | Aggregated cluster health? | `/api/v1/health` (§3) | One-shot composite |
-| Who's the leader / what's the topology? | `/api/nodes/status` (§3) | Full picture |
+| Who's the leader / what's the topology? | `/api/v1/nodes/status` (§3) | Full picture |
 | What error rate is acceptable for my test? | §4 tier table | Match to disruption magnitude |
 
 ---
 
 ## 6. Future work
 
-- **Seed-node lifecycle write** — RESOLVED. `ClusterDeploymentState.handleNodeAdded` now plants a `JOINING` `NodeLifecycleKey` for seed nodes when no entry exists (idempotent — preserves existing state). The standard MembershipFsm machinery then drives `JOINING → ON_DUTY`. Effect: the seed node (initial leader at cluster bootstrap) appears in `/api/nodes/lifecycle`, `/api/cluster/generation` `core.members[]`, and KV-Store from cluster start. Property 1 of §1.1 returned to strict equality (`== NODE_COUNT`). The N-1 relaxation in `aether/tests/integration/lib/cluster.sh::_cluster_is_ready` and the three relaxed assertions in `aether/tests/integration/suites/00-smoke/test-cluster-formation.sh` (introduced in `ef5013881`) are reverted in the same commit. Code site: `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm/ClusterDeploymentState.java::ensureSeedNodeLifecycleEntry`. Regression test: `ClusterDeploymentStateSeedNodeLifecycleTest` (3 cases — plant-when-absent, idempotent-when-present, non-seed-no-op).
-- **`SelfDrainInitiated` event** (T3.1) — RESOLVED in this commit. `SELF_DRAIN_INITIATED` is now emitted by the draining node itself at the `ACTIVE → DRAINING` transition (intentionally NOT leader-gated — a partition victim is the only authoritative source). `test-self-drain-quorum-loss.sh` consumes the event from `/api/events` via the unioned-multi-node `topology_events_since` helper, replacing the `docker logs | grep 'Self-drain: DRAINING on'` workaround.
+- **Seed-node lifecycle write** — RESOLVED. `ClusterDeploymentState.handleNodeAdded` now plants a `JOINING` `NodeLifecycleKey` for seed nodes when no entry exists (idempotent — preserves existing state). The standard MembershipFsm machinery then drives `JOINING → ON_DUTY`. Effect: the seed node (initial leader at cluster bootstrap) appears in `/api/v1/nodes/lifecycle`, `/api/v1/cluster/generation` `core.members[]`, and KV-Store from cluster start. Property 1 of §1.1 returned to strict equality (`== NODE_COUNT`). The N-1 relaxation in `aether/tests/integration/lib/cluster.sh::_cluster_is_ready` and the three relaxed assertions in `aether/tests/integration/suites/00-smoke/test-cluster-formation.sh` (introduced in `ef5013881`) are reverted in the same commit. Code site: `aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/fsm/ClusterDeploymentState.java::ensureSeedNodeLifecycleEntry`. Regression test: `ClusterDeploymentStateSeedNodeLifecycleTest` (3 cases — plant-when-absent, idempotent-when-present, non-seed-no-op).
+- **`SelfDrainInitiated` event** (T3.1) — RESOLVED in this commit. `SELF_DRAIN_INITIATED` is now emitted by the draining node itself at the `ACTIVE → DRAINING` transition (intentionally NOT leader-gated — a partition victim is the only authoritative source). `test-self-drain-quorum-loss.sh` consumes the event from `/api/v1/events` via the unioned-multi-node `topology_events_since` helper, replacing the `docker logs | grep 'Self-drain: DRAINING on'` workaround.
 - **Node departure widening** (RC2 #224) — `NODE_LEFT` vs `NODE_FAILED` event split + `reason=transport-failure` vs `reason=swim-faulty` widening is bound to the two-path SwimFaulty vs TransportUnreachable architectural finding. Out of scope for RC1.
 - **Per-suite threshold rationale comments** (T5.4) — each suite using a non-1% threshold should carry a one-line comment naming the tier from §4 it falls into. Mechanical follow-up.

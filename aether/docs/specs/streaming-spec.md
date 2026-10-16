@@ -1651,7 +1651,7 @@ New endpoints for stream management:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/streams` | List all streams with partition counts and status |
+| GET | `/api/v1/streams` | List all streams with partition counts and status |
 | GET | `/api/streams/{name}` | Stream detail: partitions, offsets, consumer groups |
 | GET | `/api/streams/{name}/consumers` | Consumer groups with lag and assignment details |
 | POST | `/api/streams/{name}/consumers/{group}/reset` | Reset consumer group cursor to earliest/latest |

@@ -327,7 +327,7 @@ This information is **not** stored in a KV-Store node-state record. Node members
 presence-derived (SWIM/QUIC via NTT); node readiness/drain is heartbeat-reported and
 leader-cached. This state is NEVER stored in or committed to the KV-Store. The provider
 identifier travels with the node's presence/heartbeat signals and is exposed through the
-management API (`GET /api/nodes?provider=…`) for migration tooling. See
+management API (`GET /api/v1/nodes?provider=…`) for migration tooling. See
 `aether/docs/specs/membership-architecture-v2-spec.md` for the authoritative model.
 
 ### 5.1 Provider Identifiers
@@ -689,18 +689,18 @@ aether cluster destroy --provider aws [--yes]
 aether cluster status --provider gcp
 ```
 
-**Implementation:** These commands filter nodes by the provider identifier carried with each node's presence/heartbeat signals (never a KV-Store node-state record). The `--provider` flag maps to a query parameter on the management API: `GET /api/nodes?provider=aws`.
+**Implementation:** These commands filter nodes by the provider identifier carried with each node's presence/heartbeat signals (never a KV-Store node-state record). The `--provider` flag maps to a query parameter on the management API: `GET /api/v1/nodes?provider=aws`.
 
 ### 8.5 Management API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/cluster/migrate` | Start migration (body: migration config JSON) |
+| `POST` | `/api/v1/cluster/migrate` | Start migration (body: migration config JSON) |
 | `GET` | `/api/cluster/migrate/status` | Get current migration status |
 | `POST` | `/api/cluster/migrate/rollback` | Initiate rollback |
 | `POST` | `/api/cluster/migrate/pause` | Pause migration (finish current step, hold) |
 | `POST` | `/api/cluster/migrate/resume` | Resume paused migration |
-| `GET` | `/api/nodes?provider={id}` | List nodes filtered by provider |
+| `GET` | `/api/v1/nodes?provider={id}` | List nodes filtered by provider |
 
 ---
 
@@ -1176,7 +1176,7 @@ aether cluster migrate --config reverse-migration.toml
 
 **Scope:**
 - Carry the `provider` identifier with each node's presence/heartbeat signals (never a KV-Store node-state record)
-- Add `?provider=` query parameter to `GET /api/nodes`
+- Add `?provider=` query parameter to `GET /api/v1/nodes`
 - Add `--provider` flag to `ClusterDrainCommand`, `ClusterDestroyCommand`, `ClusterStatusCommand`
 - Update tests
 

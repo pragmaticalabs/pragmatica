@@ -90,9 +90,9 @@ Seven failure classes were identified across a 4-audit review of the harness (li
 
 **Symptom:** The "9 members reported / 2 VMs alive" problem — the cluster's membership view (from consensus KV-Store) contains nodes that the underlying infrastructure has already destroyed or that never fully booted. The harness papers over this with `max(coreCount, coreNodes.length)` and docker-ps guards that are not available on cloud.
 
-**Root cause:** The product has no single endpoint that combines a node's cluster-identity (nodeId), infrastructure-address, role, SWIM liveness, and reported lifecycle state. Tests must stitch together three sources: `/api/nodes/lifecycle` (cluster FSM), SWIM reachability (not directly exposed), and `/api/nodes/status/{id}` (per-node, requires forwarding). The `pick_non_leader` helper in lib/cluster.sh iterates this stitch manually on every call.
+**Root cause:** The product has no single endpoint that combines a node's cluster-identity (nodeId), infrastructure-address, role, SWIM liveness, and reported lifecycle state. Tests must stitch together three sources: `/api/v1/nodes/lifecycle` (cluster FSM), SWIM reachability (not directly exposed), and `/api/v1/nodes/status/{id}` (per-node, requires forwarding). The `pick_non_leader` helper in lib/cluster.sh iterates this stitch manually on every call.
 
-**Product fix:** Tier A2 (`GET /api/nodes/live`).
+**Product fix:** Tier A2 (`GET /api/v1/nodes/live`).
 
 ### R3 — Regex-JSON parsing coupled to field names and layout
 
@@ -209,14 +209,14 @@ RouteTarget: NodeIdParam(paramIndex=0)  // forward to target node, local handler
 
 **Harness replacement:** `cloud_public_ip` and the `_registered_by_to_offset` regex in lib/common.sh:698 can be replaced by `aether nodes resolve <nodeId> --format value --field address`. Works for CTM-provisioned ULID-named replacements without any bootstrap-state or cloud-API dependency.
 
-### A2 — `GET /api/nodes/live` — unified live-node document
+### A2 — `GET /api/v1/nodes/live` — unified live-node document
 
 **Eliminates:** R2 (zombie/9-vs-2 confusion, `pick_non_leader` 3-source stitch, CTM-replacement invisibility).
 
 **Route:**
 
 ```
-GET /api/nodes/live
+GET /api/v1/nodes/live
 ManagementRoute enum entry: NODES_LIVE
 RouteTarget: ANY  // served from any node via existing forward-capable consumer pattern
 ```
@@ -264,10 +264,10 @@ RouteTarget: ANY  // served from any node via existing forward-capable consumer 
 
 | Endpoint | Frozen fields |
 |----------|--------------|
-| `GET /api/cluster/status` | `leaderId`, `coreCount`, `phase` |
-| `GET /api/nodes/status` | `nodeId`, `lifecycleState`, `isLeader` |
-| `GET /api/nodes/lifecycle` | array element `nodeId`, `derivedStatus` |
-| `GET /api/nodes/live` (new, A2) | `nodeId`, `swimAlive`, `reportedState` |
+| `GET /api/v1/cluster/status` | `leaderId`, `coreCount`, `phase` |
+| `GET /api/v1/nodes/status` | `nodeId`, `lifecycleState`, `isLeader` |
+| `GET /api/v1/nodes/lifecycle` | array element `nodeId`, `derivedStatus` |
+| `GET /api/v1/nodes/live` (new, A2) | `nodeId`, `swimAlive`, `reportedState` |
 
 Document these frozen fields in `aether/docs/reference/management-api.md` under a "Schema stability contract" subsection.
 

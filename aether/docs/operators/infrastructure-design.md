@@ -38,11 +38,11 @@ Pattern: `Generator.generate(AetherConfig, Path) -> Result<GeneratorOutput>`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/deploy` | POST | Deploy slice |
-| `/api/scale` | POST | Scale instances |
+| `/api/v1/deploy` | POST | Deploy slice |
+| `/api/v1/scale` | POST | Scale instances |
 | `/api/undeploy` | POST | Undeploy slice |
-| `/api/blueprints` | POST | Apply blueprint |
-| `/api/nodes` | GET | List nodes |
+| `/api/v1/blueprints` | POST | Apply blueprint |
+| `/api/v1/nodes` | GET | List nodes |
 | `/health` | GET | Health check |
 
 ---

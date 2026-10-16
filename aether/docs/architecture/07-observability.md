@@ -23,7 +23,7 @@ graph TB
     subgraph Outputs["Output Channels"]
         Prom["/metrics/prometheus"]
         WS["/ws/dashboard<br/>(WebSocket)"]
-        REST["/api/metrics"]
+        REST["/api/v1/metrics"]
     end
 
     MC1 -->|"MetricsPong<br/>(every 1s)"| MAG

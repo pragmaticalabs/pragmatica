@@ -32,7 +32,7 @@ Additionally, the three separate managers share 80%+ of their code: leader check
 - **REQ-2**: All deployments operate on blueprints (all slices move together)
 - **REQ-3**: Four strategies: `IMMEDIATE`, `ROLLING`, `CANARY`, `BLUE_GREEN`
 - **REQ-4**: Atomic multi-slice transitions via consensus batch apply
-- **REQ-5**: Single REST endpoint namespace: `/api/deploy/*`
+- **REQ-5**: Single REST endpoint namespace: `/api/v1/deploy/*`
 - **REQ-6**: Single CLI command group: `aether deploy`
 - **REQ-7**: Complete removal of old per-strategy endpoints, managers, and CLI commands
 - **REQ-8**: Backward-compatible KV-Store key for deployment state (single `DeploymentKey`)
@@ -214,13 +214,13 @@ public record DeploymentConfig(
 
 ### 3.1 Endpoint Summary
 
-All endpoints under `/api/deploy`. Replaces `/api/rolling-update/*`, `/api/canary/*`, `/api/blue-green/*`.
+All endpoints under `/api/v1/deploy`. Replaces `/api/rolling-update/*`, `/api/canary/*`, `/api/blue-green/*`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/deploy` | Start a deployment |
-| `GET` | `/api/deploy` | List all deployments |
-| `GET` | `/api/deploy/{id}` | Get deployment by ID |
+| `POST` | `/api/v1/deploy` | Start a deployment |
+| `GET` | `/api/v1/deploy` | List all deployments |
+| `GET` | `/api/v1/deploy/{id}` | Get deployment by ID |
 | `GET` | `/api/deploy/{id}/health` | Get deployment health metrics |
 | `POST` | `/api/deploy/{id}/promote` | Promote (advance canary stage, or switch blue-green) |
 | `POST` | `/api/deploy/{id}/routing` | Adjust traffic routing (rolling) |
@@ -229,7 +229,7 @@ All endpoints under `/api/deploy`. Replaces `/api/rolling-update/*`, `/api/canar
 
 ### 3.2 Request/Response Shapes
 
-#### POST /api/deploy -- Start Deployment
+#### POST /api/v1/deploy -- Start Deployment
 
 ```json
 {
@@ -308,7 +308,7 @@ Field rules:
 }
 ```
 
-#### GET /api/deploy -- List Deployments
+#### GET /api/v1/deploy -- List Deployments
 
 Optional query parameter: `?active=true` (default: only active)
 
@@ -735,7 +735,7 @@ static class StartCommand implements Callable<Integer> {
 
     @Override public Integer call() {
         var body = buildDeployBody();
-        var response = parent.postToNode("/api/deploy", body);
+        var response = parent.postToNode("/api/v1/deploy", body);
         return OutputFormatter.printQuery(response, parent.outputOptions());
     }
 }

@@ -555,7 +555,7 @@ Verify the deployment:
 aether blueprints status order-system:1.0.0
 
 # Or use the Management API directly
-curl http://localhost:5150/api/blueprint/order-system:1.0.0/status
+curl http://localhost:5150/api/v1/blueprints/status/order-system:1.0.0
 
 # Or use the CLI:
 aether -c localhost:5150 blueprints status order-system:1.0.0
@@ -627,7 +627,7 @@ Now you can scale the extracted slice using the CLI or Management API:
 aether scale com.example:order-processor:1.0.0 -n 5
 
 # Or scale via Management API
-curl -X POST http://localhost:5150/api/scale \
+curl -X POST http://localhost:5150/api/v1/scale \
   -H "Content-Type: application/json" \
   -d '{"artifact": "com.example:order-processor:1.0.0", "instances": 5}'
 
@@ -643,7 +643,7 @@ aether status
 
 # Via Management API
 curl http://localhost:5150/api/status
-curl http://localhost:5150/api/slices/status
+curl http://localhost:5150/api/v1/slices/status
 
 # Or use the CLI:
 aether -c localhost:5150 status

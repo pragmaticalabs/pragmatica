@@ -419,7 +419,7 @@ GovernorAnnouncementValue {
 - 5 core nodes, zero communities, zero workers.
 - Snapshot: `coreMembers[5]`, `communities = {}`, `partitions = { "default": owner = core-leader }`, `derivedMode = COREONLY`.
 - Only Tier 1 ping-pong active.
-- `/api/cluster/generation` exposes `mode: "core-only"`.
+- `/api/v1/cluster/generation` exposes `mode: "core-only"`.
 
 ### 11.2 Growth to HIERARCHICAL
 
@@ -552,7 +552,7 @@ Kept:
 
 ### 14.1 REST API
 
-**`GET /api/cluster/generation`** — returns the current snapshot as observed by the queried node:
+**`GET /api/v1/cluster/generation`** — returns the current snapshot as observed by the queried node:
 
 ```json
 {
@@ -582,7 +582,7 @@ Kept:
 }
 ```
 
-**`POST /api/cluster/await-quiesced?epoch={ i:t:c }&timeout=30s`** — blocks until the queried node has `observedEpoch ≥ requested` AND the leader reports cluster-wide quiescence at ≥ that epoch; returns 200 on success, 408 on timeout, 400 for an epoch not in `incarnation:term:counter` form (the pre-#1529 `t:c` form included).
+**`POST /api/v1/cluster/await-quiesced?epoch={ i:t:c }&timeout=30s`** — blocks until the queried node has `observedEpoch ≥ requested` AND the leader reports cluster-wide quiescence at ≥ that epoch; returns 200 on success, 408 on timeout, 400 for an epoch not in `incarnation:term:counter` form (the pre-#1529 `t:c` form included).
 
 ### 14.2 Quiesced = what exactly?
 
@@ -603,7 +603,7 @@ aether cluster await-quiesced --epoch=1:7:142 [--timeout=30s]   # incarnation:te
 
 ### 14.4 Events
 
-`/api/events` gains an event stream of `GenerationChanged(oldEpoch, newEpoch, reason)` so external observers can subscribe.
+`/api/v1/events` gains an event stream of `GenerationChanged(oldEpoch, newEpoch, reason)` so external observers can subscribe.
 
 *(Superseded by #722: never built. The event type, its `GenerationReason`, sink and aggregator route
 were deleted; the live epoch is `(leaderTerm, tenure-tick)` and advances once per ping interval of
@@ -688,7 +688,7 @@ leadership — a 1 Hz "event" nobody should subscribe to — while leader change
 - `TopologyManagementMessage.AddNode/RemoveNode/SetClusterSize` records + all wiring removed.
 - `evictLongSuspectedPeers`, `tombstonedNodes`, deficit hysteresis, Quic flush hysteresis removed.
 - `GovernorCleanup` simplified (ownership-term fencing replaces manual dedup).
-- `/api/cluster/generation` + `POST /api/cluster/await-quiesced` routes added.
+- `/api/v1/cluster/generation` + `POST /api/v1/cluster/await-quiesced` routes added.
 - CLI: `aether cluster generation`, `await-quiesced`.
 
 ### Commit 6 — Test harness simplification + acceptance run

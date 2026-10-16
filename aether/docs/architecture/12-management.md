@@ -70,17 +70,17 @@ route prefixes, not a versioned scheme the code does not implement.
 
 | Category | Base Path | Endpoints |
 |----------|-----------|-----------|
-| **Cluster** | `/api/cluster` | topology, status, generation, scale, config, provisioning, membership |
-| **Blueprints** | `/api/blueprints` | CRUD operations |
-| **Slices** | `/api/slices` | list, status, topology, config |
-| **Metrics** | `/api/metrics` | snapshot, per-node, per-slice, transport, timeouts |
-| **Scaling** | `/api/scale` | set scaling config |
-| **Deploy** | `/api/deploy` | start (canary/blue-green/rolling), promote, rollback, complete |
-| **Artifacts** | `/repository` | upload (write-once, release versions only), download, list, info, archive (`DELETE`; metrics under `/api/artifacts/metrics`) |
-| **Alerts** | `/api/alerts` | thresholds, active alerts, history |
-| **Controller** | `/api/controller` | config, status, scaling decisions |
-| **Observability** | `/api/observability` | per-method depth and config, get/set/delete |
-| **Prometheus** | `/api/metrics/prometheus` | Prometheus scrape endpoint |
+| **Cluster** | `/api/v1/cluster` | topology, status, generation, scale, config, provisioning, membership |
+| **Blueprints** | `/api/v1/blueprints` | CRUD operations |
+| **Slices** | `/api/v1/slices` | list, status, topology, config |
+| **Metrics** | `/api/v1/metrics` | snapshot, per-node, per-slice, transport, timeouts |
+| **Scaling** | `/api/v1/scale` | set scaling config |
+| **Deploy** | `/api/v1/deploy` | start (canary/blue-green/rolling), promote, rollback, complete |
+| **Artifacts** | `/repository` | upload (write-once, release versions only), download, list, info, archive (`DELETE`; metrics under `/api/v1/artifacts/metrics`) |
+| **Alerts** | `/api/v1/alerts` | thresholds, active alerts, history |
+| **Controller** | `/api/v1/controller` | config, status, scaling decisions |
+| **Observability** | `/api/v1/observability` | per-method depth and config, get/set/delete |
+| **Prometheus** | `/api/v1/metrics/prometheus` | Prometheus scrape endpoint |
 
 ### WebSocket Endpoints
 

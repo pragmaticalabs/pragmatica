@@ -121,7 +121,7 @@ runtime-switchable (RFC-0010, realized here).** "Deploy-time-static for RC1" wou
 for the observability axis; this spec realizes RFC-0010 instead.
 
 **Already shipped (don't rebuild):** dynamic **log levels** work end-to-end today (`LogLevelRegistry` +
-`LogLevelKey` + `/api/logging/levels`) — the table-stakes capability. This spec generalizes that proven
+`LogLevelKey` + `/api/v1/logging/levels`) — the table-stakes capability. This spec generalizes that proven
 pattern to the full observability seam over slices *and* resources.
 
 ---
@@ -170,8 +170,8 @@ capture, no waterfall, no `/api/traces/config`, principal/originNode lost cross-
 
 ### 3.5 The proven KV→push pattern — EXISTS ×4
 
-`LogLevelRegistry` (`AetherNode.java:1317`, `/api/logging/levels`), `ObservabilityDepthRegistry`
-(`:86-97`, `ObservabilityDepthKey` `AetherKey.java:357-391`, `/api/observability/depth`),
+`LogLevelRegistry` (`AetherNode.java:1317`, `/api/v1/logging/levels`), `ObservabilityDepthRegistry`
+(`:86-97`, `ObservabilityDepthKey` `AetherKey.java:357-391`, `/api/v1/observability/depth`),
 `AlertManager`, `DynamicConfigManager` (`onConfigPut:82-88` → `provider.put`). Each: a `@MessageReceiver`
 on a KV key pushes new state into a local registry — **exactly the write-side mechanism this spec needs.**
 
@@ -375,7 +375,7 @@ The working observability logic — depth-aware logging (`ObservabilityIntercept
 `InvocationMetricsCollector`, trace capture (`InvocationTraceStore`) — is **reused as the body of the
 system aspect**, relocated from `InvocationHandler`/`SliceInvoker` onto the always-on seam, and extended
 to resource calls. The existing `ObservabilityDepthRegistry`/`ObservabilityDepthKey` +
-`/api/observability/depth` become the depth dimension of the new config; `LogLevelRegistry` continues to
+`/api/v1/observability/depth` become the depth dimension of the new config; `LogLevelRegistry` continues to
 own the slf4j threshold (orthogonal, keep). No observability logic is thrown away — it is rehomed and
 made switchable.
 
@@ -417,7 +417,7 @@ default_depth = 1
 - **KV key:** `ObservabilityConfigKey` (per injection point), mirroring `ObservabilityDepthKey`
   (`AetherKey.java:357-391`).
 - **Management routes (REST→CLI→Docs triad, CLAUDE.md invariant #1):** extend
-  `/api/observability/...` — `GET` current config per injection point, `PUT` per-facet/depth, `DELETE`
+  `/api/v1/observability/...` — `GET` current config per injection point, `PUT` per-facet/depth, `DELETE`
   reset. CLI `aether observability set <injection-point> --tracing on --depth 3`; docs in
   `reference/management-api.md` + `cli.md`.
 - Reuses `ObservabilityRoutes` (`:148-170`) + the `ObservabilityDepthRegistry` storage pattern.

@@ -507,7 +507,7 @@ The optimistic concurrency flow:
 
 1. CLI reads current `ClusterConfigValue` from cluster
 2. CLI computes diff, confirms with user
-3. CLI sends `POST /api/cluster/config` with `expected_version` field
+3. CLI sends `POST /api/v1/cluster/config` with `expected_version` field
 4. Server compares `expected_version` against stored `configVersion`
 5. If match: apply changes, increment version, write
 6. If mismatch: return `ClusterConfigError.VersionConflict` with current version
@@ -569,7 +569,7 @@ Step 6: Wait for DNS/Network (REQ-BOOT-06)
   |
 Step 7: Update Seed Peers (REQ-BOOT-07)
   |  Now that all IPs are known, push updated seed-peer list to each node
-  |  via management API: POST /api/config with seed-peers value
+  |  via management API: POST /api/v1/config with seed-peers value
   |  [ASSUMPTION] Alternatively, use DiscoveryProvider for tag-based discovery
   |  so seed-peers are not needed in config
   |
@@ -579,7 +579,7 @@ Step 8: Wait for Quorum (REQ-BOOT-08)
   |  Timeout: 10 minutes total
   |
 Step 9: Store Cluster Config in KV-Store (REQ-BOOT-09)
-  |  POST /api/cluster/config to leader node
+  |  POST /api/v1/cluster/config to leader node
   |  Body: full aether-cluster.toml content + extracted fields
   |  configVersion = 1
   |
@@ -649,7 +649,7 @@ REQ-APPLY-01: `apply` compares the new TOML against the `ClusterConfigValue` sto
 
 | Changed Field | Action | Mechanism | Risk |
 |---------------|--------|-----------|------|
-| `cluster.core.count` (increase) | Scale up | `CTM.setDesiredSize(newCount)` via `POST /api/cluster/scale` | Low |
+| `cluster.core.count` (increase) | Scale up | `CTM.setDesiredSize(newCount)` via `POST /api/v1/cluster/scale` | Low |
 | `cluster.core.count` (decrease) | Scale down | `CTM.setDesiredSize(newCount)` -- drains excess nodes | Medium |
 | `cluster.version` | Rolling upgrade | `RollingUpdateManager.startUpdate()` via management API | High |
 | `cluster.core.min` | Update limits | Store in KV-Store, CTM reads on next reconcile | Low |
@@ -676,7 +676,7 @@ To change deployment type, destroy and re-bootstrap the cluster.
 
 ```
 1. Parse and validate new config
-2. Fetch current ClusterConfigValue from GET /api/cluster/config
+2. Fetch current ClusterConfigValue from GET /api/v1/cluster/config
 3. Compute diff (field-by-field comparison)
 4. If --dry-run: print planned actions and exit
 5. Validate immutability constraints (REQ-APPLY-02)
@@ -721,7 +721,7 @@ aether cluster export --format json            # Emit the JSON envelope (tomlCon
 
 ### 6.2 Behavior
 
-REQ-EXPORT-01: Fetch `ClusterConfigValue` from `GET /api/cluster/config`. Return the `tomlContent` field as-is.
+REQ-EXPORT-01: Fetch `ClusterConfigValue` from `GET /api/v1/cluster/config`. Return the `tomlContent` field as-is.
 
 REQ-EXPORT-02: With `--with-status`, append runtime state as comments:
 
@@ -739,7 +739,7 @@ type = "hetzner"
 
 REQ-EXPORT-03: The exported TOML is a valid `aether-cluster.toml` that can be used with `apply` or `bootstrap` (for a new cluster).
 
-REQ-EXPORT-04: With `--format json` (and `--field`, which implies JSON), emit the raw management-API envelope verbatim — the JSON object returned by `GET /api/cluster/config` (`tomlContent`, `clusterName`, `configVersion`, `coreCount`). The TOML body remains accessible as the `tomlContent` field for downstream tooling. `--with-status` is a TOML-format affordance and is ignored under JSON.
+REQ-EXPORT-04: With `--format json` (and `--field`, which implies JSON), emit the raw management-API envelope verbatim — the JSON object returned by `GET /api/v1/cluster/config` (`tomlContent`, `clusterName`, `configVersion`, `coreCount`). The TOML body remains accessible as the `tomlContent` field for downstream tooling. `--with-status` is a TOML-format affordance and is ignored under JSON.
 
 ---
 
@@ -778,7 +778,7 @@ REQ-SCALE-03: Scale-down drains excess nodes before terminating. Node selection 
 ### 7.3 REST Flow
 
 ```
-CLI: POST /api/cluster/scale { "source": "hetzner-eu", "role": "core", "count": 7, "expectedVersion": 5 }
+CLI: POST /api/v1/cluster/scale { "source": "hetzner-eu", "role": "core", "count": 7, "expectedVersion": 5 }
 Server:
   1. Check expectedVersion against the stored configVersion
   2. Resolve the source (infer when blank; refuse if ambiguous or undeclared)
@@ -869,13 +869,13 @@ REQ-STATUS-01: Status aggregates from multiple management API endpoints:
 | Data | Source Endpoint |
 |------|----------------|
 | Cluster info, leader, uptime | `GET /api/status` |
-| Node list, roles | `GET /api/nodes` |
+| Node list, roles | `GET /api/v1/nodes` |
 | Health, quorum | `GET /api/v1/health` |
-| Node lifecycle states | `GET /api/nodes/lifecycle` |
+| Node lifecycle states | `GET /api/v1/nodes/lifecycle` |
 | Topology (core count, limits) | `GET /api/v1/cluster/topology` |
 | Certificate expiry | `GET /api/certificate` |
-| Cluster config (desired state) | `GET /api/cluster/config` (new) |
-| Slice deployment info | `GET /api/slices` |
+| Cluster config (desired state) | `GET /api/v1/cluster/config` (new) |
+| Slice deployment info | `GET /api/v1/slices` |
 
 REQ-STATUS-02: Desired vs actual comparison:
 - If `core.count` in config != actual healthy core count: show `(desired: N, actual: M)`
@@ -1088,7 +1088,7 @@ function merge(base: TomlDocument, overlay: TomlDocument) -> TomlDocument:
 
 These endpoints are added to `ManagementServer` via a new `ClusterConfigRoutes` route source.
 
-#### POST /api/cluster/config
+#### POST /api/v1/cluster/config
 
 Store or update the cluster configuration in KV-Store.
 
@@ -1115,7 +1115,7 @@ Store or update the cluster configuration in KV-Store.
 - `400 Bad Request`: Invalid TOML or validation failure
 - `401 Unauthorized`: Missing or invalid API key
 
-#### GET /api/cluster/config
+#### GET /api/v1/cluster/config
 
 Retrieve the current cluster configuration.
 
@@ -1137,7 +1137,7 @@ Retrieve the current cluster configuration.
 **Errors:**
 - `404 Not Found`: No cluster config stored (cluster not bootstrapped via declarative config)
 
-#### GET /api/cluster/status
+#### GET /api/v1/cluster/status
 
 Full cluster status including desired vs actual state.
 
@@ -1170,7 +1170,7 @@ Full cluster status including desired vs actual state.
 }
 ```
 
-#### POST /api/cluster/scale
+#### POST /api/v1/cluster/scale
 
 Adjust the desired count of one `(source, role)`. The body is `ManagementApiResponses.ScaleRequest`
 (see the scale flow above); a blank `source` is inferred when exactly one source declares the role.
@@ -1203,7 +1203,7 @@ Adjust the desired count of one `(source, role)`. The body is `ManagementApiResp
 - `409 Conflict`: version mismatch, quorum safety violation (resulting core total below 3 or `coreMin`),
   no cluster configuration stored
 
-#### POST /api/cluster/upgrade
+#### POST /api/v1/cluster/upgrade
 
 Initiate a version upgrade.
 
@@ -1248,17 +1248,17 @@ Poll upgrade progress.
 | Endpoint | Used By |
 |----------|---------|
 | `GET /api/status` | `status` command |
-| `GET /api/nodes` | `status` command |
+| `GET /api/v1/nodes` | `status` command |
 | `GET /api/v1/health` | `status`, bootstrap health polling |
 | `GET /health/ready` | Bootstrap quorum check |
 | `GET /health/live` | Bootstrap liveness check |
-| `GET /api/nodes/lifecycle` | `status` command |
+| `GET /api/v1/nodes/lifecycle` | `status` command |
 | `GET /api/v1/cluster/topology` | `status` command |
 | `GET /api/certificate` | `status` command |
 | `POST /api/node/drain/{nodeId}` | `drain`, `destroy`, `upgrade` commands |
 | `POST /api/node/activate/{nodeId}` | `upgrade` command |
 | `POST /api/node/shutdown/{nodeId}` | `destroy` command |
-| `GET /api/slices` | `status` command |
+| `GET /api/v1/slices` | `status` command |
 
 ### 14.3 Route Source
 
@@ -1274,12 +1274,12 @@ public final class ClusterConfigRoutes implements RouteSource {
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(
-            Route.post("/api/cluster/config").withBody(...).to(this::storeConfig).asJson(),
-            Route.get("/api/cluster/config").toJson(this::getConfig),
-            Route.get("/api/cluster/status").toJson(this::getClusterStatus),
-            Route.post("/api/cluster/scale").withBody(...).to(this::scale).asJson(),
-            Route.post("/api/cluster/upgrade").withBody(...).to(this::startUpgrade).asJson(),
-            Route.get("/api/cluster/upgrade").withPath(aString()).to(this::getUpgrade).asJson()
+            Route.post("/api/v1/cluster/config").withBody(...).to(this::storeConfig).asJson(),
+            Route.get("/api/v1/cluster/config").toJson(this::getConfig),
+            Route.get("/api/v1/cluster/status").toJson(this::getClusterStatus),
+            Route.post("/api/v1/cluster/scale").withBody(...).to(this::scale).asJson(),
+            Route.post("/api/v1/cluster/upgrade").withBody(...).to(this::startUpgrade).asJson(),
+            Route.get("/api/v1/cluster/upgrade").withPath(aString()).to(this::getUpgrade).asJson()
         );
     }
 }
@@ -1296,11 +1296,11 @@ All new endpoints require OPERATOR or ADMIN role (existing RBAC Tier 1):
 
 | Endpoint | Method | Required Role |
 |----------|--------|---------------|
-| `/api/cluster/config` | GET | VIEWER |
-| `/api/cluster/config` | POST | OPERATOR |
-| `/api/cluster/status` | GET | VIEWER |
-| `/api/cluster/scale` | POST | OPERATOR |
-| `/api/cluster/upgrade` | POST | ADMIN |
+| `/api/v1/cluster/config` | GET | VIEWER |
+| `/api/v1/cluster/config` | POST | OPERATOR |
+| `/api/v1/cluster/status` | GET | VIEWER |
+| `/api/v1/cluster/scale` | POST | OPERATOR |
+| `/api/v1/cluster/upgrade` | POST | ADMIN |
 | `/api/cluster/upgrade/{id}` | GET | VIEWER |
 
 ---
@@ -1593,10 +1593,10 @@ This eliminates the need for Step 7 (Update Seed Peers) in the bootstrap flow.
 |-----------|--------|-------------|
 | `ClusterStatusCommand` | `aether/cli` | Aggregates data from multiple API endpoints |
 | `ClusterExportCommand` | `aether/cli` | Fetches and prints `ClusterConfigValue.tomlContent` |
-| `ClusterConfigRoutes` (partial) | `aether/node` | `GET /api/cluster/config`, `GET /api/cluster/status` |
+| `ClusterConfigRoutes` (partial) | `aether/node` | `GET /api/v1/cluster/config`, `GET /api/v1/cluster/status` |
 
 **Deliverables:**
-- `GET /api/cluster/config` and `GET /api/cluster/status` endpoints
+- `GET /api/v1/cluster/config` and `GET /api/v1/cluster/status` endpoints
 - CLI `status` and `export` commands
 - `--with-status` flag on export
 - `--json` flag on status
@@ -1609,7 +1609,7 @@ This eliminates the need for Step 7 (Update Seed Peers) in the bootstrap flow.
 |-----------|--------|-------------|
 | `ClusterApplyCommand` | `aether/cli` | Parse, diff, confirm, execute |
 | `ClusterConfigDiff` | `aether-config` | Computes field-level diff between two configs |
-| `ClusterConfigRoutes` (complete) | `aether/node` | `POST /api/cluster/config`, `POST /api/cluster/scale` |
+| `ClusterConfigRoutes` (complete) | `aether/node` | `POST /api/v1/cluster/config`, `POST /api/v1/cluster/scale` |
 
 **Deliverables:**
 - Diff algorithm with field-to-action matrix
@@ -1626,7 +1626,7 @@ This eliminates the need for Step 7 (Update Seed Peers) in the bootstrap flow.
 |-----------|--------|-------------|
 | `ClusterScaleCommand` | `aether/cli` | Thin wrapper around apply |
 | `ClusterUpgradeCommand` | `aether/cli` | Initiate and monitor rolling upgrade |
-| Upgrade endpoint | `aether/node` | `POST /api/cluster/upgrade`, `GET /api/cluster/upgrade/{id}` |
+| Upgrade endpoint | `aether/node` | `POST /api/v1/cluster/upgrade`, `GET /api/cluster/upgrade/{id}` |
 | `NodeUpgradeOrchestrator` | `aether-deployment` | Coordinates per-node drain/update/restart/activate |
 
 **Deliverables:**

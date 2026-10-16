@@ -487,7 +487,7 @@ naturally infrequent (once per failed create) and is not rate-limited.
 | `details.nodeId` | `selfNode` | `node-3` |
 | `details.consistencyMode` | config | `EVENTUAL` \| `STRONG` |
 
-Visible at `GET /api/events` (the events stream the aggregator publishes to). Severity `WARNING`.
+Visible at `GET /api/v1/events` (the events stream the aggregator publishes to). Severity `WARNING`.
 
 ---
 
@@ -608,7 +608,7 @@ New suite (e.g. `aether/tests/integration/NN-stream-budget`): on a 5-node cluste
 the old ~7-stream wall (e.g. 30 management-API streams) via the CLI/management API; assert:
 - All creates that fit the floor succeed (the wall is gone).
 - When the pool is finally exhausted, the failing create returns **HTTP 500** with the exact detail and
-  a `StreamMemoryExceeded` event appears in `GET /api/events` (loud, not silent).
+  a `StreamMemoryExceeded` event appears in `GET /api/v1/events` (loud, not silent).
 - A slice whose declared stream can't be provisioned shows the deployment **FAILED** (not "deployed but
   dead") in deployment status + a `DeploymentFailed` event.
 Use the project CLI for cluster management (not curl), per project conventions.

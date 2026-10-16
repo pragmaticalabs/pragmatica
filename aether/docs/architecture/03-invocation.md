@@ -153,7 +153,7 @@ v1 weight: 3, v2 weight: 1
 → 75% of requests go to v1, 25% to v2
 ```
 
-Weights are adjusted via `aether deploy promote <id>` (or the `/api/deploy/{id}/promote` endpoint).
+Weights are adjusted via `aether deploy promote <id>` (or the `/api/v1/deploy/promote/{id}` endpoint).
 
 ## DynamicAspectInterceptor
 
