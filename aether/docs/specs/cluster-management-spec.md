@@ -618,7 +618,7 @@ REQ-BOOT-SSH-01: Spec'd for completeness. Implementation deferred to Phase 2 / s
 
 ### 4.3 Bootstrap Idempotency
 
-REQ-BOOT-IDEMP-01: Running `bootstrap` against an existing cluster name fails with `ClusterAlreadyExists`. User must `destroy` first or use `apply`.
+REQ-BOOT-IDEMP-01: Running a fresh `bootstrap` (not `--resume`) against an existing cluster name fails with `ClusterAlreadyExists`, which names the check that matched (registry, local bootstrap state, or labelled cloud instances). User must `destroy` first or use `--resume`.
 
 REQ-BOOT-IDEMP-02: If bootstrap fails partway (e.g., 3 of 5 nodes provisioned), the CLI outputs the partial state and instructions:
 ```
@@ -1327,9 +1327,9 @@ public sealed interface ClusterConfigError extends Cause {
         }
     }
 
-    record ClusterAlreadyExists(String name) implements ClusterConfigError {
+    record ClusterAlreadyExists(String name, String matched) implements ClusterConfigError {
         @Override public String message() {
-            return "Cluster '" + name + "' already exists. Use 'apply' to modify or 'destroy' first.";
+            return "Cluster '" + name + "' already exists: " + matched + ". To continue an interrupted bootstrap re-run with --resume; to re-create the cluster run 'aether cluster destroy --cluster " + name + "' first.";
         }
     }
 
