@@ -8,16 +8,16 @@ Per-operation authority lives in [`../reference/guarantees.md`](../reference/gua
 
 ## The partition contract, per tier
 
-Aether prefers **consistency over availability** under partition, and enforces that choice at every tier by *dissolving* the side that cannot make progress rather than letting it operate autonomously. There is no split-brain at any tier.
+Aether prefers **consistency over availability** under partition, and enforces that choice at every tier by *dissolving* the side that cannot make progress rather than letting it operate autonomously. Consensus never commits on two sides of a partition (a commit needs a Rabia majority, and two disjoint groups cannot both hold one), so the KV plane does not diverge. That statement is about committed cluster state only: at the slice layer a bounded window of double execution is possible, and a cut that leaves no group with a majority halts every core (both below).
 
 ### Core cluster — the minority dissolves automatically
 
 The core runs leaderless Rabia consensus over the KV write/metadata plane. Consensus commits only while a node sees a quorum (`core/2 + 1`, workers excluded; `QuorumLossDetector.java:429`). On quorum loss:
 
 1. The engine **pauses and rejects writes** with `QuorumPaused` (`RabiaEngine.java:325,682`).
-2. After the split timeout `T` (default 15 s) the minority node **self-terminates** via `Runtime.halt(2)` — the self-drain / self-fence path (`DrainProcedure` + `QuorumLossDetector`, fed `MembershipConfig.splitTimeout()`).
+2. When the node's count of reachable cores has stayed below the threshold for the split timeout `T` (default 15 s, counted from when failure detection first drops the count below it), the minority node begins a self-drain and then **self-terminates** via `Runtime.halt(2)` — the self-drain / self-fence path (`DrainProcedure` + `QuorumLossDetector`, fed `MembershipConfig.splitTimeout()`). Measured with every core isolated, the drain begins **18 to 19 s after the cut**, not at 15 s: detection opens the window 3 to 4 s after the cut, then `T` runs `[measured: five-node Ember probe, 77 of 77 fires]`.
 
-The self-drain is **gated** so it never fires spuriously: it is armed only after the node was ever quorate (armed-latch), is suppressed during the 75 s cold-boot convergence window (`AetherNode.COLD_BOOT_CONVERGENCE_WINDOW_MS`), and stands down when a false-`FAULTY` storm is co-confirmation-refuted. Recovery of a fenced node requires an external restart / CTM reprovision.
+The self-drain is **gated** so it never fires spuriously: it is armed only after the node was ever quorate (armed-latch), is suppressed during the 75 s cold-boot convergence window (`AetherNode.COLD_BOOT_CONVERGENCE_WINDOW_MS`), and stands down when a false-`FAULTY` storm is co-confirmation-refuted. A fenced node never returns under its own NodeId. Replacing it (CTM auto-heal, or `POST /api/v1/nodes/replace/<node-id>`) needs a committed quorum, so it works only while a majority of the cores is alive; an external restart under the old NodeId is refused (exit 78) while any process of the old cluster that remembers its boot token is still running. When no majority is alive, use the whole-cluster path in [No-majority partition / every core halted](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted).
 
 ```mermaid
 stateDiagram-v2
@@ -33,7 +33,11 @@ stateDiagram-v2
     }
 ```
 
-The majority side keeps committing throughout; the minority never accepts a conflicting write, so the two sides cannot diverge.
+When one group holds a majority, it keeps committing throughout; the minority never accepts a conflicting write, so the two sides cannot diverge in committed state.
+
+#### When no group holds a majority
+
+The page above describes a partition with a majority side. A network event can instead leave **no** group with `core/2 + 1` reachable cores (a multi-way split, or a failure that cuts every core-to-core link). Then nobody commits, and the minority-dissolves rule applies to every core at once: every core whose window outlasts `T` drains and exits with code 2, and a heal after the drain started does not cancel it. Measured on five cores with every core isolated from every other: a 10 s cut halted 0 of 25 core-runs, a 15 s cut 2 of 25, and cuts of 20, 25 and 30 s halted 25 of 25; 77 of 77 cores that fired halted, none returned. A 2/2/1 split was not run, and lengths between 15 s and 20 s were not sampled `[measured: five-node Ember probe on one host over loopback; the halt is Ember's exit hook, so production halt timing (up to the 30 s drain grace) is unmeasured]`. Consensus state is held in memory only, so declared state survives only in a `[backup]` that was pushed to a remote. Operator procedure: [No-majority partition / every core halted](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted); the limit is also stated in [known limitations](../reference/known-limitations.md#no-majority-network-cut-halts-every-core).
 
 ### Worker communities — an isolated community dissolves and drains
 
@@ -53,7 +57,7 @@ minted → FORMING → ACTIVE → (DEGRADED ↔) DISSOLVING → DISSOLVED
 
 ## The dissolve timeout
 
-Both dissolve paths above are governed by **one tunable**, the split timeout `T` (TOML key `split_timeout`, `MembershipConfig.splitTimeout()`, default **15 s**). A single knob governs both sides of a split by design: the minority's quorum-loss self-drain and the majority's departure-verdict / re-provision derive from the same `T`, and their ordering is asserted by `MembershipConfigSplitTimeoutOrderingTest` so the minority always fences before the majority re-provisions its slot (no double-active window).
+The core's quorum-loss dissolve is governed by the split timeout `T` (TOML key `split_timeout`, `MembershipConfig.splitTimeout()`, default **15 s**); the worker-community dissolve has its own keys (`timeouts.cluster.core_absence`, `community_absence`; see [known limitations](../reference/known-limitations.md)). `T` sets the minority's quorum-loss self-drain and the terminal-eviction backstop window on the majority side, but it does not order the minority's halt before the majority's slice re-placement, and there is **no guarantee of no overlap**. The majority re-places the slices of a node it has declared dead on that declaration, with no `T` debounce (`ClusterDeploymentState.java:462` runs `handleNodeRemoval` then `reconcile()` on `NodeRemoved`), while the minority core keeps serving until it fires and then until its drain completes (in-flight work, up to the 30 s grace). For that bounded window the same slice can execute on both sides; committed cluster state still cannot diverge. `[mechanism: code path above]` `[unverified: the window's length under a real partition, and its effect on stateful slices, were not traced or measured]`. `MembershipConfigSplitTimeoutOrderingTest` compares two local values and pins no production timer, so it is not evidence for the ordering.
 
 The trade-off is two-sided:
 
@@ -62,7 +66,7 @@ The trade-off is two-sided:
 | **Too low** | A transient core blip (GC pause, brief network hiccup, in-flight SWIM convergence) needlessly dissolves communities / halts minority nodes, converting a recoverable stall into a teardown. |
 | **Too high** | Slow reaction to a *real* outage — the isolated side stays paused longer before dissolving, extending time-to-recover. |
 
-The 15 s default is sized to absorb SWIM convergence (~5 s) plus a brief GC/pause margin without dissolving on noise. Operators tuning it are choosing a point on the blip-tolerance ↔ outage-reaction curve; the multi-community barrier run (#367) produces the recommended-default curve for hierarchical topologies (see [Pending validation](#pending-validation)).
+The 15 s default is sized to absorb a brief GC/pause margin without dissolving on noise; it runs from the moment failure detection first drops the reachable-core count below the threshold, which was 3 to 4 s after a total cut when measured, so the drain begins at 18 to 19 s `[measured: five-node Ember probe, loopback]`. Operators tuning it are choosing a point on the blip-tolerance ↔ outage-reaction curve; the multi-community barrier run (#367) produces the recommended-default curve for hierarchical topologies (see [Pending validation](#pending-validation)).
 
 ## Per-operation guarantees
 
@@ -70,7 +74,7 @@ Each row states the guarantee during **normal operation** and during a **partiti
 
 | Operation | Normal operation | Under partition | Status / proof |
 |-----------|------------------|-----------------|----------------|
-| **KV / consensus write** (`kv.write`, `consensus.commit`) | Linearizable write order (single Rabia log, quorum-commit + local apply); quorum-durable **in memory** | Majority side only; minority returns `QuorumPaused` then self-halts | LIVE · [02-chaos](../../tests/integration/suites/02-chaos) self-drain (C12–C16), kill-leader (C4) |
+| **KV / consensus write** (`kv.write`, `consensus.commit`) | Linearizable write order (single Rabia log, quorum-commit + local apply); quorum-durable **in memory** | Majority side only; minority returns `QuorumPaused` then self-halts. With no majority anywhere, every side returns `QuorumPaused` and every core cut off from all others for 20 s or more halted (measured) | LIVE · [02-chaos](../../tests/integration/suites/02-chaos) self-drain (C12–C16), kill-leader (C4) |
 | **KV read** (`kv.read`) | **Not linearizable** — sequential, served from local applied map; may trail the committed frontier | **Both sides serve** (stale local state); no `sync()` / linearizable read path | LIVE (as local/eventual) · guarantees.md §1 |
 | **KV delete** (`kv.delete`) | Total-ordered, epoch/leader-fenced symmetrically with `Put` (#379) | Majority only | LIVE · guarantees.md §1, `#379` closed |
 | **Ownership fence** (`epoch.fence`) | Monotonic single-writer per ownership key — deposed owner's stale-epoch write rejected deterministically on every replica | Enforced when writes resume; decision rides the committed value | LIVE · guarantees.md §1 |
@@ -93,12 +97,19 @@ Authority traces to something executable, not to prose. The partition contract i
 
 | Claim | Proving test |
 |-------|--------------|
-| Core minority dissolves — quorum loss → each survivor self-drains and exits `Runtime.halt(2)` (code 2) within the `T`-derived budget (≈45 s), then the cluster recovers to N healthy cores ≤60 s | `test-self-drain-quorum-loss.sh` (S19/S20, C12–C16); unit guard `SelfDrainCoordinatorTest.noConsensusOrKvImports` (no KV/consensus writes during drain, C15) |
-| No dual-leader / no split-brain on leader loss — new leader elected, id ≠ old | `test-kill-leader.sh` (C3/C4) |
+| Quorum loss → each survivor self-drains and exits `Runtime.halt(2)` (code 2) within the `T`-derived budget (≈45 s). S19 **kills** three of five nodes (SIGKILL), so the two survivors cannot reach a majority and there are no live peers that could heal; it is not a partition. S20 then restarts the same five containers and expects five healthy cores within 60 s: a harness restart, not the supported operator recovery (fresh NodeIds plus restore) | `test-self-drain-quorum-loss.sh` (S19/S20, C12–C16) |
+| The drain is single-shot, idempotent and force-exits when the grace expires, with or without in-flight work or a departure push outstanding | `DrainProcedureTest` (unit) |
+| Leader loss by kill — a new leader is elected, id ≠ old. A kill does not leave two leaders alive, so this does not exercise a partition with two candidate leaders | `test-kill-leader.sh` (C3/C4) |
 | Quorum survival + auto-heal under kill and under load (error rate < chaos-tier 10%) | `test-kill-node.sh`, `test-kill-multiple.sh`, `test-kill-under-load.sh` (C5–C8) |
 | Stream owner kill → new owner serves the **complete** pre-kill history (all N events, in order) with no lagging CAUGHT_UP replica | `test-stream-replica-failover.sh` (C17–C20, #260/#261/#333) |
 | Stream append is crash-durable across a full-cluster restart (per-partition WAL), **only with `[backup]` restored onto the same node ids and volumes**; without `[backup]` the stream is a new life and the old WAL is not read (tripwire) | Forge `StreamCrashDurabilityTest` (streaming-persistence A6) |
 | Append epoch fence — deposed-but-alive owner's stale append rejected | Forge `StreamOwnershipDriverFenceTest` |
+
+### Not tested
+
+- A cut where no group holds a majority, in the repository's test suites. The only measurement is a five-node Ember probe (every core isolated, 10 to 30 s) that is not committed to the repository; no suite runs a 2/2/1 shape (`ChaosEvent.NetworkPartition` is defined and never consumed).
+- A heal after a core has begun its drain, in a production-mode (non-Ember) node.
+- Slice double execution during the minority's drain, with a majority alive on the other side.
 
 ### Pending validation
 

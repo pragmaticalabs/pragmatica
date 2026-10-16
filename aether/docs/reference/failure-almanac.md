@@ -39,7 +39,8 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 |--------------|-----------------|-------|
 | Non-leader node failure | detect ~8 s quiescent / ≤60 s under load; auto-heal to N ≤180 s | 02-chaos C3/C6 |
 | Leader failure | re-election ≤150 s (transient zero-leader ≈19 s) | 02-chaos C4 |
-| Quorum loss / minority partition | minority self-drain ≤45 s; recovery ≤60 s | 02-chaos C12–C16 |
+| Quorum loss / minority partition | minority self-drain ≤45 s in the harness (kill of three of five); harness restart of the same five containers ≤60 s | 02-chaos C12–C16 |
+| No-majority network cut (no group holds a majority) | every core halts for a cut of 20 s or more (drain begins 18-19 s after the cut); no automatic recovery; declared state returns only from a pushed `[backup]` | five-node Ember probe `[measured]`; [runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted) |
 | Slow detection under sustained load | ~11 s nominal → up to ~80 s under load | guarantees.md §3 · **pending tighter bound (#94)** |
 | Provisioning stall under churn | fix landed; budget cloud-pending | **pending validation (#362)** |
 | Per-node deployment failure (`ALL_OR_NOTHING` rollback) | n/a — permanent until cause is fixed | `DurableEntityForgeTest` |
@@ -49,7 +50,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Core network partition | eviction ~3 s; heal to N ≤30 s | 12-network C9/C10 |
 | QUIC connection churn | missing-peer reconcile 5–60 s | 12-network connectedPeerCount |
 | SWIM member address change refused | none — replace the node under a fresh NodeId | `SwimAnnounceSourcePinTest` (unit; no multi-node proof yet) |
-| Full-cluster restart | derived state rebuilds; snapshot-only KV | guarantees.md §1–§2 · **partial (#349)** |
+| Full-cluster restart | derived state rebuilds; consensus state is memory-only, declared state restores from a pushed `[backup]` | guarantees.md §1–§2 · **partial (#349)** |
 | DHT / artifact loss under churn | mitigation only | **pending full fix (#420 / #349)** |
 | Pub/sub message loss | none (at-most-once) | guarantees.md §5 |
 
@@ -79,11 +80,11 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 - **Symptom:** nodes on the minority side reject writes and then exit; `/api/v1/health` reports `quorum:false` on that side.
 - **Detection surface:** `/api/events` emits `QUORUM_LOST` (CRITICAL) and `SELF_DRAIN_INITIATED` (WARNING, `reason` ∈ `sustained-below-quorum` | `quorum-disappeared` | `rabia-paused`); the minority JVMs exit with **code 2** (distinguishes self-drain from clean=0 / SIGKILL=137); `aether cluster membership` carries the self-drain signal.
-- **Automatic response:** a node that cannot reach `core/2 + 1` peers self-terminates via `Runtime.halt(2)` after the split timeout; the majority continues serving. Drained nodes require external restart / CTM reprovision.
-- **Budget:** self-drain exit ≤45 s (8 s threshold + 30 s grace + 7 s headroom; wall-clock ~38 s cloud-proven) (C12); post-restart recovery to N healthy cores ≤60 s (C16). The self-drain state machine is a `[CONTRACT-GAP]` (code-only; guarded by `SelfDrainCoordinatorTest`).
+- **Automatic response:** a node that cannot reach `core/2 + 1` peers self-terminates via `Runtime.halt(2)` once the split timeout has elapsed below the threshold; a majority, if one exists, continues serving. A drained node never returns under its NodeId; replacing it needs a committed quorum. If no group holds a majority, every core halts: see the [no-majority runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted).
+- **Budget:** self-drain exit ≤45 s with the harness's configured 8 s window (8 s threshold + 30 s grace + 7 s headroom; wall-clock ~38 s cloud-proven) (C12); with the default 15 s split timeout the drain begins 18-19 s after a total cut `[measured: five-node Ember probe]`. The harness (C16) restarts the same five containers and expects N healthy cores within 60 s; that is not the supported operator recovery. The self-drain state machine is a `[CONTRACT-GAP]` (code-only; the drain procedure's single-shot and grace behaviour is unit-tested in `DrainProcedureTest`).
 - **Degraded / at risk:** the minority is unavailable **by design** (consistency over availability). Acked data on the majority is safe; the minority's in-flight uncommitted writes are rejected, not lost-then-served.
-- **Operator action:** restart or reprovision the drained minority nodes once the partition cause is fixed. See the partition contract in [14-consistency-and-partitions.md](../architecture/14-consistency-and-partitions.md).
-- **Proof anchor:** `02-chaos/test-self-drain-quorum-loss.sh` (C12–C16); `SelfDrainCoordinatorTest`.
+- **Operator action:** replace the drained minority nodes under fresh NodeIds once the partition cause is fixed (a restart under the old NodeId is refused while any old-cluster process is running); with no majority, follow the [no-majority runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted). See the partition contract in [14-consistency-and-partitions.md](../architecture/14-consistency-and-partitions.md).
+- **Proof anchor:** `02-chaos/test-self-drain-quorum-loss.sh` (C12–C16); `DrainProcedureTest`.
 
 ### Slow failure detection under sustained load
 

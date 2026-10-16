@@ -13,6 +13,8 @@ reads the bootstrap-config once per phase and, among other things, generates the
 You never hand-write `[cloud.*]` when using `aether cluster bootstrap`; see
 ["Bootstrap-config vs. composed node config"](#bootstrap-config-vs-composed-node-config) below.
 
+> **`name` must not belong to a live cluster.** Re-running `aether cluster bootstrap` (without `--resume`) with the name of a live cluster overwrites the local bootstrap state for that name, and a later `destroy` of the name removes the live cluster's machines on a Hetzner source (label sweep). At the rc4 tip nothing refuses it (a guard is proposed in #2213; the advice holds with or without it). Use `--resume` to continue, or `destroy` first. See [known limitations](known-limitations.md#re-running-bootstrap-with-a-live-clusters-name).
+
 Every field below is verified against the parser
 (`aether-config/src/main/java/org/pragmatica/aether/config/cluster/ClusterBootstrapConfigParser.java`);
 see the accompanying report for file:line citations. TOML only — this project does not use YAML.
