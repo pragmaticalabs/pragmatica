@@ -37,8 +37,9 @@ A supervisor should treat these codes as follows:
   dump the process logged first.
 - `78`: **do NOT restart under the same identity.** A restart draws a new boot token and is refused
   again for as long as any running peer remembers the old one. Replace the node with a new one under a
-  fresh NodeId. The one exception is a whole-cluster restart, where no running peer remembers the old
-  tokens. Automatic restart-on-failure policies (`Restart=on-failure`, Docker `restart: on-failure`,
+  fresh NodeId. With every process of the old cluster stopped no peer remembers the old tokens, but a
+  same-NodeId start is still not a supported restart mode (see
+  [durable-control-recovery](../operators/durable-control-recovery.md)). Automatic restart-on-failure policies (`Restart=on-failure`, Docker `restart: on-failure`,
   Kubernetes `restartPolicy: OnFailure`/`Always`) would loop on this code: exclude `78`, for example with
   systemd `RestartPreventExitStatus=78`.
 

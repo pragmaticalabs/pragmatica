@@ -2,8 +2,12 @@
 
 Cores and workers run consensus in memory (owner ruling, session 28). There is no local vote
 journal and no `cluster.consensus_path`: a node needs no control-storage path to boot, and the
-shipped image and templates configure none. A configured `[backup]` path keeps a git-backed
-snapshot of the consensus state, as before #1390.
+shipped image and templates configure none. There is no per-node consensus snapshot (removed by
+#1533): consensus state is lost when every core exits. A configured `[backup]` keeps a git repository
+of the cluster's **declared** state (every `ClusterStateKey`: blueprints, slice targets, stream
+configurations, API keys, cluster configuration and so on), pushed to `[backup] remote`; a whole-cluster
+restart restores from that and from nothing else. See
+[backup-recovery](runbooks/backup-recovery.md).
 
 **Terminal removal is the identity model.** A node whose process dies does not return under the
 same NodeId. Every process draws a random boot token at start and carries it on its SWIM
@@ -21,8 +25,14 @@ A refused process is told so (an explicit refusal answers its handshake and anno
 by exit status alone.
 
 **Recovery action:** replace a dead node with a new node under a fresh NodeId. Restarting a
-container or VM under the old NodeId produces a process the running cluster refuses. A
-whole-cluster restart is the exception, because no running peer remembers the old tokens.
+container or VM under the old NodeId produces a process the running cluster refuses. Whole-cluster
+restart is not an exception to the fresh-NodeId rule: with every process stopped no peer remembers
+the old tokens, so a same-NodeId start can work mechanically, but it starts with empty state and is
+not a supported restart mode (#1543). The supported path is a regular cluster start with a fresh set
+of cores (new NodeIds, the same cluster configuration and `[backup]` remote) followed by the restore:
+[backup-recovery](runbooks/backup-recovery.md#restarting-a-whole-cluster--a-regular-start-then-the-restore).
+The exit-78 refusal above applies whenever any process of the old cluster, including a worker or
+governor, is still running.
 
 The node status `voterReconfiguration` field reports the installed voter epoch, a requested change,
 and added voters still catching up (#1526). A voter change agreed at slot R governs from R+1; the
@@ -33,7 +43,11 @@ every member reported that view in two consecutive rounds (#1526). A consequence
 restart with a core permanently lost never forms on its own. The waiting node logs a WARN every ten
 rounds naming the configured cores not yet visible and the members not yet reporting.
 
-**Recovery action:** start the missing configured cores. A pending core never forgets a core it has
+**Recovery action:** start the missing configured cores. (This is the cold-start case: the cores that
+are missing are missing, and the rest are waiting. If instead every core **halted** after a network cut that left
+no group with a majority, none of them is waiting: use
+[No-majority partition / every core halted](runbooks/incident-response.md#no-majority-partition--every-core-halted).)
+A pending core never forgets a core it has
 seen, so if a core it saw is lost for good, or more core candidates are visible than configured (the node
 then refuses to choose and logs a WARN with the candidate set), nothing done while the pending cores keep
 running clears it — not stopping the extra candidates, not stopping a retired core, not adding a

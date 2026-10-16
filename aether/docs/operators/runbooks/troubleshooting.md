@@ -219,7 +219,12 @@ The failing step's VMs are destroyed. The error names any VM still running and b
 
 3. Resolution: heal the network partition. A minority-side node that self-fenced has left for good
    (its id does not return); replace it under a fresh id with
-   `POST /api/v1/nodes/replace/<node-id>`, or let CTM auto-heal do it
+   `POST /api/v1/nodes/replace/<node-id>`, or let CTM auto-heal do it. Replacement needs a committed
+   quorum, so this holds only while a majority of the cores is alive
+
+4. If the cores are gone (every core process exited with code 2, `reason=QUORUM_LOSS`), or no group of
+   cores held a majority, healing the network does not bring them back and replacement cannot run. Follow
+   [No-majority partition / every core halted](incident-response.md#no-majority-partition--every-core-halted)
 
 ## Log Levels
 

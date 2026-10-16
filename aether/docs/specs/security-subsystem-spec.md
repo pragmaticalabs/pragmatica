@@ -523,7 +523,7 @@ interface KeyProvider {                              // modeled on K8s KMS v2 / 
 > #253 wraps) remains **unencrypted, exactly as described below**. Key rotation here also has no
 > re-encryption-on-rotate step (old keys stay resolvable for reads) rather than this section's rewrap-
 > without-rewrite model. See `CHANGELOG.md` (#253 entry, 2026-09-04) and
-> [`configuration.md`](../reference/configuration.md#storage-encryption-configuration-253) for what
+> [`configuration.md`](../reference/configuration.md#storage-encryption-configuration) for what
 > actually shipped; treat the `KeyProvider`/`WrappedKey` design below as still-open future work, not
 > superseded.
 >
