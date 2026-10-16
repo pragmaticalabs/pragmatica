@@ -40,7 +40,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 | Non-leader node failure | detect ~8 s quiescent / ≤60 s under load; auto-heal to N ≤180 s | 02-chaos C3/C6 |
 | Leader failure | re-election ≤150 s (transient zero-leader ≈19 s) | 02-chaos C4 |
 | Quorum loss / minority partition | minority self-drain ≤45 s in the harness (kill of three of five); harness restart of the same five containers ≤60 s | 02-chaos C12–C16 |
-| No-majority network cut (no group holds a majority) | every core halts for a cut of 20 s or more (drain begins 18-19 s after the cut); no automatic recovery; declared state returns only from a pushed `[backup]` | five-node Ember probe `[measured]`; [runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted) |
+| No-majority network cut (no group holds a majority) | measured: cuts of 20, 25 and 30 s halted every core (five cores, every core isolated, Ember in-process; longer cuts were not run); the drain begins 18-19 s after the cut); no automatic recovery; declared state returns only from a pushed `[backup]` | five-node Ember probe `[measured]`; [runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted) |
 | Slow detection under sustained load | ~11 s nominal → up to ~80 s under load | guarantees.md §3 · **pending tighter bound (#94)** |
 | Provisioning stall under churn | fix landed; budget cloud-pending | **pending validation (#362)** |
 | Per-node deployment failure (`ALL_OR_NOTHING` rollback) | n/a — permanent until cause is fixed | `DurableEntityForgeTest` |
@@ -222,7 +222,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Full-cluster restart (in-memory state)
 
-- **Symptom:** after a **simultaneous** full-cluster restart, KV + DHT + un-sealed stream state since the last snapshot is gone.
+- **Symptom:** after a **simultaneous** full-cluster restart, consensus state is memory-only and is gone; only declared state in a pushed `[backup]` returns.
 - **Automatic response:** a whole-cluster restart is a regular start of fresh cores; with `[backup]` enabled the leader restores the cluster state from the change-triggered KV backup before any cluster-state write is admitted (#1533), and placement is rebuilt on the fresh nodes. DHT system maps rebuild as nodes re-register their slices/routes/endpoints on activation.
 - **Budget:** n/a (bounded by restart + re-registration).
 - **Degraded / at risk:** cluster-state changes after the last backup push (KV); entity state (checkpoints are not restored); stream records held only by the old nodes; all DHT system-map state (self-heals by rebuild). Without `[backup]`, all cluster state. A **rolling** restart is safe — this applies only to losing the whole cluster at once.

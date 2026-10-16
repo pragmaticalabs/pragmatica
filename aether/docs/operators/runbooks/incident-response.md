@@ -81,11 +81,11 @@ done | grep OK | wc -l
 
 | Cut length | Cores halted | Notes |
 |---|---|---|
-| 10 s | 0 of 25 | every core recovered |
+| 10 s | 0 of 25 | 0 of 25 halted; in one run the leader still saw a peer as Dead 60 s after the heal |
 | 15 s | 2 of 25 | one core in each of 2 repetitions: the heal came before it fired, but its detector had not yet recovered, so it fired 3 to 4 s after the heal |
 | 20 s, 25 s, 30 s | 25 of 25 each | every core in every repetition |
 
-The drain begins 18 to 19 s after the cut starts in every case that fired: the quorum-loss window opens 3 to 4 s after the cut (failure detection), and the drain begins `T` (14.90 to 15.00 s measured) after that. A cut of 20 s or more halted every core in every repetition; a cut of 10 s halted none; lengths between 15 s and 20 s were not run, so the outcome in that range is a race that this page does not predict. A heal never saved a core that had fired: 77 of 77 cores that fired exited with code 2 and none returned, including the 2 that fired after the heal. `[measured: five-node Ember probe on the rc4 tip, 5 repetitions per cut length; loopback on one host, so a real network adds probe latency; the probe is not part of the repository's test suite]`
+The drain begins 18 to 19 s after the cut starts in every case that fired: the quorum-loss window opens 3 to 4 s after the cut (failure detection), and the drain begins `T` (14.90 to 15.00 s measured) after that. Cuts of 20, 25 and 30 s halted every core in every repetition (longer cuts were not run); a cut of 10 s halted none; lengths between 15 s and 20 s were not run, so the outcome in that range is a race that this page does not predict. A heal never saved a core that had fired: 77 of 77 cores that fired exited with code 2 and none returned, including the 2 that fired after the heal. `[measured: five-node Ember probe on the rc4 tip, 5 repetitions per cut length; loopback on one host, so a real network adds probe latency; the probe is not part of the repository's test suite]`
 
 **What is guaranteed and what is not.**
 
@@ -95,7 +95,7 @@ The drain begins 18 to 19 s after the cut starts in every case that fired: the q
 | KV read, management reads | Served from each node's local applied state, possibly stale (not linearizable), until that node halts | Unavailable |
 | New slice invocations on a core that began draining | Refused: admission closes when the drain starts; in-flight work may run until it settles or the 30 s grace expires `[mechanism: DrainProcedure.java:61-63,186-199]` | Unavailable |
 | Slice re-placement | Not available: placing slices needs committed writes | n/a |
-| Cluster state | In-memory consensus state is lost on every halted core. Only `[backup]` (if enabled and pushed) survives. Stream WAL files stay on disk but are not read under fresh NodeIds | |
+| Cluster state | In-memory consensus state is lost on every halted core. Only `[backup]` (if enabled and pushed) survives. Stream WAL files stay on disk but are not read under fresh NodeIds `[unverified: read from code, not run]` | |
 
 Durability of consensus state here is process-durable only: it is replicated in memory across the cores and is lost when all cores exit. The measured halts ended the Ember node through its exit hook; a production halt happens between the drain start and the end of the 30 s grace, and that span was not measured `[unverified: production halt timing]`.
 
@@ -123,7 +123,7 @@ Follows [backup-recovery](backup-recovery.md#restarting-a-whole-cluster--a-regul
 
 1. Confirm the network is healed and stable, and that you are looking at this case (all cores exited with 2, `reason=QUORUM_LOSS`).
 2. Stop every remaining node, including workers and governors.
-3. Start fresh cores: new NodeIds, the same cluster configuration, the same `[backup]` remote, `restore = "auto"` (the default). Genesis forms exactly as on a first start and needs every configured core.
+3. Start fresh cores: new NodeIds, the same cluster configuration, the same `[backup]` remote, `restore = "auto"` (the default). Start them the way you started the first cores (for a cloud or SSH source, `aether cluster bootstrap <config>` against fresh hosts; for Docker, new containers), not by restarting the halted processes. The restore is keyed by the `[backup]` remote and its lineage, not by the cluster name `[mechanism: no cluster-name reference in aether/node/.../node/backup/]`, so the name may be new. If you reuse the old name, `destroy` the halted cluster first: a fresh `bootstrap` over a name that still has local state or labelled machines is the re-run hazard above. `[unverified: bootstrap onto fresh hosts followed by restore was not run end to end]` Genesis forms exactly as on a first start and needs every configured core.
 4. The leader commits one decision (`Backup restore decision: ...`): RESTORED, FRESH, SKIPPED_EXISTING_STATE or DISABLED. Expect RESTORED. Until it commits, backup-enabled nodes refuse writes to cluster state (`RestorePending`, retryable).
 5. Verify: restored blueprints, slice targets, API keys and stream configurations are present; slices are ACTIVE on the fresh nodes; streams have owners among the fresh nodes; worker communities re-form.
 
@@ -141,7 +141,7 @@ If the restore cannot read the backup the cluster stays up and gated (`BACKUP_RE
 
 #### Recovery without `[backup]`
 
-No automated path exists in rc4, and no earlier document named this case. The steps below follow from the same mechanisms and were not run end to end `[unverified: not run end to end]`.
+No automated path exists in rc4. The steps below follow from the same mechanisms and were not run end to end `[unverified: not run end to end]`.
 
 1. Stop every node, including workers and governors.
 2. Bring up a new cluster with new NodeIds as on a first start. Use a cluster name the old cluster did not hold, or remove the old cluster first (see the bootstrap warning above).
