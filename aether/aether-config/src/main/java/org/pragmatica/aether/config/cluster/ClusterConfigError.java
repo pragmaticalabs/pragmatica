@@ -186,10 +186,14 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
-    record ClusterAlreadyExists(String name) implements ClusterConfigError {
+    record ClusterAlreadyExists(String name, String matched) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Cluster '" + name + "' already exists. Use 'apply' to modify or 'destroy' first.";
+            return "Cluster '" + name
+                 + "' already exists: " + matched
+                 + ". To continue an interrupted bootstrap re-run with --resume; to re-create the cluster run"
+                 + " 'aether cluster destroy --cluster " + name
+                 + "' first.";
         }
 
         @Override

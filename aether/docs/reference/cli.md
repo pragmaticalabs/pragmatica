@@ -2622,6 +2622,8 @@ aether cluster bootstrap <config-file> [--cluster <name>] [--yes] [--resume] [--
 
 Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Addresses → Deploy Runtime → Cluster Formation → Post-Bootstrap. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` after each phase.
 
+**Existing cluster name.** A fresh bootstrap (without `--resume`) refuses, before minting a secret or writing any state, when the registry (`~/.aether/clusters.toml`) already holds the name, a local `bootstrap-state.json` exists for it, or a cloud source's provider lists an instance labelled `aether-cluster=<name>`; a check that cannot be made refuses too. The error names the check that matched; use `--resume` to continue an interrupted bootstrap, or `aether cluster destroy --cluster <name>` first to re-create it. There is no override flag.
+
 **Runtime modes** (`[runtime.default] type = "container" | "jvm"`):
 - **container** — VMs install Docker, pull `ghcr.io/.../aether-node:<tag>` (from `[runtime.default] image`), run with the composed `aether.toml` bind-mounted over `/app/aether.toml`. Restart via `--restart unless-stopped`.
 - **jvm** — VMs install Eclipse Temurin 25 from Adoptium, download `aether-node.jar` from `[runtime.default] jar_url` (or auto-derived `https://github.com/pragmaticalabs/pragmatica/releases/download/v<version>{-candidate?}/aether-node.jar` — pin `jar_url` explicitly whenever that derivation doesn't match a published release tag, see [Bootstrap Config Reference](bootstrap-config.md#b-jar_url-pinning)), run via `nohup java -jar … & disown`. No process supervision (consider auto-heal for crash recovery).
