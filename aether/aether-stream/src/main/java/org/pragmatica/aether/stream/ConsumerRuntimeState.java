@@ -1549,14 +1549,25 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// is told once per `(group, partition, offset)`. The episode ends when a read succeeds, or when retention reclaims past
     /// the hole and the cursor moves forward ([#forwardReset]).
     private Promise<Boolean> waitAtHole(ConsumerKey key, ConsumerState state, SegmentError.SealedRangeMissing missing) {
-        var previous = state.openHoleEpisode(missing.fromOffset());
-
-        if (previous != missing.fromOffset()) {
-            raiseHoleEnd(key, previous, HoleEnd.MOVED);
-            warnSealedRangeMissing(key, missing);
+        if (state.holeEpisodeAt() != missing.fromOffset()) {
+            endHoleEpisode(key, state, HoleEnd.MOVED);
+            openHoleEpisode(key, state, missing);
         }
 
         return failedPass(state, missing);
+    }
+
+    /// The episode is recorded only AFTER its warning is raised, and a cancel that landed meanwhile is rechecked, as
+    /// [#reportEscape] does: a cancel's hook that runs before the record finds no episode and raises nothing ahead of the
+    /// warning, and the recheck then ends it, exactly once, whichever of the two gets there first. Episodes are opened only
+    /// by the consumer's single drain pass; the cancel hook is the one concurrent closer.
+    @Contract
+    private void openHoleEpisode(ConsumerKey key, ConsumerState state, SegmentError.SealedRangeMissing missing) {
+        warnSealedRangeMissing(key, missing);
+        state.openHoleEpisode(missing.fromOffset());
+        if (state.isCancelled()) {
+            endHoleEpisode(key, state, HoleEnd.CANCELLED);
+        }
     }
 
     @Contract
@@ -1622,10 +1633,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// sealed history raises one pair by design. Nothing is raised per poll.
     @Contract
     private void trackBehindRing(ConsumerKey key, ConsumerState state, boolean fromTier) {
-        if (fromTier && state.enterBehindRing()) {
-            warnBehindRing(key, state.cursor());
+        if (fromTier && !state.isBehindRing()) {
+            openBehindRingEpisode(key, state);
         } else if (!fromTier && state.leaveBehindRing()) {
             raiseBackInRing(key, "a read was served from the ring again");
+        }
+    }
+
+    /// Recorded only AFTER the warning is raised, with the cancel rechecked, for the reason [#openHoleEpisode] gives.
+    @Contract
+    private void openBehindRingEpisode(ConsumerKey key, ConsumerState state) {
+        warnBehindRing(key, state.cursor());
+        state.enterBehindRing();
+        if (state.isCancelled() && state.leaveBehindRing()) {
+            raiseBackInRing(key, "the consumer was cancelled while behind it");
         }
     }
 
@@ -2252,9 +2273,15 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return earliest > requested && cursor.compareAndSet(requested, earliest);
         }
 
-        /// Opens the hole episode at `holeAt`; the offset of the episode it replaces, or [#NO_HOLE].
-        long openHoleEpisode(long holeAt) {
-            return holeEpisodeAt.getAndSet(holeAt);
+        /// The offset of the open hole episode, or [#NO_HOLE].
+        long holeEpisodeAt() {
+            return holeEpisodeAt.get();
+        }
+
+        /// Records the hole episode at `holeAt`. Only the drain pass opens one.
+        @Contract
+        void openHoleEpisode(long holeAt) {
+            holeEpisodeAt.set(holeAt);
         }
 
         /// Ends the hole episode; its offset, or [#NO_HOLE] when none was open. Called on every successful read, so the
@@ -2265,9 +2292,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                    : holeEpisodeAt.getAndSet(NO_HOLE);
         }
 
-        /// Whether this call opened a behind-the-ring episode.
-        boolean enterBehindRing() {
-            return behindRing.compareAndSet(false, true);
+        boolean isBehindRing() {
+            return behindRing.get();
+        }
+
+        /// Records a behind-the-ring episode. Only the drain pass opens one.
+        @Contract
+        void enterBehindRing() {
+            behindRing.set(true);
         }
 
         /// Whether this call closed a behind-the-ring episode. Called on every read served from the ring, so the common case

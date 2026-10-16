@@ -206,6 +206,42 @@ class ConsumerBehindTheRingTest {
         assertThat(warnings.getLast().message()).contains("cancelled");
     }
 
+    /// A read that was in flight when the consumer was cancelled answers afterwards, after the cancel's hook already ran. An
+    /// episode it opens must be closed by the opener itself, or nothing ever would. Deterministic: the read closes the
+    /// runtime before it answers.
+    @Test
+    void tierReadAnsweringAfterTheCancel_opensNoBehindTheRingEpisode() throws InterruptedException {
+        cancelInsideTheRead(tier(events(0, 0), E1));
+
+        assertThat(codes()).as("the late read's episode is opened and closed by the opener").containsExactly(STREAM_CONSUMER_BEHIND_RING,
+                                                                                                              STREAM_CONSUMER_BACK_IN_RING);
+        assertThat(warnings.getLast().message()).contains("cancelled");
+    }
+
+    @Test
+    void holeAnsweringAfterTheCancel_opensNoHoleEpisode() throws InterruptedException {
+        cancelInsideTheRead(new SegmentError.SealedRangeMissing(STREAM, 0, 0L, 3L).promise());
+
+        assertThat(codes()).containsExactly(STREAM_CONSUMER_SEALED_RANGE_MISSING, STREAM_CONSUMER_SEALED_RANGE_RESTORED);
+        assertThat(warnings.getLast().message()).contains("cancelled");
+    }
+
+    private void cancelInsideTheRead(Promise<StreamPartitionManager.EpochRead> answer) throws InterruptedException {
+        var answered = new java.util.concurrent.CountDownLatch(1);
+
+        start((_, _) -> closeThenAnswer(answered, answer));
+        assertThat(answered.await(5, java.util.concurrent.TimeUnit.SECONDS)).as("the read was issued").isTrue();
+        awaitWarnings(2);
+    }
+
+    private Promise<StreamPartitionManager.EpochRead> closeThenAnswer(java.util.concurrent.CountDownLatch answered,
+                                                                      Promise<StreamPartitionManager.EpochRead> answer) {
+        runtime.close();
+        answered.countDown();
+
+        return answer;
+    }
+
     /// The hole arm at unit level: the cursor waits at 5 (re-read there), one WARNING names the range, and the first read
     /// that succeeds from 5 resolves it.
     @Test
