@@ -2257,9 +2257,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return holeEpisodeAt.getAndSet(holeAt);
         }
 
-        /// Ends the hole episode; its offset, or [#NO_HOLE] when none was open.
+        /// Ends the hole episode; its offset, or [#NO_HOLE] when none was open. Called on every successful read, so the
+        /// common case (no episode) is a plain volatile read, not a write.
         long endHoleEpisode() {
-            return holeEpisodeAt.getAndSet(NO_HOLE);
+            return holeEpisodeAt.get() == NO_HOLE
+                   ? NO_HOLE
+                   : holeEpisodeAt.getAndSet(NO_HOLE);
         }
 
         /// Whether this call opened a behind-the-ring episode.
@@ -2267,9 +2270,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return behindRing.compareAndSet(false, true);
         }
 
-        /// Whether this call closed a behind-the-ring episode.
+        /// Whether this call closed a behind-the-ring episode. Called on every read served from the ring, so the common case
+        /// (no episode) is a plain volatile read.
         boolean leaveBehindRing() {
-            return behindRing.compareAndSet(true, false);
+            return behindRing.get() && behindRing.compareAndSet(true, false);
         }
 
         /// Monotonic (#1238): a late retry or dead-letter completion, or a stored cursor fetched after

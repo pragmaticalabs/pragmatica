@@ -218,6 +218,23 @@ class ConsumerBehindTheRingComponentTest {
                                  .containsExactly(2L, 3L, 4L);
     }
 
+    /// I-09 has one decider: the runtime's DEFAULT reader (the local one, used where no routed reader is wired) reads below
+    /// the ring through the same validated read, so it is served from the tier like the node's reader, never reset to the
+    /// ring tail past records the tier still holds.
+    @Test
+    void defaultLocalReader_belowTheRing_isServedFromTheTier() {
+        tier.seal(STREAM, PARTITION, 0, 19);
+        var local = StreamConsumerRuntime.streamConsumerRuntime(manager);
+
+        local.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        runtime = Option.some(local);
+        local.subscribe(STREAM, PARTITION, ConsumerConfig.consumerConfig(GROUP), (offset, _, _) -> deliver(offset));
+        awaitUntil(() -> delivered.size() >= 30, "delivered 0..29");
+
+        assertThat(delivered).containsExactlyElementsOf(range(0, 29));
+        assertThat(codes()).doesNotContain(STREAM_CONSUMER_CURSOR_EXPIRED);
+    }
+
     private final AtomicReference<StreamPartitionManager> assigneeManager = new AtomicReference<>();
 
     private StreamReadRouter assigneeOf(StreamPartitionManager owner) {
