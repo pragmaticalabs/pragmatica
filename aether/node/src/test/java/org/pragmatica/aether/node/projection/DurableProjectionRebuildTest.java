@@ -305,10 +305,17 @@ class DurableProjectionRebuildTest {
 
     /// The fence, on the real applier: a zombie's checkpoint stamped with the pre-rewind epoch is refused, so
     /// the rewound cursor stands. Dropping `EpochBearing` from the checkpoint value turns this red.
+    ///
+    /// The setUp consumer is detached first: this test drives the applier alone. A live consumer restarted
+    /// by the rewind's own apply commits its catch-up checkpoint (offset 0, the rewound epoch) on its own
+    /// thread, and the applier accepts a same-epoch write at a lower offset, so that commit could land
+    /// after the test's put of 3 and turn the read-back into `Some(0)`.
     @Test
     void zombieCheckpoint_atTheOldEpoch_isRefusedByTheApplier() {
         var rewound = RewindEpoch.rewindEpoch(0L, 1L, 1L);
 
+        manager.stop();
+        runtime.close();
         applyNow(checkpoint(6L, RewindEpoch.NONE));
         assertThat(committedCursor()).as("control: the pre-rewind checkpoint landed").isEqualTo(Option.some(6L));
         applyNow(checkpoint(0L, rewound));
