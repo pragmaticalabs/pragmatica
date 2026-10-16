@@ -56,6 +56,7 @@ public final class SwimHealthContext {
     /// default `id -> false` (never veto) preserves legacy behavior for tests.
     private final Predicate<NodeId> transportConnected;
     private final SwimHealthState stopped;
+    private final SwimHealthState closed;
     private final SwimHealthState starting;
 
     public SwimHealthContext(Fsm<SwimHealthState, SwimHealthEvents> fsm,
@@ -181,7 +182,8 @@ public final class SwimHealthContext {
         this.isBootingSupplier = isBootingSupplier;
         this.faultyLeaderEvictor = faultyLeaderEvictor;
         this.transportConnected = transportConnected;
-        this.stopped = new SwimHealthState.Stopped(this);
+        this.stopped = new SwimHealthState.Stopped(this, false);
+        this.closed = new SwimHealthState.Stopped(this, true);
         this.starting = new SwimHealthState.Starting(this);
     }
 
@@ -200,6 +202,10 @@ public final class SwimHealthContext {
 
     public SwimHealthState stopped() {
         return stopped;
+    }
+
+    public SwimHealthState closed() {
+        return closed;
     }
 
     public SwimHealthState starting() {
