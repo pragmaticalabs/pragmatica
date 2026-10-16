@@ -31,6 +31,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// (`provenLossFrom`): then `[provenLossFrom, cursor)` were processed in a lineage that no longer holds them. When the boundary is
 /// not exact (the consumer is older than the recorded history) nothing proves a loss and no WARNING is raised.
 class ConsumerRewoundEventTest {
+    private static final long DUPLICATE_WINDOW_MS = 200L;
     private static final String STREAM = "orders";
     private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
     private static final Epoch E2 = Epoch.epoch(1L, 1L, 2L);
@@ -172,13 +173,15 @@ class ConsumerRewoundEventTest {
         Thread.sleep(200);
     }
 
-    /// The warning reaches the sink on its hand-off thread, after the delivery that follows it: a fixed sleep only hopes.
+    /// The warning reaches the sink on its hand-off thread, after the delivery that follows it: wait for it, then keep the
+    /// observation window open, so the caller's `hasSize(1)` still sees a duplicate raised shortly after the first.
     private void awaitWarning() throws InterruptedException {
         var deadline = System.currentTimeMillis() + 10_000L;
 
         while (warnings.isEmpty() && System.currentTimeMillis() < deadline) {
             Thread.sleep(10);
         }
+        Thread.sleep(DUPLICATE_WINDOW_MS);
     }
 
     private StreamConsumerRuntime runtime(StreamConsumerRuntime.PartitionReader owner) {
