@@ -34,7 +34,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.holdsF
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.infoOf;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
-/// Tripwire pairs for C-01 / C-02 (cluster T assessment, rc4 `7c786db0d3`; 1b-perf-ops CONFIRMED both):
+/// Tripwire pairs for C-01 / C-02 (cluster T assessment, rc4 `7c786db0d3`; the second review CONFIRMED both):
 /// every inbound connection of a node shares the one event loop that owns the node's single bound UDP socket (QUIC
 /// child channels are pinned to the parent's loop), and the router consumers run inline on it with no hop. One consumer
 /// that blocks stops every other peer's frames, on every lane; and since the same loop is what refreshes the liveness
@@ -44,7 +44,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 /// links ride its one server loop (the layout `ConnectionDirection` produces for the highest-id core). The "blocking
 /// consumer" is a router handler that waits on a latch, standing for a slice doing a synchronous call.
 ///
-/// Fix constraints from 1b-perf-ops, so the overhaul does not "fix" the tripwire the wrong way: no `SO_REUSEPORT`
+/// Fix constraints from the second review, so the overhaul does not "fix" the tripwire the wrong way: no `SO_REUSEPORT`
 /// (#1719/#1727) and the hand-off must be keyed by (sender, lane) to keep per-sender FIFO. The real assertions below
 /// state the outcome, not the mechanism.
 @Timeout(120)

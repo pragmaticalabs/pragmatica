@@ -32,10 +32,10 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.client
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.serverSsl;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
-/// Tripwire pair for the inventory row U-021 / lane A A-10.2 (cluster T assessment, rc4 `7c786db0d3`): `stopAndRestartServer`
+/// Tripwire pair for the inventory row U-021 / A-10.2 (cluster T assessment, rc4 `7c786db0d3`): `stopAndRestartServer`
 /// and `rebuildAndStart` never read `closed` / `isRunning`, so a rotation that is in flight when `stop()` completes assigns
-/// a fresh server and client and binds the port: a stopped transport comes back to life. The spec for "rotation without a
-/// server restart" must keep `stop()` terminal.
+/// a fresh server and client and binds the port: a stopped transport comes back to life. A rotation redesigned to avoid the
+/// server restart must keep `stop()` terminal.
 ///
 /// The rotation is held in flight by the old server's graceful event-loop shutdown (seconds), which `stop()` does not wait for.
 @Timeout(60)

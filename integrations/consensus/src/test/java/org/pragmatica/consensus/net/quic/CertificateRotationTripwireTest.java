@@ -44,12 +44,12 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 /// group down, build a new one on the same port), and every connection a node ACCEPTED lives on that socket. The code
 /// comment says "existing connections drain naturally" and `tls-certificates.md` says they are "unaffected ... sub-second".
 ///
-/// D-02 (1b-perf-ops: mechanism CONFIRMED, severity lowered): `rebuildAndStart` assigns the new server object before
+/// D-02 (second review: mechanism CONFIRMED, severity lowered): `rebuildAndStart` assigns the new server object before
 /// `start(port)`; if the bind then fails, `boundPort()` is empty and every later rotation fails with "Server not
 /// running". The bind failure is forced here by taking the port in the window between the old server closing it and
 /// the new one binding (the old event-loop group's graceful shutdown keeps that window open for seconds).
 ///
-/// What the overhaul does about D-01 (rotation without a restart, per-node keys for rc5) is the spec's business; the
+/// How D-01 is fixed (for instance rotation without a server restart) is left to the overhaul; the
 /// real assertions state only the operator-visible claim: an accepted link survives a rotation.
 @Timeout(120)
 class CertificateRotationTripwireTest {

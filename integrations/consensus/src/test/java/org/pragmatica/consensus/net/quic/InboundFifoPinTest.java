@@ -36,7 +36,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 
 /// Inventory row U-010 and finding A-07 / B-02 (cluster T assessment, rc4 `7c786db0d3`): per-sender, per-lane FIFO on the
 /// REMOTE receive path. No test asserted handler order for frames that arrive over a link. The inbound-dispatch overhaul keeps
-/// "per-sender FIFO" as its central invariant (1b-perf-ops), and writing this down found that the invariant is already broken
+/// "per-sender FIFO" as its central invariant (second review), and writing this down found that the invariant is already broken
 /// in the steady state, on one link with no reconnect.
 ///
 /// Two outcomes, one fixture (two senders to one acceptor, one lane):
@@ -44,11 +44,11 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 ///     keep this green.
 ///   - TRIPWIRE PAIR: a tight burst of large frames outruns the lane's writability, `writeIfWritable` refuses the overflow
 ///     frames and `retryBackpressuredWrite` re-sends them 25 ms later, so frames sent after them overtake them (mechanism 3 of
-///     A-07; Rabia and the DHT tolerate this, 1b-link, so it is a contract and documentation matter, not a correctness bug
+///     A-07; Rabia and the DHT tolerate this (second review), so it is a contract and documentation matter, not a correctness bug
 ///     for those two lanes). The first version of this test asserted FIFO under a burst of small frames and failed one run in
 ///     two: it was a flaky pin, which is what made the mechanism visible.
 ///
-/// The real assertion is the contract the overhaul states, not a decision: if the spec decides "per stream, none across
+/// The real assertion is the contract the overhaul states, not a decision: if the overhaul decides "per stream, none across
 /// backpressure" the pair is deleted and the paced pin stays.
 @Timeout(120)
 class InboundFifoPinTest {
@@ -148,7 +148,7 @@ class InboundFifoPinTest {
             .isPositive();
     }
 
-    @Disabled("A-07.3/B-02/U-010: enable if the spec keeps per-sender per-lane FIFO under backpressure (delete the pair if it states "
+    @Disabled("A-07.3/B-02/U-010: enable if the overhaul keeps per-sender per-lane FIFO under backpressure (delete the pair if it states "
               + "'per stream, none across backpressure'). Today red: the backpressure retry lets later frames overtake refused ones.")
     @Test
     void overrunBurst_keepsSendOrderOfOneSenderOnOneLane() {

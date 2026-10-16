@@ -41,7 +41,7 @@ import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.starte
 ///
 /// The target the real tests state, "a dial within one tick of the peer being reported alive", is a guess about
 /// the overhaul's target (`[guess]`); the input channel used here, [QuicClusterNetwork#setSwimLivenessGate], is the
-/// one existing liveness input to the transport and also a guess. Adjust both to the spec.
+/// one existing liveness input to the transport and also a guess. Adjust both to the overhaul's choice.
 @Timeout(30)
 class ReconcileBackoffTripwireTest {
     private static final long TICK_MS = 5_000;
