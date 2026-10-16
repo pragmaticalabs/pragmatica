@@ -1652,10 +1652,10 @@ New endpoints for stream management:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/streams` | List all streams with partition counts and status |
-| GET | `/api/streams/{name}` | Stream detail: partitions, offsets, consumer groups |
-| GET | `/api/streams/{name}/consumers` | Consumer groups with lag and assignment details |
-| POST | `/api/streams/{name}/consumers/{group}/reset` | Reset consumer group cursor to earliest/latest |
-| POST | `/api/streams/{name}/consumers/{group}/skip` | Skip current event (for stalled consumers) |
+| GET | `/api/v1/streams/{namespace}/{stream}/{version}` | Stream detail: partitions, offsets, consumer groups |
+| GET | `/api/v1/streams/{namespace}/{stream}/{version}/consumers` | Consumer groups with lag and assignment details |
+| POST | `/api/v1/streams/{namespace}/{stream}/{version}/consumers/{group}/reset` (proposed; not implemented) | Reset consumer group cursor to earliest/latest |
+| POST | `/api/v1/streams/{namespace}/{stream}/{version}/consumers/{group}/skip` (proposed; not implemented) | Skip current event (for stalled consumers) |
 
 ---
 

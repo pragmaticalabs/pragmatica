@@ -630,7 +630,7 @@ Implementation: validation is composed via `Result.all(<check1>, <check2>, ...)`
 
 Failures are reported through three channels, all derived from the same composite error:
 
-- **HTTP deploy API** (`/api/blueprint/deploy`): structured error in response body, listing each failing field path with the specific cause. Existing `/api/blueprint/validate` (`BLUEPRINT_VALIDATE` route) uses the same shape; the deploy route reuses that shape.
+- **HTTP deploy API** (`/api/v1/blueprints/deploy`): structured error in response body, listing each failing field path with the specific cause. Existing `/api/v1/blueprints/validate` (`BLUEPRINT_VALIDATE` route) uses the same shape; the deploy route reuses that shape.
 - **CLI** (`aether blueprints deploy`): human-formatted error block on stderr; non-zero exit code.
 - **AuditLog**: every rejection logged with the failing field paths, the principal that attempted the deploy, and the blueprint identifier.
 

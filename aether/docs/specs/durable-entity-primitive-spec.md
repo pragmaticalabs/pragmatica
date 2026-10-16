@@ -665,7 +665,7 @@ No second write path exists.
 
 Surface (management triad, per project invariant — REST → CLI → docs):
 
-- `POST /api/workflows/{workflowType}/{id}/signal` — body: the event (JSON, validated against
+- `POST /api/v1/workflows/{workflowType}/{id}/signal (planned)` — body: the event (JSON, validated against
   the workflow's event type); response: post-transition state or the typed rejection
   (`InvalidEvent`, `WorkflowNotFound`, `StaleOwnerEpoch` → retried by the gateway).
 - CLI: `aether workflows signal <type> <id> --event <json>`.
@@ -1264,8 +1264,8 @@ addressed to an incarnation that has since been replaced is refused `Incarnation
 redirected.
 
 The operator surface follows the §6.6 management-triad pattern (PLANNED with #354):
-`GET /api/sagas/{type}?phase=NeedsReconciliation`, `POST /api/sagas/{type}/{id}/resolve`,
-`POST /api/sagas/{type}/{id}/signal`, with CLI and docs counterparts.
+`GET /api/v1/sagas/{type}?phase=NeedsReconciliation (planned)`, `POST /api/v1/sagas/{type}/{id}/resolve (planned)`,
+`POST /api/v1/sagas/{type}/{id}/signal (planned)`, with CLI and docs counterparts.
 
 **Resolution table — owner decision D3 (v1828 B5, B7).** `resolve` is accepted on a **parked** instance —
 `NeedsReconciliation` or `Waiting` — and only with the kinds its row lists; anything else is refused with
@@ -1749,7 +1749,7 @@ enters **DRAINING** instead of being deallocated:
 - **A live count is reported**: instances bound to the version that are not terminal, plus pending
   deadline timers (counted from the fold's timer frames, §7.9 F2) and pending compensations, per keyspace. Each partition owner derives its share from
   its fold and publishes it; the retirement gate sums them. Visible through the management triad
-  (`GET /api/sagas/{type}/versions`, CLI, docs).
+  (`GET /api/v1/sagas/{type}/versions (planned)`, CLI, docs).
 - **Retired only at zero.** The deallocation paths of §7.11.1 (`removeNonTargetVersions` and the
   others) consult the gate before unloading **any version that appears in any live binding** — the saga's
   own slice version and every version in a binding's dependency closure (D7c). A dependency version
@@ -2465,7 +2465,7 @@ reverting is a spec edit, no code churn.
 **All §14 owner decisions closed — spec is decision-complete for implementation.**
 
 - **S1 resolved (signals in v1):** new §6.6 — workflow signal injection as a thin external
-  exposure of `dispatch` (management triad: REST `POST /api/workflows/{type}/{id}/signal`,
+  exposure of `dispatch` (management triad: REST `POST /api/v1/workflows/{type}/{id}/signal (planned)`,
   CLI `aether workflows signal`, docs). Saga `WAIT_SIGNAL` step kind explicitly v2.
 - **S2 resolved:** terminal-ttl defaults confirmed (`7d` entities / `30d` workflows) + explicit delete.
 - **S4 resolved:** `C` stays hidden (`Unit`) — non-durable context in a durable workflow violates

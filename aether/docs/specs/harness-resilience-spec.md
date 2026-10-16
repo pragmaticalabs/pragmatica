@@ -84,7 +84,7 @@ Seven failure classes were identified across a 4-audit review of the harness (li
 - `~/.aether/clusters/<name>/bootstrap-state.json` — contains only the original bootstrap nodes. CTM-provisioned replacement nodes (which get ULIDs, not sequential `node-N` names) are invisible to `_registered_by_to_offset` (lib/common.sh:698), whose regex `^node-[0-9]+$` cannot match ULID-named nodes.
 - Hetzner labels (via `cloud_public_ip`) — requires `HCLOUD_TOKEN` at test runtime, not just at bootstrap time.
 
-**Product fix:** Tier A1 (`GET /api/nodes/{id}/endpoint`).
+**Product fix:** Tier A1 (`GET /api/v1/nodes/endpoint/{id}`).
 
 ### R2 — No live-vs-zombie liveness contract
 
@@ -179,14 +179,14 @@ The `run_suite "$suite" "b" || true` pattern is retained for the suite itself (a
 
 Each item in Tier A is a product change that eliminates a root-cause class from Section 3. Each triggers the REST→CLI→Docs triad: `*Routes.java` + `ManagementRoute` enum + `ManagementServer` wiring in `aether/node`; CLI subcommand in `aether/cli/AetherCli.java`; docs in `aether/docs/reference/management-api.md` and `aether/docs/reference/cli.md`.
 
-### A1 — `GET /api/nodes/{id}/endpoint` — nodeId-to-endpoint resolution
+### A1 — `GET /api/v1/nodes/endpoint/{id}` — nodeId-to-endpoint resolution
 
 **Eliminates:** R1 (bootstrap-state.json reconstruction, `_registered_by_to_offset` ULID blindness, `HCLOUD_TOKEN` dependency at test time).
 
 **Route:**
 
 ```
-GET /api/nodes/{id}/endpoint
+GET /api/v1/nodes/endpoint/{id}
 ManagementRoute enum entry: NODE_ENDPOINT_GET
 RouteTarget: NodeIdParam(paramIndex=0)  // forward to target node, local handler responds
 ```

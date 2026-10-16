@@ -221,11 +221,11 @@ All endpoints under `/api/v1/deploy`. Replaces `/api/rolling-update/*`, `/api/ca
 | `POST` | `/api/v1/deploy` | Start a deployment |
 | `GET` | `/api/v1/deploy` | List all deployments |
 | `GET` | `/api/v1/deploy/{id}` | Get deployment by ID |
-| `GET` | `/api/deploy/{id}/health` | Get deployment health metrics |
-| `POST` | `/api/deploy/{id}/promote` | Promote (advance canary stage, or switch blue-green) |
-| `POST` | `/api/deploy/{id}/routing` | Adjust traffic routing (rolling) |
-| `POST` | `/api/deploy/{id}/complete` | Complete deployment (drain old version) |
-| `POST` | `/api/deploy/{id}/rollback` | Rollback deployment |
+| `GET` | `/api/v1/deploy/health/{id}` (proposed, not implemented) | Get deployment health metrics |
+| `POST` | `/api/v1/deploy/promote/{id}` | Promote (advance canary stage, or switch blue-green) |
+| `POST` | `/api/v1/deploy/routing/{id}` (proposed, not implemented) | Adjust traffic routing (rolling) |
+| `POST` | `/api/v1/deploy/complete/{id}` | Complete deployment (drain old version) |
+| `POST` | `/api/v1/deploy/rollback/{id}` | Rollback deployment |
 
 ### 3.2 Request/Response Shapes
 
@@ -277,7 +277,7 @@ Field rules:
 }
 ```
 
-#### POST /api/deploy/{id}/routing
+#### POST /api/v1/deploy/routing/{id} (proposed, not implemented)
 
 ```json
 {
@@ -285,7 +285,7 @@ Field rules:
 }
 ```
 
-#### GET /api/deploy/{id}/health
+#### GET /api/v1/deploy/health/{id} (proposed, not implemented)
 
 ```json
 {

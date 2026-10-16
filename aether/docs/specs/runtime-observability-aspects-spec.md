@@ -166,7 +166,7 @@ Observability runs through a **separate** path, not the aspect seam: `Observabil
 **logging** PARTIAL (good, depth+rid-correlated; runtime levels shipped), **metrics** PARTIAL
 (`InvocationMetricsCollector`, in-memory `AtomicLong`, not Micrometer; resilience interceptors emit
 none), **spans** MISSING (no `Span`/`spanId`/tree), **tracing** STUB (flat `InvocationTraceStore`
-capture, no waterfall, no `/api/traces/config`, principal/originNode lost cross-node).
+capture, no waterfall, no `/api/v1/traces/config` (not implemented), principal/originNode lost cross-node).
 
 ### 3.5 The proven KV→push pattern — EXISTS ×4
 
@@ -332,7 +332,7 @@ counting is a single `incrementAndGet`; the counting facet's `AtomicLong` is con
 ### 6.3 Update flow
 
 ```
-operator → PUT /api/observability/{facet}  (or depth)   [management route]
+operator → POST /api/v1/observability/config  (or /depth)   [management route]
    → commit ObservabilityConfigKey in cluster KV
    → @MessageReceiver onObservabilityConfigPut  (every node)            [write-side, rare]
    → registry.lookup(injectionPointKey) → for each live aspect instance:
@@ -386,7 +386,7 @@ made switchable.
 | Logging | works (slice only) | rehome to seam + **resources** + per-IP toggle |
 | Metrics | partial (in-memory) | rehome + **resources** + per-IP toggle; (Micrometer wiring + resilience-interceptor metrics = separate, ties #280) |
 | Spans | **missing** | provide the **seam**; span creation/tree itself is a separate build-out (#304 / RFC-0010) |
-| Tracing | stub (flat) | per-IP capture toggle on the seam; tree-assembly/waterfall + `/api/traces/config` separate (#304) |
+| Tracing | stub (flat) | per-IP capture toggle on the seam; tree-assembly/waterfall + `/api/v1/traces/config` (not implemented) separate (#304) |
 
 ---
 
@@ -455,7 +455,7 @@ push keeps its last-good snapshot — fail-safe, observability must never break 
 | 2 — resource wrap | `ResourceProviderFacade.provide(...)` returns `aspect.apply(resource)`; compose with #268 lifecycle | `ResourceProviderFacade`, `SpiResourceProvider` |
 | 3 — write-side registry | `ObservabilityConfigKey` + `@MessageReceiver` + registry; register/deregister on slice/resource lifecycle | mirror `LogLevelRegistry` (`AetherNode.java:1317`) |
 | 4 — rehome logic | move `ObservabilityInterceptor` logging/metrics/trace-capture into the aspect body; extend to resources | `InvocationHandler.java:241-242`, `SliceInvoker.java:334,565,758` |
-| 5 — management surface | `/api/observability/{facet}` triad (REST+CLI+docs) | `ObservabilityRoutes.java:148-170` |
+| 5 — management surface | `/api/v1/observability/{depth,config}` triad (REST+CLI+docs) | `ObservabilityRoutes.java:148-170` |
 | 6 — verify | toggle logging/metrics/tracing on one slice-method and one resource-call at runtime → effect without redeploy; all-off micro-benchmark = baseline; lifecycle (no registry leak on unload) | `aether/tests/integration` |
 
 **Acceptance (from #277):** changing metrics/logging/tracing on a method (and now a resource) takes

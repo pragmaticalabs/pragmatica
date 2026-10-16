@@ -153,7 +153,7 @@ Adapted from RFC-0009 for the unified model:
 
 ### Runtime Configuration
 
-- `POST /api/traces/config` — runtime sampling rate adjustment
+- `POST /api/v1/traces/config` (proposed; not implemented) — runtime sampling rate adjustment
 
   ```json
   { "samplingRate": 0.5 }

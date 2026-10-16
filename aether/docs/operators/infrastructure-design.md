@@ -40,7 +40,6 @@ Pattern: `Generator.generate(AetherConfig, Path) -> Result<GeneratorOutput>`
 |----------|--------|-------------|
 | `/api/v1/deploy` | POST | Deploy slice |
 | `/api/v1/scale` | POST | Scale instances |
-| `/api/undeploy` | POST | Undeploy slice |
 | `/api/v1/blueprints` | POST | Apply blueprint |
 | `/api/v1/nodes` | GET | List nodes |
 | `/health` | GET | Health check |
@@ -191,7 +190,7 @@ Dependencies:
 Integration:
 - Add `CloudManager` to `AetherNode`
 - Extend `Controller` to trigger cloud scaling
-- Add `/api/cloud/*` endpoints to ManagementServer
+- Add `/api/v1/cloud/*` endpoints to ManagementServer (none exist yet)
 
 ### Phase 3: GCP/Azure/DO Support
 

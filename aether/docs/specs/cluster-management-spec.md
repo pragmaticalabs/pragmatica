@@ -868,12 +868,12 @@ REQ-STATUS-01: Status aggregates from multiple management API endpoints:
 
 | Data | Source Endpoint |
 |------|----------------|
-| Cluster info, leader, uptime | `GET /api/status` |
+| Cluster info, leader, uptime | `GET /api/v1/cluster/status` |
 | Node list, roles | `GET /api/v1/nodes` |
 | Health, quorum | `GET /api/v1/health` |
 | Node lifecycle states | `GET /api/v1/nodes/lifecycle` |
 | Topology (core count, limits) | `GET /api/v1/cluster/topology` |
-| Certificate expiry | `GET /api/certificate` |
+| Certificate expiry | `GET /api/v1/certificates` |
 | Cluster config (desired state) | `GET /api/v1/cluster/config` (new) |
 | Slice deployment info | `GET /api/v1/slices` |
 
@@ -891,7 +891,7 @@ REQ-STATUS-02: Desired vs actual comparison:
 aether cluster drain <node-id>                 # Graceful drain single node
 ```
 
-REQ-DRAIN-01: Delegates to existing `POST /api/node/drain/<nodeId>`. No new logic.
+REQ-DRAIN-01: Delegates to existing `POST /api/v1/nodes/drain/<nodeId>`. No new logic.
 
 ### 10.2 Destroy
 
@@ -903,7 +903,7 @@ aether cluster destroy --force --keep-instances # Remove registry only
 
 REQ-DESTROY-01: Destroy sequence:
 1. Confirm: `This will permanently destroy cluster "production". Type the cluster name to confirm:`
-2. Drain all nodes (parallel): `POST /api/node/drain/<nodeId>` for each
+2. Drain all nodes (parallel): `POST /api/v1/nodes/drain/<nodeId>` for each
 3. Wait for all drains to complete (slices unloaded)
 4. Terminate all instances (parallel): `ComputeProvider.terminate(instanceId)` for each
 5. Remove cluster from local registry (`~/.aether/clusters.toml`)
@@ -1227,7 +1227,7 @@ Initiate a version upgrade.
 }
 ```
 
-#### GET /api/cluster/upgrade/{upgradeId}
+#### GET /api/v1/upgrade/status
 
 Poll upgrade progress.
 
@@ -1247,17 +1247,17 @@ Poll upgrade progress.
 
 | Endpoint | Used By |
 |----------|---------|
-| `GET /api/status` | `status` command |
+| `GET /api/v1/cluster/status` | `status` command |
 | `GET /api/v1/nodes` | `status` command |
 | `GET /api/v1/health` | `status`, bootstrap health polling |
 | `GET /health/ready` | Bootstrap quorum check |
 | `GET /health/live` | Bootstrap liveness check |
 | `GET /api/v1/nodes/lifecycle` | `status` command |
 | `GET /api/v1/cluster/topology` | `status` command |
-| `GET /api/certificate` | `status` command |
-| `POST /api/node/drain/{nodeId}` | `drain`, `destroy`, `upgrade` commands |
-| `POST /api/node/activate/{nodeId}` | `upgrade` command |
-| `POST /api/node/shutdown/{nodeId}` | `destroy` command |
+| `GET /api/v1/certificates` | `status` command |
+| `POST /api/v1/nodes/drain/{nodeId}` | `drain`, `destroy`, `upgrade` commands |
+| (none: activate step removed, superseded by #1543) | `upgrade` command |
+| `POST /api/v1/nodes/shutdown/{nodeId}` | `destroy` command |
 | `GET /api/v1/slices` | `status` command |
 
 ### 14.3 Route Source
@@ -1301,7 +1301,7 @@ All new endpoints require OPERATOR or ADMIN role (existing RBAC Tier 1):
 | `/api/v1/cluster/status` | GET | VIEWER |
 | `/api/v1/cluster/scale` | POST | OPERATOR |
 | `/api/v1/cluster/upgrade` | POST | ADMIN |
-| `/api/cluster/upgrade/{id}` | GET | VIEWER |
+| `/api/v1/upgrade/status` | GET | VIEWER |
 
 ---
 
@@ -1626,7 +1626,7 @@ This eliminates the need for Step 7 (Update Seed Peers) in the bootstrap flow.
 |-----------|--------|-------------|
 | `ClusterScaleCommand` | `aether/cli` | Thin wrapper around apply |
 | `ClusterUpgradeCommand` | `aether/cli` | Initiate and monitor rolling upgrade |
-| Upgrade endpoint | `aether/node` | `POST /api/v1/cluster/upgrade`, `GET /api/cluster/upgrade/{id}` |
+| Upgrade endpoint | `aether/node` | `POST /api/v1/cluster/upgrade`, `GET /api/v1/upgrade/status` |
 | `NodeUpgradeOrchestrator` | `aether-deployment` | Coordinates per-node drain/update/restart/activate |
 
 **Deliverables:**

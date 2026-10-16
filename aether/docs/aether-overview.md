@@ -147,7 +147,7 @@ aether scale org.example:order-processor --min 2 --max 10 --target-cpu 60 --targ
 
 **Alert thresholds:** Configurable per metric, persisted via consensus. Set warning and critical levels, get notified when crossed.
 
-**Dynamic aspects:** Toggle per-method LOG/METRICS/LOG_AND_METRICS modes at runtime via REST API (`/api/aspects`) without redeployment or restart.
+**Dynamic aspects:** Tune per-method observability depth and config at runtime via REST API (`/api/v1/observability/depth`, `/api/v1/observability/config`) or `aether observability` without redeployment or restart.
 
 ### CLI
 

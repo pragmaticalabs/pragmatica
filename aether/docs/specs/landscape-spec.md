@@ -58,7 +58,7 @@ No ordering, no overrides, no resources, no config, no secrets — by design (§
 
 ## 6. Surface (project invariants)
 
-- **REST** (`aether/node` routes + `ManagementRoute` entries): `GET /api/landscape` (status; VIEWER), `POST /api/landscape/apply` (+ `prune` flag; ADMIN), `POST /api/landscape/rollback` (ADMIN), `GET /api/landscape/diff` (VIEWER).
+- **REST** (`aether/node` routes + `ManagementRoute` entries): `GET /api/v1/landscape` (status; VIEWER), `POST /api/v1/landscape/apply` (+ `prune` flag; ADMIN), `POST /api/v1/landscape/rollback` (ADMIN), `GET /api/v1/landscape/diff` (VIEWER).
 - **CLI**: `aether landscape apply|status|rollback|validate|diff|publish`.
 - **Docs**: `management-api.md` + `cli.md` + this spec as `aether/docs/specs/landscape-spec.md`; feature-catalog entry; CHANGELOG.
 

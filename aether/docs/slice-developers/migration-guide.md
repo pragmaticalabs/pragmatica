@@ -642,7 +642,7 @@ Check cluster status:
 aether status
 
 # Via Management API
-curl http://localhost:5150/api/status
+curl http://localhost:5150/api/v1/nodes/status
 curl http://localhost:5150/api/v1/slices/status
 
 # Or use the CLI:

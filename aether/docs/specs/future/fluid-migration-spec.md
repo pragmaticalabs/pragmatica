@@ -267,7 +267,7 @@ Verification passed.
 
 Drain source nodes one at a time, respecting disruption budget:
 
-- REQ-DRAIN-01: Drain nodes sequentially using existing `POST /api/node/drain/{nodeId}` endpoint.
+- REQ-DRAIN-01: Drain nodes sequentially using existing `POST /api/v1/nodes/drain/{nodeId}` endpoint.
 - REQ-DRAIN-02: Respect disruption budget: never drain more nodes simultaneously than the budget allows.
 - REQ-DRAIN-03: Wait for each node to reach `DECOMMISSIONED` before draining the next.
 - REQ-DRAIN-04: Timeout per node: `drain_timeout` (default 300s).
@@ -696,10 +696,10 @@ aether cluster status --provider gcp
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/v1/cluster/migrate` | Start migration (body: migration config JSON) |
-| `GET` | `/api/cluster/migrate/status` | Get current migration status |
-| `POST` | `/api/cluster/migrate/rollback` | Initiate rollback |
-| `POST` | `/api/cluster/migrate/pause` | Pause migration (finish current step, hold) |
-| `POST` | `/api/cluster/migrate/resume` | Resume paused migration |
+| `GET` | `/api/v1/cluster/migrate/status` | Get current migration status |
+| `POST` | `/api/v1/cluster/migrate/rollback` | Initiate rollback |
+| `POST` | `/api/v1/cluster/migrate/pause` | Pause migration (finish current step, hold) |
+| `POST` | `/api/v1/cluster/migrate/resume` | Resume paused migration |
 | `GET` | `/api/v1/nodes?provider={id}` | List nodes filtered by provider |
 
 ---

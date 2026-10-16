@@ -66,7 +66,7 @@ Detailed status of one instance.
 
 **Error:** 404 if instance name not found.
 
-### POST /api/storage/{name}/snapshot
+### POST /api/v1/storage/snapshot/{name}
 
 Force a metadata snapshot on this node.
 
@@ -184,7 +184,7 @@ aether storage list                           # GET /api/v1/cluster/storage
 aether storage list --node <nodeId>           # GET /api/v1/storage (on specified node)
 aether storage status <name>                  # GET /api/v1/cluster/storage/{name}
 aether storage status <name> --node <nodeId>  # GET /api/v1/storage/{name} (on specified node)
-aether storage snapshot <name>                # POST /api/storage/{name}/snapshot (on connected node)
+aether storage snapshot <name>                # POST /api/v1/storage/snapshot/{name} (on connected node)
 aether storage snapshot <name> --node <nodeId># POST on specified node
 ```
 
@@ -224,7 +224,7 @@ Snapshot triggered: artifacts epoch=43
 
 - [ ] `aether/node/src/main/java/org/pragmatica/aether/api/routes/StorageRoutes.java`
 - [ ] Implements `RouteSource`, receives `Supplier<AetherNode>`
-- [ ] Per-node routes: GET `/api/v1/storage`, GET `/api/v1/storage/{name}`, POST `/api/storage/{name}/snapshot`
+- [ ] Per-node routes: GET `/api/v1/storage`, GET `/api/v1/storage/{name}`, POST `/api/v1/storage/snapshot/{name}`
 - [ ] Cluster routes: GET `/api/v1/cluster/storage`, GET `/api/v1/cluster/storage/{name}` -- fan out to all nodes via existing broadcast mechanism, merge results
 
 ### ManagementServer Wiring
@@ -244,7 +244,7 @@ Snapshot triggered: artifacts epoch=43
 |-------|-------------|
 | GET /api/v1/storage | VIEWER |
 | GET /api/v1/storage/{name} | VIEWER |
-| POST /api/storage/{name}/snapshot | OPERATOR |
+| POST /api/v1/storage/snapshot/{name} | OPERATOR |
 | GET /api/v1/cluster/storage | VIEWER |
 | GET /api/v1/cluster/storage/{name} | VIEWER |
 
