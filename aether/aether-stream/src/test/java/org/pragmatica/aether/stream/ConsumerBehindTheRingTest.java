@@ -206,6 +206,27 @@ class ConsumerBehindTheRingTest {
         assertThat(warnings.getLast().message()).contains("cancelled");
     }
 
+    /// A rewind that moves the cursor off a hole ends that hole's episode, and says so; it is not ended as a successful read
+    /// from the hole's offset.
+    @Test
+    void rewindOffAHole_endsTheHoleEpisodeAsMoved() throws InterruptedException {
+        start((from, epoch) -> switch (from.intValue()) {
+            case 0 -> epoch.equals(Epoch.ZERO)
+                      ? ring(events(0, 4), E1)
+                      : ring(List.of(), epoch);
+            case 5 -> reads(5L) <= 2
+                      ? new SegmentError.SealedRangeMissing(STREAM, 0, 5L, 9L).<StreamPartitionManager.EpochRead> promise()
+                      : new StreamError.EpochDiverged(E2, 3L, StreamError.EpochDiverged.NO_PROVEN_LOSS).promise();
+            case 3 -> ring(events(3, 3), E2);
+            default -> ring(List.of(), E2);
+        });
+
+        keepWaking(() -> !warningsOf(STREAM_CONSUMER_SEALED_RANGE_RESTORED).isEmpty() && delivered.contains(3L));
+
+        assertThat(warningsOf(STREAM_CONSUMER_SEALED_RANGE_RESTORED)).singleElement()
+                                                                     .satisfies(warning -> assertThat(warning.message()).contains("moved off it"));
+    }
+
     /// A read that was in flight when the consumer was cancelled answers afterwards, after the cancel's hook already ran. An
     /// episode it opens must be closed by the opener itself, or nothing ever would. Deterministic: the read closes the
     /// runtime before it answers.

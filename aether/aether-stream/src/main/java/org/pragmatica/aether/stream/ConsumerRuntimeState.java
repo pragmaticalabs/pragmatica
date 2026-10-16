@@ -1699,6 +1699,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
         state.rewindTo(resume, diverged.ownerEpoch());
         if (resume < from) {
+            endHoleEpisode(key, state, HoleEnd.MOVED);
             announceRewind(key, from, resume, diverged);
         }
 
