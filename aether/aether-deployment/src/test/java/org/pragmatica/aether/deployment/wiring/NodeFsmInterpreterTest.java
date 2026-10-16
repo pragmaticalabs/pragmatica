@@ -321,6 +321,7 @@ class NodeFsmInterpreterTest {
 
                 assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).as("the first ACTIVE submission never reached consensus").isZero();
                 assertThat(rig.stateOf(ORDERS).or(SliceObservedState.LOADING)).isNotEqualTo(SliceObservedState.ACTIVE);
+                assertThat(rig.submitted("observed")).as("a round the fault kept from consensus is not counted as submitted (v-2204 D2)").isEqualTo(rig.cluster.applied.size());
 
                 rig.clock.advance(2_000L);
                 rig.awaitState(ORDERS, SliceObservedState.ACTIVE);

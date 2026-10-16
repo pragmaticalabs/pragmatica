@@ -92,6 +92,7 @@ public final class Fsm2System {
     private final AtomicLong quorumSequence = new AtomicLong();
     private final NodeId self;
     private final Collaborators collaborators;
+    private final SliceRuntimeAdapter adapter;
 
     private Fsm2System(NodeFsmInterpreter node,
                        ClusterFsmInterpreter cluster,
@@ -101,8 +102,10 @@ public final class Fsm2System {
                        EngineMarkerGuard guard,
                        LocalOpExecutor localOps,
                        NodeId self,
-                       Collaborators collaborators) {
+                       Collaborators collaborators,
+                       SliceRuntimeAdapter adapter) {
         this.self = self;
+        this.adapter = adapter;
         this.collaborators = collaborators;
         this.node = node;
         this.cluster = cluster;
@@ -223,7 +226,8 @@ public final class Fsm2System {
                               c.guard(),
                               localOps,
                               c.config().self(),
-                              c);
+                              c,
+                              runtime);
     }
 
     private static SeamPoller.Sink pollerSink(ClusterFsmInterpreter cluster) {
@@ -274,6 +278,11 @@ public final class Fsm2System {
     /// The executor of the node FSM's local steps (stopped with the system), for a test that reads that stop closed it.
     public LocalOpExecutor localOps() {
         return localOps;
+    }
+
+    /// The adapter the node FSM's local steps run through, as built: its own collaborators are what it received (v-2204 D1).
+    public SliceRuntimeAdapter adapter() {
+        return adapter;
     }
 
     /// What the system was built from, so a test can read that the node handed it its real route publisher, invoker and router (v-2204 F4).

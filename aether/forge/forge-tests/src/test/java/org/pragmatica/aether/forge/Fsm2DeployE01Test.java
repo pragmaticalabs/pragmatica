@@ -114,6 +114,8 @@ class Fsm2DeployE01Test {
                           version, leaderRounds, SPEC_LEADER_ROUNDS, MEASURED_LEADER_ROUNDS, nodeRounds, SPEC_NODE_ROUNDS);
         assertThat(leaderRounds).as("TRIPWIRE: the leader's rounds are today's measured count (+ slack), NOT the 7.1 budget; see leaderRounds_withinTheSpecBudget")
                                 .isLessThanOrEqualTo(MEASURED_LEADER_ROUNDS + SLACK);
+        assertThat(leaderRounds).as("TRIPWIRE, lower side: the leader now takes fewer rounds than the pin - delete me, enable leaderRounds_withinTheSpecBudget")
+                                .isGreaterThanOrEqualTo(MEASURED_LEADER_ROUNDS - SLACK);
         assertThat(nodeRounds).as("design 7.1: 4 rounds per instance, counted at submission").isLessThanOrEqualTo(SPEC_NODE_ROUNDS);
         assertThat(sensorViolations()).as("E-01 against fsm2/expected-warns-e01.txt and the O6 metrics (no fault: silent)").isEmpty();
     }

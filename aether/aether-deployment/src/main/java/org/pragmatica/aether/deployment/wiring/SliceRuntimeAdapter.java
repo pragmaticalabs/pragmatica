@@ -105,6 +105,11 @@ public final class SliceRuntimeAdapter implements LocalOpExecutor.StepRunner {
                                                                           collaborators.warnings()));
     }
 
+    /// What this adapter was actually given, for a test that reads the node's real collaborators where they are used.
+    public Collaborators collaborators() {
+        return c;
+    }
+
     public static SliceRuntimeAdapter sliceRuntimeAdapter(Collaborators collaborators) {
         return new SliceRuntimeAdapter(collaborators);
     }

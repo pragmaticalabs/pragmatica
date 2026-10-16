@@ -118,20 +118,22 @@ class DeploymentWiringBootTest {
                          .onFailure(cause -> fail("boot must succeed: " + cause.message()))
                          .unwrap();
         node.start().await(timeSpan(30).seconds()).onFailure(cause -> fail("start() must succeed: " + cause.message()));
-        var collaborators = node.deploymentWiring().system().unwrap().collaborators();
+        var system = node.deploymentWiring().system().unwrap();
+        var collaborators = system.collaborators();
+        var received = system.adapter().collaborators();
 
-        assertThat(collaborators.adapter().routePublisher().isPresent()).as("the node's HttpRoutePublisher").isTrue();
-        assertThat(collaborators.adapter().invokerFacade().isPresent()).as("the node's slice invoker").isTrue();
-        assertThat(collaborators.adapter().invocationHandler()).as("the node's invocation handler").isNotNull();
+        assertThat(received.routePublisher().isPresent()).as("the adapter received the node's HttpRoutePublisher").isTrue();
+        assertThat(received.invokerFacade().isPresent()).as("the adapter received the node's slice invoker").isTrue();
+        assertThat(received.invocationHandler()).as("the node's invocation handler").isNotNull();
 
-        var received = new CopyOnWriteArrayList<Message>();
+        var routed = new CopyOnWriteArrayList<Message>();
         var probe = MessageRouter.mutable();
 
-        probe.addRoute(ClusterStateNotification.class, received::add);
+        probe.addRoute(ClusterStateNotification.class, routed::add);
         router.replaceDelegate(probe);
         collaborators.translator().events().accept(ClusterStateNotification.passive());
 
-        assertThat(received).as("the translator's events reach the node's router").hasSize(1);
+        assertThat(routed).as("the translator's events reach the node's router").hasSize(1);
     }
 
     /// The two engines never share a binding target for a branch point: every FSM2 row for a legacy hook is a counted drop, and no LEGACY row
