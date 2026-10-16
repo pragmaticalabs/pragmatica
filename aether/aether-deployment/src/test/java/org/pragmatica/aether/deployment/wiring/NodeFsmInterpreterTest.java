@@ -6,12 +6,17 @@ package org.pragmatica.aether.deployment.wiring;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
 import org.pragmatica.aether.deployment.node.machine.LocalOutcome;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
@@ -296,6 +301,51 @@ class NodeFsmInterpreterTest {
         }
     }
 
+    /// T on FSM2 (phase-3 design 13.1): the tracer's fault sits where a node `Submit` becomes an `apply`. It leaves the first ACTIVE submission of the
+    /// target unanswered and lets the probe through: that is the whole of why T is green on FSM2.
+    @Nested
+    class TracerFault {
+        @AfterEach
+        void disarm() {
+            ActivationWriteFault.disarm();
+        }
+
+        @Test
+        void theFirstActiveSubmission_isLeftUnanswered_andTheProbeResubmissionCommitsIt() {
+            try (var rig = new NodeRig()) {
+                ActivationWriteFault.arm(SELF, ORDERS);
+
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitThat(() -> ActivationWriteFault.unansweredSubmissions() == 1);
+                rig.settle();
+
+                assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).as("the first ACTIVE submission never reached consensus").isZero();
+                assertThat(rig.stateOf(ORDERS).or(SliceObservedState.LOADING)).isNotEqualTo(SliceObservedState.ACTIVE);
+                assertThat(rig.submitted("observed")).as("a round the fault kept from consensus is not counted as submitted (v-2204 D2)").isEqualTo(rig.cluster.applied.size());
+
+                rig.clock.advance(2_000L);
+                rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+
+                assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).as("the probe resubmission got through, once").isEqualTo(1);
+                assertThat(ActivationWriteFault.unansweredSubmissions()).as("and was not itself taken").isEqualTo(1);
+            }
+        }
+
+        @Test
+        void disarmed_everyActiveSubmissionReachesConsensus() {
+            ActivationWriteFault.arm(SELF, ORDERS);
+            ActivationWriteFault.disarm();
+
+            try (var rig = new NodeRig()) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+
+                assertThat(ActivationWriteFault.unansweredSubmissions()).isZero();
+                assertThat(rig.cluster.applied.stream().filter(NodeFsmInterpreterTest::observedActive).count()).isEqualTo(1);
+            }
+        }
+    }
+
     @Nested
     class WriteProbe {
         private NodeRig hungActiveWrite() {
@@ -384,6 +434,65 @@ class NodeFsmInterpreterTest {
                 assertThat(((SliceObservedValue) probe.value()).version()).isEqualTo(((SliceObservedValue) first.value()).version());
                 assertThat(probe.key()).isEqualTo(first.key());
                 rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+            }
+        }
+
+        /// W-36, the real-applier arm (spec NT-134 (b)): the original ACTIVE write and its probe resubmission both reach the REAL applier, in either
+        /// order. The second is a fenced Put at a version already written: refused silently, so the node receives exactly one own `ObservedPut` for
+        /// the ACTIVE row and the instance is ACTIVE once. Every submission is held and applied by hand, so the order is the test's.
+        @ParameterizedTest
+        @ValueSource(booleans = {true, false})
+        void theOriginalAndItsProbe_appliedInEitherOrder_leaveOneRow_andOneOwnObservedPut(boolean originalFirst) {
+            try (var rig = new NodeRig()) {
+                var real = rig.cluster.script;
+                var held = new CopyOnWriteArrayList<List<KVCommand<AetherKey>>>();
+
+                rig.cluster.script = commands -> {
+                    if (observedActive(commands)) {
+                        held.add(commands);
+
+                        return Promise.<List<Object>>promise();
+                    }
+
+                    return real.apply(commands);
+                };
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitThat(() -> held.size() == 1);
+                rig.clock.advance(2_000);
+                rig.awaitThat(() -> held.size() == 2);
+                rig.settle();
+                var before = rig.countOf("ObservedPut");
+
+                var order = originalFirst
+                            ? List.of(held.get(0), held.get(1))
+                            : List.of(held.get(1), held.get(0));
+
+                order.forEach(rig.applier::commit);
+                rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+                rig.settle();
+
+                assertThat(rig.countOf("ObservedPut") - before).as("one own ObservedPut for the row; the fenced duplicate is refused silently").isEqualTo(1);
+                assertThat(rig.stateOf(ORDERS)).isEqualTo(Option.some(SliceObservedState.ACTIVE));
+            }
+        }
+
+        /// v-2204 F1: a round is counted when it leaves for the engine (`submitted`), the attempt and its probe resubmission apart. The settlement-side
+        /// `accepted` arm sees almost none of a clean deploy's rounds, because the row echo clears the write first.
+        @Test
+        void everySubmitThatLeavesForTheEngine_isCountedAtSubmission_attemptAndProbeApart() {
+            try (var rig = hungActiveWrite()) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitThat(() -> activeWrites(rig) == 1);
+                rig.settle();
+                var attempts = rig.submitted("observed");
+
+                rig.clock.advance(2_000);
+                rig.awaitThat(() -> activeWrites(rig) == 2);
+                rig.settle();
+
+                assertThat(attempts).as("the attempts counted so far").isGreaterThanOrEqualTo(1);
+                assertThat(rig.submitted("observed_probe")).as("the probe resubmission, counted apart").isEqualTo(1);
+                assertThat(rig.submitted("observed")).as("the attempt count does not move with the probe").isEqualTo(attempts);
             }
         }
 

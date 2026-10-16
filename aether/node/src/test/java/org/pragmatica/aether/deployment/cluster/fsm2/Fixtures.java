@@ -28,6 +28,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceObservedValue;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.swim.SwimConfig;
@@ -67,7 +68,8 @@ final class Fixtures {
                                     SwimConfig.MAX_CLUSTER_SIZE_WINDOW_MULTIPLIER,
                                     MembershipConfig.membershipConfig().splitTimeout(),
                                     GovernorAnnouncer.DEFAULT_REANNOUNCE_INTERVAL,
-                                    ClusterTimeouts.clusterTimeouts().communityAbsence())
+                                    ClusterTimeouts.clusterTimeouts().communityAbsence(),
+                                    TimeSpan.timeSpan(5).seconds().plus(swim.period()))
                             .unwrap();
     }
 

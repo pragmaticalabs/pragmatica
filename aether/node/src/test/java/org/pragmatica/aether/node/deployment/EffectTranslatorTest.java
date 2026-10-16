@@ -257,14 +257,26 @@ class EffectTranslatorTest {
 
     @Test
     void anUncataloguedClusterWarning_isLoggedAndCounted_notPublished() {
-        cluster(new ClusterEffect.Warn("stray-instance", "org.example:orders:1.0.0@core-2", "no desired row"));
+        cluster(new ClusterEffect.Warn("a-future-fsm-warning", "org.example:orders:1.0.0@core-2", "no desired row"));
 
         assertThat(warnings).isEmpty();
-        assertThat(registry.counter("aether_deployment_fsm_warnings_unmapped_total", "code", "stray-instance").count()).isEqualTo(1.0);
+        assertThat(registry.counter("aether_deployment_fsm_warnings_unmapped_total", "code", "a-future-fsm-warning").count()).isEqualTo(1.0);
         assertThat(logs.on(EffectTranslator.class.getName())).anySatisfy(line -> {
             assertThat(line.level()).isEqualTo(Level.WARN);
-            assertThat(line.message()).contains("stray-instance").contains("org.example:orders:1.0.0@core-2").contains("no desired row");
+            assertThat(line.message()).contains("a-future-fsm-warning").contains("org.example:orders:1.0.0@core-2").contains("no desired row");
         });
+    }
+
+    /// Obligation 4: a code the FSMs raise is now in the catalogue, so it reaches the cluster event log as an operator warning (and is not counted
+    /// as unmapped); the unmapped path above stays for a code that is not.
+    @Test
+    void aCataloguedClusterWarning_isPublishedAsAnOperatorWarning_notCountedAsUnmapped() {
+        cluster(new ClusterEffect.Warn("stray-instance", "org.example:orders:1.0.0@core-2", "no desired row"));
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> warnings.size() == 1);
+        assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.STRAY_INSTANCE);
+        assertThat(warnings.getFirst().subject()).isEqualTo("org.example:orders:1.0.0@core-2");
+        assertThat(registry.counter("aether_deployment_fsm_warnings_unmapped_total", "code", "stray-instance").count()).isZero();
     }
 
     // -- metrics (W-18) ---------------------------------------------------------------------------------------------------

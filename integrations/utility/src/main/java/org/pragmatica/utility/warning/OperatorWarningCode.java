@@ -149,6 +149,35 @@ public enum OperatorWarningCode {
     /// A start this node refused for want of a committed `SliceTarget` (LOAD, ACTIVATE or an ACTIVE claim) has stayed parked past the
     /// bound (#1109): the target the leader acted on has not arrived in this node's applied log. The park stays retry-able and is
     /// re-driven when the target arrives. The subject is `<artifact>@<node>`. Closed by [#SLICE_START_DEFERRAL_ENDED].
+    /// A node's configured deployment engine disagrees with the engine the cluster committed (phase-3 design 8.2): the node refuses itself and
+    /// exits when its window ends unless the mismatch clears. The message names the evidence and the recovery. Subject is the node.
+    DEPLOYMENT_ENGINE_MISMATCH("deployment-engine-mismatch", "deployment", WarningLevel.WARNING),
+    /// The deployment FSMs' warnings (phase-3 design 4.2, 5.2; owner ruling s37): every code the node FSM and the cluster FSM raise as a `Warn`
+    /// effect, so an operator reads it in the cluster event log and not only in the log. Subsystem `deployment`, level WARNING, as ruled. The text
+    /// of each is the FSM's own message; the subject names the node, artifact or datasource it is about. `FsmWarningCatalogueTest` enumerates the
+    /// codes the FSM sources raise against this list, so a new FSM warning without an entry here is a red test.
+    ACTIVATION_UNPERMITTED("activation-unpermitted", "deployment", WarningLevel.WARNING),
+    BLUEPRINT_DELETE_REFUSED("blueprint-delete-refused", "deployment", WarningLevel.WARNING),
+    BLUEPRINT_REJECTED("blueprint-rejected", "deployment", WarningLevel.WARNING),
+    BOOT_TOKEN_ABSENT("boot-token-absent", "deployment", WarningLevel.WARNING),
+    DEPARTURE_INFERRED("departure-inferred", "deployment", WarningLevel.WARNING),
+    DEPARTURE_INFERRED_REVERSED("departure-inferred-reversed", "deployment", WarningLevel.WARNING),
+    DEPARTURE_INFERRED_SUPPRESSED("departure-inferred-suppressed", "deployment", WarningLevel.WARNING),
+    IDENTITY_PROCESS_MISMATCH("identity-process-mismatch", "deployment", WarningLevel.WARNING),
+    INVALID_PLACEMENT("invalid-placement", "deployment", WarningLevel.WARNING),
+    JOIN_REFUSED_PROCESS("join-refused-process", "deployment", WarningLevel.WARNING),
+    JOIN_REFUSED_SUPERSEDED("join-refused-superseded", "deployment", WarningLevel.WARNING),
+    JOIN_UNMATCHED("join-unmatched", "deployment", WarningLevel.WARNING),
+    RETRY_EXHAUSTED_UNSETTLED("retry-exhausted-unsettled", "deployment", WarningLevel.WARNING),
+    SCHEMA_HOLD("schema-hold", "deployment", WarningLevel.WARNING),
+    SCHEMA_HOLD_CLEARED("schema-hold-cleared", "deployment", WarningLevel.WARNING),
+    SCHEMA_STATUS_UNKNOWN("schema-status-unknown", "deployment", WarningLevel.WARNING),
+    SLICE_UNRESPONSIVE("slice-unresponsive", "deployment", WarningLevel.WARNING),
+    SLICE_UNRESPONSIVE_EXPIRED("slice-unresponsive-expired", "deployment", WarningLevel.WARNING),
+    STRAY_INSTANCE("stray-instance", "deployment", WarningLevel.WARNING),
+    WORKER_ABSENCE_UNJUDGEABLE("worker-absence-unjudgeable", "deployment", WarningLevel.WARNING),
+    WORKER_NO_COMMUNITY_POLICY("worker-no-community-policy", "deployment", WarningLevel.WARNING),
+    WORKER_READMITTED_ON_EVIDENCE("worker-readmitted-on-evidence", "deployment", WarningLevel.WARNING),
     SLICE_START_AWAITING_TARGET("slice-start-awaiting-target", "deployment", WarningLevel.WARNING),
     /// The recovery of [#SLICE_START_AWAITING_TARGET], same subject (#1109): the target arrived and the start proceeded, or the parked
     /// entry was superseded or removed (an UNLOAD, the leader's orphan sweep). The message says which. Raised only when the warning was.

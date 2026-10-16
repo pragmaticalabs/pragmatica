@@ -12,15 +12,19 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterIncarnationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Option;
@@ -49,6 +53,36 @@ class ClusterIncarnationTest {
     @BeforeEach
     void setUp() {
         kvStore = emptyStore();
+        commitLeader(kvStore);
+    }
+
+    private static final NodeId MINTER = NodeId.nodeId("node-1").unwrap();
+
+    /// The committed leader the mint's transaction is witnessed by.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void commitLeader(KVStore<AetherKey, AetherValue> store) {
+        var raw = (KVStore) store;
+
+        raw.process(raw.createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, new LeaderValue(MINTER, 1L)))));
+    }
+
+    private static ClusterIncarnation.Mint mint(String lineage, String incarnationId) {
+        return new ClusterIncarnation.Mint(() -> lineage,
+                                           () -> incarnationId,
+                                           nextTransactionId(),
+                                           DeploymentEngine.LEGACY,
+                                           MINTER,
+                                           () -> 1_760_000_000_000L);
+    }
+
+    private static Supplier<String> nextTransactionId() {
+        var counter = new AtomicInteger();
+
+        return () -> "mint-test-" + counter.incrementAndGet();
+    }
+
+    private Option<KVCommand<AetherKey>> genesis(String lineage, String incarnationId) {
+        return ClusterIncarnation.genesisCommand(kvStore, mint(lineage, incarnationId)).unwrap();
     }
 
     @Nested
@@ -97,8 +131,7 @@ class ClusterIncarnationTest {
     class Genesis {
         @Test
         void genesisCommand_mintsIncarnationOne_withTheFreshLineage() {
-            ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-new", () -> "id-new")
-                              .onPresent(ClusterIncarnationTest.this::apply);
+            genesis("lineage-new", "id-new").onPresent(ClusterIncarnationTest.this::apply);
 
             assertThat(ClusterIncarnation.committed(kvStore)).isEqualTo(Option.some(ClusterIncarnationValue.genesis("lineage-new", "id-new")));
             assertThat(ClusterIncarnation.current(kvStore)).isEqualTo(ClusterIncarnationValue.GENESIS);
@@ -108,18 +141,15 @@ class ClusterIncarnationTest {
         void genesisCommand_isAbsent_onceAnIncarnationExists() {
             apply(new KVCommand.Put<>(KEY, ClusterIncarnationValue.clusterIncarnationValue("lineage-restored", 7, "id-lineage-restored-7")));
 
-            assertThat(ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-new", () -> "id-new")
-                                         .isPresent()).isFalse();
+            assertThat(genesis("lineage-new", "id-new").isPresent()).isFalse();
         }
 
         /// Two leaders that both saw no incarnation both build a genesis. The fence lets the first land
         /// and drops the second, so the cluster never ends up with two lineages in sequence.
         @Test
         void racingGeneses_resolveFirstWins() {
-            var first = ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-first", () -> "id-new")
-                                          .unwrap();
-            var second = ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-second", () -> "id-new")
-                                           .unwrap();
+            var first = genesis("lineage-first", "id-new").unwrap();
+            var second = genesis("lineage-second", "id-new").unwrap();
 
             apply(first);
             apply(second);
@@ -145,8 +175,7 @@ class ClusterIncarnationTest {
         /// land — the restored lineage replaces the fresh one, one incarnation past the backup.
         @Test
         void restoreCommands_landOverAFreshGenesis() {
-            ClusterIncarnation.genesisCommand(kvStore, () -> "lineage-fresh", () -> "id-new")
-                              .onPresent(ClusterIncarnationTest.this::apply);
+            genesis("lineage-fresh", "id-new").onPresent(ClusterIncarnationTest.this::apply);
 
             applyBatch(ClusterIncarnation.restoreCommands(ClusterIncarnationValue.clusterIncarnationValue("lineage-backup", 5, "id-lineage-backup-5"), 5, "restore-id"));
 
@@ -256,8 +285,7 @@ class ClusterIncarnationTest {
 
             var successor = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
                                                                                                                            this::applyToStore,
-                                                                                                                           () -> "lineage-successor",
-                                                                                                                           () -> "id-successor"),
+                                                                                                                           mint("lineage-successor", "id-successor")),
                                                                                     this::capture);
             successor.onLeaderChange(leaderChange(true));
 
@@ -279,10 +307,11 @@ class ClusterIncarnationTest {
             var minted = ClusterIncarnation.committed(kvStore).unwrap();
             first.onLeaderChange(leaderChange(false));
             var lagging = emptyStore();
+
+            commitLeader(lagging);
             var successor = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> lagging,
                                                                                                                            this::applyToStore,
-                                                                                                                           () -> "lineage-lagging",
-                                                                                                                           () -> "id-lagging"),
+                                                                                                                           mint("lineage-lagging", "id-lagging")),
                                                                                     this::capture);
             successor.onLeaderChange(leaderChange(true));
 
@@ -345,8 +374,7 @@ class ClusterIncarnationTest {
         private ClusterIncarnationRegistrar registrar(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
             return ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
                                                                                                                   applier,
-                                                                                                                  () -> "lineage-minted",
-                                                                                                                  () -> "id-minted"),
+                                                                                                                  mint("lineage-minted", "id-minted")),
                                                                            this::capture);
         }
 

@@ -4,14 +4,21 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.wiring;
 
+import java.lang.reflect.RecordComponent;
 import java.util.List;
+import java.util.Set;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput;
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterState;
 import org.pragmatica.aether.deployment.cluster.fsm2.RoutedEvent;
+import org.pragmatica.aether.deployment.cluster.fsm2.Seams;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -188,6 +195,155 @@ class ClusterFsmInterpreterTest {
 
                 assertThat(rig.countOf("Timer")).isGreaterThanOrEqualTo(1);
                 assertThat(rig.metric("Timer", "dropped_stale")).isZero();
+            }
+        }
+    }
+
+    /// W-12 (the production caller of `offerCoalescing`, M1, MT-13b) and W-33 (the interpreter half of the seam tests, D-4 (ii), G-3, G-4).
+    @Nested
+    class SeamDelivery {
+        private static final AetherValue.ProcessIncarnation P1 = new AetherValue.ProcessIncarnation(1L, 0x0AL);
+
+        private long coreSuspicionMs() {
+            return ClusterRig.bounds().coreSuspicion() / 1_000_000L + 1_000L;
+        }
+
+        private Seams withCoreView(Set<NodeId> view) {
+            return Seams.UNWIRED
+                    .withCountedCores(Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3))
+                    .withReady(Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3))
+                    .withCoreView(Option.some(view));
+        }
+
+        private ClusterModel model(ClusterRig rig) {
+            return ((ClusterState.Active) rig.interpreter.state()).model();
+        }
+
+        /// W-12 / M1 / MT-13b through the production interpreter: of two queued samples only the newer survives, and it stays behind the input
+        /// that was enqueued before it.
+        @Test
+        void refreshSeams_dropsTheOlderSample_andNeverOvertakesAnEarlierInput() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+                var flushes = rig.countOf("Flush");
+
+                rig.holdConsumerAt("Flush");
+                rig.interpreter.deliver(new ClusterInput.Flush());
+                rig.awaitThat(() -> rig.countOf("Flush") == flushes + 1);
+                var before = rig.countOf("SeamsRefreshed");
+
+                rig.interpreter.refreshSeams(withCoreView(Set.of(SELF, ClusterRig.CORE_2)));
+                rig.interpreter.deliver(new ClusterInput.NodeRemoved(ClusterRig.CORE_2));
+                rig.interpreter.refreshSeams(withCoreView(Set.of(SELF)));
+                rig.release();
+                rig.settle();
+
+                assertThat(rig.countOf("SeamsRefreshed") - before).as("the older sample was dropped").isEqualTo(1);
+                var order = List.copyOf(rig.stepped);
+
+                assertThat(order.lastIndexOf("SeamsRefreshed")).as("the surviving sample is behind NodeRemoved").isGreaterThan(order.lastIndexOf("NodeRemoved"));
+            }
+        }
+
+        @Test
+        void refreshSeams_afterClose_isRefusedAndCountedClosed() {
+            var rig = new ClusterRig();
+
+            rig.close();
+
+            assertThat(rig.interpreter.refreshSeams(withCoreView(Set.of(SELF)))).isFalse();
+            assertThat(rig.metric("SeamsRefreshed", "closed")).isEqualTo(1);
+        }
+
+        /// W-33 (D-4 (ii)): the `Rebuild` snapshot carries no `joined` seed, so a committed DEPARTED core that the leader's own view lists at
+        /// `Rebuild` is still departed right after it; only a full window of continuous listing, measured after `Rebuild`, joins it.
+        @Test
+        void theRebuildSeed_neverSupersedesADepartedRecord_onlyAFullWindowAfterRebuildDoes() {
+            try (var rig = new ClusterRig()) {
+                assertThat(ClusterInput.Snapshot.class.getRecordComponents())
+                        .extracting(RecordComponent::getName)
+                        .as("the snapshot has no joined seed (the membership view is not a seed)")
+                        .doesNotContain("joined", "inherited", "members");
+                rig.departed(ClusterRig.CORE_2, P1);
+                rig.supplied = withCoreView(Set.of(SELF, ClusterRig.CORE_2, ClusterRig.CORE_3));
+
+                rig.activate();
+
+                assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).as("MT-26: seeded from the Rebuild view it would already be joined").isTrue();
+
+                rig.clock.advance(coreSuspicionMs());
+                rig.settle();
+
+                assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).as("control: a full window after Rebuild supersedes the record").isFalse();
+            }
+        }
+
+        /// CI-15b through the production interpreter: the token the seam learned reaches the node's admission, and the join process keeps the
+        /// boot incarnation it had.
+        @Test
+        void processKnown_carriesTheLearnedToken_toTheNodesAdmission() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+
+                assertThat(rig.interpreter.processKnown(ClusterRig.CORE_2, 0x77L)).isTrue();
+                rig.settle();
+
+                assertThat(model(rig).admission(ClusterRig.CORE_2).map(admission -> admission.process().bootToken())).isEqualTo(Option.some(0x77L));
+            }
+        }
+
+        /// W-33: a `SeamsRefreshed.coreView` reaches the FSM's liveness clock. With no view at `Rebuild`, the clock starts when a sample
+        /// that lists the core arrives, and the same window then completes.
+        @Test
+        void aCoreViewDeliveredAfterRebuild_startsTheLivenessClock() {
+            try (var rig = new ClusterRig()) {
+                rig.departed(ClusterRig.CORE_2, P1);
+                rig.activate();
+                assertThat(model(rig).seams().coreView()).isEqualTo(Option.none());
+
+                rig.interpreter.refreshSeams(withCoreView(Set.of(SELF, ClusterRig.CORE_2)));
+                rig.settle();
+                assertThat(model(rig).seams().coreView()).as("the sample reached the model").isEqualTo(Option.some(Set.of(SELF, ClusterRig.CORE_2)));
+                assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).isTrue();
+
+                rig.clock.advance(coreSuspicionMs());
+                rig.settle();
+
+                assertThat(model(rig).isDeparted(ClusterRig.CORE_2)).as("the window ran from the delivered sample").isFalse();
+            }
+        }
+
+        /// W-33 (G-4): `coreView` at `Rebuild` is in the model before the first reconcile, because the seams are read in the same dispatch as
+        /// the snapshot, so the deferral of C17b for a liveness-pending core has its view.
+        @Test
+        void theCoreViewAtRebuild_isInTheModelBeforeTheFirstReconcile() {
+            try (var rig = new ClusterRig()) {
+                var view = withCoreView(Set.of(SELF, ClusterRig.CORE_2));
+
+                rig.supplied = view;
+                rig.activate();
+
+                assertThat(rig.atRebuild).as("the model held the view when the Rebuild step ended").isEqualTo(view);
+                var order = List.copyOf(rig.stepped);
+
+                assertThat(order.indexOf("Rebuild")).isLessThan(order.indexOf("Reconcile"));
+            }
+        }
+
+        /// W-33 (G-3): evidence observed after `Rebuild` reaches the FSM: a committed fact is stepped as a `KvPut` (the announcement route itself is
+        /// `Fsm2Routes`' W-01), and a `localAlive` sample is stepped as `SeamsRefreshed` and held by the model.
+        @Test
+        void aKvPutAndALocalAliveSample_observedAfterRebuild_reachTheFsm() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+                var puts = rig.countOf("KvPut");
+
+                rig.target(ORDERS, 1);
+                rig.interpreter.refreshSeams(Seams.UNWIRED.withLocalAlive(Option.some(Set.of(SELF))));
+                rig.settle();
+
+                assertThat(rig.countOf("KvPut")).as("the committed fact was stepped").isGreaterThan(puts);
+                assertThat(model(rig).seams().localAlive()).as("the localAlive sample was stepped").isEqualTo(Option.some(Set.of(SELF)));
             }
         }
     }

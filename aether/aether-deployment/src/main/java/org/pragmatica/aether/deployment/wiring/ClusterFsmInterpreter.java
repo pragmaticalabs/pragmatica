@@ -157,6 +157,17 @@ public final class ClusterFsmInterpreter extends FsmRuntime<ClusterInput, TimerI
         deliver(new ClusterInput.WriteSettled(settled.correlationId(), settled.incarnation(), settled.settlement()));
     }
 
+    // -- the seams ---------------------------------------------------------------------------------------------------
+    /// CI-15, CI-15c: a fresh sample of the read seams replaces a queued older one (design 3.1: only `SeamsRefreshed` is coalesced).
+    public boolean refreshSeams(Seams seams) {
+        return deliverCoalescing(new ClusterInput.SeamsRefreshed(seams), ClusterInput.SeamsRefreshed.class::isInstance);
+    }
+
+    /// CI-15b: the seam reports a token for `node` that it reported as unknown before.
+    public boolean processKnown(NodeId node, long token) {
+        return deliver(new ClusterInput.ProcessKnown(node, token));
+    }
+
     // -- activation ----------------------------------------------------------------------------------------------------
     /// CI-1: this node became the leader.
     @Contract

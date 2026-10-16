@@ -337,4 +337,40 @@ class CloseAndOverrunProbeTest {
             assertThat(probe.closings.get()).isEqualTo(1);
         }
     }
+
+    /// N-9: one `close()` of a started runtime is released by the consumer's own shutdown, within its wait, and says nothing about a stop timeout.
+    @Test
+    void aLoneClose_releasesWithinItsWait_andLogsNoStopTimeout() {
+        try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+            var probe = new Probe(new ManualTimerService());
+
+            probe.start();
+            var started = System.nanoTime();
+
+            probe.close();
+
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).as("released by the consumer, not by the 5 s wait").isLessThan(Duration.ofSeconds(3));
+            assertThat(logs.lines()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
+            assertThat(probe.closings.get()).isEqualTo(1);
+        }
+    }
+
+    /// N-10: `close()` decides atomically with `start()` whether a consumer exists. Once it has judged there is none, a later `start()` creates
+    /// none, so the shutdown the caller then runs cannot overlap a consumer that appears after the judgement. The interleaving itself (a thread
+    /// created but not yet started) cannot be forced from outside; the guard that closes it is the `retired` bar and the shared monitor.
+    @Test
+    void retireIfConsumerless_barsALaterStart_andReportsALiveConsumerAsPresent() throws Exception {
+        var neverStarted = FsmMailbox.<String>fsmMailbox("deploy-fsm-retire", _ -> {});
+
+        assertThat(neverStarted.retireIfConsumerless()).as("no consumer exists").isTrue();
+        neverStarted.start();
+        assertThat(neverStarted.running()).as("a retired mailbox does not grow a consumer").isFalse();
+
+        var started = FsmMailbox.<String>fsmMailbox("deploy-fsm-retire-alive", _ -> {});
+
+        started.start();
+        assertThat(started.retireIfConsumerless()).as("a live consumer is not retired").isFalse();
+        started.close();
+        assertThat(started.retireIfConsumerless()).as("an exited consumer needs no one").isTrue();
+    }
 }
