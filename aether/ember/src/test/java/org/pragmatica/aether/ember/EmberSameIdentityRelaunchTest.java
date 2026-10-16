@@ -27,6 +27,7 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -79,6 +80,7 @@ class EmberSameIdentityRelaunchTest {
     private static final long LINK_BOUND_MS = 30_000L;
 
     private EmberCluster cluster;
+    private int relaunchesMade;
 
     @AfterEach
     void tearDown() {
@@ -125,17 +127,16 @@ class EmberSameIdentityRelaunchTest {
         };
     }
 
-    /// The electorate precondition: the live processes AND the survivor's MEMBER records are exactly `expected`. Without it the
-    /// post-kill write proves nothing about WHICH processes voted.
+    /// The electorate precondition: the live processes AND the survivor's effective set (the records that
+    /// `countsTowardEffective`, so MEMBER and SUSPECT) are exactly `expected`. Without it the post-kill write proves nothing about
+    /// WHICH processes voted. Not "records named Member": a killed original that was only evicted to SUSPECT still votes in the count.
     private void requireElectorate(AetherNode survivor, Set<String> expected) {
         assertThat(cluster.allNodes().stream().map(node -> node.self().id()).collect(Collectors.toSet())).as("the live processes").isEqualTo(expected);
         assertThat(survivor.membershipFsm()
-                           .memberStates()
-                           .entrySet()
+                           .countedMembers()
                            .stream()
-                           .filter(entry -> "Member".equals(entry.getValue()))
-                           .map(entry -> entry.getKey().id())
-                           .collect(Collectors.toSet())).as("the survivor's MEMBER records").isEqualTo(expected);
+                           .map(NodeId::id)
+                           .collect(Collectors.toSet())).as("the survivor's effective set").isEqualTo(expected);
     }
 
     @Test
@@ -170,7 +171,18 @@ class EmberSameIdentityRelaunchTest {
             cluster.stop().await(STOP_BOUND);
         }
 
-        throw new AssertionError("none of " + SCENARIO_ATTEMPTS + " attempts reached #2173's scenario (no relaunch was refused), a miss of probability at most 6.1e-5: the regression never ran");
+        throw new AssertionError(neverReachedMessage());
+    }
+
+    /// Two distinct ways to never reach the scenario: no kill-and-relaunch ever happened (btk-3 was never seen linked, e.g. every
+    /// start aborted), or relaunches happened and none was refused (the boot-token refusal itself never fired, which is not a race
+    /// miss).
+    private String neverReachedMessage() {
+        return relaunchesMade == 0
+               ? "none of " + SCENARIO_ATTEMPTS + " attempts killed btk-3 and relaunched it (it never showed as a linked peer within "
+                 + LINK_BOUND_MS + " ms): the scenario was not reached, the regression never ran"
+               : "none of " + SCENARIO_ATTEMPTS + " attempts saw a relaunch refused although " + relaunchesMade
+                 + " relaunches were made: the boot-token refusal never happened (at most a 6.1e-5 race miss, otherwise the gate is disabled); the regression never ran";
     }
 
     /// One attempt. False when the race was not reached (the original was killed before its token was seen, or the forming
@@ -180,9 +192,10 @@ class EmberSameIdentityRelaunchTest {
         cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
         cluster.start();
         // The kill must land AFTER the survivors learned btk-3's boot token (its QUIC link is up) and while the cluster is still
-        // forming. Killed any earlier (the old trigger: as soon as the nodes exist) the original is never seen, the relaunch is
-        // the first process they meet and joins - a miss that repeats every attempt on a box where the nodes appear faster than the
-        // links, so retrying a blind kill is not a retry of the same chance. Trigger on the link, not on the clock.
+        // forming. Killed any earlier (the old trigger: as soon as the nodes exist) the original may never be seen and the relaunch
+        // is then the first process they meet and joins. Whether that miss repeats depends on the box (a verifier's blind trigger
+        // reached the refusal 4 of 4 runs on a loaded Mac, via the retry loop); the link trigger makes the reach deterministic
+        // instead of leaving it to the loop alone. Trigger on the link, not on the clock.
         if (!awaitLinkedWithin(LINK_BOUND_MS)) {
             return false;
         }
@@ -192,6 +205,7 @@ class EmberSameIdentityRelaunchTest {
 
         assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
         cluster.relaunchNode("btk-3", false);
+        relaunchesMade++;
 
         if (!refusedWithin(REFUSAL_BOUND_MS)) {
             return false;
@@ -336,26 +350,27 @@ class EmberSameIdentityRelaunchTest {
                                                                                 .doesNotContain("btk-3");
     }
 
-    /// Waits for the survivor to stop counting `id` as MEMBER. A bound reached with the record still MEMBER fails naming that
-    /// state, so a stuck record is reported as itself and not as a generic timeout.
-    private static void awaitDemoted(AetherNode survivor, org.pragmatica.consensus.NodeId id, long boundMs) {
+    /// Waits for the survivor to drop `id` from its effective set (DEPARTING or DEAD). Not merely "no longer MEMBER": the
+    /// eviction of a killed core's QUIC link moves it to SUSPECT, which still `countsTowardEffective` and still votes in the count,
+    /// so that is exactly the #2173 defect and must not pass. A bound reached with the record still counted fails naming its state,
+    /// so a stuck record is reported as itself and not as a generic timeout.
+    private static void awaitDemoted(AetherNode survivor, NodeId id, long boundMs) {
         var deadline = System.currentTimeMillis() + boundMs;
-        var state = survivor.membershipFsm().memberStates().get(id);
 
-        while ("Member".equals(state)) {
+        while (survivor.membershipFsm().isCountedMember(id)) {
             if (System.currentTimeMillis() > deadline) {
-                throw new AssertionError("the survivor still counts the killed original " + id.id() + " as MEMBER " + boundMs
-                                         + " ms after it was killed (stuck state: " + state + "): its death was never registered");
+                throw new AssertionError("the survivor still counts the killed original " + id.id() + " toward its effective set " + boundMs
+                                         + " ms after it was killed (stuck state: " + survivor.membershipFsm().memberStates().get(id)
+                                         + "): its death was never registered");
             }
             sleep(250);
-            state = survivor.membershipFsm().memberStates().get(id);
         }
     }
 
     /// From the moment the killed original was demoted, and for the whole readmission window, the survivor never
     /// counts the refused identity as a member again and the refused process never becomes consensus-active. Sampled, so a process admitted at any moment of the window
     /// fails the test, not only one still admitted at its end.
-    private static void awaitRefusedNeverParticipates(AetherNode survivor, AetherNode relaunched, org.pragmatica.consensus.NodeId relaunchedId) {
+    private static void awaitRefusedNeverParticipates(AetherNode survivor, AetherNode relaunched, NodeId relaunchedId) {
         var deadline = System.currentTimeMillis() + READMIT_WINDOW_MS;
 
         while (System.currentTimeMillis() < deadline) {

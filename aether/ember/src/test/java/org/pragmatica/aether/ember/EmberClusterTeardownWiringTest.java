@@ -17,6 +17,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
@@ -126,25 +127,102 @@ class EmberClusterTeardownWiringTest {
         harness.assertRegistryEmpty();
     }
 
+    @Test
+    @Timeout(30)
+    void handleStartResults_stopsANodeAddedWhileItsStopsAreInFlight() {
+        var harness = Harness.seeded(3);
+        var lateStops = new AtomicInteger();
+        var outcome = harness.cluster().handleStartResults(harness.oneFailedOfThree(), Map.of("wire-3", START_FAILED.message()));
+
+        harness.adoptLate(lateStops);
+        harness.stops().forEach(stop -> stop.succeed(unit()));
+
+        assertThat(outcome.await(SETTLED)).isEqualTo(START_FAILED.result());
+        assertThat(lateStops.get()).as("the node added after the failed start's snapshot was stopped before it was cleared").isEqualTo(1);
+        harness.assertRegistryEmpty();
+    }
+
+    /// The `registeredNow()` snapshot is what keeps the late-arrival stop from stopping a node twice: a snapshot that misses a
+    /// registered node makes the second pass stop it again. Each teardown stops every node it stops exactly once.
+    @Test
+    @Timeout(30)
+    void abortStart_stopsEachRegisteredNodeExactlyOnce() {
+        var harness = Harness.seeded(3);
+        var outcome = harness.cluster().abortStart(START_FAILED, Map.of());
+
+        harness.stops().forEach(stop -> stop.succeed(unit()));
+
+        assertThat(outcome.await(SETTLED)).isEqualTo(START_FAILED.result());
+        assertThat(harness.stopCalls()).containsExactly(1, 1, 1);
+    }
+
+    @Test
+    @Timeout(30)
+    void handleStartResults_stopsEachStartedNodeExactlyOnce_andNeverTheFailedOne() {
+        var harness = Harness.seeded(3);
+        var outcome = harness.cluster().handleStartResults(harness.oneFailedOfThree(), Map.of("wire-3", START_FAILED.message()));
+
+        harness.stops().forEach(stop -> stop.succeed(unit()));
+
+        assertThat(outcome.await(SETTLED)).isEqualTo(START_FAILED.result());
+        assertThat(harness.stopCalls()).containsExactly(1, 1, 0);
+    }
+
+    @Test
+    @Timeout(30)
+    void stop_stopsEachRegisteredNodeExactlyOnce() {
+        var harness = Harness.seeded(3);
+        var outcome = harness.cluster().stop();
+
+        harness.stops().forEach(stop -> stop.succeed(unit()));
+
+        assertThat(outcome.await(SETTLED)).isEqualTo(success(unit()));
+        assertThat(harness.stopCalls()).containsExactly(1, 1, 1);
+    }
+
     private static EmberCluster.NodeStartResult started(String id, int slot) {
         return EmberCluster.NodeStartResult.nodeStartResult(id, BASE_PORT + slot, BASE_MGMT_PORT + slot, none());
     }
 
-    private record Harness(EmberCluster cluster, List<Promise<Unit>> stops) {
+    private record Harness(EmberCluster cluster, List<Promise<Unit>> stops, List<AtomicInteger> stopCounts) {
         static Harness seeded(int size) {
             var cluster = emberCluster(size, BASE_PORT, BASE_MGMT_PORT, "wire");
             var stops = new ArrayList<Promise<Unit>>();
+            var stopCounts = new ArrayList<AtomicInteger>();
 
             for (int i = 1; i <= size; i++) {
                 var id = nodeId("wire-" + i).unwrap();
                 var stop = Promise.<Unit> promise();
+                var count = new AtomicInteger();
 
                 cluster.adoptNode(NodeInfo.nodeInfo(id, nodeAddress("localhost", BASE_PORT + i - 1).unwrap()),
-                                  fakeNode(id, stop));
+                                  fakeNode(id, () -> counted(count, stop)));
                 stops.add(stop);
+                stopCounts.add(count);
             }
 
-            return new Harness(cluster, stops);
+            return new Harness(cluster, stops, stopCounts);
+        }
+
+        private static Promise<Unit> counted(AtomicInteger count, Promise<Unit> stop) {
+            count.incrementAndGet();
+
+            return stop;
+        }
+
+        /// How many times each seeded node's `stop()` was invoked, in seeding order.
+        List<Integer> stopCalls() {
+            return stopCounts.stream().map(AtomicInteger::get).toList();
+        }
+
+        /// A start result where the first two nodes started and the third failed.
+        List<Result<EmberCluster.NodeStartResult>> oneFailedOfThree() {
+            return List.of(success(started("wire-1", 0)),
+                           success(started("wire-2", 1)),
+                           success(EmberCluster.NodeStartResult.nodeStartResult("wire-3",
+                                                                                BASE_PORT + 2,
+                                                                                BASE_MGMT_PORT + 2,
+                                                                                some(START_FAILED))));
         }
 
         /// Holds the registry clear, resolves the given stops from another thread (as a node's stop
@@ -204,10 +282,6 @@ class EmberClusterTeardownWiringTest {
 
             return Promise.success(unit());
         });
-    }
-
-    private static AetherNode fakeNode(NodeId id, Promise<Unit> stop) {
-        return fakeNode(id, () -> stop);
     }
 
     private static AetherNode fakeNode(NodeId id, Supplier<Promise<Unit>> stop) {
