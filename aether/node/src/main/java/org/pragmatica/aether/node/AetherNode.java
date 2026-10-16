@@ -6067,6 +6067,10 @@ public interface AetherNode extends ManageableNode {
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
+        // #2201 C-16: a consumer read below the ring tail is served from the sealed tier (StreamPartitionManager.readServingTiered,
+        // the validated read of StreamReadRouter and of the owner's forward handler). Unbound, every consumer behind the ring
+        // would be moved to the ring tail; EmberConsumerPathTripwireTest#tierFallbackSeam_isBoundOnEveryBootedNode pins it.
+        streamPartitionManager.tieredReader(streamTieredReader);
         ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());
         // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does.
         // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
