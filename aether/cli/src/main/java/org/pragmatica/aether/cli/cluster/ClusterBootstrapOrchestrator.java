@@ -103,6 +103,21 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                           List<SshPublicKey> sshPublicKeys,
                                                           boolean keepOnFailure,
                                                           String rawTomlContent) {
+        return BootstrapExistingClusterGuard.refuseExisting(config).flatMap(guarded -> runFreshPhases(guarded,
+                                                                                                      fullCheck,
+                                                                                                      sshPublicKeys,
+                                                                                                      keepOnFailure,
+                                                                                                      rawTomlContent));
+    }
+
+    /// The guard above is deliberately OUTSIDE this method: its `fold` runs `decorateAfterCleanup`, which reaps
+    /// the ledger recorded under this cluster NAME, and for a run the guard refused that ledger is the live
+    /// cluster's.
+    private static Result<BootstrapResult> runFreshPhases(ClusterBootstrapConfig config,
+                                                          boolean fullCheck,
+                                                          List<SshPublicKey> sshPublicKeys,
+                                                          boolean keepOnFailure,
+                                                          String rawTomlContent) {
         return BootstrapPhaseValidate.execute(config, fullCheck)
                                      .map(ctx -> ctx.withSshPublicKeys(sshPublicKeys))
                                      .map(ctx -> ctx.withRawTomlContent(rawTomlContent))
@@ -755,6 +770,18 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                      + "'. Docker nodes reach each other by"
                      + " container name and the others by address, so they cannot share one cluster peer list. Put the whole cluster in"
                      + " docker sources, or use no docker source.";
+            }
+        }
+
+        /// Owner Q5 — the existing-cluster guard could not make one of its three checks (registry unreadable,
+        /// cloud provider unreachable or refusing the listing). Bootstrap refuses rather than proceed on a guess.
+        record ExistingClusterCheckFailed(String clusterName, String check, Cause origin) implements BootstrapError, Cause.Wrapped {
+            @Override
+            public String message() {
+                return "Cannot confirm cluster '" + clusterName
+                     + "' does not already exist: the " + check
+                     + " check could not be made (" + origin.message()
+                     + "). Bootstrap was not started and nothing was written. Fix the cause and re-run.";
             }
         }
 
