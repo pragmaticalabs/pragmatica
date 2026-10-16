@@ -43,6 +43,7 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.STREAM_CONSUMER
 /// answer the sealed-tier fallback can give, and when the operator is told. NT-06 (in flight), NT-07 (reset versus rewind),
 /// NT-08 (the behind-the-ring episode), the reset's own warning and checkpoint, the hole arm, and a tier I/O error.
 class ConsumerBehindTheRingTest {
+    private static final long SETTLE_MS = 300L;
     private static final String STREAM = "orders";
     private static final String GROUP = "group-behind";
     private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
@@ -227,24 +228,21 @@ class ConsumerBehindTheRingTest {
                                                                      .satisfies(warning -> assertThat(warning.message()).contains("moved off it"));
     }
 
-    /// A read that was in flight when the consumer was cancelled answers afterwards, after the cancel's hook already ran. An
-    /// episode it opens must be closed by the opener itself, or nothing ever would. Deterministic: the read closes the
-    /// runtime before it answers.
+    /// A read that was in flight when the consumer was cancelled answers afterwards. The cancel is sticky (#2211 round 5): the
+    /// late answer opens no episode, so nothing is raised at all. Deterministic: the read closes the runtime before it answers;
+    /// the quiet period afterwards is the settle that lets the late pass run.
     @Test
     void tierReadAnsweringAfterTheCancel_opensNoBehindTheRingEpisode() throws InterruptedException {
         cancelInsideTheRead(tier(events(0, 0), E1));
 
-        assertThat(codes()).as("the late read's episode is opened and closed by the opener").containsExactly(STREAM_CONSUMER_BEHIND_RING,
-                                                                                                              STREAM_CONSUMER_BACK_IN_RING);
-        assertThat(warnings.getLast().message()).contains("cancelled");
+        assertThat(codes()).as("the late read opens no episode on a cancelled consumer").isEmpty();
     }
 
     @Test
     void holeAnsweringAfterTheCancel_opensNoHoleEpisode() throws InterruptedException {
         cancelInsideTheRead(new SegmentError.SealedRangeMissing(STREAM, 0, 0L, 3L).promise());
 
-        assertThat(codes()).containsExactly(STREAM_CONSUMER_SEALED_RANGE_MISSING, STREAM_CONSUMER_SEALED_RANGE_RESTORED);
-        assertThat(warnings.getLast().message()).contains("cancelled");
+        assertThat(codes()).as("the late hole answer opens no episode on a cancelled consumer").isEmpty();
     }
 
     private void cancelInsideTheRead(Promise<StreamPartitionManager.EpochRead> answer) throws InterruptedException {
@@ -252,7 +250,7 @@ class ConsumerBehindTheRingTest {
 
         start((_, _) -> closeThenAnswer(answered, answer));
         assertThat(answered.await(5, java.util.concurrent.TimeUnit.SECONDS)).as("the read was issued").isTrue();
-        awaitWarnings(2);
+        Thread.sleep(SETTLE_MS);
     }
 
     private Promise<StreamPartitionManager.EpochRead> closeThenAnswer(java.util.concurrent.CountDownLatch answered,

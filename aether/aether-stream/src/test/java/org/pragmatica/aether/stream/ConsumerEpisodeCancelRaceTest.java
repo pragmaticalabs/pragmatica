@@ -153,6 +153,68 @@ class ConsumerEpisodeCancelRaceTest {
         assertThat(codes()).containsExactly(STREAM_CONSUMER_SEALED_RANGE_MISSING, STREAM_CONSUMER_SEALED_RANGE_RESTORED);
     }
 
+    /// The cancel lands while the opener is inside its own WARN line (claimed, not yet published): the hook finds a claim, not
+    /// an episode, and raises nothing; the opener then owes the recovery and raises it, exactly once, last.
+    @Test
+    void behindRing_aCancelWhileTheOpenerIsRaisingItsWarning_leavesTheOpenerToRaiseTheRecovery() throws Exception {
+        var never = Promise.<StreamPartitionManager.EpochRead> promise();
+
+        try (var parked = ParkedLogLine.parkOnce("is behind the ring: its cursor")) {
+            start((from, _) -> from == 0L
+                               ? Promise.success(tierRead(events(0, 0)))
+                               : never);
+            assertThat(parked.entered.await(5, TimeUnit.SECONDS)).as("the opener is parked inside its warning").isTrue();
+
+            var cancel = Thread.ofVirtual().start(() -> runtime.unsubscribe(STREAM, 0, GROUP));
+
+            cancel.join(5_000);
+            assertThat(cancel.isAlive()).as("the hook ran while the opener was parked").isFalse();
+            parked.release.countDown();
+            awaitUntil(() -> warnings.size() >= 2, "the warning and the opener's recovery");
+        }
+        Thread.sleep(SETTLE_MS);
+
+        assertThat(codes()).containsExactly(STREAM_CONSUMER_BEHIND_RING, STREAM_CONSUMER_BACK_IN_RING);
+        assertThat(warnings.getLast().message()).contains("cancelled");
+    }
+
+    /// As above, for a hole.
+    @Test
+    void hole_aCancelWhileTheOpenerIsRaisingItsWarning_leavesTheOpenerToRaiseTheRecovery() throws Exception {
+        try (var parked = ParkedLogLine.parkOnce("waits at offset")) {
+            start((_, _) -> hole().promise());
+            assertThat(parked.entered.await(5, TimeUnit.SECONDS)).as("the opener is parked inside its warning").isTrue();
+
+            var cancel = Thread.ofVirtual().start(() -> runtime.unsubscribe(STREAM, 0, GROUP));
+
+            cancel.join(5_000);
+            assertThat(cancel.isAlive()).as("the hook ran while the opener was parked").isFalse();
+            parked.release.countDown();
+            awaitUntil(() -> warnings.size() >= 2, "the warning and the opener's recovery");
+        }
+        Thread.sleep(SETTLE_MS);
+
+        assertThat(codes()).containsExactly(STREAM_CONSUMER_SEALED_RANGE_MISSING, STREAM_CONSUMER_SEALED_RANGE_RESTORED);
+        assertThat(warnings.getLast().message()).contains("cancelled");
+    }
+
+    /// A read served from the RING after the cancel closed the episode neither un-cancels the consumer nor raises a second
+    /// recovery.
+    @Test
+    void behindRing_aRingReadAfterTheCancel_raisesNoSpuriousRecovery() throws Exception {
+        var inFlight = Promise.<StreamPartitionManager.EpochRead> promise();
+
+        startBehindRing(inFlight);
+        awaitUntil(() -> count(STREAM_CONSUMER_BEHIND_RING) == 1 && reads(1L) >= 1, "behind the ring, with a read in flight");
+
+        runtime.unsubscribe(STREAM, 0, GROUP).onFailure(cause -> fail(cause.message()));
+        awaitUntil(() -> count(STREAM_CONSUMER_BACK_IN_RING) == 1, "the cancel closed the episode");
+        inFlight.resolve(Result.success(new StreamPartitionManager.EpochRead(List.of(), E1)));
+        Thread.sleep(SETTLE_MS);
+
+        assertThat(codes()).containsExactly(STREAM_CONSUMER_BEHIND_RING, STREAM_CONSUMER_BACK_IN_RING);
+    }
+
     /// Read 0 is served from the tier (the episode opens), the first read at 1 stays in flight on `inFlight`, any later one
     /// is an empty tier read.
     private void startBehindRing(Promise<StreamPartitionManager.EpochRead> inFlight) {
