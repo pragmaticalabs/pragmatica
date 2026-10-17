@@ -38,10 +38,13 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// system class loader for a bootstrap class), once per class: the answer, success or failure, is kept for the life
 /// of the class, so a lookup never rescans the class path after the first one for that class.
 ///
-/// A lookup never throws. A provider that cannot be read (a services entry the `ServiceLoader` cannot load or
-/// instantiate, a `codecs()` that throws or returns `null`) is isolated: classes listed by the other providers still
-/// resolve, and a class no healthy provider lists fails with that [ProviderFailed] rather than an empty success,
-/// because the broken provider may have been the one listing it.
+/// A lookup never throws, except a `VirtualMachineError` (an exhausted stack or heap), which deliberately propagates:
+/// no `Cause` can carry it. A provider that cannot be read (a services entry the `ServiceLoader` cannot load or
+/// instantiate, a `codecs()` that throws or returns `null`, a map that throws while it is read or lists a `null`
+/// class or codec) is isolated: classes listed by the other providers still resolve, and a class no healthy provider
+/// lists fails with that [ProviderFailed] rather than an empty success, because the broken provider may have been the
+/// one listing it. Building that failure never throws either: an exception whose own `toString` throws is described
+/// by its class name.
 ///
 /// [ConflictingProviders] fires when two **differently named** providers both list the class: overlapping registries
 /// (the same `@Json` type compiled into two artifacts alongside different other types of its package, so the
@@ -77,8 +80,21 @@ public sealed interface JsonCodecs {
     record ProviderFailed(String provider, Cause origin, String message) implements Cause.Wrapped {
         static ProviderFailed providerFailed(String provider, Throwable failure) {
             return new ProviderFailed(provider,
-                                      Causes.fromThrowable(failure),
-                                      "JSON codec provider " + provider + " cannot be read: " + failure);
+                                      originOf(failure),
+                                      "JSON codec provider " + provider + " cannot be read: " + describe(failure));
+        }
+
+        // FER: printing a throwable runs its own toString and getMessage, which may throw; such a throwable degrades
+        // to its class name, which cannot fail, so building this failure never throws. The class name is the
+        // diagnosis that survives.
+        private static String describe(Throwable failure) {
+            return Option.lift(failure::toString).or(() -> failure.getClass()
+                                                                  .getName());
+        }
+
+        // FER: as describe; the stack trace is lost only for a throwable that cannot print itself.
+        private static Cause originOf(Throwable failure) {
+            return Option.lift(() -> Causes.fromThrowable(failure)).or(() -> cause(failure.getClass().getName()));
         }
 
         static ProviderFailed providerFailed(String provider, String reason) {

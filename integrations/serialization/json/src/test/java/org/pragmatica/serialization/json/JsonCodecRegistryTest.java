@@ -27,6 +27,8 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.AbstractMap;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +39,7 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /// A class listed by two providers is a class-path conflict: its lookup fails naming both, whatever the load order,
@@ -198,6 +201,165 @@ public class JsonCodecRegistryTest {
 
         assertEquals(NullProvider.class.getName(), failed.provider());
         assertTrue(failed.message().contains("returned null"), failed.message());
+    }
+
+    public static final class NullCodecProvider implements JsonCodecProvider {
+        @Override
+        public Map<Class<?>, JsonTypeCodec<?>> codecs() {
+            var codecs = new HashMap<Class<?>, JsonTypeCodec<?>>();
+
+            codecs.put(Unlisted.class, null);
+
+            return codecs;
+        }
+    }
+
+    public static final class NullClassProvider implements JsonCodecProvider {
+        @Override
+        public Map<Class<?>, JsonTypeCodec<?>> codecs() {
+            var codecs = new HashMap<Class<?>, JsonTypeCodec<?>>();
+
+            codecs.put(null, FIRST_CODEC);
+
+            return codecs;
+        }
+    }
+
+    // A map that fails while it is read: entrySet() itself, or a key read during iteration.
+    public static final class BrokenMapProvider implements JsonCodecProvider {
+        private final boolean failOnKey;
+
+        BrokenMapProvider(boolean failOnKey) {
+            this.failOnKey = failOnKey;
+        }
+
+        @Override
+        public Map<Class<?>, JsonTypeCodec<?>> codecs() {
+            return new AbstractMap<>() {
+                @Override
+                public Set<Entry<Class<?>, JsonTypeCodec<?>>> entrySet() {
+                    if (!failOnKey) {
+                        throw new IllegalStateException("entrySet failed");
+                    }
+
+                    return Set.of(new BrokenEntry());
+                }
+            };
+        }
+    }
+
+    static final class BrokenEntry implements Map.Entry<Class<?>, JsonTypeCodec<?>> {
+        @Override
+        public Class<?> getKey() {
+            throw new IllegalStateException("key read failed");
+        }
+
+        @Override
+        public JsonTypeCodec<?> getValue() {
+            return FIRST_CODEC;
+        }
+
+        @Override
+        public JsonTypeCodec<?> setValue(JsonTypeCodec<?> value) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    // An exception that cannot describe itself: its getMessage throws, so does every toString or stack trace print.
+    static final class UnprintableException extends RuntimeException {
+        @Override
+        public String getMessage() {
+            throw new IllegalStateException("getMessage failed");
+        }
+    }
+
+    public static final class UnprintableProvider implements JsonCodecProvider {
+        @Override
+        public Map<Class<?>, JsonTypeCodec<?>> codecs() {
+            throw new UnprintableException();
+        }
+    }
+
+    public static final class StackOverflowProvider implements JsonCodecProvider {
+        @Override
+        public Map<Class<?>, JsonTypeCodec<?>> codecs() {
+            throw new StackOverflowError("simulated");
+        }
+    }
+
+    // A null codec is never a found codec: the provider is broken, the healthy one still resolves.
+    @Test
+    void providerListingANullCodec_isIsolated_andTheClassFailsInsteadOfResolvingToNull() {
+        var providers = List.<JsonCodecProvider>of(new NullCodecProvider(), new FirstProvider());
+
+        assertSame(FIRST_CODEC, JsonCodecRegistry.lookup(OnlyFirst.class, providers).unwrap().unwrap());
+        var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class,
+                                      failureOf(JsonCodecRegistry.lookup(Unlisted.class, providers)));
+
+        assertEquals(NullCodecProvider.class.getName(), failed.provider());
+        assertTrue(failed.message().contains("null class or codec"), failed.message());
+    }
+
+    @Test
+    void providerListingANullClass_isIsolated_andAMissReportsIt() {
+        var providers = List.<JsonCodecProvider>of(new NullClassProvider(), new FirstProvider());
+
+        assertSame(FIRST_CODEC, JsonCodecRegistry.lookup(OnlyFirst.class, providers).unwrap().unwrap());
+        var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class,
+                                      failureOf(JsonCodecRegistry.lookup(Unlisted.class, providers)));
+
+        assertEquals(NullClassProvider.class.getName(), failed.provider());
+    }
+
+    // entrySet() throwing, and a key read throwing mid-iteration: both fail that provider only, for every lookup.
+    @Test
+    void providerWhoseMapThrowsWhileRead_isIsolated_andAMissReportsIt() {
+        for (var failOnKey : List.of(false, true)) {
+            var providers = List.<JsonCodecProvider>of(new BrokenMapProvider(failOnKey), new FirstProvider());
+
+            assertSame(FIRST_CODEC, JsonCodecRegistry.lookup(OnlyFirst.class, providers).unwrap().unwrap());
+            var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class,
+                                          failureOf(JsonCodecRegistry.lookup(Unlisted.class, providers)));
+
+            assertEquals(BrokenMapProvider.class.getName(), failed.provider());
+            assertTrue(failed.message().contains(failOnKey
+                                                 ? "key read failed"
+                                                 : "entrySet failed"), failed.message());
+        }
+    }
+
+    // Building the failure must not throw either: an exception that cannot print itself is named by its class.
+    @Test
+    void providerThrowingAnUnprintableException_isIsolated_andDescribedByItsClass() {
+        var providers = List.<JsonCodecProvider>of(new UnprintableProvider(), new FirstProvider());
+
+        assertSame(FIRST_CODEC, JsonCodecRegistry.lookup(OnlyFirst.class, providers).unwrap().unwrap());
+        var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class,
+                                      failureOf(JsonCodecRegistry.lookup(Unlisted.class, providers)));
+
+        assertTrue(failed.message().contains(UnprintableException.class.getName()), failed.message());
+        assertTrue(failed.origin().message().contains(UnprintableException.class.getName()), failed.origin().message());
+    }
+
+    // Documented exception to "never throws": a VirtualMachineError is not a failure a Cause can carry.
+    @Test
+    void virtualMachineError_propagates() {
+        var providers = List.<JsonCodecProvider>of(new StackOverflowProvider(), new FirstProvider());
+
+        assertThrows(StackOverflowError.class, () -> JsonCodecRegistry.lookup(OnlyFirst.class, providers));
+    }
+
+    // Obtaining the iterator is guarded too: for the registry that is loading the services of the class's loader.
+    @Test
+    void providersWhoseIteratorCannotBeObtained_failTheLookup() {
+        Iterable<JsonCodecProvider> providers = () -> {
+            throw new ServiceConfigurationError("services cannot be loaded");
+        };
+        var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class,
+                                      failureOf(JsonCodecRegistry.lookup(OnlyFirst.class, providers)));
+
+        assertEquals(JsonCodecRegistry.SERVICES_ENTRY, failed.provider());
+        assertTrue(failed.message().contains("services cannot be loaded"), failed.message());
     }
 
     // The answer is computed once per class and kept: a second lookup is the same value, not a fresh scan.

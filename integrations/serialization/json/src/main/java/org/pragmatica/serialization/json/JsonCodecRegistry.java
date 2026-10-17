@@ -48,7 +48,8 @@ sealed interface JsonCodecRegistry {
     ClassValue<Result<Option<JsonTypeCodec<?>>>> CODECS = new ClassValue<>() {
         @Override
         protected Result<Option<JsonTypeCodec<?>>> computeValue(Class<?> type) {
-            return lookup(type, ServiceLoader.load(JsonCodecProvider.class, loaderOf(type)));
+            return lookup(type,
+                          () -> ServiceLoader.load(JsonCodecProvider.class, loaderOf(type)).iterator());
         }
     };
 
@@ -59,8 +60,12 @@ sealed interface JsonCodecRegistry {
     /// `type`'s codec among `providers`: the codec when exactly one healthy provider lists it,
     /// [JsonCodecs.ConflictingProviders] when several do, empty when none does and every provider was read, and
     /// the providers' failure when none does but one could not be read (it may have been the one listing `type`).
+    /// Obtaining the iterator (for the registry: loading the services) is guarded too; its failure is the answer.
     static Result<Option<JsonTypeCodec<?>>> lookup(Class<?> type, Iterable<JsonCodecProvider> providers) {
-        return resolve(type, scan(providers.iterator()));
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t),
+                           providers::iterator)
+                     .flatMap(iterator -> resolve(type,
+                                                  scan(iterator)));
     }
 
     private static Result<Option<JsonTypeCodec<?>>> resolve(Class<?> type, List<Result<List<Listing>>> scan) {
@@ -92,8 +97,10 @@ sealed interface JsonCodecRegistry {
     }
 
     /// Reads every provider, isolating each: a services entry that cannot be loaded or instantiated (the iterator's
-    /// `ServiceConfigurationError`), a `codecs()` that throws, and a `codecs()` that returns `null` each become one
-    /// failed outcome carrying a [JsonCodecs.ProviderFailed], and the providers after it are still read.
+    /// `ServiceConfigurationError`), a `codecs()` that throws or returns `null`, a map that throws while it is read,
+    /// and a map listing a `null` class or codec each become one failed outcome carrying a
+    /// [JsonCodecs.ProviderFailed], and the providers after it are still read. A `VirtualMachineError` (an exhausted
+    /// stack or heap) is not isolated: it propagates, as `Result.lift` rethrows it.
     private static List<Result<List<Listing>>> scan(Iterator<JsonCodecProvider> providers) {
         return Stream.generate(() -> step(providers))
                      .limit(MAX_PROVIDER_STEPS)
@@ -123,6 +130,8 @@ sealed interface JsonCodecRegistry {
                      .flatMap(JsonCodecRegistry::listings);
     }
 
+    // Every interaction with the provider's map (entrySet, its iterator, each key and value) is inside a guarded call,
+    // so a map that throws while it is read fails this provider only.
     private static Result<List<Listing>> listings(JsonCodecProvider provider) {
         var name = provider.getClass().getName();
 
@@ -130,7 +139,18 @@ sealed interface JsonCodecRegistry {
                            provider::codecs)
                      .flatMap(codecs -> option(codecs).toResult(JsonCodecs.ProviderFailed.providerFailed(name,
                                                                                                          "codecs() returned null")))
-                     .map(codecs -> listings(name, codecs));
+                     .flatMap(codecs -> Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(name, t),
+                                                    () -> listings(name, codecs)))
+                     .flatMap(listings -> nullFree(name, listings));
+    }
+
+    // A null class or codec makes the provider broken rather than a source of listings: a null codec must never reach
+    // a caller as a found one.
+    private static Result<List<Listing>> nullFree(String provider, List<Listing> listings) {
+        return listings.stream()
+                       .allMatch(Listing::isComplete)
+               ? success(listings)
+               : JsonCodecs.ProviderFailed.providerFailed(provider, "codecs() lists a null class or codec").result();
     }
 
     private static List<Listing> listings(String provider, Map<Class<?>, JsonTypeCodec<?>> codecs) {
@@ -145,6 +165,11 @@ sealed interface JsonCodecRegistry {
     record Listing(Class<?> type, String provider, JsonTypeCodec<?> codec) {
         static Listing listing(Class<?> type, String provider, JsonTypeCodec<?> codec) {
             return new Listing(type, provider, codec);
+        }
+
+        // The class and codec come from a provider's map, outside this code's control, so either may be null.
+        boolean isComplete() {
+            return option(type).isPresent() && option(codec).isPresent();
         }
     }
 
