@@ -23,7 +23,9 @@ import java.math.BigDecimal;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.Arrays;
+import java.util.UUID;
 
 /// Growable UTF-8 output buffer, called by generated codecs. Reusable through [#reset].
 @Contract
@@ -215,6 +217,14 @@ public final class JsonWriter {
             value /= 10;
         }
         pos += width;
+    }
+
+    public void writeUuid(UUID value) {
+        writeAsciiString(value.toString());
+    }
+
+    public void writeLocalDate(LocalDate value) {
+        writeAsciiString(value.toString());
     }
 
     /// Writes a string known to contain only JSON-safe ASCII (numbers, ISO timestamps, enum names).

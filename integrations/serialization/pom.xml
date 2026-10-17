@@ -18,7 +18,9 @@
     <modules>
         <module>api</module>
         <module>json</module>
+        <module>json-codegen</module>
         <module>codec-processor</module>
+        <module>json-tests</module>
     </modules>
 
     <profiles>

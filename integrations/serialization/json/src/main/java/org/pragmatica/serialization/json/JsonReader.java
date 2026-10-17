@@ -26,9 +26,11 @@ import java.math.BigDecimal;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.util.Arrays;
 import java.util.Currency;
+import java.util.UUID;
 
 /// Pull reader over a UTF-8 `byte[]` region, called by generated codecs.
 ///
@@ -50,6 +52,7 @@ public final class JsonReader {
     private static final byte[] FALSE = {'f', 'a', 'l', 's', 'e'};
     private static final byte[] NULL = {'n', 'u', 'l', 'l'};
     private static final Currency DEFAULT_CURRENCY = Currency.getInstance("XXX");
+    private static final UUID NIL_UUID = new UUID(0, 0);
 
     private byte[] buf;
     private int pos;
@@ -104,6 +107,12 @@ public final class JsonReader {
     /// does; the returned placeholder is never used because generated code checks [#hasError] first.
     public <T> T accept(Result<T> parsed, FieldNames names, int field) {
         return parsed.fold(cause -> refuse(names.name(field), cause), value -> value);
+    }
+
+    /// As [#accept(Result, FieldNames, int)], attributing a refusal to `label` (for a record's own factory,
+    /// which runs after all its fields were read).
+    public <T> T accept(Result<T> parsed, String label) {
+        return parsed.fold(cause -> refuse(label, cause), value -> value);
     }
 
     private <T> T refuse(String field, Cause cause) {
@@ -177,9 +186,11 @@ public final class JsonReader {
         return fieldName(names);
     }
 
-    public void failMissing(FieldNames names, int seen, int required) {
+    /// Records the first required field (bit set in `required`, clear in `seen`) as missing. Masks are longs:
+    /// generated codecs support records of up to 63 components.
+    public void failMissing(FieldNames names, long seen, long required) {
         if (error == null) {
-            error = JsonError.MissingField.FACTORY.apply(names.name(Integer.numberOfTrailingZeros(required & ~seen)));
+            error = JsonError.MissingField.FACTORY.apply(names.name(Long.numberOfTrailingZeros(required & ~seen)));
             pos = end;
         }
     }
@@ -291,6 +302,13 @@ public final class JsonReader {
         return false;
     }
 
+    /// Reads a map key naming an enum constant, and the colon after it; -1 after recording a failure.
+    public int readEnumKey(FieldNames constants) {
+        var index = readEnum(constants);
+        consume(':', "':'");
+        return index;
+    }
+
     /// Reads a map key and the colon after it.
     public String readKey() {
         var key = readString();
@@ -319,6 +337,59 @@ public final class JsonReader {
             return -1;
         }
         return index;
+    }
+
+    /// Like [#readEnum], but an undeclared name decodes to `fallback` (an enum's `UNKNOWN` constant) instead
+    /// of failing, mirroring the binary codec's contract for enums that declare one.
+    public int readEnumOr(FieldNames constants, int fallback) {
+        if (!consume('"', "enum constant")) {
+            return -1;
+        }
+        var start = pos;
+        var close = scanString(start);
+        if (close < 0) {
+            // An escaped name can never equal a declared constant.
+            decodeEscaped(start);
+            return error != null ? -1 : fallback;
+        }
+        if (error != null) {
+            return -1;
+        }
+        pos = close + 1;
+        var index = constants.lookup(buf, start, close - start);
+        return index < 0
+               ? fallback
+               : index;
+    }
+
+    public UUID readUuid() {
+        var start = pos;
+        var text = readString();
+        if (error != null) {
+            return NIL_UUID;
+        }
+        try {
+            return UUID.fromString(text);
+        } catch (IllegalArgumentException e) {
+            pos = start;
+            fail("UUID");
+            return NIL_UUID;
+        }
+    }
+
+    public LocalDate readLocalDate() {
+        var start = pos;
+        var text = readString();
+        if (error != null) {
+            return LocalDate.EPOCH;
+        }
+        try {
+            return LocalDate.parse(text);
+        } catch (DateTimeParseException e) {
+            pos = start;
+            fail("ISO-8601 local date");
+            return LocalDate.EPOCH;
+        }
     }
 
     public Instant readInstant() {

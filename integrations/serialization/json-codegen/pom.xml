@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>serialization</artifactId>
+        <groupId>org.pragmatica-lite</groupId>
+        <version>1.0.0-rc4</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>serialization-json-codegen</artifactId>
+    <name>Pragmatica Lite Serialization JSON Codegen</name>
+    <description>JSON codec source generation shared by the codec processor and the slice processor</description>
+
+    <!-- A plain library, deliberately not an annotation processor: no META-INF/services entry, so a processor
+         that depends on it (the slice processor) does not drag another processor onto every module's path.
+         It needs only javax.lang.model from the JDK. -->
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

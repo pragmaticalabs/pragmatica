@@ -1,5 +1,7 @@
 package org.pragmatica.serialization.codec;
 
+import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
+
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
@@ -18,10 +20,14 @@ import java.util.Map;
 import java.util.Set;
 
 
-@SupportedAnnotationTypes({"org.pragmatica.serialization.Codec", "org.pragmatica.serialization.CodecFor"})
+@SupportedAnnotationTypes({"org.pragmatica.serialization.Codec", "org.pragmatica.serialization.CodecFor", CodecProcessor.JSON})
 @SupportedOptions({"codec.registry.suffix"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class CodecProcessor extends AbstractProcessor {
+    /// JSON is a separate opt-in (`@Json`), processed in the same pass but never as a binary codec, so adopting
+    /// JSON cannot change a type's binary wire contract.
+    static final String JSON = "org.pragmatica.serialization.json.Json";
+
     private CodecClassGenerator generator;
     private String registrySuffix = "";
 
@@ -45,7 +51,14 @@ public class CodecProcessor extends AbstractProcessor {
 
         processCodecForAnnotations(roundEnv, packageToCodecNames, packageToRequiredTypes);
         for (var annotation : annotations) {
-            if ("org.pragmatica.serialization.CodecFor".equals(annotation.getQualifiedName().toString())) {
+            var annotationName = annotation.getQualifiedName().toString();
+
+            if ("org.pragmatica.serialization.CodecFor".equals(annotationName)) {
+                continue;
+            }
+            if (JSON.equals(annotationName)) {
+                roundEnv.getElementsAnnotatedWith(annotation)
+                        .forEach(this::processJson);
                 continue;
             }
 
@@ -138,6 +151,43 @@ public class CodecProcessor extends AbstractProcessor {
         }
 
         return result;
+    }
+
+    // One self-contained holder per @Json type: <Nested_Prefix><Simple>JsonCodecs, next to the type.
+    private void processJson(Element element) {
+        if (element.getKind() != ElementKind.RECORD && element.getKind() != ElementKind.ENUM) {
+            error(element, "@Json can only be applied to records and enums");
+            return;
+        }
+        var type = (TypeElement) element;
+        var json = new JsonCodecGenerator(processingEnv);
+        var unsupported = json.addRoot(type.asType());
+
+        if (unsupported.isPresent()) {
+            error(element, "@Json type '" + type.getQualifiedName() + "' cannot get a generated codec: " + unsupported.get());
+            return;
+        }
+        var packageName = processingEnv.getElementUtils()
+                                       .getPackageOf(type)
+                                       .getQualifiedName()
+                                       .toString();
+        var holder = jsonHolderName(type);
+
+        try {
+            json.write(packageName, holder, "CodecProcessor", type);
+            note(element, "Generated JSON codecs: " + holder);
+        } catch (java.io.IOException e) {
+            error(element, "Cannot write " + holder + ": " + e.getMessage());
+        }
+    }
+
+    private static String jsonHolderName(TypeElement type) {
+        var prefix = new StringBuilder();
+
+        for (var enclosing = type.getEnclosingElement(); enclosing instanceof TypeElement outer; enclosing = outer.getEnclosingElement()) {
+            prefix.insert(0, outer.getSimpleName() + "_");
+        }
+        return prefix + type.getSimpleName().toString() + "JsonCodecs";
     }
 
     private void processAnnotatedElement(Element element, Map<String, List<String>> packageToCodecNames) {
