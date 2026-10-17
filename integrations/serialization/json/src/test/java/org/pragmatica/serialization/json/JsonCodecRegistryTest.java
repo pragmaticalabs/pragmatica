@@ -27,8 +27,10 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.Set;
 
@@ -130,6 +132,47 @@ public class JsonCodecRegistryTest {
             assertEquals(JsonCodecRegistry.SERVICES_ENTRY, failed.provider());
             assertTrue(failed.message().contains("com.example.missing.NoSuchProvider"), failed.message());
             assertTrue(failed.source().isPresent());
+        }
+    }
+
+    // The JDK's iterator defers a broken entry's error to next(), but the contract allows hasNext() to throw too
+    // (a services file it cannot parse): that failure is recorded and the providers after it are still read.
+    @Test
+    void iteratorWhoseHasNextThrows_isIsolated_andAMissReportsIt() {
+        Iterable<JsonCodecProvider> providers = () -> new HasNextFailsOnce(new FirstProvider());
+
+        assertSame(FIRST_CODEC, JsonCodecRegistry.lookup(OnlyFirst.class, providers).unwrap().unwrap());
+        var failed = assertInstanceOf(JsonCodecs.ProviderFailed.class,
+                                      failureOf(JsonCodecRegistry.lookup(Unlisted.class, providers)));
+
+        assertEquals(JsonCodecRegistry.SERVICES_ENTRY, failed.provider());
+        assertTrue(failed.message().contains("unparseable services file"), failed.message());
+    }
+
+    /// Throws from the first hasNext(), as an iterator does for a services file it cannot parse, then yields `last`.
+    static final class HasNextFailsOnce implements Iterator<JsonCodecProvider> {
+        private final JsonCodecProvider last;
+        private int calls;
+        private boolean served;
+
+        HasNextFailsOnce(JsonCodecProvider last) {
+            this.last = last;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (calls++ == 0) {
+                throw new ServiceConfigurationError("unparseable services file");
+            }
+
+            return !served;
+        }
+
+        @Override
+        public JsonCodecProvider next() {
+            served = true;
+
+            return last;
         }
     }
 
