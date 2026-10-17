@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.pragmatica.json.ValueObjectModule;
 import org.pragmatica.serialization.codec.CodecProcessor;
 import org.pragmatica.serialization.json.JsonTypeCodec;
@@ -105,6 +106,26 @@ class ValueObjectRuleAgreementTest {
 
         assertTrue(errors.contains("generic record"), errors);
         assertFalse(ValueObjectModule.valueObjectFactory(ValueObjectFixtures.Tagged.class).isPresent());
+    }
+
+    // Both rules walk implemented interfaces, transitively: a Jackson annotation inherited that way refuses the type
+    // in the generator and keeps the module from unwrapping it.
+    @ParameterizedTest
+    @ValueSource(strings = {"Labelled", "Relabelled"})
+    void jacksonAnnotationOnAnImplementedInterface_isNoValueObjectOnEitherSide(String name, @TempDir Path tempDir) throws Exception {
+        var source = Files.writeString(tempDir.resolve("Holder.java"),
+                                       """
+                                       package fixture;
+
+                                       @org.pragmatica.serialization.json.Json
+                                       public record Holder(org.pragmatica.serialization.json.tests.ValueObjectFixtures.%s value) {}
+                                       """.formatted(name));
+        var errors = compileErrors(tempDir, source);
+
+        assertTrue(errors.contains("Jackson annotation @com.fasterxml.jackson.annotation.JsonIgnoreProperties on "
+                                   + "org.pragmatica.serialization.json.tests.ValueObjectFixtures.Annotated"), errors);
+        assertFalse(ValueObjectModule.valueObjectFactory(Class.forName(ValueObjectFixtures.class.getName() + "$" + name))
+                                     .isPresent());
     }
 
     @SuppressWarnings("unchecked")

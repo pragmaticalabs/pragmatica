@@ -15,6 +15,7 @@
  */
 package org.pragmatica.serialization.json.tests;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.json.Json;
 
@@ -100,6 +101,27 @@ public interface ValueObjectFixtures {
     record Hidden(String value) {
         private static Result<Hidden> hidden(String value) {
             return Result.success(new Hidden(value));
+        }
+    }
+
+    /// A Jackson annotation reaching a value-object-shaped record only through an implemented interface: Jackson
+    /// honours it, so neither side may treat the record as a value object. The generator refuses the type (a compile
+    /// error, hence not `@Json`); the module must not unwrap it.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    interface Annotated {}
+
+    record Labelled(String value) implements Annotated {
+        public static Result<Labelled> labelled(String value) {
+            return Result.success(new Labelled(value));
+        }
+    }
+
+    /// The same, one interface further away: the annotation sits on a superinterface of the implemented interface.
+    interface Derived extends Annotated {}
+
+    record Relabelled(String value) implements Derived {
+        public static Result<Relabelled> relabelled(String value) {
+            return Result.success(new Relabelled(value));
         }
     }
 
