@@ -1,6 +1,6 @@
 # Serialization Module
 
-Binary serialization for Pragmatica Lite.
+Binary serialization for Pragmatica.
 
 ## Overview
 
@@ -73,6 +73,18 @@ becomes a gate; see the `MODE` line in that test.
 
 ## Dependencies
 
-- `pragmatica-lite-core`
-- Netty (for ByteBuf)
-- SLF4J (version-skew disclosure from `UnknownEnumOrdinals`)
+```xml
+<dependency>
+    <groupId>org.pragmatica-lite</groupId>
+    <artifactId>serialization-api</artifactId>
+    <version>1.0.0-rc4</version>
+</dependency>
+<dependency>
+    <groupId>org.pragmatica-lite</groupId>
+    <artifactId>serialization-codec-processor</artifactId>
+    <version>1.0.0-rc4</version>
+    <scope>provided</scope>
+</dependency>
+```
+
+Compile-scope dependencies of `serialization-api` (from `pom.xml`): `org.pragmatica-lite:core`, `io.netty:netty-all` (for ByteBuf), `org.slf4j:slf4j-api` (version-skew disclosure from `UnknownEnumOrdinals`).

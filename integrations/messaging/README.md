@@ -25,20 +25,25 @@ router.route(new UserCreated("user-123"));
 ### Immutable Router with Sealed Interface Validation
 
 ```java
-sealed interface DomainEvent extends Message.Wired {
+sealed interface DomainEvent extends Message.Local {
     record UserCreated(String id) implements DomainEvent {}
     record UserDeleted(String id) implements DomainEvent {}
 }
 
+// import static org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder.from;
+// import static org.pragmatica.messaging.MessageRouter.Entry.route;
 var routes = from(DomainEvent.class)
     .route(
         route(DomainEvent.UserCreated.class, this::onUserCreated),
         route(DomainEvent.UserDeleted.class, this::onUserDeleted)
     );
 
-if (routes.validate().isEmpty()) {
-    MessageRouter router = routes.asRouter().unsafe();
-}
+// asRouter() validates that every permitted subtype has a route and returns Result<MessageRouter>
+MessageRouter router = routes.asRouter().expect("all message types routed");
+
+router.route(new DomainEvent.UserCreated("user-123"));
+
+// A Message.Wired family (serializable for network transport) must also implement streamType().
 ```
 
 ### Annotations
@@ -47,4 +52,12 @@ if (routes.validate().isEmpty()) {
 
 ## Dependencies
 
-- `pragmatica-lite-core`
+```xml
+<dependency>
+    <groupId>org.pragmatica-lite</groupId>
+    <artifactId>messaging</artifactId>
+    <version>1.0.0-rc4</version>
+</dependency>
+```
+
+Compile-scope dependencies (from `pom.xml`): `org.pragmatica-lite:core`, `org.slf4j:slf4j-api`.
