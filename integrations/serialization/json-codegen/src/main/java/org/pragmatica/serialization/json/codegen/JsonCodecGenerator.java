@@ -63,14 +63,25 @@ public final class JsonCodecGenerator {
         this.analyzer = new JsonTypeAnalyzer(elements, types, packageName);
     }
 
-    /// Adds a root type; empty when supported, otherwise why it is not. A `List` or `Set` root also gets a codec of
-    /// its own in the holder (see [#source]).
+    /// Adds a root type; empty when supported, otherwise why it is not.
     public Option<String> addRoot(TypeMirror type) {
+        return addRoot(type, false);
+    }
+
+    /// Adds a root that is decoded by declared type (a request body); empty when supported, otherwise why it is
+    /// not. A `List` or `Set` body root also gets a codec of its own in the holder (see [#source]). Only a body
+    /// gets one: an encode sees the runtime value, never the declared type, so a response root's would be dead code.
+    public Option<String> addBodyRoot(TypeMirror type) {
+        return addRoot(type, true);
+    }
+
+    private Option<String> addRoot(TypeMirror type, boolean body) {
         var analyzed = analyzer.analyzeRoot(type);
 
         if (analyzed.isPresent()) {
             roots.add(type);
-            analyzed.filter(JsonType.ListOf.class::isInstance)
+            analyzed.filter(_ -> body)
+                    .filter(JsonType.ListOf.class::isInstance)
                     .map(JsonType.ListOf.class::cast)
                     .onPresent(containerRoots::add);
 
@@ -90,7 +101,7 @@ public final class JsonCodecGenerator {
         return List.copyOf(roots);
     }
 
-    /// The holder: a codec per record and enum (`CODECS`), and a codec per distinct `List` or `Set` root
+    /// The holder: a codec per record and enum (`CODECS`), and a codec per distinct `List` or `Set` body root
     /// (`CONTAINERS`, keyed by the root's reflective generic type), generated with the same container code as a
     /// component of that type.
     public String source(String holderName, String generatedBy) {

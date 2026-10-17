@@ -21,13 +21,17 @@ class GeneratedRouteJsonCodecTest {
 
     @BeforeAll
     static void readGeneratedRoutes() throws IOException {
-        var relative = Paths.get("target", "generated-sources", "annotations", "com", "example", "testslice", "TestSliceRoutes.java");
+        generatedRoutes = Files.readString(generatedFile("TestSliceRoutes.java"));
+    }
+
+    private static Path generatedFile(String name) {
+        var relative = Paths.get("target", "generated-sources", "annotations", "com", "example", "testslice", name);
         var moduleDir = Paths.get(System.getProperty("user.dir"));
         var candidate = moduleDir.resolve(relative);
 
-        generatedRoutes = Files.readString(Files.exists(candidate)
-                                           ? candidate
-                                           : moduleDir.resolve(Path.of("jbct", "slice-processor-tests")).resolve(relative));
+        return Files.exists(candidate)
+               ? candidate
+               : moduleDir.resolve(Path.of("jbct", "slice-processor-tests")).resolve(relative);
     }
 
     @Test
@@ -44,6 +48,20 @@ class GeneratedRouteJsonCodecTest {
         assertThat(generatedRoutes).contains("GeneratedJsonCodec.generatedJsonCodec(TestSliceRoutesJsonCodecs.CODECS,");
         assertThat(generatedRoutes).contains("TestSliceRoutesJsonCodecs.CONTAINERS,");
         assertThat(generatedRoutes).contains("JsonCodecAdapter.forMapper(jsonMapper)");
+    }
+
+    // TestSlice's only List roots are responses (search, getOrders): an encode sees the runtime value, never the
+    // declared type, so they get element codecs but no container codec. Body roots keep theirs (wireform signupAll).
+    @Test
+    void responseOnlyListRoots_getNoContainerCodec() throws IOException {
+        var holder = Files.readString(generatedFile("TestSliceRoutesJsonCodecs.java"));
+
+        assertThat(TestSliceRoutesJsonCodecs.CONTAINERS).isEmpty();
+        assertThat(holder).contains("CONTAINERS = java.util.Map.ofEntries(\n    );")
+                          .doesNotContain("ListRootJson")
+                          .doesNotContain("TypeToken<java.util.List<com.example.testslice.SearchResult>>")
+                          .doesNotContain("TypeToken<java.util.List<com.example.testslice.OrderResponse>>");
+        assertThat(TestSliceRoutesJsonCodecs.CODECS).containsKeys(SearchResult.class, OrderResponse.class);
     }
 
     // Owner ruling: the convenience overload uses the mapper the node passes, so a slice behaves the same either way.

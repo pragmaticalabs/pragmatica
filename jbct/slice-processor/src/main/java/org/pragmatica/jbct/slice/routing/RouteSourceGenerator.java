@@ -289,12 +289,11 @@ public class RouteSourceGenerator {
             }
 
             for (var root : jsonRoots(method, entry.getValue())) {
-                json.addRoot(root)
-                    .onPresent(reason -> messager.printMessage(Diagnostic.Kind.NOTE,
-                                                               "Route '" + entry.getKey()
-                                                              + "': " + root
-                                                              + " uses the Jackson fallback: " + reason,
-                                                               sliceElement));
+                addJsonRoot(json, root).onPresent(reason -> messager.printMessage(Diagnostic.Kind.NOTE,
+                                                                                  "Route '" + entry.getKey()
+                                                                                 + "': " + root.type()
+                                                                                 + " uses the Jackson fallback: " + reason,
+                                                                                  sliceElement));
             }
         }
 
@@ -306,10 +305,25 @@ public class RouteSourceGenerator {
                    .map(_ -> Option.some(holderName));
     }
 
+    // A body is decoded by its declared type, so a List/Set body gets a generated container codec; a response is
+    // encoded from its runtime value, so it gets only its element codecs.
+    private static Option<String> addJsonRoot(JsonCodecGenerator json, JsonRoot root) {
+        return root.body()
+               ? json.addBodyRoot(root.type())
+               : json.addRoot(root.type());
+    }
+
+    /// A JSON route root and whether it is the request body (decoded by declared type) or the response.
+    record JsonRoot(TypeMirror type, boolean body) {
+        static JsonRoot jsonRoot(TypeMirror type, boolean body) {
+            return new JsonRoot(type, body);
+        }
+    }
+
     // The JSON request body (same resolution as the generated withBody TypeToken) and the JSON response.
     // Unit carries no data and is left to the fallback, as are types without codecs (String, byte[]).
-    private List<TypeMirror> jsonRoots(MethodModel method, RouteDsl routeDsl) {
-        var roots = new ArrayList<TypeMirror>();
+    private List<JsonRoot> jsonRoots(MethodModel method, RouteDsl routeDsl) {
+        var roots = new ArrayList<JsonRoot>();
         var jsonBody = isBodyMethod(routeDsl.method()) && !boundEntirelyByPathAndQuery(method, routeDsl) && switch (routeDsl.consumes()
                                                                                                                             .category()) {
             case "TEXT", "HTML", "XML", "BINARY", "MULTIPART" -> false;
@@ -317,11 +331,11 @@ public class RouteSourceGenerator {
         };
 
         if (jsonBody) {
-            requestBodyType(method).onPresent(roots::add);
+            requestBodyType(method).onPresent(type -> roots.add(JsonRoot.jsonRoot(type, true)));
         }
 
         if (routeDsl.produces().isJson() && !isUnit(method.responseType())) {
-            roots.add(method.responseType());
+            roots.add(JsonRoot.jsonRoot(method.responseType(), false));
         }
 
         return roots;
