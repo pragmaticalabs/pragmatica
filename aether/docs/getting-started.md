@@ -348,7 +348,7 @@ provisioned is torn down automatically; pass `--keep-on-failure` if you want
 to SSH in and look before it's gone.
 
 Live-run record (rc3 build, 2026-07-24, 5×cpx32 across fsn1/nbg1/hel1, ~12-15 minutes
-wall clock end-to-end, ~€0.10 total; not re-run on rc4): all phases green, quorum 3/5, all
+wall clock end-to-end; not re-run on rc4): all phases green, quorum 3/5, all
 nodes READY, an API key auto-minted and persisted to
 `~/.aether/clusters/<name>/api-key`.
 

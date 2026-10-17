@@ -16480,7 +16480,7 @@ subsystem either -- do not read it as though they were.
   [design intent — unverified: the 30s-then-halt branch itself has no end-to-end test; only the
   underlying bounded-timeout mechanism it depends on is verified above]
   Exit code `3` and the rest of the node process's exit-code contract are now documented at
-  [`aether/docs/reference/node-operations.md`](../aether/docs/reference/node-operations.md#exit-codes)
+  [`aether/docs/reference/node-operations.md`](aether/docs/reference/node-operations.md#exit-codes)
   (new page).
 - **Review round 1 (#838): `System.exit(2)` deadlocks from inside a shutdown hook.** A shutdown hook
   runs on the thread `Shutdown.runHooks()` uses to run every hook to completion; `System.exit()`'s own
@@ -17479,7 +17479,7 @@ subsystem either -- do not read it as though they were.
   dispatches a run) but leaves `MIGRATING` — a blocking status with no automatic clearing path —
   ready to hold the next slice instance that reaches `LOADED`. Refused with `409 Conflict`
   (`SchemaAlreadyServing`, naming the datasource and active-slice count); a `COMPLETED` record with
-  zero live `ACTIVE` slices is unaffected. See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apischemamigratedatasource).
+  zero live `ACTIVE` slices is unaffected. See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apiv1schemamigratedatasource).
 - **Retry dispatch is now single-flight per record across both the timer and the route, on a given
   leader.** A PENDING record with a live scheduled retry could double-dispatch `migrateIfNeeded`
   when the route and the timer's KV-lock release raced on the same leader; `acquireLock` now
@@ -17565,7 +17565,7 @@ subsystem either -- do not read it as though they were.
   `SchemaAlreadyPending` error, naming the datasource; retry the existing pending migration or use
   `aether schema retry` once it has failed. `POST /api/schema/retry/{datasource}` is a separate route
   (`retryMigration` → `writeRetryStatus`) and is unaffected — it still accepts `PENDING` (#724's
-  original widening). See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apischemamigratedatasource).
+  original widening). See [`POST /api/schema/migrate`](aether/docs/reference/management-api.md#post-apiv1schemamigratedatasource).
 - **`recordSucceededOutcome`'s write now logs `WARN` on failure** instead of silently dropping it —
   a lost `SUCCEEDED` outcome write previously left `BlueprintService.outcome()` reporting stale or
   absent state for a blueprint that actually finished deploying, with no operator-visible signal.
