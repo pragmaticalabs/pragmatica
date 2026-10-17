@@ -20,7 +20,7 @@ while [ $SECONDS -lt $DEADLINE ]; do
     HEALTHY=0
     for i in $(seq 0 $((EXPECTED - 1))); do
         PORT=${ALL_PORTS[$i]}
-        if curl -sf "http://localhost:$PORT/api/health" > /dev/null 2>&1; then
+        if curl -sf "http://localhost:$PORT/health/live" > /dev/null 2>&1; then
             HEALTHY=$((HEALTHY + 1))
         fi
     done

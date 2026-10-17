@@ -1,0 +1,158 @@
+name: Heavy forge tests
+
+# The @Tag("Heavy") forge probes (auto-heal, surplus drain, membership chaos, multi-partition streams)
+# that ci.yml's forge-tests job excludes with -Dfailsafe.excludedGroups=Heavy, because they starve on
+# public runners (#458). #1060: not a required check and not run on every PR. It runs nightly, on
+# workflow_dispatch, and on a pull request carrying the `run-heavy` label (re-run on each push while the
+# label stays).
+#
+# GitHub fires `schedule` only for the workflow file on the DEFAULT branch, against that branch's code
+# (release-1.0.0-rc4 while it is the default). Another release branch gets Heavy coverage from the label or
+# from dispatch, not from the nightly run.
+#
+# A red nightly must reach someone: the `notify` job keeps exactly one open issue labelled `heavy-nightly`
+# (opened or commented on a red scheduled night, closed on a green one); GitHub's own notifications mail it.
+# A known red (@KnownRed, a ticketed enabled tripwire) is listed apart from a new red and does not fail the run.
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [main, release-*]
+    types: [labeled, synchronize, reopened]
+
+jobs:
+  heavy-forge-tests:
+    outputs:
+      state: ${{ steps.summary.outputs.state }}
+      reason: ${{ steps.summary.outputs.reason }}
+      new_reds: ${{ steps.summary.outputs.new_reds }}
+      known_reds: ${{ steps.summary.outputs.known_reds }}
+    # A labelled event for some other label must not start (or cancel) a Heavy run.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'run-heavy') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'run-heavy'))
+    runs-on: ubuntu-latest
+    # Measured on #1063 (run 34769833940): setup through blueprints took 2m39s and the test step 51m04s.
+    # Eight classes spent their full 4-minute setUp wait in that run. Step budget 100m (~2x measured),
+    # fork 5700s so failsafe reaps before the step dies, job 120m.
+    timeout-minutes: 120
+    concurrency:
+      group: heavy-forge-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Bootstrap annotation processors and Maven plugins
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+
+      - name: Install all artifacts
+        run: mvn install -B -DskipTests
+
+      # Heavy classes deploy standalone test blueprints (test-stream, test-entity, ...) by coordinates.
+      # Nothing in the reactor installs them. build.sh step 5 does it locally, and without this step 11
+      # classes failed in setUp on "Artifact not found in local repository". `clean` for the same reason
+      # build.sh gives: an incremental build re-jars stale generated factories.
+      - name: Build test blueprints
+        run: |
+          shopt -s nullglob
+          poms=(aether/tests/blueprints/*/pom.xml)
+          (( ${#poms[@]} > 0 )) || { echo "no aether/tests/blueprints/*/pom.xml found; refusing to continue" >&2; exit 1; }
+          for pom in "${poms[@]}"; do
+            echo "::group::${pom}"
+            mvn -B -f "$pom" clean install -DskipTests
+            echo "::endgroup::"
+          done
+          echo "built ${#poms[@]} test blueprints"
+
+      # -Dgroups=Heavy selects the tagged classes, so a newly tagged class is picked up with no edit
+      # here. -Dfailsafe.excludedGroups= clears the pom's exclusion slot. The failsafe fork timeout is
+      # raised from the pom's 1800s default because this job keeps every Heavy class in one fork, and
+      # it stays below the step timeout so failsafe, not GitHub, ends a wedged run and the XML survives.
+      - name: Run Heavy forge tests
+        run: >
+          mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
+          -Dgroups=Heavy -Dfailsafe.excludedGroups=
+          -Dfailsafe.forkedProcessTimeoutInSeconds=5700
+        timeout-minutes: 100
+
+      # Counts <testcase> elements, never the <testsuite tests="N"> attribute, which reads 0 for
+      # @Nested classes.
+      # The state (ok | red | unknown) goes to the notify job. UNKNOWN (no report, a report that does not parse, zero testcases) fails this
+      # step: a run that examined nothing is never green. pipefail so the script's exit code survives the tee.
+      - name: Summarise failsafe reports
+        id: summary
+        if: always()
+        run: |
+          set -o pipefail
+          python3 tools/heavy-forge-summary.py | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Heavy forge test results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: heavy-forge-test-results
+          if-no-files-found: error
+          path: |
+            aether/forge/forge-tests/target/failsafe-reports/*.xml
+            aether/forge/forge-tests/target/failsafe-reports/*.txt
+          retention-days: 14
+
+  # One heavy-nightly issue: opened or commented on a red scheduled night, closed on a green one. `issues: write` is scoped to
+  # this job only; the test job above keeps `contents: read`. The lists come in through env, never interpolated into the script.
+  notify:
+    needs: heavy-forge-tests
+    if: always() && github.event_name == 'schedule' && (needs.heavy-forge-tests.result == 'success' || needs.heavy-forge-tests.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    concurrency:
+      group: heavy-nightly-issue
+      cancel-in-progress: false
+    steps:
+      - name: Open, update or close the heavy-nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ needs.heavy-forge-tests.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          STATE: ${{ needs.heavy-forge-tests.outputs.state }}
+          REASON: ${{ needs.heavy-forge-tests.outputs.reason }}
+          NEW_REDS: ${{ needs.heavy-forge-tests.outputs.new_reds }}
+          KNOWN_REDS: ${{ needs.heavy-forge-tests.outputs.known_reds }}
+        run: |
+          set -euo pipefail
+          gh label create heavy-nightly --description "the nightly Heavy forge run" --force >/dev/null
+          open=$(gh issue list --label heavy-nightly --state open --json number --jq '.[0].number // empty')
+          # Close ONLY on a night that is both a green job and a summary that read real reports (state ok). Anything else, including a missing or
+          # unknown state, keeps the issue open: an unknown night is never green.
+          if [ "$RESULT" = success ] && [ "${STATE:-}" = ok ]; then
+            if [ -n "$open" ]; then
+              gh issue close "$open" --comment "Green: $RUN_URL ($SHA)"
+            fi
+            exit 0
+          fi
+          body=$(printf 'Run: %s\nCommit: %s\nState: %s %s\n\nNew reds:\n%s\n\nKnown reds:\n%s\n' "$RUN_URL" "$SHA" "${STATE:-unknown}" "${REASON:-}" "${NEW_REDS:-none listed}" "${KNOWN_REDS:-none}")
+          # the title says which kind of bad night this is, and follows the latest night when it changes
+          if [ "${STATE:-}" = red ]; then title="Heavy nightly: new reds"; else title="Heavy nightly: unknown result"; fi
+          if [ -n "$open" ]; then
+            gh issue edit "$open" --title "$title"
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "$title" --label heavy-nightly --body "$body"
+          fi
