@@ -21,6 +21,11 @@ Unified Application Runtime for Java -- scale horizontally without microservices
 > - **Not yet production-hardened.** Some background reconcilers are tuned for settled clusters
 >   and can be transiently slower to converge under heavy churn; these are tracked for the next
 >   milestones. Use this release candidate for evaluation and non-critical workloads.
+> - **Known limitations are listed in
+>   [docs/reference/known-limitations.md](docs/reference/known-limitations.md) — read before
+>   evaluating.** Among them: a network cut that leaves no core majority halts every core,
+>   node-binary version skew has no join-time check, and the dashboard does not work against a
+>   real node.
 
 ## Overview
 
@@ -48,10 +53,11 @@ public interface PlaceOrder {
 # Check cluster status
 aether status
 
-# Deploy a slice
-aether deploy org.example:my-slice:1.0.0
+# Push the artifacts of a blueprint, then deploy the blueprint (coordinates are the blueprint's)
+aether artifacts push org.example:my-blueprint:1.0.0
+aether blueprints deploy org.example:my-blueprint:1.0.0 --wait
 
-# Scale it
+# Scale a slice
 aether scale org.example:my-slice:1.0.0 -n 3
 ```
 
@@ -66,7 +72,13 @@ To run an example application on Forge, follow the [Quick Start](../README.md#qu
 PostgreSQL, `./run-forge.sh`, then `curl`. The example scripts use the installed Forge; nothing is built from source but
 the example.
 
-Forge provides a visual dashboard, cluster operations, chaos testing, and per-node management API access.
+Forge provides a dashboard, cluster operations, chaos testing, and per-node management API access.
+**rc4 limitation:** on Forge only `/ws/status` has a publisher (`/ws/dashboard` and `/ws/events` send nothing), and
+Forge serves only a subset of the dashboard's unversioned `/api/...` REST calls, so several panels (governors,
+strategies, streams, schema, storage, desired topology, among others) are empty; against a real node, whose router
+serves `/api/v1` only, every REST-fed panel is empty. See
+[Known Limitations](docs/reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty);
+use the CLI or the `/api/v1` REST API for the data behind the empty panels.
 
 ### Installation
 
