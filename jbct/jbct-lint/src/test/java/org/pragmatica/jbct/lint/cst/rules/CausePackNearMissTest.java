@@ -79,6 +79,22 @@ class CausePackNearMissTest {
                                  .doesNotContain("JBCT-CAUSE-01");
     }
 
+    /// The third mixin, `Cause.Transient` (#280), is recognized the same way: a record implementing
+    /// it by qualified spelling is a variant the pack examines. Without the widening the record is
+    /// invisible to the pack and the value-discarding shape below goes unflagged.
+    @Test
+    void qualifiedTransientMixin_marksVariant() {
+        assertThat(rulesFor("""
+                            package demo;
+                            class Steps {
+                                record Busy(String message) implements Cause.Transient {
+                                    static final Fn1<Busy, String> FACTORY =
+                                        Causes.forOneValue("Peer busy: %s", Busy::new);
+                                }
+                            }
+                            """)).contains("JBCT-CAUSE-01");
+    }
+
     /// Same-file hierarchy detection runs to a fixpoint: a variant of `E2 extends E1 extends
     /// Cause` is recognized where SEAL-02's direct-extends check went blind.
     @Test

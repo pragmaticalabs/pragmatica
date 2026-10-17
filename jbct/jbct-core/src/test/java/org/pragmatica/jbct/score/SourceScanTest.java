@@ -105,6 +105,31 @@ class SourceScanTest {
         assertThat(scan.diagnostics()).isEmpty();
     }
 
+    /// Excluding an unparseable file from the RATIO is right; excluding it from the REPORT is how a
+    /// density gate came to return clean over a file it never read (#977). The scan therefore counts
+    /// what it could not analyse, and its coverage says so.
+    @Test
+    void sourceScan_countsWhatItCouldNotAnalyse_soTheRatioCarriesItsOwnDenominator() throws IOException {
+        var files = List.of(write("A.java", THREE_CODE_LINES));
+        var scan = SourceScan.sourceScan(files, SourceScanTest::parseFailure, SourceScanTest::ignoreError);
+
+        assertThat(scan.filesUnanalyzed()).isEqualTo(1);
+        assertThat(scan.coverage().isPartial()).isTrue();
+        assertThat(scan.coverage().render()).isEqualTo("0 of 1 file(s), 1 UNPARSEABLE");
+    }
+
+    /// The control: a scan that read everything reports no gap, and its coverage renders the bare
+    /// count exactly as the header always printed it.
+    @Test
+    void sourceScan_reportsNoGap_whenEveryFileWasAnalysed() throws IOException {
+        var files = List.of(write("A.java", THREE_CODE_LINES));
+        var scan = SourceScan.sourceScan(files, SourceScanTest::oneDiagnostic, SourceScanTest::ignoreError);
+
+        assertThat(scan.filesUnanalyzed()).isZero();
+        assertThat(scan.coverage().isPartial()).isFalse();
+        assertThat(scan.coverage().render()).isEqualTo("1 file(s)");
+    }
+
     @Test
     void sourceScan_noFiles_isEmpty() {
         var scan = SourceScan.sourceScan(List.of(), SourceScanTest::oneDiagnostic, SourceScanTest::ignoreError);

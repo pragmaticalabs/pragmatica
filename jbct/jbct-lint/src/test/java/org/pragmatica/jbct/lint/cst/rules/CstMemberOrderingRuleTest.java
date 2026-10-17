@@ -248,6 +248,69 @@ class CstMemberOrderingRuleTest {
         }
     }
 
+    /// #655: an anonymous class body has no `TypeKind`, so its methods' nearest enclosing type is the
+    /// outer type. They must not rank as the outer type's members.
+    @Nested
+    class AnonymousClassMembers {
+        @Test
+        void clean_on_anonymous_implementation_inside_the_use_case_factory() {
+            // The anonymous `execute` sits lexically after the factory; ranked as an outer member it read
+            // as "execute after the factory".
+            assertFalse(hasRule("""
+                    package org.example;
+                    public interface RegisterUser {
+                        record Request(String email) {}
+                        Result<Request> execute(Request request);
+                        static RegisterUser registerUser() {
+                            return new RegisterUser() {
+                                @Override
+                                public Result<Request> execute(Request request) {
+                                    return Result.success(request);
+                                }
+                            };
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void clean_on_anonymous_class_in_a_constant_initializer() {
+            // The anonymous `run` would rank as a method before the ZERO constant.
+            assertFalse(hasRule("""
+                    package org.example;
+                    record Money(long cents) {
+                        public static final Runnable NOOP = new Runnable() {
+                            public void run() {}
+                        };
+                        public static final Money ZERO = new Money(0);
+                        static Result<Money> money(long cents) {
+                            return Result.success(new Money(cents));
+                        }
+                    }
+                    """));
+        }
+
+        @Test
+        void still_flags_a_misordered_outer_member_beside_an_anonymous_class() {
+            // Exempting anonymous-class methods must not hide a genuine inversion of the outer type's own members.
+            assertTrue(hasRule("""
+                    package org.example;
+                    public interface RegisterUser {
+                        Result<Request> execute(Request request);
+                        static RegisterUser registerUser() {
+                            return new RegisterUser() {
+                                @Override
+                                public Result<Request> execute(Request request) {
+                                    return Result.success(request);
+                                }
+                            };
+                        }
+                        record Request(String email) {}
+                    }
+                    """));
+        }
+    }
+
     @Test
     void does_not_flag_unclassified_file() {
         assertFalse(hasRule("""

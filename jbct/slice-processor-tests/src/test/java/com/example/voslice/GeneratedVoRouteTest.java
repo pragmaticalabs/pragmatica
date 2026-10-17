@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package com.example.voslice;
 
@@ -61,7 +60,7 @@ class GeneratedVoRouteTest {
         @Test
         void getSeat_handlerReceivesLiftedValueObjectDirectly() {
             assertThat(generated).contains(
-                ".to(seatId -> delegate.getSeat(new com.example.voslice.GetSeatRequest(seatId)))");
+                ".to(seatId -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.voslice.GetSeatRequest(seatId)).async().flatMap(__constructed -> delegate.getSeat(__constructed)))");
         }
 
         @Test
@@ -85,7 +84,7 @@ class GeneratedVoRouteTest {
         @Test
         void findSeat_handlerReceivesLiftedOptionalValueObject() {
             assertThat(generated).contains(
-                ".to(seat -> delegate.findSeat(new com.example.voslice.FindSeatRequest(seat)))");
+                ".to(seat -> org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new com.example.voslice.FindSeatRequest(seat)).async().flatMap(__constructed -> delegate.findSeat(__constructed)))");
         }
     }
 }

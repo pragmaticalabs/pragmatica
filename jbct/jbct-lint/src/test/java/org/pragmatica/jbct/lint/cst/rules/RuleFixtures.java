@@ -237,6 +237,34 @@ final class RuleFixtures {
                 }
                 """),
 
+        // JBCT-EX-03: catch clause outside a marked JDK boundary.
+        fixture("JBCT-EX-03", 6,
+                """
+                package org.example;
+                class Foo {
+                    Result<String> run() {
+                        try {
+                            return success(read());
+                        } catch (IllegalStateException e) {
+                            return FAILED.result();
+                        }
+                    }
+                }
+                """,
+                """
+                package org.example;
+                class Foo {
+                    @SuppressWarnings("JBCT-EX-03")
+                    Result<String> run() {
+                        try {
+                            return success(read());
+                        } catch (IllegalStateException e) {
+                            return FAILED.result();
+                        }
+                    }
+                }
+                """),
+
         // JBCT-NAM-01: factory method must be named after the type (Email.email).
         fixture("JBCT-NAM-01", 3,
                 """

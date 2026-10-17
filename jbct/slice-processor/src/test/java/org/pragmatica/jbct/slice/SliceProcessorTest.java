@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.jbct.slice;
 
@@ -9,17 +8,22 @@ import com.google.testing.compile.Compilation;
 import com.google.testing.compile.CompilationSubject;
 import com.google.testing.compile.JavaFileObjects;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.junit.jupiter.api.io.TempDir;
 
 import javax.tools.JavaFileObject;
 import javax.tools.StandardLocation;
 import java.io.IOException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -75,6 +79,13 @@ class SliceProcessorTest {
                 }
                 static void writeCompact(Object buf, int value) {}
                 static int readCompact(Object buf) { return 0; }
+                // #964: present so the GENERATED SOURCE COMPILES, and for no other purpose. This whole
+                // interface is a fake standing in for org.pragmatica.serialization.SliceCodec, so these
+                // bodies encode nothing and decode nothing. Never cite a test in this file as evidence
+                // about unknown-ordinal behaviour — that evidence is UnknownEnumOrdinalWireTest in
+                // integrations/cluster, which runs real bytes through the real generated codecs.
+                static <E extends Enum<E>> E readEnum(Object buf, E[] values, E unknown) { return unknown; }
+                static <E extends Enum<E>> E readEnumOrFail(Object buf, E[] values, Class<E> type) { return null; }
                 static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs) { return parent; }
                 static SliceCodec sliceCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) { return parent; }
                 record TypeCodec<T>(Class<T> type, int tag, TypeWriter<T> writer, TypeReader<T> reader) {}
@@ -243,10 +254,10 @@ class SliceProcessorTest {
                 Result<Boolean> requireBoolean(String section, String key);
                 Result<List<String>> requireStringList(String section, String key);
                 Option<String> getString(String section, String key);
-                Option<Integer> getInt(String section, String key);
-                Option<Long> getLong(String section, String key);
-                Option<Double> getDouble(String section, String key);
-                Option<Boolean> getBoolean(String section, String key);
+                Result<Option<Integer>> getInt(String section, String key);
+                Result<Option<Long>> getLong(String section, String key);
+                Result<Option<Double>> getDouble(String section, String key);
+                Result<Option<Boolean>> getBoolean(String section, String key);
             }
             """);
 
@@ -2194,12 +2205,67 @@ class SliceProcessorTest {
         assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.state.OrderState>(test.state.OrderState.class");
         assertThat(factoryContent).contains("codec.write(buf, val.status())");
         assertThat(factoryContent).contains("return new test.state.OrderState(status, amount);");
-        // The enum state type gets the ordinal codec.
+        // The enum state type gets the ordinal codec — bounds-checked (#964), never the raw
+        // values()[readCompact(buf)] index. AuditLevel declares no UNKNOWN sentinel, so it takes the
+        // STRICT form: the ordinal is still range-checked and the failure names the enum, rather than
+        // an AIOOBE from generated code that the transport boundary swallows.
         assertThat(factoryContent).contains("new SliceCodec.TypeCodec<test.state.AuditLevel>(test.state.AuditLevel.class");
-        assertThat(factoryContent).contains("test.state.AuditLevel.values()[SliceCodec.readCompact(buf)]");
+        assertThat(factoryContent).contains(
+            "SliceCodec.readEnumOrFail(buf, test.state.AuditLevel.values(), test.state.AuditLevel.class)");
+        assertThat(factoryContent).doesNotContain("test.state.AuditLevel.values()[SliceCodec.readCompact(buf)]");
         // The String key is served by FrameworkCodecs, so no entry and no checklist for it.
         assertThat(factoryContent).doesNotContain("java.lang.String.class");
         assertThat(factoryContent).doesNotContain("Set.of(");
+    }
+
+    /// #964, the OTHER arm of the slice-enum rule: an application enum that DOES declare `UNKNOWN` as
+    /// its last constant opts into the sentinel, and its unrecognised ordinals decode to it with the
+    /// rest of the message intact — the same contract framework `@Codec` enums get, without forcing
+    /// every application enum to carry a wire concern.
+    ///
+    /// Paired deliberately with the strict-form assertion above: the two fixtures differ ONLY in
+    /// whether the enum ends with `UNKNOWN`, so a generator that emitted one form unconditionally
+    /// would redden exactly one of them. Asserting only the form it produced would not distinguish
+    /// "the branch works" from "there is no branch".
+    @Test
+    void codec_generatesSentinelEnumRead_whenEnumDeclaresUnknownLast() throws Exception {
+        var auditLevel = JavaFileObjects.forSourceString("test.state.AuditLevel",
+                                                         """
+            package test.state;
+            public enum AuditLevel { OFF, FULL, UNKNOWN }
+            """);
+        var source = JavaFileObjects.forSourceString("test.EntitySlice",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AuditEntity;
+            import test.infra.DurableEntity;
+            import test.state.AuditLevel;
+            @Slice
+            public interface EntitySlice {
+                Promise<String> create(String orderId);
+                static EntitySlice entitySlice(@AuditEntity DurableEntity<String, AuditLevel> audit) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+
+        sources.add(DURABLE_ENTITY);
+        sources.add(entityQualifier("AuditEntity", "entities.audit"));
+        sources.add(auditLevel);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.EntitySliceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains(
+            "SliceCodec.readEnum(buf, test.state.AuditLevel.values(), test.state.AuditLevel.UNKNOWN)");
+        assertThat(factoryContent).doesNotContain("readEnumOrFail");
     }
 
     @Test
@@ -2568,6 +2634,97 @@ class SliceProcessorTest {
         Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
         assertCompilation(compilation).failed();
         assertCompilation(compilation).hadErrorContaining("Multiple @Key annotations");
+    }
+
+    /// #279 (2): two methods sharing one interceptor config section were deduplicated into ONE
+    /// provision, and that provision captured the FIRST method's `@Key` extractor — so the second
+    /// method's calls were keyed with a `Fn1` written for the first method's request type
+    /// (`ClassCastException` at the first call, or a wrong key when the types happen to coincide).
+    /// A key-bearing method must get its own provision carrying its own extractor.
+    @Test
+    void should_provision_a_key_bearing_interceptor_per_method_when_the_config_section_is_shared() throws Exception {
+        var userId = JavaFileObjects.forSourceString("test.dto.UserId",
+                                                     """
+            package test.dto;
+            public record UserId(String value) {}
+            """);
+        var orderId = JavaFileObjects.forSourceString("test.dto.OrderId",
+                                                      """
+            package test.dto;
+            public record OrderId(long value) {}
+            """);
+        var userRequest = JavaFileObjects.forSourceString("test.dto.GetUserRequest",
+                                                          """
+            package test.dto;
+            import org.pragmatica.aether.resource.aspect.Key;
+            public record GetUserRequest(@Key UserId userId, boolean includeDetails) {}
+            """);
+        var orderRequest = JavaFileObjects.forSourceString("test.dto.GetOrderRequest",
+                                                           """
+            package test.dto;
+            import org.pragmatica.aether.resource.aspect.Key;
+            public record GetOrderRequest(@Key OrderId orderId, boolean includeLines) {}
+            """);
+        var withCache = JavaFileObjects.forSourceString("test.annotation.WithCache",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.MethodInterceptor;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = MethodInterceptor.class, config = "cache.shared")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.METHOD)
+            public @interface WithCache {}
+            """);
+        var source = JavaFileObjects.forSourceString("test.LookupService",
+                                                     """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.dto.GetUserRequest;
+            import test.dto.GetOrderRequest;
+            import test.annotation.WithCache;
+            @Slice
+            public interface LookupService {
+                @WithCache
+                Promise<String> getUser(GetUserRequest request);
+                @WithCache
+                Promise<String> getOrder(GetOrderRequest request);
+                static LookupService lookupService() { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(userId);
+        sources.add(orderId);
+        sources.add(userRequest);
+        sources.add(orderRequest);
+        sources.add(withCache);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.LookupServiceFactory")
+                                        .get().getCharContent(false).toString();
+
+        assertThat(factoryContent).contains("GetUserRequest::userId");
+        // the second method must carry ITS OWN key extractor
+        assertThat(factoryContent).contains("GetOrderRequest::orderId");
+        // one provision per key-bearing method, both under the shared section
+        assertThat(countOccurrences(factoryContent, "provide(MethodInterceptor.class, \"cache.shared\"")).isEqualTo(2);
+    }
+
+    private static int countOccurrences(String text, String needle) {
+        var count = 0;
+        var index = text.indexOf(needle);
+
+        while (index >= 0) {
+            count++;
+            index = text.indexOf(needle, index + needle.length());
+        }
+
+        return count;
     }
 
     @Test
@@ -4186,9 +4343,76 @@ class SliceProcessorTest {
         var factoryContent = compilation.generatedSourceFile("test.ServerServiceFactory")
                                         .get().getCharContent(false).toString();
         assertThat(factoryContent).contains("ctx.config().requireString(\"app.server\", \"host\")");
-        assertThat(factoryContent).contains("Result.success(ctx.config().getInt(\"app.server\", \"port\"))");
-        assertThat(factoryContent).contains("Result.success(ctx.config().getBoolean(\"app.server\", \"enable_tls\"))");
+        // #1098: the typed get* methods return Result<Option<T>> so a malformed value fails the
+        // Result.all chain; wrapping them in Result.success would swallow that failure again.
+        assertThat(factoryContent).contains("ctx.config().getInt(\"app.server\", \"port\")");
+        assertThat(factoryContent).contains("ctx.config().getBoolean(\"app.server\", \"enable_tls\")");
+        assertThat(factoryContent).doesNotContain("Result.success(ctx.config().getInt(");
+        assertThat(factoryContent).doesNotContain("Result.success(ctx.config().getBoolean(");
         assertThat(factoryContent).contains("ServerConfig::serverConfig");
+    }
+
+    /// #1098, the live consequence the ticket names: a `@ConfigUpdate` handler re-parses the section
+    /// through the same access expressions, so a malformed optional value must fail `parsed` (and be
+    /// logged, not dispatched) rather than be wrapped in `Result.success` and read as absent.
+    @Test
+    void should_generate_config_update_parsing_without_wrapping_typed_optional_reads() throws Exception {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.server")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target({ElementType.PARAMETER, ElementType.METHOD})
+            public @interface AppConfig {}
+            """);
+        var serverConfig = JavaFileObjects.forSourceString("test.config.ServerConfig",
+                                                            """
+            package test.config;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+            public record ServerConfig(String host, Option<Integer> port, Option<Boolean> enableTls) {
+                public static Result<ServerConfig> serverConfig(String host, Option<Integer> port, Option<Boolean> enableTls) {
+                    return Result.success(new ServerConfig(host, port, enableTls));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ServerService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import org.pragmatica.lang.Unit;
+            import test.annotation.AppConfig;
+            import test.config.ServerConfig;
+            @Slice
+            public interface ServerService {
+                Promise<String> serve(String request);
+                @AppConfig
+                Promise<Unit> onConfig(ServerConfig config);
+                static ServerService serverService(@AppConfig ServerConfig config) { return null; }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(serverConfig);
+        sources.add(source);
+
+        Compilation compilation = javac().withProcessors(new SliceProcessor()).compile(sources);
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.ServerServiceFactory")
+                                        .get().getCharContent(false).toString();
+        assertThat(factoryContent).contains("public static void notifyConfigUpdate(");
+        assertThat(factoryContent).contains("config.requireString(\"app.server\", \"host\")");
+        assertThat(factoryContent).contains("config.getInt(\"app.server\", \"port\")");
+        assertThat(factoryContent).contains("config.getBoolean(\"app.server\", \"enable_tls\")");
+        assertThat(factoryContent).doesNotContain("Result.success(config.getInt(");
+        assertThat(factoryContent).doesNotContain("Result.success(config.getBoolean(");
+        assertThat(factoryContent).contains("parsed.onFailure(cause -> configLog.warn(\"Config parse failed for section {}: {}\", section, cause.message()));");
     }
 
     @Test
@@ -4304,8 +4528,159 @@ class SliceProcessorTest {
         var factoryContent = compilation.generatedSourceFile("test.ProxyServiceFactory")
                                         .get().getCharContent(false).toString();
         assertThat(factoryContent).contains("ctx.config().requireString(\"app.proxy\", \"host\")");
-        assertThat(factoryContent).contains("Result.success(ctx.config().getString(\"app.proxy\", \"fallback_url\").map(s -> ProxyUrl.proxyUrl(s).expect(\"optional ProxyUrl value validated at config load time\")))");
+        // #1429: a present but invalid value must fail the Result chain with the factory's cause, never throw.
+        assertThat(factoryContent).contains("ctx.config().getString(\"app.proxy\", \"fallback_url\").fold(() -> Result.<org.pragmatica.lang.Option<ProxyUrl>>success(org.pragmatica.lang.Option.none()), s -> ProxyUrl.proxyUrl(s).map(org.pragmatica.lang.Option::some))");
+        assertThat(factoryContent).doesNotContain("ProxyUrl.proxyUrl(s).expect(");
+        assertThat(factoryContent).doesNotContain("validated at config load time");
         assertThat(factoryContent).contains("ProxyConfig::proxyConfig");
+    }
+
+    /// #1429, run rather than read: the generated factory is loaded and called. A present but invalid optional
+    /// value object must FAIL the factory's result with the value object's own cause. Before the fix the
+    /// factory unwrapped it with `.expect(...)`, so the call threw out of the factory instead.
+    @Test
+    void should_fail_the_factory_result_not_throw_for_an_invalid_optional_value_object() throws Exception {
+        var compilation = compileOptionalProxyUrlSlice();
+        assertCompilation(compilation).succeeded();
+        var loader = classLoaderOf(compilation);
+
+        var invalid = createProxyService(loader, Option.some("not-a-url")).await();
+        assertThat(invalid.isFailure()).isTrue();
+        String failure = invalid.fold(cause -> cause.message(), _ -> "(success)");
+        assertThat(failure).contains("invalid proxy url: not-a-url");
+
+        // Controls: the same compiled factory still succeeds for a valid value and for an absent one.
+        assertThat(proxiedFallback(loader, createProxyService(loader, Option.some("https://fallback")))).isEqualTo("Some(https://fallback)");
+        assertThat(proxiedFallback(loader, createProxyService(loader, Option.none()))).isEqualTo("None()");
+    }
+
+    private Compilation compileOptionalProxyUrlSlice() {
+        var appConfig = JavaFileObjects.forSourceString("test.annotation.AppConfig",
+                                                        """
+            package test.annotation;
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import org.pragmatica.aether.slice.annotation.ConfigurationSection;
+            import java.lang.annotation.*;
+            @ResourceQualifier(type = ConfigurationSection.class, config = "app.proxy")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface AppConfig {}
+            """);
+        var proxyUrl = JavaFileObjects.forSourceString("test.config.ProxyUrl",
+                                                        """
+            package test.config;
+            import org.pragmatica.lang.Result;
+            import org.pragmatica.lang.utils.Causes;
+            public record ProxyUrl(String value) {
+                public static Result<ProxyUrl> proxyUrl(String raw) {
+                    return raw.startsWith("https://")
+                           ? Result.success(new ProxyUrl(raw))
+                           : Causes.cause("invalid proxy url: " + raw).result();
+                }
+            }
+            """);
+        var proxyConfig = JavaFileObjects.forSourceString("test.config.ProxyConfig",
+                                                           """
+            package test.config;
+            import org.pragmatica.lang.Option;
+            import org.pragmatica.lang.Result;
+            public record ProxyConfig(String host, Option<ProxyUrl> fallbackUrl) {
+                public static Result<ProxyConfig> proxyConfig(String host, Option<ProxyUrl> fallbackUrl) {
+                    return Result.success(new ProxyConfig(host, fallbackUrl));
+                }
+            }
+            """);
+        var source = JavaFileObjects.forSourceString("test.ProxyService",
+                                                      """
+            package test;
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.AppConfig;
+            import test.config.ProxyConfig;
+            @Slice
+            public interface ProxyService {
+                Promise<String> proxy(String request);
+                static ProxyService proxyService(@AppConfig ProxyConfig config) {
+                    return request -> Promise.success(config.fallbackUrl().map(url -> url.value()).toString());
+                }
+            }
+            """);
+        var sources = commonSources();
+        sources.add(appConfig);
+        sources.add(proxyUrl);
+        sources.add(proxyConfig);
+        sources.add(source);
+
+        return javac().withProcessors(new SliceProcessor()).compile(sources);
+    }
+
+    /// Calls the generated `ProxyServiceFactory.proxyService(ctx)` with a config whose `fallback_url` is `fallback`.
+    @SuppressWarnings("unchecked")
+    private static Promise<Object> createProxyService(ClassLoader loader, Option<String> fallback) throws Exception {
+        var contextType = loader.loadClass("org.pragmatica.aether.slice.SliceCreationContext");
+        var facadeType = loader.loadClass("org.pragmatica.aether.slice.ConfigFacade");
+        var facade = Proxy.newProxyInstance(loader, new Class<?>[] {facadeType}, (_, method, _) -> switch (method.getName()) {
+            case "requireString" -> Result.success("proxy.example");
+            case "getString" -> fallback;
+            default -> throw new UnsupportedOperationException(method.getName());
+        });
+        var context = Proxy.newProxyInstance(loader, new Class<?>[] {contextType}, (_, method, _) -> "config".equals(method.getName())
+                                                                                                    ? facade
+                                                                                                    : null);
+
+        return (Promise<Object>) loader.loadClass("test.ProxyServiceFactory")
+                                  .getMethod("proxyService", contextType)
+                                  .invoke(null, context);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String proxiedFallback(ClassLoader loader, Promise<Object> created) throws Exception {
+        var service = created.await().fold(cause -> { throw new AssertionError(cause.message()); }, value -> value);
+        var answer = (Promise<Object>) loader.loadClass("test.ProxyService").getMethod("proxy", String.class).invoke(service, "request");
+
+        String proxied = answer.await().fold(cause -> cause.message(), String::valueOf);
+
+        return proxied;
+    }
+
+    /// Child-first over the compilation's class output, so the factory links against the stubs it was compiled
+    /// with. `org.pragmatica.lang` always comes from the test classpath: the factory's Result, Option and Promise
+    /// must be the ones this test reads.
+    private static ClassLoader classLoaderOf(Compilation compilation) throws IOException {
+        var classes = new HashMap<String, byte[]>();
+
+        for (var file : compilation.generatedFiles()) {
+            if (file.getKind() == JavaFileObject.Kind.CLASS) {
+                var path = file.toUri().getPath();
+                var binaryName = path.substring(path.indexOf("CLASS_OUTPUT/") + "CLASS_OUTPUT/".length(),
+                                                path.length() - ".class".length())
+                                     .replace('/', '.');
+                try (var in = file.openInputStream()) {
+                    classes.put(binaryName, in.readAllBytes());
+                }
+            }
+        }
+
+        return new ClassLoader(SliceProcessorTest.class.getClassLoader()) {
+            @Override
+            protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+                synchronized (getClassLoadingLock(name)) {
+                    var loaded = findLoadedClass(name);
+                    var bytes = classes.get(name);
+
+                    if (loaded == null && bytes != null && !name.startsWith("org.pragmatica.lang.")) {
+                        loaded = defineClass(name, bytes, 0, bytes.length);
+                    }
+                    if (loaded == null) {
+                        return super.loadClass(name, resolve);
+                    }
+                    if (resolve) {
+                        resolveClass(loaded);
+                    }
+                    return loaded;
+                }
+            }
+        };
     }
 
     // ========== Transitive Method-Level Annotation Tests ==========

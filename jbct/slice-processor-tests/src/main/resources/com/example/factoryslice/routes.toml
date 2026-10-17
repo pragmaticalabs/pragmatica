@@ -5,6 +5,8 @@ shorten = "POST /shorten"
 plain = "POST /plain"
 updateItem = "PUT /items/{id:Long}"
 lookup = "GET /lookup/{code}"
+strict = "GET /strict/{code}"
+openCode = "POST /open/{code}"
 
 [errors]
 default = 500

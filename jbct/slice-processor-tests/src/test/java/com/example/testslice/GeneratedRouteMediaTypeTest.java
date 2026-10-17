@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package com.example.testslice;
 
@@ -86,9 +85,16 @@ class GeneratedRouteMediaTypeTest {
 
         @Test
         void jsonRoutesStillEmitAsJson() {
-            assertThat(generated).contains(".named(\"create\").withSecurity(SecurityPolicy.publicRoute()).asJson()");
-            assertThat(generated).contains(".named(\"getById\").withSecurity(SecurityPolicy.publicRoute()).asJson()");
-            assertThat(generated).contains(".named(\"health\").withSecurity(SecurityPolicy.publicRoute()).asJson()");
+            // #763: this fixture's routes.toml has no [security] section on any route, which used
+            // to codegen as SecurityPolicy.publicRoute() -- the #763 bug itself, reproduced here.
+            // The fix changed RouteConfigLoader.DEFAULT_SECURITY to UNSPECIFIED, so an existing
+            // slice with no [security] section now inherits the server's global policy at request
+            // time instead of always being public; the generated source reflects that correctly.
+            // "Backward-compatible" here means the JSON-emission shape (.asJson()) is unchanged,
+            // not the security literal -- pin the CURRENT correct security default, not the old one.
+            assertThat(generated).contains(".named(\"create\").withSecurity(SecurityPolicy.unspecified()).asJson()");
+            assertThat(generated).contains(".named(\"getById\").withSecurity(SecurityPolicy.unspecified()).asJson()");
+            assertThat(generated).contains(".named(\"health\").withSecurity(SecurityPolicy.unspecified()).asJson()");
         }
 
         @Test

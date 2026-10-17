@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.routing;
 
 import java.nio.file.Files;
@@ -58,7 +57,10 @@ public final class RouteConfigLoader {
     private static final Cause FILE_NOT_FOUND = Causes.cause("Route configuration file not found");
     private static final Cause PARSE_ERROR = Causes.cause("Failed to parse route configuration");
 
-    private static final SecuritySection DEFAULT_SECURITY = new SecuritySection(RouteSecurityLevel.PUBLIC,
+    /// #763: an entirely absent `[security]` section is NOT the same as an explicit
+    /// `default = "public"` — it means the slice never declared a stance, so the route must inherit
+    /// the server's global security policy rather than being silently exempted from it.
+    private static final SecuritySection DEFAULT_SECURITY = new SecuritySection(RouteSecurityLevel.UNSPECIFIED,
                                                                                 OverridePolicy.STRENGTHEN_ONLY);
 
     /// Matches a `[vN.routes]` section header (the version-routes block) and captures the version number.
