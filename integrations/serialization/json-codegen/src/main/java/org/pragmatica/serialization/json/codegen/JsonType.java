@@ -19,6 +19,9 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.TypeElement;
 import java.util.List;
 
+import org.pragmatica.lang.Option;
+
+
 /// What a JSON codec has to do for one Java type. Records and enums are references: their definitions live
 /// in [JsonTypeAnalyzer], so recursive types resolve without cycles in this model.
 sealed interface JsonType {
@@ -50,12 +53,23 @@ sealed interface JsonType {
 
     record Component(String name, JsonType type) {}
 
-    /// `factory` is the JBCT construction path (`static Result<T> t(...)` over the components, in order), or
-    /// null when the record has none. A value object is a single-component record over a scalar that has
+    /// `factory` is the JBCT construction path (`static Result<T> t(...)` over the components, in order), when
+    /// the record has one. A value object is a single-component record over a scalar that has
     /// one; it travels unwrapped, as its bare component (owner ruling 2026-10-17).
-    record RecordDefinition(TypeElement element, List<Component> components, ExecutableElement factory) {
+    record RecordDefinition(TypeElement element, List<Component> components, Option<ExecutableElement> factory) {
         boolean isValueObject() {
-            return factory != null && components.size() == 1 && components.getFirst().type() instanceof Scalar;
+            return factory.isPresent()
+                   && components.size() == 1
+                   && components.getFirst()
+                                .type() instanceof Scalar;
+        }
+
+        /// The factory's name; asked only where the record has one (value objects, the factory branch of the
+        /// record reader).
+        String factoryName() {
+            return factory.map(method -> method.getSimpleName()
+                                               .toString())
+                          .or("");
         }
     }
 

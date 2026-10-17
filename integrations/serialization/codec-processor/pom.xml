@@ -30,6 +30,13 @@
         </dependency>
 
         <!-- Testing -->
+        <!-- @Json and the runtime its generated codecs compile against -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>com.google.testing.compile</groupId>
             <artifactId>compile-testing</artifactId>

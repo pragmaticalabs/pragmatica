@@ -15,7 +15,9 @@
  */
 package org.pragmatica.serialization.json;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
+
 
 /// A generated codec: one write function and one read function for a type. Not to be confused with
 /// `org.pragmatica.http.JsonCodec`, the HTTP seam a slice's generated codecs are adapted to.
@@ -23,8 +25,10 @@ import org.pragmatica.lang.Result;
 /// `reader` may return anything (including `null`) once it has recorded a failure in the
 /// [JsonReader]'s error slot; [#decode] never lets such a value escape.
 public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
+    /// Appends `value` to the writer; cannot fail. `void` because it drives the [JsonWriter] carve-out.
     @FunctionalInterface
     public interface BodyWriter<T> {
+        @Contract
         void write(JsonWriter out, T value);
     }
 
@@ -39,14 +43,18 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
 
     public Result<T> decode(JsonReader in) {
         var value = reader.read(in);
+
         in.finish();
+
         return in.result(value);
     }
 
     /// Decodes with a reused reader: the unwrapped value, or `null` on failure. Benchmark entry point.
     public T decode(JsonReader in, byte[] json) {
         var value = reader.read(in.reset(json));
+
         in.finish();
+
         return in.hasError()
                ? null
                : value;
@@ -58,6 +66,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
 
     public byte[] encode(JsonWriter out, T value) {
         writer.write(out.reset(), value);
+
         return out.toByteArray();
     }
 

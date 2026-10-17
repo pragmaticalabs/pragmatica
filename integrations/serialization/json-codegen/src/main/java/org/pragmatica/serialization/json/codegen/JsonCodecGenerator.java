@@ -21,11 +21,16 @@ import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.lang.model.element.Element;
 import javax.lang.model.type.TypeMirror;
-import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.Writer;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 
 /// Generates one holder of reflection-free JSON codecs for a set of root types. Shared by the codec
 /// processor (`@Json` types) and the slice processor (HTTP route request and response types), so both emit
@@ -34,7 +39,6 @@ public final class JsonCodecGenerator {
     private final Filer filer;
     private final JsonTypeAnalyzer analyzer;
     private final List<TypeMirror> roots = new ArrayList<>();
-
     private final String packageName;
 
     /// `packageName` is where the holder will be written; it decides which types and factories are reachable.
@@ -49,16 +53,20 @@ public final class JsonCodecGenerator {
     }
 
     /// Adds a root type; empty when supported, otherwise why it is not.
-    public Optional<String> addRoot(TypeMirror type) {
+    public Option<String> addRoot(TypeMirror type) {
         if (analyzer.analyze(type).isPresent()) {
             roots.add(type);
-            return Optional.empty();
+
+            return Option.none();
         }
-        return Optional.of(analyzer.reason(type));
+
+        return Option.some(analyzer.reason(type));
     }
 
     public boolean hasCodecs() {
-        return !analyzer.records().isEmpty() || !analyzer.enums().isEmpty();
+        return ! analyzer.records()
+                         .isEmpty() || !analyzer.enums()
+                                                .isEmpty();
     }
 
     public List<TypeMirror> roots() {
@@ -70,14 +78,23 @@ public final class JsonCodecGenerator {
     }
 
     /// Writes `packageName.holderName` through the Filer.
-    public void write(String holderName, String generatedBy, Element... originatingElements) throws IOException {
+    public Result<Unit> write(String holderName, String generatedBy, Element... originatingElements) {
         var qualified = packageName.isEmpty()
                         ? holderName
                         : packageName + "." + holderName;
-        var file = filer.createSourceFile(qualified, originatingElements);
 
-        try (var writer = new PrintWriter(file.openWriter())) {
-            writer.print(source(holderName, generatedBy));
+        return Result.lift(Causes::fromThrowable,
+                           () -> filer.createSourceFile(qualified, originatingElements))
+                     .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
+                     .map(writer -> print(writer,
+                                          source(holderName, generatedBy)));
+    }
+
+    private static Unit print(Writer target, String source) {
+        try (var writer = new PrintWriter(target)) {
+            writer.print(source);
         }
+
+        return Unit.unit();
     }
 }

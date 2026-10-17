@@ -15,7 +15,14 @@
 
     <!-- A plain library, deliberately not an annotation processor: no META-INF/services entry, so a processor
          that depends on it (the slice processor) does not drag another processor onto every module's path.
-         It needs only javax.lang.model from the JDK. -->
+         Beyond javax.lang.model it needs only core, which both processors already carry. -->
+
+    <dependencies>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+        </dependency>
+    </dependencies>
 
     <build>
         <plugins>

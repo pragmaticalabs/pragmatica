@@ -20,27 +20,29 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// Failures produced while decoding JSON. The reader records at most one of these in its error slot;
 /// generated codecs lift it into a `Result` once, at the codec boundary.
 public sealed interface JsonError extends Cause {
     record Malformed(int position, String expected, String message) implements JsonError {
-        static final Fn2<Malformed, Integer, String> FACTORY =
-            Causes.forTwoValues("Malformed JSON at offset %d: expected %s", Malformed::new);
+        static final Fn2<Malformed, Integer, String> FACTORY = Causes.forTwoValues("Malformed JSON at offset %d: expected %s",
+                                                                                   Malformed::new);
     }
 
     record MissingField(String field, String message) implements JsonError {
-        static final Fn1<MissingField, String> FACTORY =
-            Causes.forOneValue("Missing required field: %s", MissingField::new);
+        static final Fn1<MissingField, String> FACTORY = Causes.forOneValue("Missing required field: %s",
+                                                                            MissingField::new);
     }
 
     /// A value object's factory refused the field's value; the factory's cause travels as `origin`.
     record InvalidField(Cause origin, String field, String message) implements JsonError, Cause.Wrapped {
-        static final Fn2<InvalidField, Cause, String> FACTORY =
-            Causes.forTwoValues("Invalid value for field %2$s", InvalidField::new);
+        static InvalidField invalidField(Cause origin, String field) {
+            return new InvalidField(origin, field, "Invalid value for field " + field + ": " + origin.message());
+        }
     }
 
     record OutOfRange(int position, String type, String message) implements JsonError {
-        static final Fn2<OutOfRange, Integer, String> FACTORY =
-            Causes.forTwoValues("Number at offset %d does not fit %s", OutOfRange::new);
+        static final Fn2<OutOfRange, Integer, String> FACTORY = Causes.forTwoValues("Number at offset %d does not fit %s",
+                                                                                    OutOfRange::new);
     }
 }

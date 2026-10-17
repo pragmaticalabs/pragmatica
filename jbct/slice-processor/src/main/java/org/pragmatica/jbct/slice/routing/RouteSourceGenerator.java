@@ -3,8 +3,6 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.routing;
 
-import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
-
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.Messager;
 import javax.lang.model.element.ElementKind;
@@ -38,6 +36,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
 
 
 /// Generates RouteSource and SliceRouterFactory implementation class for a slice.
@@ -211,10 +210,28 @@ public class RouteSourceGenerator {
         }
 
         validateVersionMethodBindings(routeConfig, model, sliceElement);
+        var routesName = model.simpleName() + "Routes";
+
         try {
-            var routesName = model.simpleName() + "Routes";
+            return generateJsonCodecs(sliceElement, model, routeConfig, routesName + "JsonCodecs").flatMap(jsonCodecs -> writeRoutesClass(sliceElement,
+                                                                                                                                          model,
+                                                                                                                                          routeConfig,
+                                                                                                                                          errorMappings,
+                                                                                                                                          routesName,
+                                                                                                                                          jsonCodecs));
+        } catch (Exception e) {
+            return routesClassFailure(e);
+        }
+    }
+
+    private Result<Option<String>> writeRoutesClass(TypeElement sliceElement,
+                                                    SliceModel model,
+                                                    RouteConfig routeConfig,
+                                                    List<ErrorTypeMapping> errorMappings,
+                                                    String routesName,
+                                                    Option<String> jsonCodecs) {
+        try {
             var qualifiedName = model.packageName() + "." + routesName;
-            var jsonCodecs = generateJsonCodecs(sliceElement, model, routeConfig, routesName + "JsonCodecs");
             // Generate the Routes class
             JavaFileObject file = filer.createSourceFile(qualifiedName, sliceElement);
 
@@ -224,10 +241,12 @@ public class RouteSourceGenerator {
 
             return Result.success(Option.some(qualifiedName));
         } catch (Exception e) {
-            return Causes.cause("Failed to generate routes class: " + e.getClass()
-                                                                       .getSimpleName()
-                               + ": " + e.getMessage()).result();
+            return routesClassFailure(e);
         }
+    }
+
+    private static <T> Result<T> routesClassFailure(Exception e) {
+        return Causes.cause("Failed to generate routes class: " + e.getClass().getSimpleName() + ": " + e.getMessage()).result();
     }
 
     /// Decision D8 (#198 §5): for a versioned slice, verify every `(vN, bindKey)` resolves to an
@@ -255,10 +274,10 @@ public class RouteSourceGenerator {
     /// A type the generator cannot handle (an interface, a type variable, ...) gets a compiler note and stays on
     /// Jackson, the generated codec's fallback; no supported type at all means no holder and no change to the
     /// generated routes. Returns the holder's simple name when one was written.
-    private Option<String> generateJsonCodecs(TypeElement sliceElement,
-                                              SliceModel model,
-                                              RouteConfig routeConfig,
-                                              String holderName) throws java.io.IOException {
+    private Result<Option<String>> generateJsonCodecs(TypeElement sliceElement,
+                                                      SliceModel model,
+                                                      RouteConfig routeConfig,
+                                                      String holderName) {
         var json = new JsonCodecGenerator(filer, elements, types, model.packageName());
         var methodMap = buildMethodMap(model.methods());
 
@@ -268,55 +287,64 @@ public class RouteSourceGenerator {
             if (method == null) {
                 continue;
             }
+
             for (var root : jsonRoots(method, entry.getValue())) {
                 json.addRoot(root)
-                    .ifPresent(reason -> messager.printMessage(Diagnostic.Kind.NOTE,
-                                                               "Route '" + entry.getKey() + "': " + root
+                    .onPresent(reason -> messager.printMessage(Diagnostic.Kind.NOTE,
+                                                               "Route '" + entry.getKey()
+                                                              + "': " + root
                                                               + " uses the Jackson fallback: " + reason,
                                                                sliceElement));
             }
         }
+
         if (!json.hasCodecs()) {
-            return Option.none();
+            return Result.success(Option.none());
         }
-        json.write(holderName, "slice-processor " + BuildInfo.VERSION, sliceElement);
-        return Option.some(holderName);
+
+        return json.write(holderName, "slice-processor " + BuildInfo.VERSION, sliceElement)
+                   .map(_ -> Option.some(holderName));
     }
 
     // The JSON request body (same resolution as the generated withBody TypeToken) and the JSON response.
     // Unit carries no data and is left to the fallback, as are types without codecs (String, byte[]).
-    private List<javax.lang.model.type.TypeMirror> jsonRoots(MethodModel method, RouteDsl routeDsl) {
-        var roots = new ArrayList<javax.lang.model.type.TypeMirror>();
-        var jsonBody = isBodyMethod(routeDsl.method()) && !boundEntirelyByPathAndQuery(method, routeDsl)
-                       && switch (routeDsl.consumes().category()) {
-                           case "TEXT", "HTML", "XML", "BINARY", "MULTIPART" -> false;
-                           default -> true;
-                       };
+    private List<TypeMirror> jsonRoots(MethodModel method, RouteDsl routeDsl) {
+        var roots = new ArrayList<TypeMirror>();
+        var jsonBody = isBodyMethod(routeDsl.method()) && !boundEntirelyByPathAndQuery(method, routeDsl) && switch (routeDsl.consumes()
+                                                                                                                            .category()) {
+            case "TEXT", "HTML", "XML", "BINARY", "MULTIPART" -> false;
+            default -> true;
+        };
 
         if (jsonBody) {
-            requestBodyType(method).ifPresent(roots::add);
+            requestBodyType(method).onPresent(roots::add);
         }
+
         if (routeDsl.produces().isJson() && !isUnit(method.responseType())) {
             roots.add(method.responseType());
         }
+
         return roots;
     }
 
-    private static java.util.Optional<javax.lang.model.type.TypeMirror> requestBodyType(MethodModel method) {
+    private static Option<TypeMirror> requestBodyType(MethodModel method) {
         if (method.hasSecurityParams()) {
             var bizParams = method.businessParameters();
 
             return bizParams.size() == 1
-                   ? java.util.Optional.of(bizParams.getFirst().type())
-                   : java.util.Optional.empty();
+                   ? Option.some(bizParams.getFirst().type())
+                   : Option.none();
         }
-        return method.parameters().isEmpty()
-               ? java.util.Optional.empty()
-               : java.util.Optional.of(method.parameterType());
+
+        return method.parameters()
+                     .isEmpty()
+               ? Option.none()
+               : Option.some(method.parameterType());
     }
 
-    private static boolean isUnit(javax.lang.model.type.TypeMirror type) {
-        return type.toString().equals("org.pragmatica.lang.Unit");
+    private static boolean isUnit(TypeMirror type) {
+        return type.toString()
+                   .equals("org.pragmatica.lang.Unit");
     }
 
     private void generateRoutesClass(PrintWriter out,
@@ -401,7 +429,8 @@ public class RouteSourceGenerator {
         // Generated JSON codecs for this slice's route types; Jackson (the given mapper) for everything else.
         jsonCodecs.onPresent(holder -> {
             out.println("    private static org.pragmatica.http.JsonCodec jsonCodec(JsonMapper jsonMapper) {");
-            out.println("        return org.pragmatica.aether.http.adapter.GeneratedJsonCodec.generatedJsonCodec(" + holder + ".CODECS,");
+            out.println("        return org.pragmatica.aether.http.adapter.GeneratedJsonCodec.generatedJsonCodec(" + holder
+                       + ".CODECS,");
             out.println("                                                                                    org.pragmatica.http.routing.JsonCodecAdapter.forMapper(jsonMapper));");
             out.println("    }");
             out.println();

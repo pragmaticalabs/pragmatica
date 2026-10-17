@@ -15,8 +15,6 @@
  */
 package org.pragmatica.serialization.json;
 
-import org.pragmatica.lang.Contract;
-
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.math.BigDecimal;
@@ -27,14 +25,22 @@ import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.UUID;
 
+import org.pragmatica.lang.Contract;
+
+
 /// Growable UTF-8 output buffer, called by generated codecs. Reusable through [#reset].
 @Contract
 public final class JsonWriter {
     private static final byte[] HEX = "0123456789ABCDEF".getBytes(StandardCharsets.ISO_8859_1);
+
     private static final byte[] TRUE = {'t', 'r', 'u', 'e'};
+
     private static final byte[] FALSE = {'f', 'a', 'l', 's', 'e'};
+
     private static final byte[] NULL = {'n', 'u', 'l', 'l'};
+
     private static final byte[] MIN_LONG = Long.toString(Long.MIN_VALUE).getBytes(StandardCharsets.ISO_8859_1);
+
     // Two ASCII digits per entry for 00..99.
     private static final byte[] DIGIT_PAIRS = new byte[200];
     // 0: copy as is; 'u': \\u00XX; anything else: two-byte escape \\<char>.
@@ -42,12 +48,14 @@ public final class JsonWriter {
 
     static {
         for (int i = 0; i < 100; i++) {
-            DIGIT_PAIRS[2 * i] = (byte) ('0' + i / 10);
-            DIGIT_PAIRS[2 * i + 1] = (byte) ('0' + i % 10);
+            DIGIT_PAIRS[2 * i] = (byte)('0' + i / 10);
+            DIGIT_PAIRS[2 * i + 1] = (byte)('0' + i % 10);
         }
+
         for (int i = 0; i < 0x20; i++) {
             ESCAPE[i] = 'u';
         }
+
         ESCAPE['"'] = '"';
         ESCAPE['\\'] = '\\';
         ESCAPE['\b'] = 'b';
@@ -71,6 +79,7 @@ public final class JsonWriter {
 
     public JsonWriter reset() {
         pos = 0;
+
         return this;
     }
 
@@ -115,28 +124,36 @@ public final class JsonWriter {
     public void writeLong(long value) {
         if (value == Long.MIN_VALUE) {
             writeRaw(MIN_LONG);
+
             return;
         }
+
         ensure(20);
         if (value < 0) {
             buf[pos++] = '-';
             value = -value;
         }
+
         var len = digitCount(value);
         var at = pos + len;
+
         while (value >= 100) {
-            var pair = (int) (value % 100) << 1;
+            var pair = (int)(value % 100) << 1;
+
             value /= 100;
             buf[--at] = DIGIT_PAIRS[pair + 1];
             buf[--at] = DIGIT_PAIRS[pair];
         }
+
         if (value >= 10) {
             var pair = (int) value << 1;
+
             buf[--at] = DIGIT_PAIRS[pair + 1];
             buf[--at] = DIGIT_PAIRS[pair];
         } else {
-            buf[--at] = (byte) ('0' + value);
+            buf[--at] = (byte)('0' + value);
         }
+
         pos += len;
     }
 
@@ -145,6 +162,7 @@ public final class JsonWriter {
         number.setLength(0);
         number.append(value);
         var len = number.length();
+
         ensure(len);
         for (int i = 0; i < len; i++) {
             buf[pos++] = (byte) number.charAt(i);
@@ -164,22 +182,31 @@ public final class JsonWriter {
         var secondOfDay = (int) Math.floorMod(seconds, 86_400L);
         // H. Hinnant's civil_from_days.
         var z = days + 719_468L;
-        var era = (z >= 0 ? z : z - 146_096L) / 146_097L;
+        var era = (z >= 0
+                   ? z
+                   : z - 146_096L) / 146_097L;
         var doe = z - era * 146_097L;
         var yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
         var doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
         var mp = (5 * doy + 2) / 153;
-        var day = (int) (doy - (153 * mp + 2) / 5 + 1);
-        var month = (int) (mp < 10 ? mp + 3 : mp - 9);
-        var year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+        var day = (int)(doy - (153 * mp + 2) / 5 + 1);
+        var month = (int)(mp < 10
+                          ? mp + 3
+                          : mp - 9);
+        var year = yoe + era * 400 + (month <= 2
+                                      ? 1
+                                      : 0);
+
         if (year < 0 || year > 9_999) {
             writeAsciiString(value.toString());
+
             return;
         }
+
         ensure(32);
         buf[pos++] = '"';
-        putPair((int) (year / 100));
-        putPair((int) (year % 100));
+        putPair((int)(year / 100));
+        putPair((int)(year % 100));
         buf[pos++] = '-';
         putPair(month);
         buf[pos++] = '-';
@@ -191,6 +218,7 @@ public final class JsonWriter {
         buf[pos++] = ':';
         putPair(secondOfDay % 60);
         var nanos = value.getNano();
+
         if (nanos != 0) {
             buf[pos++] = '.';
             if (nanos % 1_000_000 == 0) {
@@ -201,6 +229,7 @@ public final class JsonWriter {
                 putDigits(nanos, 9);
             }
         }
+
         buf[pos++] = 'Z';
         buf[pos++] = '"';
     }
@@ -213,9 +242,10 @@ public final class JsonWriter {
     // Exactly `width` digits, zero-padded.
     private void putDigits(int value, int width) {
         for (int at = pos + width - 1; at >= pos; at--) {
-            buf[at] = (byte) ('0' + value % 10);
+            buf[at] = (byte)('0' + value % 10);
             value /= 10;
         }
+
         pos += width;
     }
 
@@ -230,6 +260,7 @@ public final class JsonWriter {
     /// Writes a string known to contain only JSON-safe ASCII (numbers, ISO timestamps, enum names).
     public void writeAsciiString(String value) {
         var len = value.length();
+
         ensure(len + 2);
         buf[pos++] = '"';
         value.getBytes(0, len, buf, pos);
@@ -242,6 +273,7 @@ public final class JsonWriter {
     /// out of line; when something needs escaping it commits nothing and the loop takes over.
     public void writeString(String value) {
         var len = value.length();
+
         if (len >= VECTOR_THRESHOLD && writeVectorized(value)) {
             return;
         }
@@ -250,6 +282,7 @@ public final class JsonWriter {
         buf[pos++] = '"';
         for (int i = 0; i < len; i++) {
             var c = value.charAt(i);
+
             if (c < 0x80 && ESCAPE[c] == 0) {
                 buf[pos++] = (byte) c;
             } else if (c < 0x80) {
@@ -258,6 +291,7 @@ public final class JsonWriter {
                 i = writeNonAscii(value, i, c);
             }
         }
+
         buf[pos++] = '"';
     }
 
@@ -269,17 +303,21 @@ public final class JsonWriter {
         // +8: the last word of the check may read past the copied bytes.
         ensure(len + 10);
         var start = pos + 1;
+
         System.arraycopy(bytes, 0, buf, start, len);
         if (hasEscapable(buf, start, len)) {
             return false;
         }
+
         buf[pos] = '"';
         pos = start + len;
         buf[pos++] = '"';
+
         return true;
     }
 
     private static final VarHandle LONGS = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
+
     private static final long ONES = 0x0101010101010101L;
     private static final long HIGHS = 0x8080808080808080L;
 
@@ -288,25 +326,32 @@ public final class JsonWriter {
     static boolean hasEscapable(byte[] buf, int start, int len) {
         var hits = 0L;
         var i = 0;
+
         for (; i + 8 <= len; i += 8) {
             hits |= escapableBits((long) LONGS.get(buf, start + i));
         }
+
         var rest = len - i;
+
         if (rest > 0) {
-            var mask = -1L >>> (64 - 8 * rest);
+            var mask = -1L >>>(64 - 8 * rest);
+
             hits |= escapableBits(((long) LONGS.get(buf, start + i) & mask) | (0x4141414141414141L & ~mask));
         }
+
         return hits != 0;
     }
 
     private static long escapableBits(long w) {
         var quote = w ^ 0x2222222222222222L;
         var slash = w ^ 0x5C5C5C5C5C5C5C5CL;
+
         return ((w - 0x2020202020202020L) & ~w | (quote - ONES) & ~quote | (slash - ONES) & ~slash) & HIGHS;
     }
 
     private void writeAscii(String value) {
         var len = value.length();
+
         ensure(len);
         value.getBytes(0, len, buf, pos);
         pos += len;
@@ -314,11 +359,14 @@ public final class JsonWriter {
 
     private void escapeAscii(char c) {
         var kind = ESCAPE[c];
+
         buf[pos++] = '\\';
         if (kind != 'u') {
             buf[pos++] = kind;
+
             return;
         }
+
         buf[pos++] = 'u';
         buf[pos++] = '0';
         buf[pos++] = '0';
@@ -329,31 +377,41 @@ public final class JsonWriter {
     // Encodes one char (or surrogate pair) as UTF-8; returns the index of the last char consumed.
     private int writeNonAscii(String value, int i, char c) {
         if (c < 0x800) {
-            buf[pos++] = (byte) (0xC0 | (c >> 6));
-            buf[pos++] = (byte) (0x80 | (c & 0x3F));
+            buf[pos++] = (byte)(0xC0 | (c >> 6));
+            buf[pos++] = (byte)(0x80 | (c & 0x3F));
+
             return i;
         }
+
         if (Character.isHighSurrogate(c) && i + 1 < value.length() && Character.isLowSurrogate(value.charAt(i + 1))) {
             var cp = Character.toCodePoint(c, value.charAt(i + 1));
-            buf[pos++] = (byte) (0xF0 | (cp >> 18));
-            buf[pos++] = (byte) (0x80 | ((cp >> 12) & 0x3F));
-            buf[pos++] = (byte) (0x80 | ((cp >> 6) & 0x3F));
-            buf[pos++] = (byte) (0x80 | (cp & 0x3F));
+
+            buf[pos++] = (byte)(0xF0 | (cp >> 18));
+            buf[pos++] = (byte)(0x80 | ((cp >> 12) & 0x3F));
+            buf[pos++] = (byte)(0x80 | ((cp >> 6) & 0x3F));
+            buf[pos++] = (byte)(0x80 | (cp & 0x3F));
+
             return i + 1;
         }
         // An unpaired surrogate becomes U+FFFD, as String.getBytes(UTF_8) does.
-        var ch = Character.isSurrogate(c) ? '�' : c;
-        buf[pos++] = (byte) (0xE0 | (ch >> 12));
-        buf[pos++] = (byte) (0x80 | ((ch >> 6) & 0x3F));
-        buf[pos++] = (byte) (0x80 | (ch & 0x3F));
+        var ch = Character.isSurrogate(c)
+                 ? '�'
+                 : c;
+
+        buf[pos++] = (byte)(0xE0 | (ch >> 12));
+        buf[pos++] = (byte)(0x80 | ((ch >> 6) & 0x3F));
+        buf[pos++] = (byte)(0x80 | (ch & 0x3F));
+
         return i;
     }
 
     private static int digitCount(long value) {
         var count = 1;
+
         for (long bound = 10; count < 19 && value >= bound; bound *= 10) {
             count++;
         }
+
         return count;
     }
 

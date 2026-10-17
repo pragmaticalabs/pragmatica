@@ -655,6 +655,105 @@ class CodecProcessorTest {
         }
     }
 
+    /// `@Json` refuses at compile time what its generated codec cannot carry, rather than failing at the first
+    /// request. Map keys are the subtle case: a JSON object key is a string, so only a String, an enum, or a
+    /// value object over a String qualifies.
+    @Nested
+    class JsonTests {
+        @Test
+        void json_generatesCodec_forMapKeyedByValueObjectOverString() {
+            var source = JavaFileObjects.forSourceString("com.example.Prices",
+                """
+                package com.example;
+
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.serialization.json.Json;
+                import java.util.Map;
+
+                @Json
+                public record Prices(Map<Sku, Long> bySku) {
+                    public record Sku(String value) {
+                        public static Result<Sku> sku(String value) {
+                            return Result.success(new Sku(value));
+                        }
+                    }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.PricesJsonCodecs")
+                                   .contentsAsUtf8String()
+                                   .contains("Sku.sku(in.readKey())");
+        }
+
+        @Test
+        void json_failsCompilation_forIntegerMapKey() {
+            var source = JavaFileObjects.forSourceString("com.example.Counts",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+                import java.util.Map;
+
+                @Json
+                public record Counts(Map<Integer, String> byId) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Counts' cannot get a generated codec");
+            assertThat(compilation).hadErrorContaining("map key must be a String");
+        }
+
+        @Test
+        void json_failsCompilation_forMapKeyedByValueObjectOverLong() {
+            var source = JavaFileObjects.forSourceString("com.example.Ledger",
+                """
+                package com.example;
+
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.serialization.json.Json;
+                import java.util.Map;
+
+                @Json
+                public record Ledger(Map<AccountNo, Long> balances) {
+                    public record AccountNo(long value) {
+                        public static Result<AccountNo> accountNo(long value) {
+                            return Result.success(new AccountNo(value));
+                        }
+                    }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("map key must be a String");
+        }
+
+        @Test
+        void json_failsCompilation_forInterfaceComponent() {
+            var source = JavaFileObjects.forSourceString("com.example.Holder",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Holder(Runnable task) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Holder' cannot get a generated codec");
+            assertThat(compilation).hadErrorContaining("neither a record nor an enum");
+        }
+    }
+
     private static Compilation compileWith(javax.tools.JavaFileObject... sources) {
         return javac().withProcessors(new CodecProcessor())
                       .compile(sources);

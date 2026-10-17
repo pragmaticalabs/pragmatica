@@ -31,8 +31,10 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
+
+import org.pragmatica.lang.Option;
+
 
 /// Classifies Java types into [JsonType]s and collects the record and enum definitions a codec needs.
 /// A type the generated codecs cannot handle (an interface, a type variable, a nested generic record, an
@@ -48,7 +50,6 @@ final class JsonTypeAnalyzer {
     private final Map<String, JsonType.EnumDefinition> enums = new LinkedHashMap<>();
     private final Map<String, String> unsupported = new LinkedHashMap<>();
     private final Set<String> inProgress = new HashSet<>();
-
     private final String holderPackage;
 
     /// `holderPackage` is where the generated codecs will live: types and factories there need only be
@@ -68,12 +69,12 @@ final class JsonTypeAnalyzer {
     }
 
     /// The type's model, or empty when unsupported ([#reason] then says why).
-    Optional<JsonType> analyze(TypeMirror type) {
+    Option<JsonType> analyze(TypeMirror type) {
         return switch (type.getKind()) {
-            case INT -> Optional.of(new JsonType.Scalar(JsonType.ScalarKind.INT));
-            case LONG -> Optional.of(new JsonType.Scalar(JsonType.ScalarKind.LONG));
-            case DOUBLE -> Optional.of(new JsonType.Scalar(JsonType.ScalarKind.DOUBLE));
-            case BOOLEAN -> Optional.of(new JsonType.Scalar(JsonType.ScalarKind.BOOLEAN));
+            case INT -> Option.some(new JsonType.Scalar(JsonType.ScalarKind.INT));
+            case LONG -> Option.some(new JsonType.Scalar(JsonType.ScalarKind.LONG));
+            case DOUBLE -> Option.some(new JsonType.Scalar(JsonType.ScalarKind.DOUBLE));
+            case BOOLEAN -> Option.some(new JsonType.Scalar(JsonType.ScalarKind.BOOLEAN));
             case DECLARED -> analyzeDeclared((DeclaredType) type);
             default -> fail(type.toString(), "unsupported type kind " + type.getKind());
         };
@@ -83,7 +84,7 @@ final class JsonTypeAnalyzer {
         return unsupported.getOrDefault(erasedName(type), "unsupported type " + type);
     }
 
-    private Optional<JsonType> analyzeDeclared(DeclaredType type) {
+    private Option<JsonType> analyzeDeclared(DeclaredType type) {
         var element = (TypeElement) type.asElement();
         var name = element.getQualifiedName().toString();
         var args = type.getTypeArguments();
@@ -99,68 +100,85 @@ final class JsonTypeAnalyzer {
             case "java.util.UUID" -> scalar(JsonType.ScalarKind.UUID);
             case "java.time.LocalDate" -> scalar(JsonType.ScalarKind.LOCAL_DATE);
             case "java.util.Currency" -> scalar(JsonType.ScalarKind.CURRENCY);
-            case OPTION -> single(args, name).flatMap(this::analyze)
-                                              .map(JsonType.OptionalOf::new);
-            case "java.util.List" -> single(args, name).flatMap(this::analyze)
-                                                         .map(element1 -> new JsonType.ListOf(element1, false));
-            case "java.util.Set" -> single(args, name).flatMap(this::analyze)
-                                                        .map(element1 -> new JsonType.ListOf(element1, true));
+            case OPTION -> single(args, name).flatMap(this::analyze).map(JsonType.OptionalOf::new);
+            case "java.util.List" -> single(args, name).flatMap(this::analyze).map(element1 -> new JsonType.ListOf(element1,
+                                                                                                                   false));
+            case "java.util.Set" -> single(args, name).flatMap(this::analyze).map(element1 -> new JsonType.ListOf(element1,
+                                                                                                                  true));
             case "java.util.Map" -> analyzeMap(args);
             default -> analyzeUserType(element);
         };
     }
 
-    private Optional<JsonType> analyzeMap(List<? extends TypeMirror> args) {
+    private Option<JsonType> analyzeMap(List<? extends TypeMirror> args) {
         if (args.size() != 2) {
             return fail("java.util.Map", "raw Map");
         }
-        var key = analyze(args.get(0));
-        var value = analyze(args.get(1));
 
-        if (key.isEmpty() || value.isEmpty()) {
-            return Optional.empty();
-        }
-        if (!isKeyType(key.get())) {
-            return fail("java.util.Map", "map key must be a String, an enum or a value object over a String: " + args.get(0));
-        }
-        return Optional.of(new JsonType.MapOf(key.get(), value.get()));
+        var keyType = args.get(0);
+
+        return Option.all(analyze(keyType),
+                          analyze(args.get(1)))
+                     .flatMap((key, value) -> mapOf(key, value, keyType));
+    }
+
+    private Option<JsonType> mapOf(JsonType key, JsonType value, TypeMirror keyType) {
+        return isKeyType(key)
+               ? Option.some(new JsonType.MapOf(key, value))
+               : fail("java.util.Map", "map key must be a String, an enum or a value object over a String: " + keyType);
     }
 
     private boolean isKeyType(JsonType key) {
         return switch (key) {
-            case JsonType.Scalar scalar -> scalar.kind() == JsonType.ScalarKind.STRING;
+            case JsonType.Scalar _ -> isString(key);
             case JsonType.EnumRef _ -> true;
-            case JsonType.RecordRef ref -> {
-                var definition = records.get(ref.element().getQualifiedName().toString());
-                yield definition != null && definition.isValueObject()
-                      && ((JsonType.Scalar) definition.components().getFirst().type()).kind() == JsonType.ScalarKind.STRING;
-            }
+            case JsonType.RecordRef ref -> Option.option(records.get(ref.element().getQualifiedName().toString())).filter(JsonType.RecordDefinition::isValueObject).filter(JsonTypeAnalyzer::overString).isPresent();
             default -> false;
         };
     }
 
-    private Optional<JsonType> analyzeUserType(TypeElement element) {
+    // A value object has exactly one component, so "any" is "its".
+    private static boolean overString(JsonType.RecordDefinition definition) {
+        return definition.components()
+                         .stream()
+                         .map(JsonType.Component::type)
+                         .anyMatch(JsonTypeAnalyzer::isString);
+    }
+
+    private static boolean isString(JsonType type) {
+        return type instanceof JsonType.Scalar scalar && scalar.kind() == JsonType.ScalarKind.STRING;
+    }
+
+    private Option<JsonType> analyzeUserType(TypeElement element) {
         var name = element.getQualifiedName().toString();
 
         if (unsupported.containsKey(name)) {
-            return Optional.empty();
+            return Option.none();
         }
+
         if (!isAccessible(element)) {
             return fail(name, "not accessible from package '" + holderPackage + "' where its codec is generated");
         }
+
         if (element.getKind() == ElementKind.ENUM) {
             enums.computeIfAbsent(name, _ -> enumDefinition(element));
-            return Optional.of(new JsonType.EnumRef(element));
+
+            return Option.some(new JsonType.EnumRef(element));
         }
+
         if (element.getKind() != ElementKind.RECORD) {
-            return fail(name, "neither a record nor an enum (interfaces and sealed hierarchies are left to the fallback)");
+            return fail(name,
+                        "neither a record nor an enum (interfaces and sealed hierarchies are left to the fallback)");
         }
+
         if (!element.getTypeParameters().isEmpty()) {
             return fail(name, "generic record");
         }
+
         if (records.containsKey(name) || inProgress.contains(name)) {
-            return Optional.of(new JsonType.RecordRef(element));
+            return Option.some(new JsonType.RecordRef(element));
         }
+
         inProgress.add(name);
         var components = new ArrayList<JsonType.Component>();
 
@@ -169,20 +187,28 @@ final class JsonTypeAnalyzer {
 
             if (type.isEmpty()) {
                 inProgress.remove(name);
-                return fail(name, "component " + component.getSimpleName() + ": " + reason(component.asType()));
+
+                return fail(name,
+                            "component " + component.getSimpleName() + ": " + reason(component.asType()));
             }
-            components.add(new JsonType.Component(component.getSimpleName().toString(), type.get()));
+
+            type.onPresent(present -> components.add(new JsonType.Component(component.getSimpleName().toString(),
+                                                                            present)));
         }
+
         inProgress.remove(name);
-        records.put(name, new JsonType.RecordDefinition(element, List.copyOf(components), findFactory(element)));
-        return Optional.of(new JsonType.RecordRef(element));
+        records.put(name,
+                    new JsonType.RecordDefinition(element, List.copyOf(components), findFactory(element)));
+
+        return Option.some(new JsonType.RecordRef(element));
     }
 
     private JsonType.EnumDefinition enumDefinition(TypeElement element) {
         var constants = element.getEnclosedElements()
                                .stream()
                                .filter(enclosed -> enclosed.getKind() == ElementKind.ENUM_CONSTANT)
-                               .map(enclosed -> enclosed.getSimpleName().toString())
+                               .map(enclosed -> enclosed.getSimpleName()
+                                                        .toString())
                                .toList();
 
         return new JsonType.EnumDefinition(element, constants, constants.indexOf("UNKNOWN"));
@@ -190,7 +216,7 @@ final class JsonTypeAnalyzer {
 
     // The JBCT factory: static, public, named after the type in lower camel case, taking exactly the
     // record's components in order, returning Result<ThisRecord>.
-    private ExecutableElement findFactory(TypeElement element) {
+    private Option<ExecutableElement> findFactory(TypeElement element) {
         var simple = element.getSimpleName().toString();
         var factoryName = Character.toLowerCase(simple.charAt(0)) + simple.substring(1);
         var components = element.getRecordComponents();
@@ -199,45 +225,57 @@ final class JsonTypeAnalyzer {
             if (enclosed.getKind() != ElementKind.METHOD || !enclosed.getSimpleName().contentEquals(factoryName)) {
                 continue;
             }
-            var method = (ExecutableElement) enclosed;
 
+            var method = (ExecutableElement) enclosed;
             var samePackage = elements.getPackageOf(element).getQualifiedName().contentEquals(holderPackage);
 
-            if (!method.getModifiers().contains(Modifier.STATIC) || !isAccessible(method.getModifiers(), samePackage)
-                || method.getParameters().size() != components.size() || !returnsResultOf(method, element)) {
+            if (!method.getModifiers().contains(Modifier.STATIC) || !isAccessible(method.getModifiers(), samePackage) || method.getParameters()
+                                                                                                                               .size() != components.size() || !returnsResultOf(method,
+                                                                                                                                                                                element)) {
                 continue;
             }
+
             var matches = true;
 
             for (int i = 0; i < components.size() && matches; i++) {
-                matches = types.isSameType(method.getParameters().get(i).asType(), components.get(i).asType());
+                matches = types.isSameType(method.getParameters().get(i).asType(),
+                                           components.get(i).asType());
             }
+
             if (matches) {
-                return method;
+                return Option.some(method);
             }
         }
-        return null;
+
+        return Option.none();
     }
 
     private boolean returnsResultOf(ExecutableElement method, TypeElement element) {
-        if (!(method.getReturnType() instanceof DeclaredType declared)) {
+        if (! (method.getReturnType() instanceof DeclaredType declared)) {
             return false;
         }
+
         var raw = (TypeElement) declared.asElement();
 
-        return raw.getQualifiedName().contentEquals(RESULT) && declared.getTypeArguments().size() == 1
-               && types.isSameType(declared.getTypeArguments().getFirst(), element.asType());
+        return raw.getQualifiedName()
+                  .contentEquals(RESULT)
+               && declared.getTypeArguments()
+                          .size() == 1
+               && types.isSameType(declared.getTypeArguments().getFirst(),
+                                   element.asType());
     }
 
     private boolean isAccessible(TypeElement element) {
         var samePackage = elements.getPackageOf(element).getQualifiedName().contentEquals(holderPackage);
 
         for (Element current = element; current instanceof TypeElement type; current = current.getEnclosingElement()) {
-            if (!isAccessible(type.getModifiers(), samePackage)
-                && !(type.getNestingKind() == NestingKind.MEMBER && type.getEnclosingElement().getKind().isInterface())) {
+            if (!isAccessible(type.getModifiers(), samePackage) && !(type.getNestingKind() == NestingKind.MEMBER && type.getEnclosingElement()
+                                                                                                                        .getKind()
+                                                                                                                        .isInterface())) {
                 return false;
             }
         }
+
         return true;
     }
 
@@ -245,25 +283,28 @@ final class JsonTypeAnalyzer {
         return modifiers.contains(Modifier.PUBLIC) || (samePackage && !modifiers.contains(Modifier.PRIVATE));
     }
 
-    private Optional<TypeMirror> single(List<? extends TypeMirror> args, String owner) {
+    private Option<TypeMirror> single(List<? extends TypeMirror> args, String owner) {
         if (args.size() != 1 || args.getFirst().getKind() == TypeKind.WILDCARD || args.getFirst().getKind() == TypeKind.TYPEVAR) {
             return fail(owner, "needs one concrete type argument");
         }
-        return Optional.of((TypeMirror) args.getFirst());
+
+        return Option.some((TypeMirror) args.getFirst());
     }
 
-    private static Optional<JsonType> scalar(JsonType.ScalarKind kind) {
-        return Optional.of(new JsonType.Scalar(kind));
+    private static Option<JsonType> scalar(JsonType.ScalarKind kind) {
+        return Option.some(new JsonType.Scalar(kind));
     }
 
-    private <T> Optional<T> fail(String name, String reason) {
+    private <T> Option<T> fail(String name, String reason) {
         unsupported.putIfAbsent(name, reason);
-        return Optional.empty();
+
+        return Option.none();
     }
 
     private String erasedName(TypeMirror type) {
         return type instanceof DeclaredType declared
-               ? ((TypeElement) declared.asElement()).getQualifiedName().toString()
+               ? ((TypeElement) declared.asElement()).getQualifiedName()
+                                                     .toString()
                : type.toString();
     }
 }

@@ -45,11 +45,14 @@ def literal(word):
     return f"0x{word:016X}L"
 
 
+# The jbct formatter's layout (one literal per line, aligned under the first), so a regenerated table
+# passes the format gate unchanged.
 def array(name, words):
-    lines = [f"    static final long[] {name} = {{"]
-    for i in range(0, len(words), 4):
-        lines.append("        " + ", ".join(literal(w) for w in words[i:i + 4]) + ",")
-    lines.append("    };")
+    head = f"    static final long[] {name} = {{"
+    pad = " " * len(head)
+    lines = [head + literal(words[0]) + ","]
+    lines += [pad + literal(w) + "," for w in words[1:]]
+    lines.append(pad + "};")
     return lines
 
 
