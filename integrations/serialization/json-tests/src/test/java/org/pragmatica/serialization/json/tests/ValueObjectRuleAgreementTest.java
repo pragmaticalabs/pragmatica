@@ -96,7 +96,7 @@ class ValueObjectRuleAgreementTest {
     void genericRecord_isRefusedByTheGenerator_andIsNoValueObjectForJackson(@TempDir Path tempDir) throws Exception {
         var source = Files.writeString(tempDir.resolve("GenericHolder.java"),
                                        """
-                                       package probe;
+                                       package fixture;
 
                                        @org.pragmatica.serialization.json.Json
                                        public record GenericHolder(org.pragmatica.serialization.json.tests.ValueObjectFixtures.Tagged<String> value) {}
