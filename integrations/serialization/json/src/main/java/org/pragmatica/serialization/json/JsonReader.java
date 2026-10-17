@@ -264,7 +264,7 @@ public final class JsonReader {
     }
 
     /// Records the first required field (bit set in `required`, clear in `seen`) as missing. Masks are longs:
-    /// generated codecs support records of up to 63 components.
+    /// generated codecs support records of up to 64 components (one bit each; the analyzer refuses wider ones).
     public void failMissing(FieldNames names, long seen, long required) {
         if (error == null) {
             error = JsonError.MissingField.FACTORY.apply(names.name(Long.numberOfTrailingZeros(required & ~seen)));
