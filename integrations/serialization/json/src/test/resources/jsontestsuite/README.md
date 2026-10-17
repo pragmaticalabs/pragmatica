@@ -25,9 +25,16 @@ Each `i_` file has an expectation pinned in `JsonTestSuiteTest.INFORMATIVE`. The
 | `i_string_utf16BE_no_BOM.json` | reject | accept | Same: UTF-16 is not accepted. |
 | `i_string_utf16LE_no_BOM.json` | reject | accept | Same: UTF-16 is not accepted. |
 | `i_structure_UTF-8_BOM_empty_object.json` | reject | accept | A byte order mark is not skipped. RFC 8259 forbids sending one and only permits ignoring it. |
-| `i_object_key_lone_2nd_surrogate.json` | accept | reject | A lone surrogate escape decodes to U+FFFD in keys as in values. Jackson accepts it in values but rejects it in keys. |
+| `i_string_1st_surrogate_but_2nd_missing.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
+| `i_string_1st_valid_surrogate_2nd_invalid.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
+| `i_string_incomplete_surrogate_and_escape_valid.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
+| `i_string_incomplete_surrogate_pair.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
+| `i_string_incomplete_surrogates_escape_valid.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
+| `i_string_invalid_lonely_surrogate.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
+| `i_string_invalid_surrogate.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
+| `i_string_inverted_surrogates_U+1D11E.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
+| `i_string_lone_second_surrogate.json` | reject | accept | A lone surrogate escape is rejected: it has no UTF-8 encoding, so no decoded string can carry it. |
 
-Two values differ while both parsers accept. First, the integer token `-0` read as a double is -0.0 here, as
-`Double.parseDouble` reads it; Jackson's double path yields +0.0 (`JsonTestSuiteTest.NEGATIVE_ZERO_VALUES`). Second, a lone surrogate escape (`"\uDADA"`) decodes to U+FFFD here, as the
-JDK's UTF-8 codec does. Jackson keeps the unpaired UTF-16 unit. `JsonTestSuiteTest.LONE_SURROGATE_VALUES` lists
-the affected files.
+One value differs while both parsers accept: the integer token `-0` read as a double is -0.0 here, as
+`Double.parseDouble` reads it; Jackson's double path yields +0.0 (`JsonTestSuiteTest.NEGATIVE_ZERO_VALUES`). A lone surrogate escape is rejected in values and in keys; Jackson
+rejects it only in keys, so the value files are listed as deviations above.

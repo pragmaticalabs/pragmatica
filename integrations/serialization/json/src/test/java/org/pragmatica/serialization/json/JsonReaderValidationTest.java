@@ -73,6 +73,35 @@ class JsonReaderValidationTest {
         }
     }
 
+    static Result<String> readString(String json) {
+        var in = JsonReader.jsonReader()
+                           .reset(utf8(json));
+        var value = in.readString();
+
+        in.finish();
+
+        return in.result(value);
+    }
+
+    /// A lone surrogate has no UTF-8 encoding, so it is rejected wherever an escape is decoded or skipped,
+    /// rather than replaced with U+FFFD.
+    @Test
+    void loneSurrogateEscapes_areRejected_inValuesKeysAndSkippedValues() {
+        for (var lone : new String[]{"\\uD800", "\\uDC00", "\\uD800x", "\\uD800\\u0041", "\\uD800\\uD800", "\\uDD1E\\uD834",
+                                     "a\\uDBFF"}) {
+            assertTrue(readString("\"" + lone + "\"").isFailure(), "value " + lone);
+            assertTrue(validate(utf8("[\"" + lone + "\"]")).isFailure(), "skipped value " + lone);
+            assertTrue(validate(utf8("{\"" + lone + "\":1}")).isFailure(), "skipped key " + lone);
+        }
+    }
+
+    @Test
+    void pairedSurrogateEscapes_decodeToTheSupplementaryCodePoint() {
+        assertEquals("\uD834\uDD1E", readString("\"\\uD834\\uDD1E\"").unwrap());
+        assertEquals("x\uDBFF\uDFFFy", readString("\"x\\uDBFF\\uDFFFy\"").unwrap());
+        assertTrue(validate(utf8("{\"\\uD834\\uDD1E\":[\"\\uD834\\uDD1E\"]}")).isSuccess());
+    }
+
     @Test
     void skipValue_acceptsEveryValidShape() {
         for (var good : new String[]{"{}", "[]", " [ ] ", "{\"a\":[1,-2.5e+3,0,-0,1E-2,true,false,null,\"s\\n\\u00e9\",{}]}",

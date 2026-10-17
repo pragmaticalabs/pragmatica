@@ -63,21 +63,21 @@ class JsonTestSuiteTest {
                                                                   entry("i_number_too_big_neg_int.json", ACCEPT),
                                                                   entry("i_number_too_big_pos_int.json", ACCEPT),
                                                                   entry("i_number_very_big_negative_int.json", ACCEPT),
-                                                                  entry("i_object_key_lone_2nd_surrogate.json", ACCEPT),
-                                                                  entry("i_string_1st_surrogate_but_2nd_missing.json", ACCEPT),
-                                                                  entry("i_string_1st_valid_surrogate_2nd_invalid.json", ACCEPT),
+                                                                  entry("i_object_key_lone_2nd_surrogate.json", REJECT),
+                                                                  entry("i_string_1st_surrogate_but_2nd_missing.json", REJECT),
+                                                                  entry("i_string_1st_valid_surrogate_2nd_invalid.json", REJECT),
                                                                   entry("i_string_UTF-16LE_with_BOM.json", REJECT),
                                                                   entry("i_string_UTF-8_invalid_sequence.json", REJECT),
                                                                   entry("i_string_UTF8_surrogate_U+D800.json", REJECT),
-                                                                  entry("i_string_incomplete_surrogate_and_escape_valid.json", ACCEPT),
-                                                                  entry("i_string_incomplete_surrogate_pair.json", ACCEPT),
-                                                                  entry("i_string_incomplete_surrogates_escape_valid.json", ACCEPT),
-                                                                  entry("i_string_invalid_lonely_surrogate.json", ACCEPT),
-                                                                  entry("i_string_invalid_surrogate.json", ACCEPT),
+                                                                  entry("i_string_incomplete_surrogate_and_escape_valid.json", REJECT),
+                                                                  entry("i_string_incomplete_surrogate_pair.json", REJECT),
+                                                                  entry("i_string_incomplete_surrogates_escape_valid.json", REJECT),
+                                                                  entry("i_string_invalid_lonely_surrogate.json", REJECT),
+                                                                  entry("i_string_invalid_surrogate.json", REJECT),
                                                                   entry("i_string_invalid_utf-8.json", REJECT),
-                                                                  entry("i_string_inverted_surrogates_U+1D11E.json", ACCEPT),
+                                                                  entry("i_string_inverted_surrogates_U+1D11E.json", REJECT),
                                                                   entry("i_string_iso_latin_1.json", REJECT),
-                                                                  entry("i_string_lone_second_surrogate.json", ACCEPT),
+                                                                  entry("i_string_lone_second_surrogate.json", REJECT),
                                                                   entry("i_string_lone_utf8_continuation_byte.json", REJECT),
                                                                   entry("i_string_not_in_unicode_range.json", REJECT),
                                                                   entry("i_string_overlong_sequence_2_bytes.json", REJECT),
@@ -90,24 +90,22 @@ class JsonTestSuiteTest {
                                                                   entry("i_structure_UTF-8_BOM_empty_object.json", REJECT));
 
     /// Where [#INFORMATIVE] departs from Jackson on purpose, with the reason (mirrored in the README).
-    static final Map<String, String> DEVIATIONS_FROM_JACKSON = Map.of("i_string_not_in_unicode_range.json", "invalid UTF-8 (above U+10FFFF) rejected",
-                                                                      "i_string_overlong_sequence_2_bytes.json", "invalid UTF-8 (overlong) rejected",
-                                                                      "i_string_UTF-16LE_with_BOM.json", "input must be UTF-8 (RFC 8259 8.1)",
-                                                                      "i_string_utf16BE_no_BOM.json", "input must be UTF-8 (RFC 8259 8.1)",
-                                                                      "i_string_utf16LE_no_BOM.json", "input must be UTF-8 (RFC 8259 8.1)",
-                                                                      "i_structure_UTF-8_BOM_empty_object.json", "byte order mark not skipped",
-                                                                      "i_object_key_lone_2nd_surrogate.json", "lone surrogate escape decodes to U+FFFD in keys too");
-
-    /// Accepted by both, but a lone surrogate escape decodes to U+FFFD here while Jackson keeps the unpaired unit.
-    static final Set<String> LONE_SURROGATE_VALUES = Set.of("i_string_1st_surrogate_but_2nd_missing.json",
-                                                            "i_string_1st_valid_surrogate_2nd_invalid.json",
-                                                            "i_string_incomplete_surrogate_and_escape_valid.json",
-                                                            "i_string_incomplete_surrogate_pair.json",
-                                                            "i_string_incomplete_surrogates_escape_valid.json",
-                                                            "i_string_invalid_lonely_surrogate.json",
-                                                            "i_string_invalid_surrogate.json",
-                                                            "i_string_inverted_surrogates_U+1D11E.json",
-                                                            "i_string_lone_second_surrogate.json");
+    static final Map<String, String> DEVIATIONS_FROM_JACKSON = Map.ofEntries(
+                                                                              entry("i_string_not_in_unicode_range.json", "invalid UTF-8 (above U+10FFFF) rejected"),
+                                                                              entry("i_string_overlong_sequence_2_bytes.json", "invalid UTF-8 (overlong) rejected"),
+                                                                              entry("i_string_UTF-16LE_with_BOM.json", "input must be UTF-8 (RFC 8259 8.1)"),
+                                                                              entry("i_string_utf16BE_no_BOM.json", "input must be UTF-8 (RFC 8259 8.1)"),
+                                                                              entry("i_string_utf16LE_no_BOM.json", "input must be UTF-8 (RFC 8259 8.1)"),
+                                                                              entry("i_structure_UTF-8_BOM_empty_object.json", "byte order mark not skipped"),
+                                                                              entry("i_string_1st_surrogate_but_2nd_missing.json", "lone surrogate escape rejected"),
+                                                                              entry("i_string_1st_valid_surrogate_2nd_invalid.json", "lone surrogate escape rejected"),
+                                                                              entry("i_string_incomplete_surrogate_and_escape_valid.json", "lone surrogate escape rejected"),
+                                                                              entry("i_string_incomplete_surrogate_pair.json", "lone surrogate escape rejected"),
+                                                                              entry("i_string_incomplete_surrogates_escape_valid.json", "lone surrogate escape rejected"),
+                                                                              entry("i_string_invalid_lonely_surrogate.json", "lone surrogate escape rejected"),
+                                                                              entry("i_string_invalid_surrogate.json", "lone surrogate escape rejected"),
+                                                                              entry("i_string_inverted_surrogates_U+1D11E.json", "lone surrogate escape rejected"),
+                                                                              entry("i_string_lone_second_surrogate.json", "lone surrogate escape rejected"));
 
     /// Accepted by both, but the integer token `-0` read as a double is -0.0 here (as `Double.parseDouble` reads it)
     /// while Jackson's double path yields +0.0.
@@ -354,25 +352,6 @@ class JsonTestSuiteTest {
                       .get(0);
     }
 
-    static String withLoneSurrogatesReplaced(String text) {
-        var sb = new StringBuilder();
-
-        for (int i = 0; i < text.length(); i++) {
-            var c = text.charAt(i);
-
-            if (Character.isHighSurrogate(c) && i + 1 < text.length() && Character.isLowSurrogate(text.charAt(i + 1))) {
-                sb.append(c)
-                  .append(text.charAt(++i));
-            } else {
-                sb.append(Character.isSurrogate(c)
-                          ? '�'
-                          : c);
-            }
-        }
-
-        return sb.toString();
-    }
-
     @ParameterizedTest
     @MethodSource("singleScalarFiles")
     void typedReader_agreesWithGenericValidation_andWithJacksonsValue(Single single) {
@@ -402,12 +381,7 @@ class JsonTestSuiteTest {
     }
 
     static void assertStringValue(String name, String jackson, String ours) {
-        if (LONE_SURROGATE_VALUES.contains(name)) {
-            assertTrue(!jackson.equals(ours), name + ": listed as a lone-surrogate deviation but equal to Jackson");
-            assertEquals(withLoneSurrogatesReplaced(jackson), ours, name);
-        } else {
-            assertEquals(jackson, ours, name);
-        }
+        assertEquals(jackson, ours, name);
     }
 
     static void assertDoubleValue(String name, double jackson, double ours) {

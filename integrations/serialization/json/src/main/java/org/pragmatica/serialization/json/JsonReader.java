@@ -1274,15 +1274,47 @@ public final class JsonReader {
 
         return switch (buf[at]) {
             case '"', '\\', '/', 'b', 'f', 'n', 'r', 't' -> at + 1;
-            case 'u' -> hex4(at + 1) < 0
-                        ? -1
-                        : at + 5;
+            case 'u' -> skipUnicodeEscape(at + 1);
             default -> {
                 pos = at;
                 fail("valid escape");
                 yield -1;
             }
         };
+    }
+
+    // The 4 hex digits start at `at`; a surrogate must be a high one followed by an escaped low one.
+    private int skipUnicodeEscape(int at) {
+        var cp = hex4(at);
+
+        if (cp < 0) {
+            return -1;
+        }
+
+        if (!Character.isSurrogate((char) cp)) {
+            return at + 4;
+        }
+
+        return pairedLow(cp, at + 4) < 0
+               ? -1
+               : at + 10;
+    }
+
+    // The low surrogate escaped at `at` that completes `high`; -1 after failing when `high` is a lone surrogate.
+    // Lone surrogates are rejected: they have no UTF-8 encoding, so no decoded string can carry one.
+    private int pairedLow(int high, int at) {
+        if (Character.isHighSurrogate((char) high) && at + 6 <= end && buf[at] == '\\' && buf[at + 1] == 'u') {
+            var low = hex4(at + 2);
+
+            if (low >= 0 && Character.isLowSurrogate((char) low)) {
+                return low;
+            }
+        }
+
+        pos = at - 6;
+        fail("surrogate pair");
+
+        return -1;
     }
 
     // ---- internals -----------------------------------------------------------------------------
@@ -1582,13 +1614,15 @@ public final class JsonReader {
                     }
 
                     i += 4;
-                    if (Character.isHighSurrogate((char) cp) && i + 6 <= end && buf[i] == '\\' && buf[i + 1] == 'u') {
-                        var low = hex4(i + 2);
+                    if (Character.isSurrogate((char) cp)) {
+                        var low = pairedLow(cp, i);
 
-                        if (low >= 0 && Character.isLowSurrogate((char) low)) {
-                            cp = Character.toCodePoint((char) cp, (char) low);
-                            i += 6;
+                        if (low < 0) {
+                            return "";
                         }
+
+                        cp = Character.toCodePoint((char) cp, (char) low);
+                        i += 6;
                     }
 
                     len = putUtf8(out, len, cp);
@@ -1608,7 +1642,7 @@ public final class JsonReader {
     }
 
     // The decoded bytes as a string; raw non-ASCII bytes were copied as they came, so they are validated first.
-    // Escapes always decode to well-formed UTF-8 (a lone surrogate becomes U+FFFD, as in the JDK's encoder).
+    // Escapes always decode to well-formed UTF-8: lone surrogates were rejected while decoding.
     private String decoded(byte[] out, int len, boolean sawNonAscii, int after) {
         var invalid = sawNonAscii
                       ? invalidUtf8(out, 0, len)
@@ -1659,13 +1693,9 @@ public final class JsonReader {
             out[len++] = (byte)(0xC0 | (cp >> 6));
             out[len++] = (byte)(0x80 | (cp & 0x3F));
         } else if (cp < 0x10000) {
-            var c = Character.isSurrogate((char) cp)
-                    ? 0xFFFD
-                    : cp;
-
-            out[len++] = (byte)(0xE0 | (c >> 12));
-            out[len++] = (byte)(0x80 | ((c >> 6) & 0x3F));
-            out[len++] = (byte)(0x80 | (c & 0x3F));
+            out[len++] = (byte)(0xE0 | (cp >> 12));
+            out[len++] = (byte)(0x80 | ((cp >> 6) & 0x3F));
+            out[len++] = (byte)(0x80 | (cp & 0x3F));
         } else {
             out[len++] = (byte)(0xF0 | (cp >> 18));
             out[len++] = (byte)(0x80 | ((cp >> 12) & 0x3F));
