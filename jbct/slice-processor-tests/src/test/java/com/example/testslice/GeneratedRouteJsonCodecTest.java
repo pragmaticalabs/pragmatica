@@ -42,6 +42,7 @@ class GeneratedRouteJsonCodecTest {
         assertThat(generatedRoutes).contains("jsonMapper, mountMode, jsonCodec(jsonMapper))");
         assertThat(generatedRoutes).contains("jsonMapper, RouteMountMode.pathMode(), jsonCodec(jsonMapper))");
         assertThat(generatedRoutes).contains("GeneratedJsonCodec.generatedJsonCodec(TestSliceRoutesJsonCodecs.CODECS,");
+        assertThat(generatedRoutes).contains("TestSliceRoutesJsonCodecs.CONTAINERS,");
         assertThat(generatedRoutes).contains("JsonCodecAdapter.forMapper(jsonMapper)");
     }
 

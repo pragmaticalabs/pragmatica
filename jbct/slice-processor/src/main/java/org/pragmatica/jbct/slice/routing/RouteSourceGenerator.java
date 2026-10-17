@@ -431,6 +431,8 @@ public class RouteSourceGenerator {
             out.println("    private static org.pragmatica.http.JsonCodec jsonCodec(JsonMapper jsonMapper) {");
             out.println("        return org.pragmatica.aether.http.adapter.GeneratedJsonCodec.generatedJsonCodec(" + holder
                        + ".CODECS,");
+            out.println("                                                                                    " + holder
+                       + ".CONTAINERS,");
             out.println("                                                                                    org.pragmatica.http.routing.JsonCodecAdapter.forMapper(jsonMapper));");
             out.println("    }");
             out.println();

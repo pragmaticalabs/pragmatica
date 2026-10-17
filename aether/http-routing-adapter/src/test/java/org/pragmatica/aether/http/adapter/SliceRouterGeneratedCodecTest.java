@@ -22,6 +22,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.json.Json;
 import org.pragmatica.serialization.json.JsonTypeCodec;
+import org.pragmatica.serialization.json.spi.JsonReader;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -180,6 +181,40 @@ class SliceRouterGeneratedCodecTest {
         assertThat(response.statusCode()).isEqualTo(400);
         assertThat(body).contains("Invalid JSON body for List<CreateItem>: Missing required field: name");
         assertThat(fallbackCalls).isEmpty();
+    }
+
+    // A generated container codec for the body type wins over the combinator: the marker codec's value comes back.
+    @Test
+    void containerCodec_isUsedBeforeTheCombinator_andNeverTouchesFallback() {
+        var listType = new TypeToken<List<CreateItem>>() {};
+        var codec = GeneratedJsonCodec.generatedJsonCodec(SliceRouterGeneratedCodecTest_CreateItemJson.CODECS,
+                                                          Map.of(listType.token(), MARKER_LIST),
+                                                          recordingFallback());
+
+        assertThat(codec.decoderFor(listType.token()).unwrap()).isSameAs(MARKER_LIST);
+        assertThat(codec.deserialize("[{\"name\":\"a\"}]".getBytes(StandardCharsets.UTF_8), listType).unwrap())
+            .containsExactly(new CreateItem("marker"));
+        assertThat(fallbackCalls).isEmpty();
+    }
+
+    // The combinator for a collection body is built on the first request of that type and reused after.
+    @Test
+    void combinatorCodec_isBuiltOncePerBodyType() {
+        var setType = new TypeToken<Set<CreateItem>>() {}.token();
+        var codec = GeneratedJsonCodec.generatedJsonCodec(SliceRouterGeneratedCodecTest_CreateItemJson.CODECS, recordingFallback());
+        var first = codec.decoderFor(setType).unwrap();
+
+        assertThat(codec.decoderFor(setType).unwrap()).isSameAs(first);
+        assertThat(codec.decoderFor(new TypeToken<Set<CreateItem>>() {}.token()).unwrap()).isSameAs(first);
+        assertThat(codec.decoderFor(new TypeToken<List<ItemCreated>>() {}.token()).isEmpty()).isTrue();
+    }
+
+    private static final JsonTypeCodec<List<CreateItem>> MARKER_LIST = JsonTypeCodec.jsonTypeCodec((out, value) -> out.writeNull(),
+                                                                                                    SliceRouterGeneratedCodecTest::readMarker);
+
+    private static List<CreateItem> readMarker(JsonReader in) {
+        in.skipValue();
+        return List.of(new CreateItem("marker"));
     }
 
     @Test

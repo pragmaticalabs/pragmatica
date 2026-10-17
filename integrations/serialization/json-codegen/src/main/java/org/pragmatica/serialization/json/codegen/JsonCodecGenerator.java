@@ -43,6 +43,7 @@ public final class JsonCodecGenerator {
     private final Elements elements;
     private final JsonTypeAnalyzer analyzer;
     private final List<TypeMirror> roots = new ArrayList<>();
+    private final List<JsonType.ListOf> containerRoots = new ArrayList<>();
     private final String packageName;
 
     /// `packageName` is where the holder will be written; it decides which types and factories are reachable.
@@ -57,10 +58,16 @@ public final class JsonCodecGenerator {
         this.analyzer = new JsonTypeAnalyzer(elements, types, packageName);
     }
 
-    /// Adds a root type; empty when supported, otherwise why it is not.
+    /// Adds a root type; empty when supported, otherwise why it is not. A `List` or `Set` root also gets a codec of
+    /// its own in the holder (see [#source]).
     public Option<String> addRoot(TypeMirror type) {
-        if (analyzer.analyzeRoot(type).isPresent()) {
+        var analyzed = analyzer.analyzeRoot(type);
+
+        if (analyzed.isPresent()) {
             roots.add(type);
+            analyzed.filter(JsonType.ListOf.class::isInstance)
+                    .map(JsonType.ListOf.class::cast)
+                    .onPresent(containerRoots::add);
 
             return Option.none();
         }
@@ -78,8 +85,11 @@ public final class JsonCodecGenerator {
         return List.copyOf(roots);
     }
 
+    /// The holder: a codec per record and enum (`CODECS`), and a codec per distinct `List` or `Set` root
+    /// (`CONTAINERS`, keyed by the root's reflective generic type), generated with the same container code as a
+    /// component of that type.
     public String source(String holderName, String generatedBy) {
-        return new JsonCodecEmitter(analyzer).emit(packageName, holderName, generatedBy);
+        return new JsonCodecEmitter(analyzer).emit(packageName, holderName, generatedBy, containerRoots);
     }
 
     /// The entry point of `root` (the only root added), named `holderName`.

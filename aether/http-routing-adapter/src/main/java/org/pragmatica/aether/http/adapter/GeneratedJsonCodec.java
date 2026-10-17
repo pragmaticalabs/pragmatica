@@ -10,6 +10,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import org.pragmatica.http.JsonCodec;
@@ -27,12 +28,14 @@ import static org.pragmatica.lang.Result.success;
 
 /// The HTTP JSON seam backed by a slice's generated codecs, with `fallback` (Jackson) for every type they
 /// do not cover. Encode dispatches on the value's exact class (records and enums are final), and a
-/// collection on its elements' classes; decode dispatches on the request's [TypeToken]: a type with a codec,
-/// or a `List<T>` / `Set<T>` whose `T` has one (through [JsonTypeCodec#listOf] / [JsonTypeCodec#setOf]).
+/// collection on its elements' classes. Decode dispatches on the request's [TypeToken], in this order: a type with
+/// a codec in `codecs`; a generic type with a generated codec in `containers` (a slice's `List` and `Set` route
+/// roots, decoded by generated code with static element calls); a `List<T>` / `Set<T>` whose `T` has a codec,
+/// through [JsonTypeCodec#listOf] / [JsonTypeCodec#setOf]; otherwise the fallback.
 ///
-/// @param codecs   generated codecs by exact class, as a slice's `<Slice>RoutesJsonCodecs.CODECS`
-/// @param fallback the codec for anything the generated ones do not cover
-public record GeneratedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs, JsonCodec fallback) implements JsonCodec {
+/// The decode choice is made once per requested type and kept, so a request builds no codec. The requested types
+/// are the route body types the router asks for, a set fixed by the slice's routes, which bounds the cache.
+public final class GeneratedJsonCodec implements JsonCodec {
     // Exactly these raw types, the ones the combinators' ArrayList and LinkedHashSet satisfy; any other requested
     // collection type (Collection, SortedSet, a concrete class) stays on the fallback rather than being guessed.
     private static final Map<Type, Fn1<JsonTypeCodec<?>, JsonTypeCodec<?>>> CONTAINERS = Map.of(List.class,
@@ -40,8 +43,33 @@ public record GeneratedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs, JsonCod
                                                                                                 Set.class,
                                                                                                 JsonTypeCodec::setOf);
 
+    private final Map<Class<?>, JsonTypeCodec<?>> codecs;
+    private final Map<Type, JsonTypeCodec<?>> containers;
+    private final JsonCodec fallback;
+    private final Map<Type, Option<JsonTypeCodec<?>>> decoders = new ConcurrentHashMap<>();
+
+    private GeneratedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs,
+                               Map<Type, JsonTypeCodec<?>> containers,
+                               JsonCodec fallback) {
+        this.codecs = codecs;
+        this.containers = containers;
+        this.fallback = fallback;
+    }
+
+    /// @param codecs   generated codecs by exact class, as a slice's `<Slice>RoutesJsonCodecs.CODECS`
+    /// @param fallback the codec for anything the generated ones do not cover
     public static GeneratedJsonCodec generatedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs, JsonCodec fallback) {
-        return new GeneratedJsonCodec(Map.copyOf(codecs), fallback);
+        return generatedJsonCodec(codecs, Map.of(), fallback);
+    }
+
+    /// @param codecs     generated codecs by exact class, as a slice's `<Slice>RoutesJsonCodecs.CODECS`
+    /// @param containers generated codecs of generic route roots by reflective type, as a slice's
+    ///                   `<Slice>RoutesJsonCodecs.CONTAINERS`
+    /// @param fallback   the codec for anything the generated ones do not cover
+    public static GeneratedJsonCodec generatedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs,
+                                                        Map<Type, JsonTypeCodec<?>> containers,
+                                                        JsonCodec fallback) {
+        return new GeneratedJsonCodec(Map.copyOf(codecs), Map.copyOf(containers), fallback);
     }
 
     @Override
@@ -60,8 +88,16 @@ public record GeneratedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs, JsonCod
         return option(codecs.get(value.getClass()));
     }
 
-    private Option<JsonTypeCodec<?>> decoderFor(Type type) {
-        return Option.<JsonTypeCodec<?>> option(codecs.get(type)).orElse(() -> containerCodec(type));
+    /// The generated codec `type` is decoded with, empty when it goes to the fallback; chosen on the first request
+    /// of `type` and kept.
+    public Option<JsonTypeCodec<?>> decoderFor(Type type) {
+        return decoders.computeIfAbsent(type, this::chooseDecoder);
+    }
+
+    private Option<JsonTypeCodec<?>> chooseDecoder(Type type) {
+        return Option.<JsonTypeCodec<?>> option(codecs.get(type))
+                     .orElse(() -> option(containers.get(type)))
+                     .orElse(() -> containerCodec(type));
     }
 
     // A one-argument parameterized type: the element's codec under the raw type's combinator, when both exist. Read

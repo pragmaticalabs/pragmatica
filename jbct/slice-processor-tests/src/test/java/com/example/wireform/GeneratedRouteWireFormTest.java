@@ -9,11 +9,14 @@ import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.http.adapter.GeneratedJsonCodec;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.type.TypeToken;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -37,6 +40,22 @@ class GeneratedRouteWireFormTest {
     void registry_holdsNoCodecForJacksonAnnotatedTypes_orTypesReachingThem() {
         assertThat(WireFormSliceRoutesJsonCodecs.CODECS).containsKeys(Signup.class, Email.class, Accounts.class, ShapeRequest.class, Note.class);
         assertThat(WireFormSliceRoutesJsonCodecs.CODECS).doesNotContainKeys(Circle.class, Drawing.class, Renamed.class);
+    }
+
+    // The List<Signup> body has a generated container codec in the holder, and the router decodes with exactly it:
+    // generated code (its reader is the holder's own method), not the listOf combinator.
+    @Test
+    void listBody_isDecodedByTheHoldersGeneratedContainerCodec() {
+        var listType = new TypeToken<List<Signup>>() {}.token();
+        var generated = WireFormSliceRoutesJsonCodecs.CONTAINERS.get(listType);
+        var codec = GeneratedJsonCodec.generatedJsonCodec(WireFormSliceRoutesJsonCodecs.CODECS,
+                                                          WireFormSliceRoutesJsonCodecs.CONTAINERS,
+                                                          JsonCodecAdapter.forMapper(PRODUCTION));
+
+        assertThat(generated).isNotNull();
+        assertThat(generated.reader().getClass().getName()).startsWith(WireFormSliceRoutesJsonCodecs.class.getName() + "$");
+        assertThat(codec.decoderFor(listType).unwrap()).isSameAs(generated);
+        assertThat(generated.decode("[{\"email\":\"a@b.c\"}]").unwrap()).isEqualTo(List.of(new Signup(new Email("a@b.c"))));
     }
 
     @Test

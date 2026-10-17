@@ -16,7 +16,7 @@ import org.pragmatica.lang.Promise;
 public interface WireFormSlice {
     Promise<Accounts> signup(Signup request);
 
-    // A List body has no generated codec: it is decoded by the Jackson fallback.
+    // A List body is decoded by the routes holder's generated container codec (CONTAINERS), not the fallback.
     Promise<Accounts> signupAll(List<Signup> request);
 
     Promise<Shape> shape(ShapeRequest request);
