@@ -1160,7 +1160,7 @@ class CodecProcessorTest {
                                    .isEqualTo("com.example." + earlyName + "\ncom.example." + lateName + "\n");
         }
 
-        // D1: the name is a function of the listed type set only: order-independent, reproducible, and different
+        // The name is a function of the listed type set only: order-independent, reproducible, and different
         // for a different set, so two artifacts with @Json types in one package ship two loadable registries.
         @Test
         void registryName_isDerivedFromTheSortedTypeSet() {
