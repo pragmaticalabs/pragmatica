@@ -366,6 +366,49 @@ class QuicClusterNetworkTest {
         }
 
         @Test
+        void directedInitiatorDialsLowerIdDesiredPeerWithoutGrace() {
+            var self = new NodeId("zzz-worker");
+            var peer = new NodeId("aaa-core");
+            var network = createAndStartNetwork(self, List.of(), MessageRouter.mutable());
+            var state = network.seedPeerForTests(peer, initPeer(peer));
+            network.setConnectionInitiator((local, remote) -> local.equals(self) && remote.equals(peer));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peer)));
+
+            network.reconcileMissingPeersTick();
+
+            awaitTrue(() -> state.phase() == PeerState.Phase.CONNECTING || state.phase() == PeerState.Phase.EVICTED,
+                      "Directed initiator must dial before the default sixty-second grace");
+        }
+
+        @Test
+        void directedAcceptorDoesNotRaceHigherIdDesiredPeer() {
+            var self = new NodeId("aaa-core");
+            var peer = new NodeId("zzz-worker");
+            var network = createAndStartNetwork(self, List.of(), MessageRouter.mutable());
+            var state = network.seedPeerForTests(peer, initPeer(peer));
+            network.setConnectionInitiator((local, remote) -> local.equals(peer));
+            network.setDesiredConnections(() -> List.of(desiredNodeInfo(peer)));
+
+            network.reconcileMissingPeersTick();
+
+            assertThat(state.phase()).isEqualTo(PeerState.Phase.INIT);
+        }
+
+        @Test
+        void directedInitiatorAlsoAppliesToTopologyReconciler() {
+            var self = new NodeId("zzz-worker");
+            var peer = new NodeId("aaa-core");
+            var network = createAndStartNetwork(self, List.of(topologyNodeInfo(peer)), MessageRouter.mutable());
+            var state = network.seedPeerForTests(peer, initPeer(peer));
+            network.setConnectionInitiator((local, remote) -> local.equals(self) && remote.equals(peer));
+
+            network.reconcileMissingPeersTick();
+
+            awaitTrue(() -> state.phase() == PeerState.Phase.CONNECTING || state.phase() == PeerState.Phase.EVICTED,
+                      "Topology reconciliation must use the same designated initiator as direct connect");
+        }
+
+        @Test
         void reconcileTick_unwiredDefault_usesLegacyTopologyPath() {
             var self = new NodeId("aaa-self");
             var peerId = new NodeId("zzz-legacy");
@@ -489,6 +532,60 @@ class QuicClusterNetworkTest {
         }
     }
 
+    /// A peer the acceptor's topology ALREADY knows (introduced earlier by label-less gossip) still states
+    /// its own role in its Hello. The transport forwards those labels upward in `ConnectionEstablished`,
+    /// so the membership layer learns the role from the handshake instead of only for topology-unknown
+    /// peers. A label-less Hello for a known peer adds nothing: the topology's own view stays the source.
+    @Nested
+    class KnownPeerHelloLabels {
+        private static final Map<String, String> CORE_LABELS = Map.of(NodeInfo.LABEL_ROLE, "core");
+
+        @Test
+        void inboundHello_knownPeerWithLabels_forwardsLabelledNodeInfo() {
+            var acceptorId = new NodeId("zzz-acceptor");
+            var dialerId = new NodeId("aaa-dialer");
+            var established = new CopyOnWriteArrayList<NetworkServiceMessage.ConnectionEstablished>();
+            var acceptorRouter = MessageRouter.mutable();
+            acceptorRouter.addRoute(NetworkServiceMessage.ConnectionEstablished.class, established::add);
+            var acceptor = createAndStartNetwork(acceptorId, Map.of(), List.of(knownPeerInfo(dialerId)), acceptorRouter);
+            var dialer = createAndStartNetwork(dialerId, CORE_LABELS, List.of(), MessageRouter.mutable());
+
+            dialer.connect(dialTarget(acceptorId, acceptor.boundPort().fold(() -> fail("acceptor not bound"), port -> port)));
+
+            awaitTrue(() -> !established.isEmpty(), "the acceptor routes ConnectionEstablished for the dialer");
+            assertThat(established.getFirst().nodeInfo().isPresent())
+                .as("a topology-KNOWN peer whose Hello carried labels is forwarded with them")
+                .isTrue();
+            assertThat(established.getFirst().nodeInfo().map(NodeInfo::labels).or(Map.of())).isEqualTo(CORE_LABELS);
+        }
+
+        @Test
+        void inboundHello_knownPeerWithoutLabels_forwardsNoNodeInfo() {
+            var acceptorId = new NodeId("zzz-acceptor");
+            var dialerId = new NodeId("aaa-dialer");
+            var established = new CopyOnWriteArrayList<NetworkServiceMessage.ConnectionEstablished>();
+            var acceptorRouter = MessageRouter.mutable();
+            acceptorRouter.addRoute(NetworkServiceMessage.ConnectionEstablished.class, established::add);
+            var acceptor = createAndStartNetwork(acceptorId, Map.of(), List.of(knownPeerInfo(dialerId)), acceptorRouter);
+            var dialer = createAndStartNetwork(dialerId, Map.of(), List.of(), MessageRouter.mutable());
+
+            dialer.connect(dialTarget(acceptorId, acceptor.boundPort().fold(() -> fail("acceptor not bound"), port -> port)));
+
+            awaitTrue(() -> !established.isEmpty(), "the acceptor routes ConnectionEstablished for the dialer");
+            assertThat(established.getFirst().nodeInfo().isPresent())
+                .as("a topology-known peer with a label-less Hello is not re-announced upward")
+                .isFalse();
+        }
+
+        private static NodeInfo knownPeerInfo(NodeId id) {
+            return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("127.0.0.1", 19999).unwrap());
+        }
+
+        private static NodeInfo dialTarget(NodeId expectedId, int port) {
+            return NodeInfo.nodeInfo(expectedId, NodeAddress.nodeAddress("127.0.0.1", port).unwrap(), Map.of());
+        }
+    }
+
     /// #487 — QUIC send-to-self loopback. `peers` never contains self, so before #487 a send-to-self
     /// hit the null-peer branch and was silently dropped (the #467/#457 root cause). Loopback now
     /// delivers a self-addressed message to the local handler on the pinned server event loop — the same
@@ -537,12 +634,12 @@ class QuicClusterNetworkTest {
 
             var count = 50;
             for (int i = 0; i < count; i++) {
-                network.send(self, stubProtocolMessage(new NodeId("seq-" + i)));
+                network.send(self, new StubProtocolMessage(self, i));
             }
 
             awaitTrue(() -> received.size() == count, "all sequential self-sends are delivered");
-            var order = received.stream().map(m -> m.sender().id()).toList();
-            var expected = java.util.stream.IntStream.range(0, count).mapToObj(i -> "seq-" + i).toList();
+            var order = received.stream().map(StubProtocolMessage::sequence).toList();
+            var expected = java.util.stream.IntStream.range(0, count).boxed().toList();
             assertThat(order)
                 .as("self-loopback preserves per-sender FIFO order (single pinned event loop)")
                 .containsExactlyElementsOf(expected);
@@ -618,9 +715,17 @@ class QuicClusterNetworkTest {
 
     // --- Helper methods ---
     private QuicClusterNetwork createAndStartNetwork(NodeId nodeId, List<NodeInfo> peers, MessageRouter router) {
+        return createAndStartNetwork(nodeId, Map.of(), peers, router);
+    }
+
+    /// As above, with `selfLabels` on the node's own `NodeInfo` — the labels its outbound Hello carries.
+    private QuicClusterNetwork createAndStartNetwork(NodeId nodeId,
+                                                     Map<String, String> selfLabels,
+                                                     List<NodeInfo> peers,
+                                                     MessageRouter router) {
         var nodeAddress = NodeAddress.nodeAddress("127.0.0.1", 19999)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
-        var selfInfo = NodeInfo.nodeInfo(nodeId, nodeAddress);
+        var selfInfo = NodeInfo.nodeInfo(nodeId, nodeAddress, selfLabels);
         TopologyObserver topology = stubTopologyManager(selfInfo, peers);
 
         var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl);
@@ -685,7 +790,8 @@ class QuicClusterNetworkTest {
         }
     }
 
-    private record StubProtocolMessage(NodeId sender) implements org.pragmatica.consensus.ProtocolMessage {
+    private record StubProtocolMessage(NodeId sender, int sequence) implements org.pragmatica.consensus.ProtocolMessage {
+        StubProtocolMessage(NodeId sender) { this(sender, 0); }
         @Override
         public StreamType streamType() {
             return StreamType.CONSENSUS;
@@ -694,6 +800,9 @@ class QuicClusterNetworkTest {
 
     private TopologyObserver stubTopologyManager(NodeInfo self, List<NodeInfo> peers) {
         return new TopologyObserver() {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
             @Override
             public NodeInfo self() {
                 return self;

@@ -118,6 +118,20 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
         return Collections.unmodifiableSet(unionKeys);
     }
 
+    /// Union of every layer's [ConfigurationProvider#staticKeys()] — mirrors [#keys()] exactly,
+    /// just calling the static-only accessor, so a dynamic layer (e.g. a KV-overlay
+    /// [DynamicConfigurationProvider]) contributes nothing here regardless of its position.
+    @Override
+    public Set<String> staticKeys() {
+        var unionKeys = new LinkedHashSet<String>();
+
+        for (var layer : layers) {
+            unionKeys.addAll(layer.staticKeys());
+        }
+
+        return Collections.unmodifiableSet(unionKeys);
+    }
+
     @Override
     public Map<String, String> asMap() {
         var merged = new LinkedHashMap<String, String>();
@@ -155,9 +169,17 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
                 return reloaded;
             }
 
-            reloadedLayers.add((ConfigurationProvider) reloaded.unwrap());
+            reloadedLayers.add(asProvider(reloaded.unwrap()));
         }
 
         return success(new LayeredConfigProvider(reloadedLayers));
+    }
+
+    /// A layer's `reload()` is typed `Result<ConfigSource>`: a source that is not itself a provider is wrapped,
+    /// never cast (a cast threw ClassCastException out of the whole layered reload).
+    private static ConfigurationProvider asProvider(ConfigSource source) {
+        return source instanceof ConfigurationProvider provider
+               ? provider
+               : ConfigurationProvider.configurationProvider(source);
     }
 }

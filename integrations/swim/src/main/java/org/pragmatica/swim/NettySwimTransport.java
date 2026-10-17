@@ -20,6 +20,7 @@ import java.net.InetSocketAddress;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.net.NodeInfo;
@@ -37,7 +38,9 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.FixedRecvByteBufAllocator;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
@@ -65,9 +68,24 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public final class NettySwimTransport implements SwimTransport {
     private static final Logger LOG = LoggerFactory.getLogger(NettySwimTransport.class);
     /// ANNOUNCE rate: 10 per second per source IP.
+    /// Per-datagram receive buffer, set explicitly (it equals Netty's default, which used to be implicit):
+    /// a datagram longer than this is truncated. Senders stay under [PiggybackBuffer#MAX_DATAGRAM_BYTES],
+    /// well below it.
+    static final int RECEIVE_BUFFER_BYTES = 2048;
     private static final int ANNOUNCE_RATE_PER_SECOND = 10;
     /// Evict per-source rate limiter entries idle longer than this.
     private static final long ANNOUNCE_LIMITER_IDLE_EVICT_MS = 5 * 60 * 1_000L;
+    /// Bound on EACH of the two transport-shutdown waits (#929). Netty's own `shutdownGracefully()`
+    /// timeout cannot supply this: it is enforced by `confirmShutdown()`, which runs ON the event
+    /// loop, so a wedged loop cannot enforce its own timeout — the caller must. 5 s is far above the
+    /// healthy path, which a green nine-node forge teardown measures at a constant 2.00 s per node,
+    /// and that 2 s was entirely the quiet period dropped below.
+    private static final long SHUTDOWN_TIMEOUT_MS = 5_000L;
+    /// No quiet period (#929). Netty defaults to 2 s so a graceful protocol can drain in-flight work.
+    /// SWIM is fire-and-forget UDP with nothing to drain, so the wait bought nothing and cost ~2 s
+    /// per node — ~18 s of every nine-node forge teardown, on the caller's thread.
+    private static final long SHUTDOWN_QUIET_PERIOD_MS = 0L;
+    private static final Result<Unit> SHUTDOWN_OK = Result.success(unit());
 
     private final Serializer serializer;
     private final Deserializer deserializer;
@@ -76,13 +94,15 @@ public final class NettySwimTransport implements SwimTransport {
     private final AtomicReference<Option<Channel>> channel = new AtomicReference<>(none());
     private final AtomicReference<Option<EventLoopGroup>> group = new AtomicReference<>(none());
     private final AtomicReference<Option<DnsNameResolver>> nettyResolver = new AtomicReference<>(none());
-
     /// Test-only silent-death fault injection for the SWIM UDP plane. Mirrors
     /// `QuicClusterNetwork.blackholed`: when true, outbound sends are dropped and inbound
     /// datagrams are discarded before dispatch, so this node neither acks nor observes SWIM
     /// probes — simulating genuine silent death across BOTH transport planes. Default false
     /// (zero effect in normal operation).
     private volatile boolean blackholed = false;
+
+    /// Test-only per-peer partition (#1730): datagrams to or from an address it accepts are dropped.
+    private volatile java.util.function.Predicate<InetSocketAddress> droppedPeers = _ -> false;
 
     /// Per-source IP rate limiter map for ANNOUNCE flood protection.
     /// Entries idle > {@value #ANNOUNCE_LIMITER_IDLE_EVICT_MS} ms are evicted lazily.
@@ -121,7 +141,7 @@ public final class NettySwimTransport implements SwimTransport {
 
     @Override
     public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
-        if (blackholed) {
+        if (blackholed || droppedPeers.test(target)) {
             return Promise.unitPromise();
         }
 
@@ -240,6 +260,13 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private static void sendEncrypted(Channel ch, InetSocketAddress target, byte[] encrypted) {
+        if (encrypted.length > PiggybackBuffer.MAX_DATAGRAM_BYTES) {
+            LOG.warn("SWIM datagram to {} is {} B, over the {} B budget — a receiver may drop it",
+                     target,
+                     encrypted.length,
+                     PiggybackBuffer.MAX_DATAGRAM_BYTES);
+        }
+
         var packet = new DatagramPacket(Unpooled.wrappedBuffer(encrypted), target);
 
         ch.writeAndFlush(packet).addListener(future -> logSendFailure(future, target));
@@ -271,6 +298,8 @@ public final class NettySwimTransport implements SwimTransport {
         nettyResolver.set(option(dnsResolver));
         var bootstrap = new Bootstrap().group(eventLoopGroup)
                                        .channel(NioDatagramChannel.class)
+                                       .option(ChannelOption.RCVBUF_ALLOCATOR,
+                                               new FixedRecvByteBufAllocator(RECEIVE_BUFFER_BYTES))
                                        .handler(new ChannelInitializer<DatagramChannel>() {
             @Override
             @Contract
@@ -283,36 +312,83 @@ public final class NettySwimTransport implements SwimTransport {
         LOG.info("SWIM transport started on port {}", port);
     }
 
+    /// Exception lifting restored (#929 verification round 1). `stopChannel` calls
+    /// `DnsNameResolver::close` and `ch.close()`, neither inside a `Result.lift`, and
+    /// [`#awaitBounded`] catches only `InterruptedException` — so without this an unchecked exception
+    /// from either would leave `stop()` as a THROWN exception rather than a `Result` failure. The
+    /// inner `Result` is flattened so the two error channels stay one.
     private Result<Unit> doStop() {
-        return Result.lift(SwimError.TransportFailure::new, this::stopChannel);
+        return Result.<Result<Unit>> lift(SwimError.TransportFailure::new, this::stopChannel).flatMap(inner -> inner);
     }
 
-    private void stopChannel() {
+    /// Stop the transport under a BOUND, and report what actually happened (#929).
+    ///
+    /// Both waits used to be bare `.sync()` — unbounded — and this method logged
+    /// "SWIM transport stopped" unconditionally at the end. When a deadlocked SWIM event loop could
+    /// neither run the pending close task nor reach `confirmShutdown()`, the wait ran until JUnit's
+    /// 8-minute lifecycle backstop interrupted it; `.sync()` then threw, the interrupt flag was
+    /// re-asserted, and the success line was logged anyway over a transport that was never stopped
+    /// (the surviving `nioEventLoopGroup` thread is visible in the dumps 10 s later). That false
+    /// line is why #727, #749 and #750 each looked past the wedge underneath it.
+    ///
+    /// So a shutdown that does NOT complete now returns a FAILURE and logs a warning INSTEAD of the
+    /// success line — never as well as it. Expect this to surface teardown failures that previously
+    /// read as clean: those are correctly red, not a regression.
+    private Result<Unit> stopChannel() {
         nettyResolver.getAndSet(none()).onPresent(DnsNameResolver::close);
-        channel.getAndSet(none()).onPresent(NettySwimTransport::closeChannel);
-        if (!externalGroup.isPresent()) {
-            group.getAndSet(none()).onPresent(NettySwimTransport::shutdownGroup);
-        }
+        var channelClosed = channel.getAndSet(none()).map(NettySwimTransport::closeChannel).or(SHUTDOWN_OK);
+        var groupStopped = externalGroup.isPresent()
+                           ? SHUTDOWN_OK
+                           : group.getAndSet(none()).map(NettySwimTransport::shutdownGroup).or(SHUTDOWN_OK);
 
-        LOG.info("SWIM transport stopped");
+        return channelClosed.flatMap(() -> groupStopped)
+                            .onSuccess(_ -> LOG.info("SWIM transport stopped"))
+                            .onFailure(cause -> LOG.warn("SWIM transport shutdown did NOT complete: {}",
+                                                         cause.message()));
     }
 
+    private static Result<Unit> closeChannel(Channel ch) {
+        return awaitBounded(ch.close(), "channel close");
+    }
+
+    private static Result<Unit> shutdownGroup(EventLoopGroup g) {
+        return awaitBounded(g.shutdownGracefully(SHUTDOWN_QUIET_PERIOD_MS, SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS),
+                            "event loop group shutdown");
+    }
+
+    /// Bounded wait on a Netty future, reporting the THREE outcomes that are not success: the bound
+    /// elapsing, an interrupt aborting the wait, and the future completing with a failure.
+    ///
+    /// That third case is why `isSuccess()` is consulted separately (#929 verification round 1).
+    /// `Future.await(long)` returns true when the future is DONE, irrespective of outcome — so
+    /// testing only its boolean reports a failed close as a clean stop and logs the success line over
+    /// it. The pre-#929 `.sync()` rethrew that cause, so treating it as success would have been a NEW
+    /// dishonesty introduced by the very change that exists to remove one.
+    ///
+    /// Package-private rather than private so the failed-but-completed branch can be pinned directly:
+    /// it is not reachable through `stopChannel` with a real channel, and an honesty claim whose
+    /// third branch no test can reach is exactly the shape this ticket is about.
     @SuppressWarnings("JBCT-EX-01")  // Adapter boundary: wrapping Netty I/O
-    private static void closeChannel(Channel ch) {
+    static Result<Unit> awaitBounded(Future<?> future, String stage) {
         try {
-            ch.close().sync();
+            if (!future.await(SHUTDOWN_TIMEOUT_MS)) {
+                return new SwimError.ShutdownTimeout(stage, SHUTDOWN_TIMEOUT_MS).result();
+            }
+
+            return future.isSuccess()
+                   ? SHUTDOWN_OK
+                   : new SwimError.ShutdownFailed(stage, future.cause()).result();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+
+            return new SwimError.ShutdownInterrupted(stage).result();
         }
     }
 
-    @SuppressWarnings("JBCT-EX-01")  // Adapter boundary: wrapping Netty I/O
-    private static void shutdownGroup(EventLoopGroup g) {
-        try {
-            g.shutdownGracefully().sync();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+    @Override
+    @Contract
+    public void dropPeers(java.util.function.Predicate<InetSocketAddress> drop) {
+        droppedPeers = drop;
     }
 
     private SimpleChannelInboundHandler<DatagramPacket> inboundHandler(SwimMessageHandler handler) {
@@ -326,13 +402,22 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private void handleIncoming(SwimMessageHandler handler, DatagramPacket packet) {
-        if (blackholed) {
+        if (blackholed || droppedPeers.test(packet.sender())) {
             // Silent death: drop the inbound datagram before decrypt/dispatch so this node
             // never observes peers' probes nor acks them — mirroring QuicClusterNetwork.
             return;
         }
 
         var buf = packet.content();
+
+        if (buf.readableBytes() >= RECEIVE_BUFFER_BYTES) {
+            LOG.error("SWIM datagram from {} filled the whole {} B receive buffer — it was probably truncated and"
+                     + " will fail to decrypt; the sender packed more than the {} B datagram budget",
+                      packet.sender(),
+                      RECEIVE_BUFFER_BYTES,
+                      PiggybackBuffer.MAX_DATAGRAM_BYTES);
+        }
+
         var bytes = new byte[buf.readableBytes()];
 
         buf.readBytes(bytes);
@@ -358,7 +443,9 @@ public final class NettySwimTransport implements SwimTransport {
     }
 
     private AnnounceRateLimiterEntry newAnnounceEntry(InetAddress ignored) {
-        return new AnnounceRateLimiterEntry(RateLimiter.rateLimiter(ANNOUNCE_RATE_PER_SECOND, timeSpan(1).seconds()),
+        return new AnnounceRateLimiterEntry(RateLimiter.rateLimiter(ANNOUNCE_RATE_PER_SECOND,
+                                                                    timeSpan(1).seconds())
+                                                       .unwrap(),
                                             System.currentTimeMillis());
     }
 

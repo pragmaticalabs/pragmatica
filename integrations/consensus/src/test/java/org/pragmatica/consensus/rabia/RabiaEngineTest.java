@@ -48,10 +48,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -93,8 +96,8 @@ class RabiaEngineTest {
         // Wait for sync to occur and send quorum sync responses
         Thread.sleep(150); // Allow sync request to be sent
         // Send sync responses from other nodes
-        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         Thread.sleep(50); // Allow activation to complete
     }
 
@@ -176,20 +179,97 @@ class RabiaEngineTest {
                     .isTrue();
         }
 
+        @Test
+        void identical_concurrent_submissions_each_complete_and_the_command_applies_once() throws InterruptedException {
+            // #958: the batch id is a content hash, so two callers submitting byte-identical
+            // commands register the same id. Before the fix, registerBatch() replaced the first
+            // pending batch with the second, dropping the first caller's correlation id from the
+            // local map; commitChanges() completes only the local batch's correlation ids, so the
+            // first promise never settled and surfaced as ApplyTimeout although the command applied.
+            // Guarantee pinned: every caller's promise completes with its own command's outcome,
+            // and the command is applied exactly once.
+            var target = new RabiaEngine<>(topologyManager,
+                                           network,
+                                           stateMachine,
+                                           applyTimeoutConfig(timeSpan(2).seconds()));
+
+            activate(target);
+            network.clearMessages();
+            var command = new TestCommand("identical");
+            var start = new CountDownLatch(1);
+            var submitted = new CountDownLatch(2);
+            var first = new AtomicReference<Promise<List<String>>>();
+            var second = new AtomicReference<Promise<List<String>>>();
+
+            submitConcurrently(start, submitted, first, target, command);
+            submitConcurrently(start, submitted, second, target, command);
+            start.countDown();
+            assertThat(submitted.await(2, SECONDS)).as("both submissions must be issued").isTrue();
+            Thread.sleep(50);
+            var batches = network.getMessages()
+                                 .stream()
+                                 .filter(m -> m instanceof RabiaProtocolMessage.Asynchronous.NewBatch<?>)
+                                 .map(m -> ((RabiaProtocolMessage.Asynchronous.NewBatch<TestCommand>) m).batch())
+                                 .toList();
+
+            assertThat(batches).as("each submission broadcasts its own batch").hasSize(2);
+            assertThat(batches.get(0).id()).as("identical content hashes to one id").isEqualTo(batches.get(1).id());
+            target.processPropose(new Propose<>(NODE_2, Phase.ZERO, batches.getFirst()));
+            Thread.sleep(50);
+            target.processVoteRound1(new VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
+            target.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
+            Thread.sleep(50);
+            target.processVoteRound2(new VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
+            target.processVoteRound2(new VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
+            var firstResult = first.get().await(timeSpan(5).seconds());
+            var secondResult = second.get().await(timeSpan(5).seconds());
+
+            assertThat(stateMachine.getProcessedCommands()).as("the identical command is applied exactly once")
+                      .containsExactly(command);
+            assertThat(firstResult).as("first caller's promise must settle with its command's outcome")
+                      .isEqualTo(Result.success(List.of("result:identical")));
+            assertThat(secondResult).as("second caller's promise must settle with its command's outcome")
+                      .isEqualTo(Result.success(List.of("result:identical")));
+            target.stop().await();
+        }
+
+        private void submitConcurrently(CountDownLatch start,
+                                        CountDownLatch submitted,
+                                        AtomicReference<Promise<List<String>>> slot,
+                                        RabiaEngine<TestCommand> target,
+                                        TestCommand command) {
+            Thread.ofPlatform().start(() -> {
+                try {
+                    start.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+
+                    return;
+                }
+
+                slot.set(target.<String> apply(List.of(command)));
+                submitted.countDown();
+            });
+        }
+
         private ProtocolConfig shortApplyTimeoutConfig() {
+            return applyTimeoutConfig(timeSpan(200).millis());
+        }
+
+        private ProtocolConfig applyTimeoutConfig(TimeSpan applyTimeout) {
             return ProtocolConfig.protocolConfig(timeSpan(60).seconds(),
                                                  timeSpan(100).millis(),
                                                  100,
                                                  ProtocolConfig.DEFAULT_MAX_PENDING_BATCHES,
-                                                 timeSpan(200).millis())
+                                                 applyTimeout)
                                  .unwrap();
         }
 
         private void activate(RabiaEngine<TestCommand> target) throws InterruptedException {
             target.clusterState(ClusterStateNotification.active());
             Thread.sleep(150);
-            target.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-            target.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            target.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            target.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
             Thread.sleep(50);
         }
     }
@@ -261,7 +341,7 @@ class RabiaEngineTest {
             engine.clusterState(ClusterStateNotification.active());
             awaitSyncRequestBroadcast();
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive())
                 .as("1 response + self = 2 of %d = a majority; demanding a 2nd response demanded the whole cluster",
@@ -399,9 +479,9 @@ class RabiaEngineTest {
             // test network, which collapsed the gate to 1 and let a minority activate the engine).
             // Two responses plus self is already the majority of five that #660 settled on; the third is
             // harmless surplus, ignored once the engine is active.
-            stallEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-            stallEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
-            stallEngine.processSyncResponse(new SyncResponse<>(NODE_4, RabiaPersistence.SavedState.empty()));
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            stallEngine.processSyncResponse(new SyncResponse<>(NODE_4, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
             Thread.sleep(50);
         }
 
@@ -509,7 +589,7 @@ class RabiaEngineTest {
 
         @Test
         void ignores_decisions_when_inactive() {
-            var decision = new Decision<>(NODE_2, new Phase(1), StateValue.V1, Batch.<TestCommand>emptyBatch());
+            var decision = new Decision<>(NODE_2, new Phase(1), StateValue.V0, Batch.<TestCommand>emptyBatch());
 
             engine.processDecision(decision);
             // No exception should be thrown
@@ -520,7 +600,7 @@ class RabiaEngineTest {
     class ProtocolInvariants {
 
         @Test
-        void locked_value_carries_to_next_phase() throws InterruptedException {
+        void completed_slot_starts_next_slot_with_fresh_proposal() throws InterruptedException {
             activateEngine();
             network.clearMessages();
 
@@ -544,17 +624,14 @@ class RabiaEngineTest {
                 .anyMatch(m -> m instanceof Decision<?> d && d.phase().equals(Phase.ZERO));
             assertThat(phase0Decision).as("Phase 0 should have V1 decision").isTrue();
 
-            // After V1 decision, the locked value (V1) is set for next phase
-            // Per Rabia spec: moveToNextPhase() sets lockedValue to Option.some(decidedValue)
-            // This is verified by the engine advancing to next phase
+            // The next slot starts a fresh weak-MVC instance.
             network.clearMessages();
 
             // Submit new commands which will trigger startPhase for phase 1
             engine.handleSubmit(new RabiaEngineIO.SubmitCommands<>(List.of(new TestCommand("cmd2"))));
             Thread.sleep(150);
 
-            // If there were pending batches and locked value was V1, the engine should
-            // broadcast a VoteRound1 with V1 immediately when starting phase 1
+            // A new slot must collect proposal evidence before voting.
             var phase1Messages = network.getMessages().stream()
                 .filter(m -> m instanceof Propose<?> || m instanceof VoteRound1)
                 .toList();
@@ -566,6 +643,8 @@ class RabiaEngineTest {
             assertThat(hasPhase1Proposal)
                 .as("Engine should have started phase 1 with proposal after V1 decision")
                 .isTrue();
+            assertThat(phase1Messages).noneMatch(message -> message instanceof VoteRound1);
+
         }
 
         @Test
@@ -764,8 +843,8 @@ class RabiaEngineTest {
             engine.clusterState(ClusterStateNotification.active());
             Thread.sleep(150); // Allow sync request to be sent
             var state = RabiaPersistence.SavedState.<TestCommand>savedState(new byte[]{42}, Phase.ZERO, List.of());
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, state));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, state));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, state, ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, state, ResponderState.COLD));
             Thread.sleep(50); // Allow activation to complete
 
             assertThat(activeAtFire.get())
@@ -855,7 +934,7 @@ class RabiaEngineTest {
         }
 
         @Test
-        void fast_path_skips_round2_when_super_majority_agrees() throws InterruptedException {
+        void first_round_agreement_still_requires_round2() throws InterruptedException {
             activateEngine();
             network.clearMessages();
 
@@ -872,16 +951,16 @@ class RabiaEngineTest {
             engine.processVoteRound1(new VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
             Thread.sleep(100);
 
-            // Verify decision was broadcast WITHOUT any round 2 votes being sent
+            // First-round agreement alone must not publish a Decision
             var hasDecision = network.getMessages().stream()
                 .anyMatch(m -> m instanceof Decision);
-            assertThat(hasDecision).as("Fast path should produce a decision").isTrue();
+            assertThat(hasDecision).as("Round 1 evidence cannot commit a slot").isFalse();
 
-            // Verify no VoteRound2 was broadcast (fast path skipped round 2)
+            // The normal protocol broadcasts a second-round vote
             var round2VoteCount = network.getMessages().stream()
                 .filter(m -> m instanceof VoteRound2)
                 .count();
-            assertThat(round2VoteCount).as("Fast path should skip round 2 voting").isZero();
+            assertThat(round2VoteCount).as("Agreement must be confirmed in round 2").isPositive();
         }
     }
 
@@ -912,8 +991,8 @@ class RabiaEngineTest {
             Thread.sleep(200);
 
             // Send sync responses to complete activation
-            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            gatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
             Thread.sleep(100);
 
             assertThat(gatedEngine.isActive()).as("Gated engine should activate after authorization").isTrue();
@@ -927,8 +1006,8 @@ class RabiaEngineTest {
             ungatedEngine.clusterState(ClusterStateNotification.active());
             Thread.sleep(200);
 
-            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+            ungatedEngine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
             Thread.sleep(100);
 
             assertThat(ungatedEngine.isActive()).as("Ungated engine should activate on quorum").isTrue();
@@ -953,6 +1032,12 @@ class RabiaEngineTest {
     // ==================== Stub Implementations ====================
 
     static class TestTopologyManager implements TopologyManager {
+        @Override
+        public boolean isConsensusMember(NodeId id) {
+            return id.equals(self.id()) || java.util.stream.IntStream.rangeClosed(1, clusterSize)
+                     .anyMatch(index -> id.equals(nodeId("node-" + index).unwrap()));
+        }
+
         private final NodeInfo self;
         private final int clusterSize;
 
@@ -1008,7 +1093,8 @@ class RabiaEngineTest {
 
         @Override
         public List<NodeId> topology() {
-            return List.of();
+            return java.util.stream.IntStream.rangeClosed(1, clusterSize)
+                .mapToObj(index -> nodeId("node-" + index).unwrap()).toList();
         }
     }
 
@@ -1038,7 +1124,7 @@ class RabiaEngineTest {
 
         @Override
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            messages.add(message);
+            if (messages.stream().noneMatch(existing -> existing == message)) { messages.add(message); }
             return Unit.unit();
         }
 

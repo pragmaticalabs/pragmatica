@@ -1,30 +1,37 @@
 # Cluster Module
 
-Rabia consensus algorithm implementation with modular architecture.
+Cluster node assembly on top of the [consensus](../consensus/README.md) module: a Rabia-backed cluster node, a replicated key-value store, and cluster metrics messages.
 
 ## Overview
 
-Provides a highly modular implementation of the [Rabia consensus algorithm](https://dl.acm.org/doi/10.1145/3477132.3483582), a CFT (crash-fault-tolerant) distributed consensus protocol. Unlike RAFT or Paxos, Rabia does not rely on a persistent event log, making it simpler to implement and use.
+This module does not contain the consensus algorithm. The Rabia engine, state machine interface, leader manager and topology live in [`../consensus`](../consensus/README.md); this module wires them into a running node and provides the state machine most clusters run on it.
 
-### Core Components
+### Packages
 
-- **Consensus Engine** - Orchestrates the consensus process with batch command tracking and Promise-based API
-- **State Machine** - Pluggable component for processing commands after consensus, with snapshot support for recovery
-- **Persistence Layer** - Pluggable storage for bootstrapping and recovery (in-memory default)
-- **Message Router** - Targeted message delivery between nodes using the Message Bus pattern
-- **Leader Manager** - Deterministic leader selection for cluster-wide operations
+- **`cluster.node`** - `ClusterNode<C>` (`self()`, `topologyManager()`, `start()`, `stop()`, `apply(List<C>)`) and its implementations: `rabia.RabiaNode` (assembles `QuicClusterNetwork`, `RabiaEngine`, leader manager and message routes, configured by `NodeConfig`), `ForwardingClusterNode` (forwards `apply` to a core peer, for worker nodes that do not take part in consensus), `SwitchableClusterNode` (switches between direct and forwarding modes at runtime)
+- **`cluster.state.kvstore`** - `KVStore`, a `StateMachine` over `KVCommand` with structured keys, per-key fencing checks (epoch, owner, version, incarnation, community and leader-authority variants), and `KVStoreNotification` delivery
+- **`cluster.metrics`** - wire messages for leader-independent health and connectivity observations (`ClusterSyncMessage`, `CommunityReport`, `PeerHealthObservation`, `PeerConnectivityObservation` and related types)
 
-### Protocol Flow
+### Batch identity
 
-1. **Propose** - Node proposes a batch of commands
-2. **Round 1 Vote** - Nodes vote on the proposal
-3. **Round 2 Vote** - Refinement based on round 1 majority (may be skipped via fast path)
-4. **Decision** - With f+1 votes, nodes commit or use coin flip
-
-Batch deduplication ensures correctness when multiple nodes submit identical commands concurrently.
+Batch ids are content-derived: `StateMachine.createBatch` hashes the serializer-encoded command list (SHA-256), so identical command lists submitted by different nodes get the same batch id on every node, and `StateMachine.merge` combines batches that share an id. This is per-batch identity only; it makes no claim about client retries across separate submissions.
 
 ## Dependencies
 
-- `pragmatica-lite-consensus`
-- `pragmatica-lite-messaging`
-- `pragmatica-lite-core`
+```xml
+<dependency>
+    <groupId>org.pragmatica-lite</groupId>
+    <artifactId>cluster</artifactId>
+    <version>1.0.0-rc4</version>
+</dependency>
+```
+
+Compile-scope dependencies (from `pom.xml`), all `org.pragmatica-lite` unless noted:
+
+- `core`
+- `messaging`
+- `utility`
+- `consensus`
+- `tcp`
+- `serialization-api`
+- `io.netty:netty-all`, `org.slf4j:slf4j-api`

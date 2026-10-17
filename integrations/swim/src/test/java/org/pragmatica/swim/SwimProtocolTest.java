@@ -20,6 +20,9 @@ import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +33,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.Ack;
@@ -109,7 +113,7 @@ class SwimProtocolTest {
             // NOT sticky.
             protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
 
-            var sameIncAlive = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var sameIncAlive = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(sameIncAlive)));
 
             assertThat(protocol.members().get(NODE_A).state())
@@ -128,13 +132,13 @@ class SwimProtocolTest {
             protocol.addSeedMember(NODE_A, ADDR_A); // OBSERVED at incarnation 0
 
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L,
-                                                List.of(new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A))));
+                                                List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A))));
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a gossiped SUSPECT must NOT dislodge a local OBSERVED member")
                 .isEqualTo(MemberState.OBSERVED);
 
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L,
-                                                List.of(new MembershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A))));
+                                                List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 0, ADDR_A))));
             assertThat(protocol.members().get(NODE_A).state())
                 .as("a gossiped FAULTY must NOT dislodge a local OBSERVED member either")
                 .isEqualTo(MemberState.OBSERVED);
@@ -155,7 +159,7 @@ class SwimProtocolTest {
             // A gossiped SUSPECT for a member we have NEVER seen is hearsay, not confirmation
             // (#336/#241): introduce it OBSERVED — no armed death-timer, probe-eligible — so our OWN
             // probe cycle decides. The wire SUSPECT is NOT re-broadcast (OBSERVED never disseminated).
-            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
 
             assertThat(protocol.members().get(NODE_A).state())
@@ -241,7 +245,7 @@ class SwimProtocolTest {
 
         @Test
         void onMessage_pingWithPiggyback_processesUpdates() {
-            var update = new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B);
+            var update = MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B);
             var ping = new Ping(NODE_A, 1L, List.of(update));
 
             protocol.onMessage(ADDR_A, ping);
@@ -334,7 +338,7 @@ class SwimProtocolTest {
 
         @Test
         void handleAnnounce_selfAnnounceOfUnknown_introducedAsObservedNotAlive() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.members()).containsKey(NODE_A);
             assertThat(protocol.members().get(NODE_A).state())
@@ -344,7 +348,7 @@ class SwimProtocolTest {
 
         @Test
         void handleAnnounce_selfAnnounceOfUnknown_doesNotSetEverSeenHealthyNorEmitHealthy() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.everSeenHealthyForTest(NODE_A))
                 .as("OBSERVED birth is not yet proven-healthy — a probe-ack sets ever-seen-healthy later")
@@ -356,7 +360,7 @@ class SwimProtocolTest {
 
         @Test
         void handleAnnounce_selfAnnounceOfUnknown_armsNoSuspectTimer() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.suspectTimestampForTest(NODE_A).isEmpty())
                 .as("OBSERVED introduction must NOT arm a decay-to-FAULTY suspect timer at birth")
@@ -367,7 +371,7 @@ class SwimProtocolTest {
         void handleAnnounce_unknownMember_stillDeliversJoinAnnounced() {
             // The legitimate reachability probe (clusterNetwork.connect) is driven by
             // JoinAnnounced — formation must remain unaffected.
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
 
             assertThat(observations.byType(SwimObservation.JoinAnnounced.class))
                 .as("JoinAnnounced must still fire so the reachability probe proceeds")
@@ -380,7 +384,7 @@ class SwimProtocolTest {
             // member is hearsay. Neither makes the member ALIVE, and a gossiped SUSPECT-of-unknown is
             // now ALSO born OBSERVED (#336/#241) — no armed death-timer, not yet proven-healthy — so
             // our own probing decides rather than third-party rumour.
-            var gossip = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var gossip = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossip)));
 
             assertThat(protocol.members().get(NODE_A).state())
@@ -392,42 +396,34 @@ class SwimProtocolTest {
         }
 
         @Test
-        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_refreshesProbeAddress() {
-            // Wave 9 Fix C — the ROOT of the post-partition-heal self-destruct: a Docker IP
-            // reshuffle changes a KNOWN member's address. Without adopting the fresh ANNOUNCE
-            // source IP, SWIM keeps probing the stale pre-partition IP, acks go silent, and the
-            // healthy member is falsely declared FAULTY. The re-ANNOUNCE (higher incarnation on
-            // rejoin) for an already-resident member must refresh its probe address.
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_keepsProbeAddress() {
+            // The mid-life address refresh (Wave 9 Fix C) is gone: a pinned member's address does not follow a
+            // later ANNOUNCE. A changed address for a live process is refused and reported instead, and a
+            // restarted process takes a new identity.
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
             var originalAddress = protocol.members().get(NODE_A).address();
 
-            // Same NODE_A re-ANNOUNCEs (rejoin, incarnation 1) but its datagram now arrives from a
-            // NEW source IP — the reshuffled container address.
             var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
             protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
 
-            assertThat(protocol.members().get(NODE_A).address().getAddress().getHostAddress())
-                .as("a re-ANNOUNCE from a new source IP must refresh the resident member's probe address")
-                .isEqualTo("127.0.0.2");
             assertThat(protocol.members().get(NODE_A).address())
-                .as("the probe address actually changed from the stale pre-reshuffle address")
-                .isNotEqualTo(originalAddress);
+                .as("a re-ANNOUNCE from a new source IP must not move the pinned member's probe address")
+                .isEqualTo(originalAddress);
+            assertThat(protocol.addressConflictsReportedForTest()).as("and is reported").isEqualTo(1);
         }
 
         @Test
-        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_nextProbeTargetsNewAddress() {
-            // The behavioural consequence of the refresh: the very next probe must target the new
-            // (reachable) source IP, not the stale one — killing the stale-IP probe storm at the root.
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
+        void handleAnnounce_knownMemberReAnnounceFromNewSourceIp_nextProbeStillTargetsPinnedAddress() {
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 0L));
             var newSourceIp = new InetSocketAddress("127.0.0.2", ADDR_A.getPort());
             protocol.onMessage(newSourceIp, Announce.announce(nodeInfoFor(NODE_A, ADDR_A), "", 1L));
             transport.sentMessages.clear();
 
             protocol.probeOnceForTest();
 
-            assertThat(transport.sentMessages.getFirst().target().getAddress().getHostAddress())
-                .as("the next probe must target the refreshed (new) source IP, not the stale pre-reshuffle one")
-                .isEqualTo("127.0.0.2");
+            assertThat(transport.sentMessages.getFirst().target())
+                .as("the next probe still targets the pinned address")
+                .isEqualTo(ADDR_A);
         }
 
         private static NodeInfo nodeInfoFor(NodeId id, InetSocketAddress addr) {
@@ -459,7 +455,7 @@ class SwimProtocolTest {
 
         @Test
         void dialInfoFor_announceWithRoleAndSource_exposesLabels() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
 
             var discovered = observations.byType(SwimObservation.MemberDiscovered.class);
             assertThat(discovered).hasSize(1);
@@ -471,7 +467,7 @@ class SwimProtocolTest {
 
         @Test
         void dialInfoFor_announceWithoutLabels_exposesAddressOnlyNodeInfo() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoNoLabels(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoNoLabels(NODE_A, ADDR_A), "", 0L));
 
             var discovered = observations.byType(SwimObservation.MemberDiscovered.class);
             assertThat(discovered).hasSize(1);
@@ -482,7 +478,7 @@ class SwimProtocolTest {
 
         @Test
         void member_announceWithLabels_retainsLabelsOnSwimMember() {
-            protocol.onMessage(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
+            protocol.announceFromPinnedSourceForTest(ADDR_A, Announce.announce(nodeInfoWithLabels(NODE_A, ADDR_A), "", 0L));
 
             assertThat(protocol.members().get(NODE_A).labels())
                 .containsEntry(NodeInfo.LABEL_ROLE, "active")
@@ -507,7 +503,7 @@ class SwimProtocolTest {
         @Test
         void addUpdate_withinCapacity_allRetained() {
             var buffer = PiggybackBuffer.piggybackBuffer(5);
-            var update = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var update = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
 
             buffer.addUpdate(update);
 
@@ -517,8 +513,8 @@ class SwimProtocolTest {
         @Test
         void peekUpdates_returnsUpdatesWithoutRemoving() {
             var buffer = PiggybackBuffer.piggybackBuffer(10);
-            buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
-            buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
 
             var peeked = buffer.peekUpdates(1);
 
@@ -532,15 +528,15 @@ class SwimProtocolTest {
         void addUpdate_exceedsDoubleCapacity_evictsOldest() {
             var buffer = PiggybackBuffer.piggybackBuffer(2);
             // Buffer allows up to maxSize*2=4 entries for dissemination headroom
-            buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
-            buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
-            buffer.addUpdate(new MembershipUpdate(NODE_C, MemberState.ALIVE, 0, ADDR_C));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.ALIVE, 0, ADDR_B));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_C, MemberState.ALIVE, 0, ADDR_C));
 
             assertThat(buffer.size()).isEqualTo(3); // under 2*2=4 threshold
 
             // Add 2 more to exceed threshold
-            buffer.addUpdate(new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A));
-            buffer.addUpdate(new MembershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A));
+            buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
 
             assertThat(buffer.size()).isEqualTo(4); // trimmed to 4 (maxSize*2)
         }
@@ -575,7 +571,7 @@ class SwimProtocolTest {
             // A seeded member is OBSERVED — LOCAL-ONLY and never disseminated (#336/#241); only a
             // member in a disseminable state (ALIVE/SUSPECT/FAULTY) rides the piggyback. Introduce
             // NODE_A via gossip ALIVE so it is buffered for dissemination.
-            var aliveA = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
+            var aliveA = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveA)));
             transport.sentMessages.clear();
 
@@ -613,12 +609,12 @@ class SwimProtocolTest {
             // Seed introduces NODE_A as OBSERVED (#336/#241). Drive it to ALIVE via positive
             // gossip first so the subsequent SUSPECT gossip is a genuine ALIVE->SUSPECT edge
             // (not a no-op against the seeded OBSERVED state).
-            var aliveGossip = new MembershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
+            var aliveGossip = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 1L, ADDR_A);
             localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 0L, List.of(aliveGossip)));
             assertThat(localProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
 
             // Drive ALIVE -> SUSPECT (incarnation=2) via a piggybacked update from a peer.
-            var initialSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
+            var initialSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
             localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(initialSuspect)));
 
             assertThat(localListener.suspected).hasSize(1);
@@ -633,7 +629,7 @@ class SwimProtocolTest {
             // each of these would replace members.get(NODE_A) and (in the original
             // diagnosis) reset the suspect timer. With the fix they are no-ops.
             for (var i = 0; i < 14; i++) {
-                var rebroadcast = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
+                var rebroadcast = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 2L, ADDR_A);
                 localProtocol.onMessage(ADDR_B, new Ping(NODE_B, 100L + i, List.of(rebroadcast)));
             }
 
@@ -707,7 +703,7 @@ class SwimProtocolTest {
 
         @Test
         void announceJoin_notYetAcknowledged_sendsAnnounce() throws InterruptedException {
-            // No quorum signal exists any more — the only stop conditions are inbound-probe and the cap.
+            // No quorum signal exists any more — the only stop conditions are the join ack and the cap.
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
 
             // First scheduled attempt fires at 500ms; wait until at least one ANNOUNCE is sent.
@@ -718,28 +714,318 @@ class SwimProtocolTest {
                 .isGreaterThanOrEqualTo(1);
         }
 
+        /// The seed's address-candidate probe is an ordinary Ping. If this node's Ack to it is lost the seed never
+        /// accepts the ANNOUNCE, so a Ping alone must not end the retries.
         @Test
-        void announceJoin_inboundPingReceived_cancelsAnnounceLoop() throws InterruptedException {
+        void announceJoin_inboundPingReceived_keepsAnnouncing() throws InterruptedException {
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of()));
+
+            var afterPing = announceCount(transport);
+
+            waitUntil(() -> announceCount(transport) > afterPing, 3_000L);
+            assertThat(announceCount(transport))
+                .as("announce loop must keep retrying after an inbound Ping: the seed has not accepted the ANNOUNCE")
+                .isGreaterThan(afterPing);
+        }
+
+        @Test
+        void announceJoin_joinAckReceived_cancelsAnnounceLoop() throws InterruptedException {
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
 
             waitUntil(() -> announceCount(transport) >= 1, 3_000L);
             assertThat(announceCount(transport)).isGreaterThanOrEqualTo(1);
 
-            // Deliver an inbound Ping through the real receive path — sets inboundProbeReceived.
-            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of()));
+            // The seed's sequence-0 Ack for an accepted ANNOUNCE, through the real receive path.
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 0L, List.of()));
 
-            // The loop must stop announcing on the next tick: count freezes after the latch is set.
-            var afterPing = announceCount(transport);
+            // The loop must stop announcing by the following tick; allow an in-flight attempt to drain first.
+            Thread.sleep(200L);
+
+            var afterAck = announceCount(transport);
+
             Thread.sleep(1_200L); // span at least two 500ms announce ticks
             assertThat(announceCount(transport))
-                .as("announce loop must cancel on the tick following an inbound Ping (self acknowledged)")
-                .isEqualTo(afterPing);
+                .as("announce loop must cancel once the join ack arrives")
+                .isEqualTo(afterAck);
+        }
+
+        /// The join-ack latch belongs to one join attempt: a node that joins again must announce again, however the
+        /// previous attempt ended.
+        @Test
+        void announceJoin_afterAnEarlierJoinWasAcknowledged_announcesAgain() throws InterruptedException {
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 0L, List.of()));
+            Thread.sleep(1_200L);
+
+            var afterFirstJoin = announceCount(transport);
+
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) > afterFirstJoin, 3_000L);
+            assertThat(announceCount(transport))
+                .as("the new join attempt must not inherit the previous attempt's acknowledgement")
+                .isGreaterThan(afterFirstJoin);
+        }
+
+        /// #501: the announce loop is a periodic task on the shared scheduler; `stop()` must cancel it
+        /// like the probe tick, or a stopped protocol keeps sending ANNOUNCE for up to 30s.
+        @Test
+        void stop_cancelsTheAnnounceLoop_noAnnounceAfterStop() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport)).isGreaterThanOrEqualTo(1);
+
+            protocol.stop();
+
+            // NIT (review 2026-09-14): cancel(false) does not interrupt an attempt already running,
+            // so sample AFTER a settle shorter than the 500ms period — an in-flight attempt drains
+            // into `afterStop` instead of landing between the sample and the assertion.
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+            var ticks = observeSchedulerTicks(1_200L); // span at least two 500ms announce ticks
+
+            assertThat(ticks)
+                .as("positive control: the shared scheduler was executing throughout the window in "
+                    + "which no ANNOUNCE was observed — an empty read from a dead scheduler would "
+                    + "look identical to a cancelled loop")
+                .isGreaterThanOrEqualTo(2);
+            assertThat(announceCount(transport))
+                .as("a stopped protocol must not keep announcing — stop() cancels the announce loop")
+                .isEqualTo(afterStop);
+        }
+
+        /// #501 (review 2026-09-14, BLOCKING-1, sequence A): `announceJoin` without `start()` leaves
+        /// `tickFuture` empty, so a `stop()` that cancelled the announce loop only *after* the
+        /// running-check returned `PROTOCOL_NOT_RUNNING` and cancelled nothing. The loop's lifetime
+        /// must depend on `stop()` alone, never on whether the probe tick happens to be armed.
+        @Test
+        void stopWithoutStart_cancelsTheAnnounceLoop() throws InterruptedException {
+            // No start() — the probe tick is never armed.
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport))
+                .as("positive control: the announce loop is live and its sends are observable")
+                .isGreaterThanOrEqualTo(1);
+
+            assertThat(protocol.stop().isFailure())
+                .as("the tick was never armed, so stop() still reports PROTOCOL_NOT_RUNNING — the "
+                    + "announce cancel must not be conditional on that result")
+                .isTrue();
+
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+            var ticks = observeSchedulerTicks(1_200L);
+
+            assertThat(ticks)
+                .as("positive control: the shared scheduler was executing throughout the window")
+                .isGreaterThanOrEqualTo(2);
+            assertThat(announceCount(transport))
+                .as("a never-started protocol that announced must stop announcing on stop()")
+                .isEqualTo(afterStop);
+        }
+
+        /// #501 (review 2026-09-14, BLOCKING-1, sequence B): the production race — `announceJoin`
+        /// resolves the protocol, a concurrent `stop()` completes, then the join calls in and arms a
+        /// loop with `tickFuture` empty, which every later `stop()` early-returned past. `stop()` must
+        /// REFUSE the announce, not merely cancel a handle it may never see.
+        @Test
+        void announceJoinAfterStop_armsNothing() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            assertThat(announceCount(transport))
+                .as("instrument control: announceJoin on this protocol does reach the transport")
+                .isGreaterThanOrEqualTo(1);
+
+            protocol.stop();
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+            // Nothing advances the self-incarnation once the protocol is stopped, so it is a stable
+            // witness for whether announceJoin ran AT ALL — independent of the per-seed send guard,
+            // which reads the same latch and would otherwise mask a missing refusal here.
+            var incarnationBefore = protocol.selfIncarnation();
+
+            // The call that raced the stop. Nothing cancels what it arms, so only a refusal helps.
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", incarnationBefore + 1_000L, List.of(ADDR_A));
+
+            assertThat(protocol.selfIncarnation())
+                .as("announceJoin must be refused before it does anything at all — a seeded incarnation "
+                    + "proves it armed a loop instead")
+                .isEqualTo(incarnationBefore);
+
+            var ticks = observeSchedulerTicks(1_200L);
+
+            assertThat(ticks)
+                .as("positive control: the shared scheduler was executing throughout the window")
+                .isGreaterThanOrEqualTo(2);
+            assertThat(announceCount(transport))
+                .as("an announceJoin that lands after stop() must arm no loop at all")
+                .isEqualTo(afterStop);
+
+            // The reviewer's literal sequence ends with a second stop(); it must stay frozen.
+            protocol.stop();
+            Thread.sleep(700L);
+            assertThat(announceCount(transport))
+                .as("still no announce after the second stop()")
+                .isEqualTo(afterStop);
+        }
+
+        /// #501: the stop-latch is per stop/start cycle, not a permanent kill switch — a restarted
+        /// protocol must be able to announce again, or a node that stops and restarts SWIM would
+        /// silently never rejoin.
+        @Test
+        void restartedProtocol_announcesAgain() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            protocol.stop();
+            Thread.sleep(200L);
+
+            var afterStop = announceCount(transport);
+
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) > afterStop, 3_000L);
+
+            assertThat(announceCount(transport))
+                .as("start() clears the stop-latch — a restarted protocol announces again")
+                .isGreaterThan(afterStop);
+        }
+
+        /// #501 (review 2026-09-14, SHOULD-FIX-2): "a re-announce supersedes (cancels) the previous
+        /// loop" was unpinned — dropping the cancel left the whole module green. Discriminated by
+        /// SEED SET rather than by rate: the superseded loop targets ADDR_A and the current one
+        /// ADDR_B, so a retained loop keeps hitting ADDR_A while a cancelled one cannot, however
+        /// loaded the box is.
+        @Test
+        void reAnnounce_cancelsThePreviousLoop_supersededSeedGoesSilent() throws InterruptedException {
+            protocol.start();
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport, ADDR_A) >= 1, 3_000L);
+            assertThat(announceCount(transport, ADDR_A))
+                .as("positive control: the first loop is live and targeting ADDR_A")
+                .isGreaterThanOrEqualTo(1);
+
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_B));
+
+            // Shorter than the 500ms period: an attempt in flight at the supersede drains into the
+            // sample, a retained loop still gets two full ticks inside the window measured below.
+            Thread.sleep(200L);
+
+            var supersededCount = announceCount(transport, ADDR_A);
+
+            waitUntil(() -> announceCount(transport, ADDR_B) >= 2, 5_000L);
+
+            assertThat(announceCount(transport, ADDR_B))
+                .as("positive control: the superseding loop fired twice, so ≥1s of scheduler time "
+                    + "elapsed while ADDR_A was observed silent")
+                .isGreaterThanOrEqualTo(2);
+            assertThat(announceCount(transport, ADDR_A))
+                .as("a re-announce must cancel the previous loop — the superseded seed set goes silent")
+                .isEqualTo(supersededCount);
+        }
+
+        /// #501 (review 2026-09-14, BLOCKING-1 follow-up): `cancel(false)` does not interrupt an
+        /// attempt already running, so the cancel alone cannot stop an announce that is mid-flight.
+        /// Deterministic in-flight pin: the transport parks inside the send to ADDR_A, `stop()` runs
+        /// while it is parked, and the remaining seed must never be announced to.
+        @Test
+        void stopDuringAnAttempt_doesNotAnnounceToTheRemainingSeeds() throws InterruptedException {
+            var blocking = new ParkingTransport();
+            var local = SwimProtocol.swimProtocol(swimConfig(), blocking, new RecordingListener(), SELF_ID, SELF_ADDR)
+                                    .fold(cause -> null, v -> v);
+
+            local.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A, ADDR_B));
+
+            assertThat(blocking.entered.await(5, TimeUnit.SECONDS))
+                .as("positive control: an attempt is genuinely in flight, parked inside the send to "
+                    + "the first seed — the measurement below is taken on a LIVE attempt, not a dead one")
+                .isTrue();
+            assertThat(announceCount(blocking, ADDR_A))
+                .as("positive control: the first seed's ANNOUNCE was recorded before stop()")
+                .isEqualTo(1);
+
+            local.stop();
+            blocking.release.countDown();
+
+            Thread.sleep(1_200L); // two further announce periods
+
+            assertThat(announceCount(blocking, ADDR_B))
+                .as("an attempt in flight across stop() must not announce to the remaining seeds")
+                .isZero();
+            assertThat(announceCount(blocking, ADDR_A))
+                .as("and it must not re-arm: exactly the one send that was already in progress")
+                .isEqualTo(1);
+        }
+
+        /// Parks the caller inside the first ANNOUNCE send so a `stop()` can be made to land while an
+        /// attempt is demonstrably mid-flight. Records like [`RecordingTransport`] in every other way.
+        private static final class ParkingTransport extends RecordingTransport {
+            private final CountDownLatch entered = new CountDownLatch(1);
+            private final CountDownLatch release = new CountDownLatch(1);
+            private final AtomicInteger announces = new AtomicInteger(0);
+
+            @Override
+            public Promise<Unit> send(InetSocketAddress target, SwimMessage message) {
+                var result = super.send(target, message);
+
+                if (message instanceof Announce && announces.incrementAndGet() == 1) {
+                    entered.countDown();
+                    try {
+                        release.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+
+                return result;
+            }
         }
 
         private static int announceCount(RecordingTransport transport) {
             return (int) transport.sentMessages.stream()
                                                .filter(m -> m.message() instanceof Announce)
                                                .count();
+        }
+
+        private static int announceCount(RecordingTransport transport, InetSocketAddress target) {
+            return (int) transport.sentMessages.stream()
+                                               .filter(m -> m.message() instanceof Announce)
+                                               .filter(m -> m.target().equals(target))
+                                               .count();
+        }
+
+        /// Liveness control for every "no further ANNOUNCE" assertion: run an independent periodic
+        /// task on the SAME scheduler that carries the announce loop for the measurement window and
+        /// report how many times it fired. An empty read from a stalled scheduler and an empty read
+        /// from a cancelled loop are otherwise indistinguishable.
+        private static int observeSchedulerTicks(long windowMs) throws InterruptedException {
+            var ticks = new AtomicInteger(0);
+            var control = SharedScheduler.scheduleAtFixedRate(ticks::incrementAndGet,
+                                                              timeSpan(200).millis(),
+                                                              timeSpan(200).millis());
+
+            try {
+                Thread.sleep(windowMs);
+            } finally {
+                control.cancel(false);
+            }
+
+            return ticks.get();
         }
 
         private static void waitUntil(java.util.function.BooleanSupplier condition, long timeoutMs)
@@ -816,7 +1102,7 @@ class SwimProtocolTest {
             // strictly greater than 5 (durable). Replays of the SAME stale suspicion
             // (incarnation now below our refutation) are ignored entirely — no further
             // incarnation bumps (pre-gate every replay re-bumped, feeding gossip churn).
-            var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
+            var selfSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 5L, SELF_ADDR);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
             var afterFirst = protocol.selfIncarnation();
@@ -831,7 +1117,7 @@ class SwimProtocolTest {
                 .isEqualTo(afterFirst);
 
             // A GENUINELY NEW suspicion at our current incarnation still strictly advances.
-            var newSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, afterFirst, SELF_ADDR);
+            var newSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, afterFirst, SELF_ADDR);
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 4L, List.of(newSuspect)));
             assertThat(protocol.selfIncarnation())
                 .as("a new suspicion challenging the current liveness claim strictly advances the stored incarnation")
@@ -841,7 +1127,7 @@ class SwimProtocolTest {
         @Test
         void handleSelfUpdate_higherSuspicionIncarnation_refutationOutpacesIt() {
             // A suspicion raised at a high incarnation must still be strictly out-paced.
-            var highSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 42L, SELF_ADDR);
+            var highSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 42L, SELF_ADDR);
 
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(highSuspect)));
 
@@ -857,7 +1143,7 @@ class SwimProtocolTest {
             // each probe round must carry the ADVANCED incarnation.
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 7L, List.of(ADDR_A));
 
-            var selfSuspect = new MembershipUpdate(SELF_ID, MemberState.SUSPECT, 7L, SELF_ADDR);
+            var selfSuspect = MembershipUpdate.membershipUpdate(SELF_ID, MemberState.SUSPECT, 7L, SELF_ADDR);
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of(selfSuspect)));
             var advanced = protocol.selfIncarnation();
             assertThat(advanced).isGreaterThan(7L);
@@ -958,7 +1244,7 @@ class SwimProtocolTest {
                     // reshuffled values() order under the old index.
                     ackPingsTo(localTransport, FLAPPER_ADDR, localProtocol);
                     var state = (pingedSeq % 2 == 0) ? MemberState.ALIVE : MemberState.SUSPECT;
-                    var gossip = new MembershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
+                    var gossip = MembershipUpdate.membershipUpdate(FLAPPER, state, 1L, FLAPPER_ADDR);
                     localProtocol.onMessage(FLAPPER_ADDR, new Ping(FLAPPER, 5_000L + pingedSeq, List.of(gossip)));
                     pingedSeq++;
                     Thread.sleep(15L);
@@ -1073,7 +1359,7 @@ class SwimProtocolTest {
                                                           SELF_ID, SELF_ADDR, () -> false)
                                             .fold(cause -> null, v -> v);
 
-            var gossipSuspect = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var gossipSuspect = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             localProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(gossipSuspect)));
 
             assertThat(localProtocol.members().get(NODE_A).state())

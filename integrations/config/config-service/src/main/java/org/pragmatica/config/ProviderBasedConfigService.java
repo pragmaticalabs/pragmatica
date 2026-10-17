@@ -1,5 +1,6 @@
 package org.pragmatica.config;
 
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -9,15 +10,19 @@ import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.parse.Text;
@@ -28,6 +33,7 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Result.unitResult;
 
 
 /// ConfigService implementation that delegates to a ConfigurationProvider.
@@ -73,29 +79,48 @@ public final class ProviderBasedConfigService implements ConfigService {
         return provider.getString(key);
     }
 
+    /// #1098 — both typed readers are the provider's own: absent → `Success(None)`, present but
+    /// malformed → [ConfigError.TypeMismatch] naming the key and the value. The old `getBoolean`
+    /// went through `Boolean.parseBoolean`, which read `"yes"` as `false` and never failed.
     @Override
-    public Option<Integer> getInt(String key) {
-        return provider.getString(key)
-                       .flatMap(ProviderBasedConfigService::safeParseInteger);
+    public Result<Option<Integer>> getInt(String key) {
+        return provider.getInt(key);
     }
 
     @Override
-    public Option<Boolean> getBoolean(String key) {
-        var raw = provider.getString(key);
-
-        return raw.map(ProviderBasedConfigService::toBooleanValue);
+    public Result<Option<Boolean>> getBoolean(String key) {
+        return provider.getBoolean(key);
     }
 
-    private static Boolean toBooleanValue(String value) {
-        return Boolean.parseBoolean(value);
+    /// Whether `path` is a SECTION a record can bind from: something is keyed UNDER it. [#hasSection] also
+    /// answers true for a path that exists only as a scalar key (`retention = "time"` makes
+    /// `streams.x.retention` a "section"), which is right for asking whether a name is configured at all and wrong
+    /// for deciding to bind a record there: the record then fails on its first required field. A scalar where a
+    /// record is expected is NOT a record section, so a nested record falls to its default (or `none()` for an
+    /// `Option`) exactly as if the key were absent. That is the explicit choice for shorthand keys such as a
+    /// stream's `retention = "time"`, which the stream parser, not this binder, interprets (#822).
+    private boolean hasRecordSection(String path) {
+        var prefix = path + ".";
+
+        return provider.keys()
+                       .stream()
+                       .anyMatch(key -> key.startsWith(prefix));
+    }
+
+    /// A key that holds a SCALAR where a record is expected is an operator error, not an absent section: treating it
+    /// as absent bound the record's default (or `none()`) and dropped what the operator wrote (`json = "snake_case"`
+    /// where a `[http.x.json]` table was expected). It is a [ConfigError.TypeMismatch] naming the key and saying a
+    /// table was expected; the value is not echoed, since a misplaced scalar can be a credential.
+    private Option<Result<Object>> scalarWhereTableExpected(String path, Class<?> recordType) {
+        return provider.getString(path)
+                       .map(_ -> ConfigError.typeMismatch(path,
+                                                          "a table of keys for " + recordType.getSimpleName(),
+                                                          "a scalar value")
+                                            .result());
     }
 
     private static boolean hasSectionPrefix(String key, String prefix, String section) {
         return key.startsWith(prefix) || key.equals(section);
-    }
-
-    private static Option<Integer> safeParseInteger(String value) {
-        return Number.parseInt(value).option();
     }
 
     // --- Record binding ---
@@ -112,13 +137,99 @@ public final class ProviderBasedConfigService implements ConfigService {
             var types = extractComponentTypes(components);
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
 
-            return collectComponentArgs(section, components, configClass).flatMap(args -> invokeFactoryOrConstructor(configClass,
-                                                                                                                     constructor,
-                                                                                                                     types,
-                                                                                                                     args));
+            return strictKeyCheck(section, configClass, components).flatMap(_ -> collectComponentArgs(section,
+                                                                                                      components,
+                                                                                                      configClass))
+                                 .flatMap(args -> invokeFactoryOrConstructor(configClass, constructor, types, args));
         } catch (ReflectiveOperationException e) {
             return ConfigError.parseFailed(section, e).result();
         }
+    }
+
+    /// Opt-in ([StrictKeys]) rejection of keys the annotated record does not declare. Scoped to
+    /// exactly one path segment past the section prefix, so a nested sub-section (e.g. a consumer
+    /// group table owned by the dashed-by-convention stream parser) is never inspected here.
+    ///
+    /// Scoped to [ConfigurationProvider#staticKeys()] rather than the full merged
+    /// [ConfigurationProvider#keys()]: an environment variable, system property, or KV-overlay
+    /// entry landing at `<section>.<one segment>` must never fail a bind the file alone would have
+    /// accepted, since none of those layers wrote the section that declares this record (#738
+    /// review finding).
+    ///
+    /// A quoted TOML key with a literal dot (e.g. `"a.b" = 1`) is indistinguishable, once
+    /// flattened, from a nested sub-table (`[section.a]` / `b = 1`) — [TomlConfigSource]'s
+    /// flattening step throws that distinction away before it reaches this class or any
+    /// [ConfigurationProvider]. Such a key is therefore never flagged as unknown here, by the same
+    /// `indexOf('.') < 0` scoping that protects genuine nested sub-sections; see the class Javadoc
+    /// on `org.pragmatica.aether.resource.TopicConfig` for the operator-facing statement of this
+    /// limit.
+    ///
+    /// Reports every unknown key in the section in one error, not just the first.
+    private Result<Unit> strictKeyCheck(String section, Class<?> configClass, RecordComponent[] components) {
+        if (!configClass.isAnnotationPresent(StrictKeys.class)) {
+            return unitResult();
+        }
+
+        var known = Arrays.stream(components).map(c -> toSnakeCase(c.getName())).collect(Collectors.toSet());
+        var prefix = section + ".";
+        var unknownKeys = provider.staticKeys()
+                                  .stream()
+                                  .filter(k -> k.startsWith(prefix))
+                                  .map(k -> k.substring(prefix.length()))
+                                  .filter(k -> k.indexOf('.') < 0)
+                                  .filter(k -> !known.contains(k))
+                                  .sorted()
+                                  .toList();
+
+        if (unknownKeys.isEmpty()) {
+            return unitResult();
+        }
+
+        var suggestions = unknownKeys.stream().collect(Collectors.toMap(k -> k, k -> nearestKey(k, known)));
+
+        return ConfigError.unknownKey(section, unknownKeys, suggestions).<Unit> result();
+    }
+
+    private static final int MIN_SUGGESTION_DISTANCE = 3;
+
+    /// Nearest known key by Levenshtein distance, omitted (empty string) beyond a bound of
+    /// `max(3, unknown.length() / 2)` — otherwise a typo bearing no real resemblance to any
+    /// component (e.g. `zzzzzzzzzzqqqq`) still names the argmin of an unbounded search, which
+    /// reads as a real suggestion rather than the noise it is (#738 review finding).
+    private static String nearestKey(String unknown, Set<String> known) {
+        var threshold = Math.max(MIN_SUGGESTION_DISTANCE, unknown.length() / 2);
+
+        return known.stream()
+                    .map(k -> Map.entry(k,
+                                        levenshtein(unknown, k)))
+                    .min(Comparator.comparingInt(Map.Entry::getValue))
+                    .filter(e -> e.getValue() <= threshold)
+                    .map(Map.Entry::getKey)
+                    .orElse("");
+    }
+
+    private static int levenshtein(String a, String b) {
+        var dp = new int[a.length() + 1][b.length() + 1];
+
+        for (int i = 0; i <= a.length(); i++) {
+            dp[i][0] = i;
+        }
+
+        for (int j = 0; j <= b.length(); j++) {
+            dp[0][j] = j;
+        }
+
+        for (int i = 1; i <= a.length(); i++) {
+            for (int j = 1; j <= b.length(); j++) {
+                var cost = a.charAt(i - 1) == b.charAt(j - 1)
+                           ? 0
+                           : 1;
+
+                dp[i][j] = Math.min(Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1), dp[i - 1][j - 1] + cost);
+            }
+        }
+
+        return dp[a.length()][b.length()];
     }
 
     private static Class<?>[] extractComponentTypes(RecordComponent[] components) {
@@ -194,7 +305,13 @@ public final class ProviderBasedConfigService implements ConfigService {
                                                     Class<?> configClass) {
         var extracted = extractValue(section, component);
 
-        if (extracted.isSuccess()) {
+        if (!isAbsent(extracted)) {
+            // Only ABSENCE may be satisfied by the derived name or the DEFAULT instance. #761 made
+            // a declaration error (UnsupportedType) propagate; #1098 inverts the guard so that
+            // EVERY other failure does too — a malformed value (TypeMismatch), a nested record's
+            // own refusal, an unknown key — because letting any of them fall through turns "wrong"
+            // into a silent default. (The derived-name fallback below is String-only, so an Option
+            // component never reaches it.)
             return extracted.flatMap(v -> IndexedValue.indexedValue(index, v));
         }
         // Convention: derive `name` (String) from the section suffix when it's absent from TOML.
@@ -205,7 +322,7 @@ public final class ProviderBasedConfigService implements ConfigService {
             return IndexedValue.indexedValue(index, derived.unwrap());
         }
 
-        return getDefaultComponentValue(configClass, component, index);
+        return getDefaultComponentValue(section, configClass, component, index);
     }
 
     private static Option<Object> deriveNameFromSectionSuffix(String section, RecordComponent component) {
@@ -270,9 +387,11 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     // --- Primitive parser lookup ---
-    static Option<Fn1<Option<Object>, String>> primitiveParser(Class<?> type) {
+    /// Each parser answers a failure for a value it cannot read; the caller replaces that cause
+    /// with a [ConfigError.TypeMismatch] naming the key, the declared type and the raw value.
+    static Option<Fn1<Result<Object>, String>> primitiveParser(Class<?> type) {
         if (type == String.class) {
-            return some(Option::some);
+            return some(Result::success);
         }
 
         if (type == int.class || type == Integer.class) {
@@ -306,53 +425,57 @@ public final class ProviderBasedConfigService implements ConfigService {
         return none();
     }
 
-    private static Option<Object> parseIntAsObject(String v) {
-        return safeParseInt(v).map(Object.class::cast);
+    private static Result<Object> parseIntAsObject(String v) {
+        return Number.parseInt(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseLongAsObject(String v) {
-        return safeParseLong(v).map(Object.class::cast);
+    private static Result<Object> parseLongAsObject(String v) {
+        return Number.parseLong(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseBooleanAsObject(String v) {
-        return some(Boolean.parseBoolean(v));
+    private static Result<Object> parseBooleanAsObject(String v) {
+        return ConfigSource.parseBoolean(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseDoubleAsObject(String v) {
-        return safeParseDouble(v).map(Object.class::cast);
+    private static Result<Object> parseDoubleAsObject(String v) {
+        return Number.parseDouble(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseTimeSpanAsObject(String v) {
-        return TimeSpan.timeSpan(v)
-                       .option()
-                       .map(Object.class::cast);
+    private static Result<Object> parseTimeSpanAsObject(String v) {
+        return TimeSpan.timeSpan(v).map(Object.class::cast);
     }
 
-    private static Option<Object> parseDurationAsObject(String v) {
-        return TimeSpan.timeSpan(v)
-                       .option()
-                       .map(ts -> (Object) ts.duration());
+    private static Result<Object> parseDurationAsObject(String v) {
+        return TimeSpan.timeSpan(v).map(ts -> (Object) ts.duration());
     }
 
-    private static Option<Object> parseIoTimeSpanAsObject(String v) {
+    private static Result<Object> parseIoTimeSpanAsObject(String v) {
         return parseIoTimeSpan(v).map(Object.class::cast);
     }
 
-    private static Option<org.pragmatica.lang.io.TimeSpan> parseIoTimeSpan(String v) {
-        return TimeSpan.timeSpan(v)
-                       .option()
-                       .map(ts -> org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
+    private static Result<org.pragmatica.lang.io.TimeSpan> parseIoTimeSpan(String v) {
+        return TimeSpan.timeSpan(v).map(ts -> org.pragmatica.lang.io.TimeSpan.fromDuration(ts.duration()));
     }
 
     // --- Type-specific resolvers ---
     private Option<Result<Object>> lookupPrimitive(String fullKey, Class<?> type) {
-        return primitiveParser(type).map(parser -> fetchAndParse(fullKey, parser));
+        return primitiveParser(type).map(parser -> fetchAndParse(fullKey, type, parser));
     }
 
-    private Result<Object> fetchAndParse(String fullKey, Fn1<Option<Object>, String> parser) {
+    /// Absent → [ConfigError.SectionNotFound] (the one cause a DEFAULT may satisfy); present but
+    /// unparseable → [ConfigError.TypeMismatch], which propagates (#1098).
+    private Result<Object> fetchAndParse(String fullKey, Class<?> type, Fn1<Result<Object>, String> parser) {
         return provider.getString(fullKey)
-                       .flatMap(parser)
-                       .toResult(ConfigError.sectionNotFound(fullKey));
+                       .toResult(ConfigError.sectionNotFound(fullKey))
+                       .flatMap(raw -> parseNamed(fullKey, type, raw, parser));
+    }
+
+    private static Result<Object> parseNamed(String fullKey,
+                                             Class<?> type,
+                                             String raw,
+                                             Fn1<Result<Object>, String> parser) {
+        return parser.apply(raw)
+                     .mapError(_ -> toTypeMismatch(fullKey, type, raw));
     }
 
     private Option<Result<Object>> lookupEnum(String fullKey, Class<?> type) {
@@ -377,8 +500,8 @@ public final class ProviderBasedConfigService implements ConfigService {
 
         var nestedSection = section + "." + toSnakeCase(key);
 
-        if (!hasSection(nestedSection)) {
-            return some(findDefaultOrError(type, nestedSection));
+        if (!hasRecordSection(nestedSection)) {
+            return some(scalarWhereTableExpected(nestedSection, type).or(() -> findDefaultOrError(type, nestedSection)));
         }
 
         return some((Result<Object>) bindToClass(nestedSection, type));
@@ -415,8 +538,8 @@ public final class ProviderBasedConfigService implements ConfigService {
 
     private static boolean isStringListType(Type genericType) {
         return genericType instanceof ParameterizedType paramType
-            && paramType.getActualTypeArguments().length == 1
-            && paramType.getActualTypeArguments()[0] == String.class;
+               && paramType.getActualTypeArguments().length == 1
+               && paramType.getActualTypeArguments() [0] == String.class;
     }
 
     private Option<Result<Object>> lookupBackoffStrategy(String fullKey, Class<?> type) {
@@ -425,19 +548,6 @@ public final class ProviderBasedConfigService implements ConfigService {
         }
 
         return some(resolveBackoffStrategy(fullKey));
-    }
-
-    // --- Primitive parsers ---
-    private static Option<Integer> safeParseInt(String value) {
-        return Number.parseInt(value).option();
-    }
-
-    private static Option<Long> safeParseLong(String value) {
-        return Number.parseLong(value).option();
-    }
-
-    private static Option<Double> safeParseDouble(String value) {
-        return Number.parseDouble(value).option();
     }
 
     // --- Map value collection ---
@@ -466,9 +576,7 @@ public final class ProviderBasedConfigService implements ConfigService {
     // comma-joined-scalar convention (e.g. HetznerEnvironmentIntegrationFactory#ssh_key_ids).
     // Absent key defaults to an empty list, matching collectMapValue's zero-matches behavior.
     private Result<Object> collectListValue(String fullKey) {
-        return success(provider.getString(fullKey)
-                               .map(ProviderBasedConfigService::splitCommaList)
-                               .or(List.of()));
+        return success(provider.getString(fullKey).map(ProviderBasedConfigService::splitCommaList).or(List.of()));
     }
 
     private static List<String> splitCommaList(String raw) {
@@ -505,46 +613,51 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     private Result<Object> exponentialBackoffStrategy(String fullKey) {
-        var initialDelay = optionalIoTimeSpan(fullKey + ".initial_delay", org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis());
-        var maxDelay = optionalIoTimeSpan(fullKey + ".max_delay", org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
-        var factor = optionalDouble(fullKey + ".factor", 2.0);
-        var withJitter = optionalBoolean(fullKey + ".with_jitter", false);
-
-        return success(BackoffStrategy.exponential()
-                                      .initialDelay(initialDelay)
-                                      .maxDelay(maxDelay)
-                                      .factor(factor)
-                                      .jitter(withJitter));
+        return Result.all(optionalIoTimeSpan(fullKey + ".initial_delay",
+                                             org.pragmatica.lang.io.TimeSpan.timeSpan(100).millis()),
+                          optionalIoTimeSpan(fullKey + ".max_delay",
+                                             org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds()),
+                          optionalDouble(fullKey + ".factor", 2.0),
+                          optionalBoolean(fullKey + ".with_jitter", false))
+                     .map((initialDelay, maxDelay, factor, withJitter) -> BackoffStrategy.exponential()
+                                                                                         .initialDelay(initialDelay)
+                                                                                         .maxDelay(maxDelay)
+                                                                                         .factor(factor)
+                                                                                         .jitter(withJitter));
     }
 
     private Result<Object> linearBackoffStrategy(String fullKey) {
         return Result.all(requiredIoTimeSpan(fullKey + ".initial_delay"),
                           requiredIoTimeSpan(fullKey + ".increment"),
-                          requiredIoTimeSpan(fullKey + ".max_delay"))
-                     .map((initialDelay, increment, maxDelay) -> BackoffStrategy.linear()
-                                                                                .initialDelay(initialDelay)
-                                                                                .increment(increment)
-                                                                                .maxDelay(maxDelay));
+                          requiredIoTimeSpan(fullKey + ".max_delay")).map((initialDelay, increment, maxDelay) -> BackoffStrategy.linear()
+                                                                                                                                .initialDelay(initialDelay)
+                                                                                                                                .increment(increment)
+                                                                                                                                .maxDelay(maxDelay));
     }
 
+    // #1098: the sub-field fallbacks apply to an ABSENT key only; a present, unparseable one is a
+    // TypeMismatch that fails the whole strategy, exactly as a required sub-field does.
     private Result<org.pragmatica.lang.io.TimeSpan> requiredIoTimeSpan(String fullKey) {
         return provider.getString(fullKey)
-                       .flatMap(ProviderBasedConfigService::parseIoTimeSpan)
-                       .toResult(ConfigError.sectionNotFound(fullKey));
+                       .toResult(ConfigError.sectionNotFound(fullKey))
+                       .flatMap(raw -> parseIoTimeSpan(raw).mapError(_ -> toTypeMismatch(fullKey, TimeSpan.class, raw)));
     }
 
-    private org.pragmatica.lang.io.TimeSpan optionalIoTimeSpan(String fullKey, org.pragmatica.lang.io.TimeSpan fallback) {
+    private Result<org.pragmatica.lang.io.TimeSpan> optionalIoTimeSpan(String fullKey,
+                                                                       org.pragmatica.lang.io.TimeSpan fallback) {
         return provider.getString(fullKey)
-                       .flatMap(ProviderBasedConfigService::parseIoTimeSpan)
-                       .or(fallback);
+                       .fold(() -> success(fallback),
+                             raw -> parseIoTimeSpan(raw).mapError(_ -> toTypeMismatch(fullKey, TimeSpan.class, raw)));
     }
 
-    private double optionalDouble(String fullKey, double fallback) {
-        return provider.getString(fullKey).flatMap(ProviderBasedConfigService::safeParseDouble).or(fallback);
+    private Result<Double> optionalDouble(String fullKey, double fallback) {
+        return provider.getDouble(fullKey)
+                       .map(value -> value.or(fallback));
     }
 
-    private boolean optionalBoolean(String fullKey, boolean fallback) {
-        return provider.getString(fullKey).map(Boolean::parseBoolean).or(fallback);
+    private Result<Boolean> optionalBoolean(String fullKey, boolean fallback) {
+        return provider.getBoolean(fullKey)
+                       .map(value -> value.or(fallback));
     }
 
     // --- DEFAULT field lookup ---
@@ -567,13 +680,47 @@ public final class ProviderBasedConfigService implements ConfigService {
         return isStaticFinal && type.isAssignableFrom(field.getType());
     }
 
-    private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass,
+    private static boolean isAbsent(Result<Object> extracted) {
+        return extracted.fold(cause -> cause instanceof ConfigError.SectionNotFound, _ -> false);
+    }
+
+    /// What may stand in for an absent component, in order: the record's `DEFAULT` instance, then a public
+    /// static final `DEFAULT_<COMPONENT>` constant of the component's type. The per-field form exists for
+    /// records that must NOT have a whole-record default because some component has none (an `SmtpConfig` with
+    /// a `DEFAULT` would silently supply a host); each component that has a default declares it, and one that
+    /// does not stays required. Nothing left: [ConfigError.MissingField] naming the key, never "section
+    /// not found" (#822).
+    private static Result<IndexedValue> getDefaultComponentValue(String section,
+                                                                 Class<?> configClass,
                                                                  RecordComponent component,
                                                                  int index) {
         return lookupDefaultField(configClass).flatMap(defaultInstance -> invokeAccessor(defaultInstance, component))
+                                 .orElse(() -> lookupFieldDefault(configClass, component))
                                  .map(value -> new IndexedValue(index, value))
-                                 .toResult(ConfigError.sectionNotFound(configClass.getSimpleName()
-                                                                      + "." + component.getName()));
+                                 .toResult(ConfigError.missingField(section + "." + toSnakeCase(component.getName()),
+                                                                    configClass.getSimpleName()
+                                                                   + "." + component.getName()));
+    }
+
+    private static Option<Object> lookupFieldDefault(Class<?> configClass, RecordComponent component) {
+        var constant = "DEFAULT_" + toSnakeCase(component.getName()).toUpperCase();
+
+        try {
+            var field = configClass.getField(constant);
+            var modifiers = field.getModifiers();
+
+            if (Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers)) {
+                return option(field.get(configClass)).filter(value -> wrapperOf(component.getType()).isInstance(value));
+            }
+        } catch (NoSuchFieldException | IllegalAccessException e) {}
+
+        return none();
+    }
+
+    private static Class<?> wrapperOf(Class<?> type) {
+        return MethodType.methodType(type)
+                         .wrap()
+                         .returnType();
     }
 
     private static Option<Object> invokeAccessor(Object instance, RecordComponent component) {
@@ -585,30 +732,50 @@ public final class ProviderBasedConfigService implements ConfigService {
     }
 
     // --- Option value extraction ---
-    @SuppressWarnings("unchecked")
+    /// #761 — an `Option<X>` this binder cannot bind is a [ConfigError.UnsupportedType], never a
+    /// silent `none()` and never a mistyped value. Two arms used to be silent: a raw `Option` or a
+    /// nested generic (`Option<List<String>>`) was handed `provider.getString(fullKey)` — an
+    /// `Option<String>` in a slot declared as something else, a type error that surfaces at first
+    /// use; and an inner class that is neither primitive, enum nor record bound to `none()`,
+    /// indistinguishable from an absent key. The enumeration over every record the binder is
+    /// handed found no instance of either, so this changes nothing that binds today; it makes the
+    /// next unsupported declaration fail at bind time with its key and type named.
     private Result<Object> extractOptionValue(String section, String tomlKey, Type genericType) {
         var fullKey = section + "." + tomlKey;
 
         if (! (genericType instanceof ParameterizedType paramType)) {
-            return success(provider.getString(fullKey));
+            return unsupportedOptionError(fullKey, genericType);
         }
 
         var typeArgs = paramType.getActualTypeArguments();
 
         if (typeArgs.length != 1 || !(typeArgs[0] instanceof Class<?> innerClass)) {
-            return success(provider.getString(fullKey));
+            return unsupportedOptionError(fullKey,
+                                          typeArgs.length == 1
+                                          ? typeArgs[0]
+                                          : genericType);
         }
 
         return extractOptionalPrimitive(fullKey, innerClass);
     }
 
+    private static Result<Object> unsupportedOptionError(String fullKey, Type innerType) {
+        return ConfigError.unsupportedType(fullKey,
+                                           "Option<" + innerType.getTypeName() + ">")
+                          .result();
+    }
+
     private Result<Object> extractOptionalPrimitive(String fullKey, Class<?> innerClass) {
-        return primitiveParser(innerClass).map(parser -> wrapOptionalParse(fullKey, parser))
+        return primitiveParser(innerClass).map(parser -> wrapOptionalParse(fullKey, innerClass, parser))
                               .or(() -> handleOptionalEnum(fullKey, innerClass));
     }
 
-    private Result<Object> wrapOptionalParse(String fullKey, Fn1<Option<Object>, String> parser) {
-        return success(provider.getString(fullKey).flatMap(parser));
+    /// #1098 — `Option<T>` means the KEY may be absent, not that a value the parser rejects may
+    /// quietly become `none()`: absent → `Success(None)`, malformed → [ConfigError.TypeMismatch].
+    private Result<Object> wrapOptionalParse(String fullKey, Class<?> innerClass, Fn1<Result<Object>, String> parser) {
+        return provider.getString(fullKey)
+                       .fold(() -> success(none()),
+                             raw -> parseNamed(fullKey, innerClass, raw, parser).map(Option::option));
     }
 
     private Result<Object> handleOptionalEnum(String fullKey, Class<?> innerClass) {
@@ -640,8 +807,12 @@ public final class ProviderBasedConfigService implements ConfigService {
     /// it is why this deliberately does NOT use `findDefaultOrError`, which [#lookupNestedRecord]
     /// applies to a bare (non-Option) record component to make a missing section an error.
     private Result<Object> handleOptionalRecord(String fullKey, Class<?> innerClass) {
-        if (!innerClass.isRecord() || !hasSection(fullKey)) {
-            return success(none());
+        if (!innerClass.isRecord()) {
+            return unsupportedOptionError(fullKey, innerClass);
+        }
+
+        if (!hasRecordSection(fullKey)) {
+            return scalarWhereTableExpected(fullKey, innerClass).or(() -> success(none()));
         }
 
         return bindToClass(fullKey, innerClass).map(Option::option);

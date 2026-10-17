@@ -113,7 +113,13 @@ class BlockEncryptorTest {
 
             BlockEncryptor.aesGcm(shortKey, KEY_ID)
                           .onSuccess(_ -> fail("Should fail with invalid key length"))
-                          .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.InvalidKeyLength.class));
+                          .onFailure(cause -> {
+                              assertThat(cause).isInstanceOf(EncryptionError.InvalidKeyLength.class);
+                              // #253 SHOULD-FIX #7: the failure must name the key id an operator needs
+                              // to act on, not just report a byte-length mismatch in the abstract.
+                              assertThat(cause.message()).as("InvalidKeyLength must name the key id")
+                                                         .contains(KEY_ID);
+                          });
         }
 
         @Test
@@ -121,6 +127,39 @@ class BlockEncryptorTest {
             encryptor.encrypt(TEST_DATA)
                      .onFailure(cause -> fail("Encryption failed: " + cause.message()))
                      .onSuccess(encrypted -> assertThat(encrypted.ciphertext()).isNotEqualTo(TEST_DATA));
+        }
+
+        @Test
+        void encrypt_withAad_decrypt_sameAad_roundTrips() {
+            var aad = "253-header-prefix".getBytes();
+
+            encryptor.encrypt(TEST_DATA, aad)
+                     .flatMap(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params(), aad))
+                     .onFailure(cause -> fail("AAD round-trip failed: " + cause.message()))
+                     .onSuccess(decrypted -> assertThat(decrypted).isEqualTo(TEST_DATA));
+        }
+
+        @Test
+        void encrypt_withAad_decrypt_differentAad_failsAuthentication() {
+            var encryptAad = "253-header-prefix".getBytes();
+            var tamperedAad = "253-header-PREFIX".getBytes();
+
+            encryptor.encrypt(TEST_DATA, encryptAad)
+                     .onFailure(cause -> fail("Encryption failed: " + cause.message()))
+                     .onSuccess(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params(), tamperedAad)
+                                                       .onSuccess(_ -> fail("Decryption with a different AAD must fail authentication"))
+                                                       .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class)));
+        }
+
+        @Test
+        void encrypt_withAad_decrypt_withoutAad_failsAuthentication() {
+            var aad = "253-header-prefix".getBytes();
+
+            encryptor.encrypt(TEST_DATA, aad)
+                     .onFailure(cause -> fail("Encryption failed: " + cause.message()))
+                     .onSuccess(encrypted -> encryptor.decrypt(encrypted.ciphertext(), encrypted.params())
+                                                       .onSuccess(_ -> fail("Decryption that drops the AAD used at encryption must fail"))
+                                                       .onFailure(cause -> assertThat(cause).isInstanceOf(EncryptionError.DecryptionFailed.class)));
         }
     }
 

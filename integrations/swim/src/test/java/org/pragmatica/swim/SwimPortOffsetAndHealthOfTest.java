@@ -69,7 +69,7 @@ class SwimPortOffsetAndHealthOfTest {
         @Test
         void handleAnnounce_unknownPeer_storesMemberAtSwimPort() {
             var announce = Announce.announce(NODE_A_INFO, "", 1L);
-            protocol.onMessage(new InetSocketAddress(NODE_A_ADDR.host(), QUIC_PORT + SWIM_OFFSET), announce);
+            protocol.announceFromPinnedSourceForTest(new InetSocketAddress(NODE_A_ADDR.host(), QUIC_PORT + SWIM_OFFSET), announce);
 
             var member = protocol.members().get(NODE_A);
             assertThat(member).as("ANNOUNCE registers the peer").isNotNull();
@@ -90,7 +90,7 @@ class SwimPortOffsetAndHealthOfTest {
                                     .fold(_ -> null, v -> v);
 
             var announce = Announce.announce(NODE_A_INFO, "", 1L);
-            fresh.onMessage(new InetSocketAddress(NODE_A_ADDR.host(), QUIC_PORT), announce);
+            fresh.announceFromPinnedSourceForTest(new InetSocketAddress(NODE_A_ADDR.host(), QUIC_PORT), announce);
 
             var member = fresh.members().get(NODE_A);
             assertThat(member).isNotNull();
@@ -126,7 +126,7 @@ class SwimPortOffsetAndHealthOfTest {
             // Datagram physically arrives from 10.0.0.9 (resolved), gossiped host is
             // advertised-host.invalid. The probe address must use the source IP.
             var sender = new InetSocketAddress("10.0.0.9", QUIC_PORT + SWIM_OFFSET);
-            protocol.onMessage(sender, Announce.announce(NODE_B_INFO, "", 1L));
+            protocol.announceFromPinnedSourceForTest(sender, Announce.announce(NODE_B_INFO, "", 1L));
 
             var member = protocol.members().get(NODE_B);
             assertThat(member).as("ANNOUNCE registers the peer").isNotNull();
@@ -139,20 +139,14 @@ class SwimPortOffsetAndHealthOfTest {
         }
 
         @Test
-        void handleAnnounce_sourceIpAbsent_probeAddressFallsBackToGossipedHost() {
-            // An unresolved sender (no kernel-resolved IP) forces the fallback to the
-            // gossiped hostname (cold-boot static seeds / NAT) — resolution is never
-            // mandatory.
+        void handleAnnounce_sourceIpAbsent_isIgnored_asNothingCanBePinned() {
+            // An unresolved sender has no source IP to pin, so its ANNOUNCE is ignored. (It used to fall back
+            // to the gossiped hostname; the transport always delivers a resolved address, so only a
+            // hand-built sender reaches this.)
             var unresolved = InetSocketAddress.createUnresolved("ignored-host", QUIC_PORT + SWIM_OFFSET);
             protocol.onMessage(unresolved, Announce.announce(NODE_B_INFO, "", 1L));
 
-            var member = protocol.members().get(NODE_B);
-            assertThat(member).as("ANNOUNCE registers the peer").isNotNull();
-            assertThat(member.address().getHostString())
-                .as("with no source IP the probe address falls back to the gossiped host")
-                .isEqualTo("advertised-host.invalid");
-            assertThat(member.address().getPort())
-                .isEqualTo(QUIC_PORT + SWIM_OFFSET);
+            assertThat(protocol.members()).as("an unpinnable ANNOUNCE registers nothing").doesNotContainKey(NODE_B);
         }
     }
 

@@ -4,6 +4,9 @@ import org.pragmatica.cloud.aws.s3.S3Config;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
+
 
 /// Configuration for S3-backed remote storage tier.
 public record RemoteTierConfig(S3Config s3Config, String prefix, long maxBytes) {
@@ -26,7 +29,7 @@ public record RemoteTierConfig(S3Config s3Config, String prefix, long maxBytes) 
     /// capacity limit. Validation is performed here (parse-don't-validate) so construction never
     /// throws: an invalid combination yields a [`Result.failure`].
     public static Result<RemoteTierConfig> remoteTierConfig(S3Config s3Config, String prefix, long maxBytes) {
-        return validate(s3Config, prefix, maxBytes).map(_ -> new RemoteTierConfig(s3Config, prefix, maxBytes));
+        return Result.all(requireS3Config(s3Config), requirePrefix(prefix), requirePositive(maxBytes)).map(RemoteTierConfig::new);
     }
 
     /// Creates a validated remote tier configuration with default "blocks" prefix.
@@ -34,19 +37,18 @@ public record RemoteTierConfig(S3Config s3Config, String prefix, long maxBytes) 
         return remoteTierConfig(s3Config, "blocks", maxBytes);
     }
 
-    private static Result<Boolean> validate(S3Config s3Config, String prefix, long maxBytes) {
-        if (s3Config == null) {
-            return ConfigError.S3_CONFIG_REQUIRED.result();
-        }
+    private static Result<S3Config> requireS3Config(S3Config s3Config) {
+        return option(s3Config).toResult(ConfigError.S3_CONFIG_REQUIRED);
+    }
 
-        if (prefix == null || prefix.isBlank()) {
-            return ConfigError.PREFIX_REQUIRED.result();
-        }
+    private static Result<String> requirePrefix(String prefix) {
+        return option(prefix).filter(value -> !value.isBlank())
+                     .toResult(ConfigError.PREFIX_REQUIRED);
+    }
 
-        if (maxBytes <= 0) {
-            return ConfigError.MAX_BYTES_NOT_POSITIVE.result();
-        }
-
-        return Result.success(true);
+    private static Result<Long> requirePositive(long maxBytes) {
+        return maxBytes > 0
+               ? success(maxBytes)
+               : ConfigError.MAX_BYTES_NOT_POSITIVE.result();
     }
 }

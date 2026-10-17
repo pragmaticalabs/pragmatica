@@ -376,7 +376,7 @@ public class PgConnection implements Connection {
                                                                                                                                     ps)));
     }
 
-    private static boolean isStaleStatementError(Cause cause) {
+    static boolean isStaleStatementError(Cause cause) {
         return cause instanceof SqlError.ServerError serverError && ("42P05".equals(serverError.response().code()) || "26000".equals(serverError.response()
                                                                                                                                                 .code()));
     }

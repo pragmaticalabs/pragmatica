@@ -100,8 +100,8 @@ class RabiaSyncAdoptionQuorumTest {
         void bareMajorityColdStart_activates_whenQuorumMinusOnePeersAnswer() {
             var engine = coldStarted(5);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("2 peer responses + self = 3 of 5 = a majority; requiring a 3rd response demanded 4 live nodes")
@@ -114,7 +114,7 @@ class RabiaSyncAdoptionQuorumTest {
         void threeNodeCluster_activates_onOnePeerResponse() {
             var engine = coldStarted(3);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("1 peer response + self = 2 of 3 = a majority")
@@ -140,8 +140,8 @@ class RabiaSyncAdoptionQuorumTest {
         void fourNodeCluster_activates_onTwoPeerResponses() {
             var engine = coldStarted(4);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("2 responses + self = 3 of 4 = a majority")
@@ -154,7 +154,7 @@ class RabiaSyncAdoptionQuorumTest {
         void twoNodeCluster_activates_onOnePeerResponse() {
             var engine = coldStarted(2);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("1 response + self = 2 of 2 = a majority")
@@ -173,7 +173,7 @@ class RabiaSyncAdoptionQuorumTest {
         void oneResponse_isAMinorityOfFive_andMustNotActivate() throws InterruptedException {
             var engine = coldStarted(5);
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
 
             assertThat(staysInactive(engine))
                 .as("1 response + self = 2 of 5 is a minority — adopting state on it is the bug #660 must not introduce")
@@ -185,31 +185,34 @@ class RabiaSyncAdoptionQuorumTest {
         /// Here self holds phase 42 while both responders are at phase 0: adopting a response would
         /// silently discard a committed phase this node may be the sole surviving witness of.
         ///
-        /// Self is a FLOOR, not an adopted candidate — so the assertion is that NOTHING was installed.
-        /// Adopting self's own persisted snapshot would be its own bug: `persistence.save` never runs on
-        /// commit, so that snapshot lags the live state machine by an unbounded amount and installing it
-        /// would overwrite live state with a staler picture.
+        /// Self is a FLOOR, not an adopted candidate — so the assertion is that the RESPONDERS' snapshot
+        /// was not installed. What IS installed is self's own durable checkpoint: #1020 installs it
+        /// when a cold process activates on its own state over an EMPTY live store, and no older peer
+        /// snapshot may overwrite that recovered committed prefix. (Before #1020 this asserted that NOTHING was installed, which
+        /// holds for a resync from ACTIVE — where the live phase is at or past the persisted one — and
+        /// not for a fresh process whose committed history sat on disk.)
         ///
         /// The responders carry a NON-EMPTY snapshot on purpose. `restoreState` skips `restoreSnapshot`
         /// entirely when the adopted state's snapshot is empty, so stale-but-EMPTY responders would leave
-        /// nothing installed whether the floor held or not, and this assertion would pass against an
-        /// engine with no floor at all. A mutation run caught exactly that: with the floor deleted, this
-        /// test stayed green until the responders were given real bytes to install.
+        /// the own-snapshot install as the last one whether the floor held or not, and this assertion
+        /// would pass against an engine with no floor at all. A mutation run caught exactly that: with
+        /// the floor deleted, this test stayed green until the responders were given real bytes to install.
         @Test
         void ownMoreAdvancedState_isNotRegressed_byStalerResponses() {
             var stateMachine = new RecordingStateMachine();
             var engine = coldStarted(5, stateMachine, persistedAt(Phase.phase(42), SELF_SNAPSHOT));
             var stale = SavedState.<TestCommand>savedState(PEER_SNAPSHOT, Phase.phase(10), List.of());
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale, ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale, ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("the node must still ACTIVATE — refusing to regress is not a reason to stay dead")
                 .isTrue();
             assertThat(stateMachine.lastRestored())
-                .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed")
-                .isNull();
+                .as("self at phase 42 outranks both responders at phase 10, so their snapshot must NOT be installed — self's own is")
+                .isEqualTo(SELF_SNAPSHOT);
+            assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(42));
         }
 
         /// The discriminator for the test above: when a RESPONSE is the most advanced state, it must be
@@ -220,11 +223,11 @@ class RabiaSyncAdoptionQuorumTest {
             var stateMachine = new RecordingStateMachine();
             var engine = coldStarted(5, stateMachine, persistedAt(Phase.phase(7), SELF_SNAPSHOT));
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
             engine.processSyncResponse(new SyncResponse<>(NODE_3,
                                                           SavedState.savedState(PEER_SNAPSHOT,
                                                                                 Phase.phase(99),
-                                                                                List.of())));
+                                                                                List.of()), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("engine must reach ACTIVE so the adopted candidate is observable")
@@ -243,11 +246,11 @@ class RabiaSyncAdoptionQuorumTest {
             var stateMachine = new RecordingStateMachine();
             var engine = coldStarted(5, stateMachine, persistedAt(Phase.phase(5), SELF_SNAPSHOT));
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty()));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, SavedState.empty(), ResponderState.COLD));
             engine.processSyncResponse(new SyncResponse<>(NODE_3,
                                                           SavedState.savedState(PEER_SNAPSHOT,
                                                                                 Phase.phase(5),
-                                                                                List.of())));
+                                                                                List.of()), ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("engine must reach ACTIVE so the adopted candidate is observable")
@@ -291,8 +294,8 @@ class RabiaSyncAdoptionQuorumTest {
 
             var stale = SavedState.<TestCommand>savedState(PEER_SNAPSHOT, Phase.phase(10), List.of());
 
-            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale));
-            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale));
+            engine.processSyncResponse(new SyncResponse<>(NODE_2, stale, ResponderState.COLD));
+            engine.processSyncResponse(new SyncResponse<>(NODE_3, stale, ResponderState.COLD));
 
             assertThat(awaitActive(engine))
                 .as("the node must still ACTIVATE — holding its own history is not a reason to stay dead")
@@ -306,10 +309,12 @@ class RabiaSyncAdoptionQuorumTest {
                 .isEqualTo("42/10");
 
             // HALF TWO — CHANGED by #660. D9 previously restored anyway, discarding the node's own
-            // committed history. It now holds that history and installs nothing.
+            // committed history. It now holds that history: the cluster's older snapshot is not
+            // installed, and its own checkpoint is (restored at boot, #1390; own-state install, #1020).
             assertThat(stateMachine.lastRestored())
                 .as("the node must NOT regress onto the cluster's older state — that is the ratified behaviour #660 supersedes")
-                .isNull();
+                .isEqualTo(SELF_SNAPSHOT);
+            assertThat(engine.currentPhaseForTesting()).isEqualTo(Phase.phase(42));
         }
     }
 
@@ -349,7 +354,7 @@ class RabiaSyncAdoptionQuorumTest {
         engines.add(engine);
         engine.clusterState(ClusterStateNotification.active());
 
-        assertThat(awaitCondition(() -> network.getMessages()
+        assertThat(awaitCondition(() -> (clusterSize == 1 && engine.isActive()) || network.getMessages()
                                                .stream()
                                                .anyMatch(SyncRequest.class::isInstance)))
             .as("engine must have started its sync round before responses are delivered")

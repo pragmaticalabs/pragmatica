@@ -5,7 +5,7 @@
     <parent>
         <artifactId>net</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -73,4 +73,18 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- #2184: WebSocketBufferLeakTest installs Netty's leak-detector factory in a static initialiser,
+                         which takes effect only before any buffer class initialises: every test class gets a fresh JVM. -->
+                    <reuseForks>false</reuseForks>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

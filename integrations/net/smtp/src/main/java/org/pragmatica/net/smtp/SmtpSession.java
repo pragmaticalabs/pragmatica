@@ -18,6 +18,7 @@ package org.pragmatica.net.smtp;
 import java.util.List;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 
 import io.netty.channel.Channel;
@@ -38,8 +39,16 @@ class SmtpSession {
     private final SmtpMessage message;
     private final Promise<String> promise;
     private final Option<SslContext> sslContext;
-    private Channel channel;
-    private State state;
+    /// Written on the event loop while the pipeline is built and read there for every command, but
+    /// also read off it by [#onTimeout] — whose whole purpose is to close this socket. A plain
+    /// field lets that read see `null` and silently skip the close, which is the leak that method
+    /// documents itself as preventing.
+    private volatile Channel channel;
+    /// Written on the event loop, but read off it by [#onTimeout] on the timer thread (#1203). Volatile for
+    /// the same reason as [#channel]: a stale read there could re-run the terminal path on a finished session.
+    /// Who wins a race between a reply and the timeout is decided by the promise's own compare-and-set, not
+    /// by this field, so volatile is about visibility only.
+    private volatile State state;
     private int recipientIndex;
 
     enum State {
@@ -91,7 +100,7 @@ class SmtpSession {
 
     private void handleGreeting(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.ConnectionFailed("Server rejected connection: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "Server rejected connection: " + code + " " + text));
 
             return;
         }
@@ -102,7 +111,7 @@ class SmtpSession {
 
     private void handleEhlo(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.ProtocolError("EHLO rejected: " + code + " " + text));
+            failSession(new SmtpError.ProtocolError(code, "EHLO rejected: " + code + " " + text));
 
             return;
         }
@@ -123,7 +132,7 @@ class SmtpSession {
 
     private void handleStartTls(int code, String text) {
         if (code != 220) {
-            failSession(new SmtpError.TlsFailed("STARTTLS rejected: " + code + " " + text));
+            failSession(new SmtpError.TlsFailed(code, "STARTTLS rejected: " + code + " " + text));
 
             return;
         }
@@ -153,7 +162,7 @@ class SmtpSession {
 
     private void handleAuth(int code, String text) {
         if (code != 235) {
-            failSession(new SmtpError.AuthFailed("Authentication failed: " + code + " " + text));
+            failSession(new SmtpError.AuthFailed(code, "Authentication failed: " + code + " " + text));
 
             return;
         }
@@ -168,7 +177,7 @@ class SmtpSession {
 
     private void handleMailFrom(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.Rejected("MAIL FROM rejected: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "MAIL FROM rejected: " + code + " " + text));
 
             return;
         }
@@ -186,7 +195,7 @@ class SmtpSession {
 
     private void handleRcptTo(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.Rejected("RCPT TO rejected: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "RCPT TO rejected: " + code + " " + text));
 
             return;
         }
@@ -206,7 +215,7 @@ class SmtpSession {
 
     private void handleData(int code, String text) {
         if (code != 354) {
-            failSession(new SmtpError.Rejected("DATA rejected: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "DATA rejected: " + code + " " + text));
 
             return;
         }
@@ -225,7 +234,7 @@ class SmtpSession {
 
     private void handleDataContent(int code, String text) {
         if (!isSuccess(code)) {
-            failSession(new SmtpError.Rejected("Message rejected: " + code + " " + text));
+            failSession(new SmtpError.Rejected(code, "Message rejected: " + code + " " + text));
 
             return;
         }
@@ -257,11 +266,21 @@ class SmtpSession {
         }
     }
 
-    /// Called when an exception occurs on the channel.
+    /// Called when an exception occurs on the channel — a transport error or a malformed reply.
+    /// The channel is closed with the promise: a reply this client cannot parse is not a reason to
+    /// keep the socket (review of #1075, SF-2).
     void onException(Throwable cause) {
         if (state != State.DONE) {
-            promise.fail(new SmtpError.ConnectionFailed("Connection error: " + cause.getMessage()));
-            state = State.DONE;
+            failSession(new SmtpError.ConnectionFailed("Connection error: " + cause.getMessage()));
+        }
+    }
+
+    /// Called when the command timeout fires: fails the promise and closes the channel, so a
+    /// timed-out session does not leave its socket open until the client is closed.
+    @Contract
+    void onTimeout(SmtpError.Timeout timeout) {
+        if (state != State.DONE) {
+            failSession(timeout);
         }
     }
 
@@ -277,8 +296,11 @@ class SmtpSession {
         option(channel).filter(Channel::isOpen).onPresent(Channel::close);
     }
 
+    /// A positive completion is 2yz. A 3yz where a completion is expected (`354` is matched
+    /// exactly where it belongs, at DATA) is a reply this client cannot act on and is refused,
+    /// not treated as success (review of #1075, NIT-1).
     private static boolean isSuccess(int code) {
-        return code >= 200 && code < 400;
+        return code >= 200 && code < 300;
     }
 
     private String extractLocalHostname() {

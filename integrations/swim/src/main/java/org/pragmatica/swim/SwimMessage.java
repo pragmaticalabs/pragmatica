@@ -17,6 +17,7 @@ package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -50,10 +51,16 @@ public sealed interface SwimMessage {
 
     /// UDP datagram broadcast by a joining node so existing members can register it
     /// without waiting for the next Ping/Ack cycle. Carries the full `NodeInfo`
-    /// (id, address, role, labels) and cluster name for membership gating.
-    record Announce(NodeInfo nodeInfo, String clusterName, long incarnation) implements SwimMessage {
+    /// (id, address, role, labels), cluster name for membership gating, and the sender's
+    /// per-process random `bootToken` (`0` = none; compared by equality only).
+    record Announce(NodeInfo nodeInfo, String clusterName, long incarnation, long bootToken) implements SwimMessage {
+        /// An ANNOUNCE carrying no process token (`0`): never token-gated.
         public static Announce announce(NodeInfo nodeInfo, String clusterName, long incarnation) {
-            return new Announce(nodeInfo, clusterName, incarnation);
+            return new Announce(nodeInfo, clusterName, incarnation, 0L);
+        }
+
+        public static Announce announce(NodeInfo nodeInfo, String clusterName, long incarnation, long bootToken) {
+            return new Announce(nodeInfo, clusterName, incarnation, bootToken);
         }
     }
 
@@ -74,14 +81,57 @@ public sealed interface SwimMessage {
         }
     }
 
-    /// A single membership update disseminated via piggyback.
+    /// Explicit refusal of an ANNOUNCE by the boot-token gate (terminal removal): tells the announcing
+    /// process that its NodeId belongs to a retired or different process, so it can exit instead of
+    /// announcing forever. `refused` is the NodeId the refusal is about.
+    record IdentityRefused(NodeId from, NodeId refused, String reason) implements SwimMessage {
+        public static IdentityRefused identityRefused(NodeId from, NodeId refused, String reason) {
+            return new IdentityRefused(from, refused, reason);
+        }
+    }
+
+    /// A single membership update disseminated via piggyback. `bootToken` is the subject's
+    /// per-process random boot token as known to the sender (`0` = unknown; equality only).
+    /// `labels` are the subject's descriptor labels (role/source) as known to the sender — empty
+    /// when the sender learned the subject without them. Carrying them is what lets a peer that
+    /// learns the subject ONLY by gossip still classify its role (a core counts only with an
+    /// explicit `role=core`).
     @Codec
-    record MembershipUpdate(NodeId nodeId, MemberState state, long incarnation, InetSocketAddress address) {
+    record MembershipUpdate(NodeId nodeId,
+                            MemberState state,
+                            long incarnation,
+                            InetSocketAddress address,
+                            long bootToken,
+                            Map<String, String> labels) {
+        /// Compact constructor ensures labels are an immutable copy.
+        public MembershipUpdate {
+            labels = Map.copyOf(labels);
+        }
+
+        /// An update carrying no process token (`0`) and no labels: never token-gated.
         public static MembershipUpdate membershipUpdate(NodeId nodeId,
                                                         MemberState state,
                                                         long incarnation,
                                                         InetSocketAddress address) {
-            return new MembershipUpdate(nodeId, state, incarnation, address);
+            return new MembershipUpdate(nodeId, state, incarnation, address, 0L, Map.of());
+        }
+
+        /// An update carrying a process token and no labels.
+        public static MembershipUpdate membershipUpdate(NodeId nodeId,
+                                                        MemberState state,
+                                                        long incarnation,
+                                                        InetSocketAddress address,
+                                                        long bootToken) {
+            return new MembershipUpdate(nodeId, state, incarnation, address, bootToken, Map.of());
+        }
+
+        public static MembershipUpdate membershipUpdate(NodeId nodeId,
+                                                        MemberState state,
+                                                        long incarnation,
+                                                        InetSocketAddress address,
+                                                        long bootToken,
+                                                        Map<String, String> labels) {
+            return new MembershipUpdate(nodeId, state, incarnation, address, bootToken, labels);
         }
     }
 }

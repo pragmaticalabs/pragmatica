@@ -15,6 +15,9 @@
  */
 package org.pragmatica.dht;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
@@ -37,17 +40,23 @@ public final class DHTTopologyListener {
 
     private final DHTNode node;
     private final Option<DHTRebalancer> rebalancer;
+    private final Option<DHTAntiEntropy> antiEntropy;
+    /// Nodes seen entering DEPARTING and not since recovered or rejoined — the membership half of "who may
+    /// send a departure push" (#1818 round 3). Kept past the node's removal: its push can land after the
+    /// ring has pruned it.
+    private final Set<NodeId> departing = ConcurrentHashMap.newKeySet();
 
-    private DHTTopologyListener(DHTNode node, Option<DHTRebalancer> rebalancer) {
+    private DHTTopologyListener(DHTNode node, Option<DHTRebalancer> rebalancer, Option<DHTAntiEntropy> antiEntropy) {
         this.node = node;
         this.rebalancer = rebalancer;
+        this.antiEntropy = antiEntropy;
     }
 
     /// Create a topology listener for the given DHT node without rebalancer.
     ///
     /// @param node the local DHT node whose ring will be updated
     public static DHTTopologyListener dhtTopologyListener(DHTNode node) {
-        return new DHTTopologyListener(node, Option.none());
+        return new DHTTopologyListener(node, Option.none(), Option.none());
     }
 
     /// Create a topology listener for the given DHT node with rebalancer.
@@ -55,16 +64,34 @@ public final class DHTTopologyListener {
     /// @param node       the local DHT node whose ring will be updated
     /// @param rebalancer rebalancer to trigger re-replication on node departure
     public static DHTTopologyListener dhtTopologyListener(DHTNode node, DHTRebalancer rebalancer) {
-        return new DHTTopologyListener(node, Option.some(rebalancer));
+        return new DHTTopologyListener(node, Option.some(rebalancer), Option.none());
     }
 
-    /// Handle a node-joined decision by adding the node to the consistent hash ring.
+    /// Create a topology listener with rebalancer and anti-entropy: a join triggers an immediate
+    /// anti-entropy round (issue #420).
+    ///
+    /// @param node        the local DHT node whose ring will be updated
+    /// @param rebalancer  rebalancer to trigger re-replication on node departure
+    /// @param antiEntropy anti-entropy process to run once when a node joins the ring
+    public static DHTTopologyListener dhtTopologyListener(DHTNode node,
+                                                          DHTRebalancer rebalancer,
+                                                          DHTAntiEntropy antiEntropy) {
+        return new DHTTopologyListener(node, Option.some(rebalancer), Option.some(antiEntropy));
+    }
+
+    /// Handle a node-joined decision by adding the node to the consistent hash ring, then run one
+    /// anti-entropy round: the ring now counts the joiner toward the replication factor of every
+    /// partition it gained, while the joiner holds none of them until it pulls. The round runs on
+    /// every node (the joiner's own `NodeJoined` included), and is idempotent with the periodic
+    /// cycle — nodes that gained nothing pull nothing (issue #420).
     @Contract
     public void onNodeJoined(MembershipDecision.NodeJoined event) {
         var addedNodeId = event.nodeId();
 
+        departing.remove(addedNodeId);
         log.info("DHT: Node added {}, updating ring", addedNodeId.id());
-        node.ring().addNode(addedNodeId);
+        node.changeRing(ring -> ring.addNode(addedNodeId));
+        antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
     }
 
     /// Handle a node-removed decision by removing the node from the consistent hash ring
@@ -72,12 +99,25 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
         removeFromRing(event.nodeId());
+        discardIfSelfRemovedWhileRunning(event.nodeId());
     }
 
     /// Handle a node-decommissioned decision identically to node-removed for ring purposes.
     @Contract
     public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {
         removeFromRing(event.nodeId());
+        discardIfSelfRemovedWhileRunning(event.nodeId());
+    }
+
+    /// A committed removal of THIS node while it is not departing — it was cut off (a pause, a partition) rather
+    /// than drained — leaves it holding a store no tombstone issued since has reached (#1777 track 3, owner ruling
+    /// 2026-10-03). The node drops that store, so it rejoins empty, as a restarted node does. A DEPARTING node keeps
+    /// its store: its departure push hands that store off before it halts, and it prunes itself from its own ring
+    /// on the DEPARTING edge (seed-500), so "self left the ring" alone cannot be the trigger.
+    private void discardIfSelfRemovedWhileRunning(NodeId removedNodeId) {
+        if (removedNodeId.equals(node.nodeId()) && !departing.contains(removedNodeId)) {
+            node.discardStoreAfterSelfRemoval();
+        }
     }
 
     /// Prune a node from the ring at the moment it ENTERS the membership `Departing` state
@@ -99,6 +139,7 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeDeparting(NodeId departingNodeId) {
         log.info("DHT: Node {} entering DEPARTING, pruning ring ahead of halt", departingNodeId.id());
+        departing.add(departingNodeId);
         removeFromRing(departingNodeId);
     }
 
@@ -113,7 +154,16 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeRecovered(NodeId recoveredNodeId) {
         log.info("DHT: Node {} recovered from DEPARTING, re-adding to ring", recoveredNodeId.id());
-        node.ring().addNode(recoveredNodeId);
+        departing.remove(recoveredNodeId);
+        node.changeRing(ring -> ring.addNode(recoveredNodeId));
+        // Same shape as a join: the re-added node counts toward RF again; a round settles what it
+        // missed while pruned (issue #420).
+        antiEntropy.onPresent(DHTAntiEntropy::synchronizeNow);
+    }
+
+    /// Whether `nodeId` was seen entering DEPARTING and has not since recovered or rejoined.
+    public boolean isDeparting(NodeId nodeId) {
+        return departing.contains(nodeId);
     }
 
     /// Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown
@@ -141,9 +191,13 @@ public final class DHTTopologyListener {
     /// transient QUIC flap. Genuinely-dead peers reach `NodeRemoved` via SWIM failure
     /// detection + reconciler decision within seconds; transient flaps reconnect and
     /// preserve ring locality.
+    ///
+    /// A removal can make this node a replica of partitions it never held (#1777 track 2): those become
+    /// catching up, and one anti-entropy round starts filling them at once rather than at the next tick.
     private void removeFromRing(NodeId removedNodeId) {
         log.info("DHT: Node removed {}, updating ring", removedNodeId.id());
-        node.ring().removeNode(removedNodeId);
+        node.changeRing(ring -> ring.removeNode(removedNodeId));
         rebalancer.onPresent(r -> r.onNodeRemoved(removedNodeId));
+        antiEntropy.onPresent(DHTAntiEntropy::catchUpNow);
     }
 }

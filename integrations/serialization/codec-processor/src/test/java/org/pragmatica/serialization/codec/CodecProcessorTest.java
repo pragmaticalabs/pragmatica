@@ -5,6 +5,8 @@ import com.google.testing.compile.JavaFileObjects;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import org.pragmatica.serialization.SliceCodec;
+
 import static com.google.testing.compile.CompilationSubject.assertThat;
 import static com.google.testing.compile.Compiler.javac;
 
@@ -93,7 +95,7 @@ class CodecProcessorTest {
                 import org.pragmatica.serialization.Codec;
 
                 @Codec
-                public enum Color { RED, GREEN, BLUE }
+                public enum Color { RED, GREEN, BLUE, UNKNOWN }
                 """);
 
             var compilation = compileWith(source);
@@ -105,9 +107,87 @@ class CodecProcessorTest {
             assertThat(compilation).generatedSourceFile("com.example.ColorCodec")
                                    .contentsAsUtf8String()
                                    .contains("SliceCodec.writeCompact(buf, value.ordinal());");
+            // #964: the bounds-checked read, NOT the raw values()[readCompact(buf)] index this
+            // replaced. The literal is asserted because the generated string IS the wire behaviour —
+            // an ordinal past values() must reach the sentinel rather than throw AIOOBE into a
+            // boundary that drops the message.
             assertThat(compilation).generatedSourceFile("com.example.ColorCodec")
                                    .contentsAsUtf8String()
-                                   .contains("Color.values()[SliceCodec.readCompact(buf)]");
+                                   .contains("SliceCodec.readEnum(buf, Color.values(), Color.UNKNOWN)");
+            assertThat(compilation).generatedSourceFile("com.example.ColorCodec")
+                                   .contentsAsUtf8String()
+                                   .doesNotContain("values()[SliceCodec.readCompact(buf)]");
+        }
+
+        /// #964: the processor REFUSES an enum that cannot represent a value it does not know.
+        ///
+        /// An error rather than a warning, and rejected here rather than left to fail later inside
+        /// generated source: the generated `readBody` references `X.UNKNOWN`, so without this the
+        /// author's diagnostic would be "cannot find symbol" pointing at a file they did not write.
+        @Test
+        void enumCodec_failsCompilation_whenSentinelIsMissing() {
+            var source = JavaFileObjects.forSourceString("com.example.NoSentinel",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public enum NoSentinel { RED, GREEN }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("must declare UNKNOWN as its LAST constant");
+            assertThat(compilation).hadErrorContaining("com.example.NoSentinel");
+        }
+
+        /// LAST is the load-bearing half of the rule, so it is enforced rather than merely documented.
+        /// A sentinel in the middle silently REMAPS every constant after it onto other legitimate
+        /// values when an older node reads them — corruption, which is strictly worse than the
+        /// unknown-value case the sentinel exists to handle.
+        @Test
+        void enumCodec_failsCompilation_whenSentinelIsNotLast() {
+            var source = JavaFileObjects.forSourceString("com.example.SentinelInMiddle",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public enum SentinelInMiddle { RED, UNKNOWN, GREEN }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("must declare UNKNOWN as its LAST constant");
+        }
+
+        /// The nested/sealed and @CodecFor paths call `generateEnumCodec` directly rather than through
+        /// `processEnum`, so each needed its own guard. Without this test a nested enum could slip past
+        /// the rule while the top-level tests stayed green — the same shape as a check that examines a
+        /// smaller space than the claim it supports.
+        @Test
+        void enumCodec_failsCompilation_whenNestedSentinelIsMissing() {
+            var source = JavaFileObjects.forSourceString("com.example.Holder",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec
+                public record Holder(String name, Holder.Kind kind) {
+                    @Codec
+                    enum Kind { A, B }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("must declare UNKNOWN as its LAST constant");
         }
     }
 
@@ -137,6 +217,104 @@ class CodecProcessorTest {
             assertThat(compilation).generatedSourceFile("com.example.Shape_CircleCodec");
             assertThat(compilation).generatedSourceFile("com.example.Shape_RectCodec");
         }
+
+        /// #1633: a record field typed by a `@Codec` sealed interface. The generated record codec used to call
+        /// `ShapeCodec`, which the processor never emits (only the permitted subtypes get codecs), so the
+        /// generated source did not compile. The field is now dispatched by its runtime subtype's tag, and a
+        /// value of each subtype survives a round trip through a real [SliceCodec].
+        @Test
+        @SuppressWarnings("unchecked")
+        void recordWithSealedInterfaceField_compiles_andRoundTripsEachSubtype() throws Exception {
+            var drawingSource = JavaFileObjects.forSourceString("com.example.Drawing",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.Codec;
+
+                @Codec(tag = 102)
+                public record Drawing(String name, Shape shape) {}
+                """);
+            var compilation = compileWith(SHAPE_SOURCE, drawingSource);
+
+            assertThat(compilation).succeeded();
+
+            var loader = classLoaderOf(compilation);
+            var codecs = (java.util.List<SliceCodec.TypeCodec<?>>) loader.loadClass("com.example.ExampleCodecs")
+                                                                        .getField("CODECS")
+                                                                        .get(null);
+            var codec = SliceCodec.sliceCodec(codecs);
+            var circle = loader.loadClass("com.example.Shape$Circle").getConstructor(double.class).newInstance(2.5);
+            var rect = loader.loadClass("com.example.Shape$Rect").getConstructor(double.class, double.class).newInstance(3.0, 4.0);
+            var shapeType = loader.loadClass("com.example.Shape");
+            var drawingType = loader.loadClass("com.example.Drawing");
+
+            for (var shape : java.util.List.of(circle, rect)) {
+                var drawing = drawingType.getConstructor(String.class, shapeType).newInstance("d", shape);
+                var buf = io.netty.buffer.Unpooled.buffer();
+
+                codec.write(buf, drawing);
+                Object decoded = codec.read(buf);
+
+                org.junit.jupiter.api.Assertions.assertEquals(drawing, decoded);
+            }
+        }
+    }
+
+    private static final javax.tools.JavaFileObject SHAPE_SOURCE = JavaFileObjects.forSourceString("com.example.Shape",
+        """
+        package com.example;
+
+        import org.pragmatica.serialization.Codec;
+
+        @Codec
+        public sealed interface Shape permits Shape.Circle, Shape.Rect {
+            @Codec(tag = 100)
+            record Circle(double radius) implements Shape {}
+
+            @Codec(tag = 101)
+            record Rect(double width, double height) implements Shape {}
+        }
+        """);
+
+    /// Child-first over the compilation's class output for the test's own `com.example` types, so the
+    /// generated codecs link against the types they were compiled with; everything else comes from the
+    /// test classpath, so the codecs and this test share one [SliceCodec].
+    private static ClassLoader classLoaderOf(Compilation compilation) throws java.io.IOException {
+        var classes = new java.util.HashMap<String, byte[]>();
+
+        for (var file : compilation.generatedFiles()) {
+            if (file.getKind() == javax.tools.JavaFileObject.Kind.CLASS) {
+                var path = file.toUri().getPath();
+                var binaryName = path.substring(path.indexOf("CLASS_OUTPUT/") + "CLASS_OUTPUT/".length(),
+                                                path.length() - ".class".length())
+                                     .replace('/', '.');
+
+                try (var in = file.openInputStream()) {
+                    classes.put(binaryName, in.readAllBytes());
+                }
+            }
+        }
+
+        return new ClassLoader(CodecProcessorTest.class.getClassLoader()) {
+            @Override
+            protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+                synchronized (getClassLoadingLock(name)) {
+                    var loaded = findLoadedClass(name);
+                    var bytes = classes.get(name);
+
+                    if (loaded == null && bytes != null && name.startsWith("com.example.")) {
+                        loaded = defineClass(name, bytes, 0, bytes.length);
+                    }
+                    if (loaded == null) {
+                        return super.loadClass(name, resolve);
+                    }
+                    if (resolve) {
+                        resolveClass(loaded);
+                    }
+                    return loaded;
+                }
+            }
+        };
     }
 
     @Nested
@@ -170,7 +348,7 @@ class CodecProcessorTest {
                 import org.pragmatica.serialization.Codec;
 
                 @Codec
-                public enum Role { ADMIN, USER }
+                public enum Role { ADMIN, USER, UNKNOWN }
                 """);
             var recordSource = JavaFileObjects.forSourceString("com.example.Account",
                 """
@@ -355,7 +533,7 @@ class CodecProcessorTest {
                 """
                 package com.example;
 
-                public enum ExternalEnum { A, B, C }
+                public enum ExternalEnum { A, B, C, UNKNOWN }
                 """);
             var source = JavaFileObjects.forSourceString("com.example.Wrapper",
                 """

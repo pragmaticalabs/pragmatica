@@ -48,6 +48,15 @@ public final class IntrinsicConfigProvider implements ConfigurationProvider {
         return values.keySet();
     }
 
+    /// Explicit override, though it matches [ConfigurationProvider#staticKeys()]'s default: this
+    /// provider IS the static/file-backed layer — a slice's own `resources.toml`, flattened once
+    /// at load — and no dynamic/environmental source is ever wrapped into this type, so every key
+    /// held here counts.
+    @Override
+    public Set<String> staticKeys() {
+        return keys();
+    }
+
     @Override
     public Map<String, String> asMap() {
         return new LinkedHashMap<>(values);

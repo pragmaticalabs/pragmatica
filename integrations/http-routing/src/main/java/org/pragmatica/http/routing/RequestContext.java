@@ -33,6 +33,16 @@ public interface RequestContext extends HttpRequest {
         return path();
     }
 
+    /// #772: parse the request body as JSON, wrapping any failure — a missing body, malformed
+    /// JSON, or a type mismatch — as a typed 400 [org.pragmatica.http.HttpError] naming what was
+    /// expected, exactly mirroring [PathParameter#mapped] (#397): a body the client sent wrong is
+    /// a CLIENT error, never the framework's [ErrorMapper#defaultMapper] 500. A failure that
+    /// occurs AFTER a successful parse (domain validation performed by the handler itself) does
+    /// not go through this method and is unaffected.
+    default <T> Result<T> jsonBody(TypeToken<T> type) {
+        return fromJson(type).mapError(cause -> HttpStatus.BAD_REQUEST.with(cause));
+    }
+
     /// Request headers as a single-valued map (first value per name). Derived from [#headers].
     default Map<String, String> requestHeaders() {
         return headers().asMap()

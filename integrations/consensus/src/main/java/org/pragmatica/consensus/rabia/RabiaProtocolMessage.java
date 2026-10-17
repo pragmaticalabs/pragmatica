@@ -21,6 +21,7 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaPersistence.SavedState;
 import org.pragmatica.messaging.StreamType;
+import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.Codec;
 
 
@@ -34,21 +35,62 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
 
     /// Synchronous protocol messages (part of the consensus rounds).
     sealed interface Synchronous extends RabiaProtocolMessage {
-        /// Initial proposal from a node.
-        record Propose<C extends Command>(NodeId sender, Phase phase, Batch<C> value) implements Synchronous {}
+        /// One immutable proposal for a log slot in a fixed voter epoch. `epoch` is the sender's voter
+        /// epoch for this slot; a carried `reconfiguration` names its own base epoch (Rabia §4).
+        record Propose<C extends Command>(NodeId sender,
+                                          long epoch,
+                                          Phase phase,
+                                          Batch<C> value,
+                                          Option<ReconfigurationCommand> reconfiguration) implements Synchronous {
+            public Propose(NodeId sender, Phase phase, Batch<C> value) {
+                this(sender, 0, phase, value, Option.none());
+            }
 
-        /// Round 1 vote message.
-        record VoteRound1(NodeId sender, Phase phase, StateValue stateValue) implements Synchronous {}
+            public Propose(NodeId sender, long epoch, Phase phase, Batch<C> value) {
+                this(sender, epoch, phase, value, Option.none());
+            }
+        }
 
-        /// Round 2 vote message.
-        record VoteRound2(NodeId sender, Phase phase, StateValue stateValue) implements Synchronous {}
+        record VoteRound1(NodeId sender, long epoch, Phase phase, long round, StateValue stateValue) implements Synchronous {
+            public VoteRound1(NodeId sender, Phase phase, StateValue stateValue) {
+                this(sender, 0, phase, 0, stateValue);
+            }
 
-        /// Decision broadcast message.
-        record Decision<C extends Command>(NodeId sender, Phase phase, StateValue stateValue, Batch<C> value) implements Synchronous {}
+            public VoteRound1(NodeId sender, Phase phase, long round, StateValue stateValue) {
+                this(sender, 0, phase, round, stateValue);
+            }
+        }
+
+        record VoteRound2(NodeId sender, long epoch, Phase phase, long round, StateValue stateValue) implements Synchronous {
+            public VoteRound2(NodeId sender, Phase phase, StateValue stateValue) {
+                this(sender, 0, phase, 0, stateValue);
+            }
+
+            public VoteRound2(NodeId sender, Phase phase, long round, StateValue stateValue) {
+                this(sender, 0, phase, round, stateValue);
+            }
+        }
+
+        record Decision<C extends Command>(NodeId sender,
+                                           long epoch,
+                                           Phase phase,
+                                           StateValue stateValue,
+                                           Batch<C> value,
+                                           Option<ReconfigurationCommand> reconfiguration) implements Synchronous {
+            public Decision(NodeId sender, Phase phase, StateValue stateValue, Batch<C> value) {
+                this(sender, 0, phase, stateValue, value, Option.none());
+            }
+
+            public Decision(NodeId sender, long epoch, Phase phase, StateValue stateValue, Batch<C> value) {
+                this(sender, epoch, phase, stateValue, value, Option.none());
+            }
+        }
 
         /// State synchronization response. Travels on the dedicated SYNC lane (not CONSENSUS) so
         /// it is not head-of-line-blocked by consensus round traffic during a joiner's catch-up.
-        record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state) implements Synchronous {
+        /// `responder` says whether `state` came from a live engine or a stopped/syncing one (#667);
+        /// the adoption rule in `RabiaEngine` weighs the two differently.
+        record SyncResponse<C extends Command>(NodeId sender, SavedState<C> state, ResponderState responder) implements Synchronous {
             @Override
             public StreamType streamType() {
                 return StreamType.SYNC;
@@ -58,8 +100,29 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
 
     /// Asynchronous protocol messages (outside consensus rounds).
     sealed interface Asynchronous extends RabiaProtocolMessage {
+        /// Requests retained ballots for one binary round of an unfinished slot.
+        record RoundRequest(NodeId sender, long epoch, Phase phase, long round) implements Asynchronous {
+            public RoundRequest(NodeId sender, Phase phase, long round) {
+                this(sender, 0, phase, round);
+            }
+        }
+
+        /// Asks the other voters to carry `target` as a Rabia §4 command computed from voter epoch `epoch`.
+        record ReconfigurationRequest(NodeId sender, long epoch, ClusterConfig target) implements Asynchronous {}
+
+        /// Genesis view agreement (#1526). A core whose genesis is pending announces its `view` in its
+        /// `round`; a core whose electorate is already formed answers with the configuration that governs
+        /// it in `formed`.
+        record GenesisAnnouncement(NodeId sender,
+                                   long round,
+                                   Option<ClusterConfig> view,
+                                   Option<VoterConfiguration> formed) implements Asynchronous {}
+
         /// State synchronization request. Travels on the dedicated SYNC lane (not CONSENSUS) so a
         /// far-behind joiner's SyncRequest retries do not flood the consensus round traffic.
+        /// Explicit refusal: this responder cannot encode a bounded full-state reply.
+        record SyncRejected(NodeId sender, long epoch) implements Asynchronous {}
+
         record SyncRequest(NodeId sender) implements Asynchronous {
             @Override
             public StreamType streamType() {
@@ -68,6 +131,10 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
         }
 
         /// Distribute a new batch to all nodes.
-        record NewBatch<C extends Command>(NodeId sender, Batch<C> batch) implements Asynchronous {}
+        /// #2011: NOT offline-buffered. The transport's offline buffer re-delivers a frame on reattach with no time limit,
+        /// so a NewBatch could arrive minutes after its slot decided -- far outside any bounded committed-batch window --
+        /// and re-queue a committed batch. A NewBatch is an optimisation: a missed one is repaired by the proposals that
+        /// carry the batch ([RabiaEngine] learnProposedBatch), so dropping it for an offline peer costs nothing.
+        record NewBatch<C extends Command>(NodeId sender, Batch<C> batch) implements Asynchronous, org.pragmatica.consensus.net.NoOfflineBuffering {}
     }
 }

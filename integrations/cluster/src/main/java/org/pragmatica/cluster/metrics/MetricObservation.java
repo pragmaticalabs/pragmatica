@@ -1,0 +1,42 @@
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.cluster.metrics;
+
+import java.util.Map;
+
+import org.pragmatica.serialization.Codec;
+
+
+/// Producer identity is the containing map key (or pong sender). Forwarding preserves this
+/// envelope unchanged. `incarnation` is the producer's per-process random BOOT TOKEN — equality
+/// only, never ordered: sequence is monotonic within one token. The first token seen for a producer
+/// pins it; a sample from a different token is another process claiming the NodeId (terminal
+/// removal) and never supersedes. Observation time is UTC.
+@Codec
+public record MetricObservation(long incarnation, long sequence, long observedAtMs, Map<String, Double> values) {
+    public static final long MAX_AGE_MS = 30_000;
+    public static final long CLOCK_SKEW_ALLOWANCE_MS = 5_000;
+
+    public MetricObservation {
+        values = Map.copyOf(values);
+    }
+
+    public static MetricObservation metricObservation(long incarnation,
+                                                      long sequence,
+                                                      long observedAtMs,
+                                                      Map<String, Double> values) {
+        return new MetricObservation(incarnation, sequence, observedAtMs, values);
+    }
+
+    public static boolean isTimestampFresh(long observedAtMs, long nowMs) {
+        var age = nowMs - observedAtMs;
+
+        return age >= -CLOCK_SKEW_ALLOWANCE_MS && age <= MAX_AGE_MS;
+    }
+
+    /// Within the pinned boot token the higher sequence wins. A different token is a different process
+    /// for the same NodeId — refused under terminal removal — so it is never "after" the pinned one.
+    public boolean isAfter(MetricObservation previous) {
+        return incarnation == previous.incarnation() && sequence > previous.sequence();
+    }
+}

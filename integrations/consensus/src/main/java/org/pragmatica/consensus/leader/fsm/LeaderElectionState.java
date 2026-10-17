@@ -19,6 +19,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderDoubtConfirmed;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderSilent;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ProposalSettled;
 import org.pragmatica.lang.Contract;
@@ -51,7 +52,7 @@ import org.slf4j.LoggerFactory;
 /// All states accept [`ClusterFsmEvent`] as their event type; leader-election domain events
 /// ([`LeaderElectionEvents`]) also implement `ClusterFsmEvent` so they flow through the same
 /// dispatch path.
-public sealed interface LeaderElectionState extends FsmState<LeaderElectionState, ClusterFsmEvent> permits LeaderElectionState.Dormant, LeaderElectionState.QuorumWaiting, LeaderElectionState.AwaitingKvSync, LeaderElectionState.Electing, LeaderElectionState.Led, LeaderElectionState.ReElecting, LeaderElectionState.QuorumLost, LeaderElectionState.Stopped {
+public sealed interface LeaderElectionState extends FsmState<LeaderElectionState, ClusterFsmEvent> permits LeaderElectionState.Dormant, LeaderElectionState.QuorumWaiting, LeaderElectionState.AwaitingKvSync, LeaderElectionState.Electing, LeaderElectionState.Led, LeaderElectionState.ReElecting, LeaderElectionState.QuorumLost, LeaderElectionState.Stopped, LeaderElectionState.Passive {
     Logger log = LoggerFactory.getLogger(LeaderElectionState.class);
 
     /// Marker no-op used in `tx.handle(...)` arms where an event is intentionally absorbed
@@ -74,6 +75,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ClusterFsmEvent.QuorumEstablished _ -> tx.transitionTo(ctx.quorumWaiting());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 // ConsensusReady arriving in Dormant is acknowledged but causes no transition —
@@ -162,6 +165,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ConsensusReady _ -> tx.transitionTo(ctx.awaitingKvSync());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
@@ -189,6 +194,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///     - `KvSyncGraceTimeout` (no peer has committed a leader within the grace window;
     ///       cluster is genuinely fresh — fall through to `Electing`/`ReElecting`).
     ///
+    /// The timeout is not a wall-clock licence to elect (#1803). A node that joined a running cluster must
+    /// not depose a live leader it has simply not read yet, so at the timeout it first follows any committed
+    /// leader it can see (the KV record; on entry also the leader it observed while passive, before it was
+    /// admitted as a voter), and while its KV state is still catching up ([`LeaderElectionContext#isKvSyncPending`]) it
+    /// waits another grace window, up to [`LeaderElectionContext#kvSyncMaxWait`]. Only a cluster that shows
+    /// no leader and no sync in flight — or a sync that never settles — reaches `Electing`.
+    ///
     /// On entry the state ALSO consults [`LeaderElectionContext#currentLeaderFromKvSupplier`]
     /// (pull-side) and dispatches a synthetic `LeaderCommitted` if the local KV already records
     /// a leader. This handles the auto-heal path: a single replacement node joining a live
@@ -196,9 +208,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// pull-side check fires immediately and the state passes through in a single dispatch tick
     /// without paying any grace latency.
     @Contract
-    record AwaitingKvSync(LeaderElectionContext ctx, AtomicReference<ScheduledFuture<?>> graceTimeoutFuture) implements LeaderElectionState {
+    record AwaitingKvSync(LeaderElectionContext ctx,
+                          AtomicReference<ScheduledFuture<?>> graceTimeoutFuture,
+                          long enteredAtNanos) implements LeaderElectionState {
         public static AwaitingKvSync fresh(LeaderElectionContext ctx) {
-            return new AwaitingKvSync(ctx, new AtomicReference<>());
+            return new AwaitingKvSync(ctx, new AtomicReference<>(), System.nanoTime());
         }
 
         @Override
@@ -208,6 +222,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // synthesize LeaderCommitted now. Synchronous dispatch — re-entry into `handle`
             // happens before this method returns and transitions to `Led(leader)`.
             adoptLeaderFromKvIfPresent(ctx);
+            // #1803: a leader this node already observed (while passive, before it was admitted as a
+            // voter) is a committed leader too. The KV pull above skips a leader equal to the one
+            // already known, so without this a joiner never left the wait on the strength of it.
+            if (ctx.fsm().current() instanceof AwaitingKvSync) {
+                adoptKnownLeader(ctx);
+            }
             // If the synchronous dispatch already advanced us out of AwaitingKvSync, skip
             // scheduling the grace timer — this record's CAS reservation is gone, but the new
             // state owns its own timers.
@@ -238,8 +258,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, tx);
-                case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx);
+                case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx, this);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
@@ -249,14 +271,63 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
     }
 
+    /// The wait's verdict at a grace timeout (#1803). A committed leader in the KV record is adopted even if its
+    /// push notification never reached this node — a joiner never elects against a live leader. With none
+    /// visible and KV state still catching up, the wait is stretched by another grace window (bounded by
+    /// [`LeaderElectionContext#kvSyncMaxWait`]) so the leader can still arrive through KV sync. Only a
+    /// cluster that shows no leader and no sync in flight is genuinely leaderless and lets this node elect.
     private static void graceTimeoutFallthrough(LeaderElectionContext ctx,
-                                                TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+                                                TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
+                                                AwaitingKvSync waiting) {
+        ctx.currentLeaderFromKvSupplier()
+           .get()
+           .onPresent(leader -> adoptVisibleLeader(ctx, leader, tx))
+           .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
+    }
+
+    private static void adoptVisibleLeader(LeaderElectionContext ctx,
+                                           NodeId leader,
+                                           TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        log.info("AwaitingKvSync grace window elapsed with committed leader {} visible — following it, not electing",
+                 leader);
+        adoptLeaderUnconditionally(ctx, new LeaderCommitted(leader), tx);
+    }
+
+    private static void electOrKeepWaiting(LeaderElectionContext ctx,
+                                           TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
+                                           AwaitingKvSync waiting) {
+        if (ctx.isKvSyncPending() && waitedLessThanMax(ctx, waiting)) {
+            tx.handle(() -> rearmGrace(ctx, waiting));
+
+            return;
+        }
+
         log.info("AwaitingKvSync grace window elapsed without observing a committed leader — proceeding to election");
         if (ctx.hasEverHadLeader()) {
             tx.transitionTo(ctx.reElecting());
         } else {
             tx.transitionTo(ctx.electing());
         }
+    }
+
+    private static boolean waitedLessThanMax(LeaderElectionContext ctx, AwaitingKvSync waiting) {
+        return System.nanoTime() - waiting.enteredAtNanos() < ctx.kvSyncMaxWait()
+                                                                 .nanos();
+    }
+
+    private static void rearmGrace(LeaderElectionContext ctx, AwaitingKvSync waiting) {
+        log.info("AwaitingKvSync: KV state still catching up and no committed leader visible yet — waiting another {}ms",
+                 ctx.kvSyncGraceDelay().millis());
+        waiting.graceTimeoutFuture()
+               .set(SharedScheduler.schedule(() -> dispatchSelf(ctx,
+                                                                new KvSyncGraceTimeout()),
+                                             ctx.kvSyncGraceDelay()));
+    }
+
+    /// Adopts the leader this node already knows. Synchronous dispatch, like the KV pull: the `LeaderCommitted`
+    /// handler moves the FSM to `Led` before this returns.
+    private static void adoptKnownLeader(LeaderElectionContext ctx) {
+        ctx.currentLeader().onPresent(leader -> dispatchSelf(ctx, new LeaderCommitted(leader)));
     }
 
     /// Periodic re-check of (a) consensus readiness AND (b) KV-committed leader. R6: pulls
@@ -313,6 +384,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void onEntry() {
+            ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
             ctx.resetStuckElectionCount();
             adoptLeaderFromKvIfPresent(ctx);
@@ -337,6 +409,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ElectionTick _ -> tx.handle(() -> {
                     adoptLeaderFromKvIfPresent(ctx);
                     trySubmitProposal(ctx, this);
@@ -361,6 +435,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `NodeGone` for a SWIM-alive leader). A LEADER tenure (`leader == self`) schedules NO timer:
     /// the leader is the one stamping pings, so it cannot observe itself silent. The future is
     /// cancelled in `onExit` / `onCasLost` so a stale lease tick from a prior tenure cannot fire.
+    ///
+    /// A follower that loses the leader (`NodeGone(leader)`, or the lease expiring) does not go to
+    /// `ReElecting` on that private view when the leader pre-vote is enabled (#1748): it stays in
+    /// `Led(leader)` and asks the electorate through [`LeaderPreVote`]; only [`LeaderDoubtConfirmed`] — a majority
+    /// affirmatively doubting the leader — takes it to `ReElecting`. Without the pre-vote (local mode, stubs)
+    /// the edge is immediate, as before.
     @Contract
     record Led(LeaderElectionContext ctx,
                NodeId leader,
@@ -403,6 +483,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void onExit() {
             cancelFuture(leaseFuture);
+            ctx.preVote().onPresent(preVote -> preVote.cancel(leader));
         }
 
         @Override
@@ -410,18 +491,24 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             cancelFuture(leaseFuture);
         }
 
+        /// Whether this follower has lost the leader on its own evidence: the leader is gone from its transport
+        /// view, or its leader ping has been silent for the full lease threshold. Read by the pre-vote both to
+        /// keep retrying while it holds and to answer other followers' questions about this leader.
+        public boolean isLeaderSuspected() {
+            return ! ctx.currentTopology()
+                        .contains(leader) || consecutiveSilentChecks.get() >= LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS;
+        }
+
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
-                case ClusterFsmEvent.NodeGone ng -> {
-                    ctx.setCurrentTopology(ng.topology());
-                    if (ng.node().equals(leader)) {
-                        tx.transitionTo(ctx.reElecting());
-                    }
-                }
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
+                case ClusterFsmEvent.NodeGone ng -> handleNodeGoneInLed(ctx, this, ng, tx);
                 case ClusterFsmEvent.NodeAdded na -> ctx.setCurrentTopology(na.topology());
                 case LeaderCommitted lc -> handleLeaderCommittedInLed(ctx, leader, lc, tx);
-                case LeaderSilent ls -> handleLeaderSilentInLed(ctx, leader, ls, tx);
+                case LeaderSilent ls -> handleLeaderSilentInLed(ctx, this, ls, tx);
+                case LeaderDoubtConfirmed dc -> handleLeaderDoubtConfirmedInLed(ctx, this, dc, tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 // External LeaderChange is informational — canonical leader lives in our Led
@@ -478,9 +565,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// (which snapshots the committed-viewSequence baseline, so a stale pre-silence commit cannot
     /// regress the fresh election).
     private static void handleLeaderSilentInLed(LeaderElectionContext ctx,
-                                                NodeId currentLeader,
+                                                Led led,
                                                 LeaderSilent event,
                                                 TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        var currentLeader = led.leader();
+
         if (!event.silentLeader().equals(currentLeader)) {
             log.warn("Discarding STALE LeaderSilent({}) in Led({}) — leader already swapped",
                      event.silentLeader(),
@@ -489,7 +578,52 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        log.warn("Led({}): leader-acting lease expired — transitioning to ReElecting", currentLeader);
+        log.warn("Led({}): leader-acting lease expired — leader lost", currentLeader);
+        loseLeader(ctx, led, tx);
+    }
+
+    private static void handleNodeGoneInLed(LeaderElectionContext ctx,
+                                            Led led,
+                                            ClusterFsmEvent.NodeGone event,
+                                            TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        ctx.setCurrentTopology(event.topology());
+        if (event.node().equals(led.leader())) {
+            loseLeader(ctx, led, tx);
+        }
+    }
+
+    /// This follower lost its leader on its own evidence. With the pre-vote enabled it asks the electorate
+    /// first and stays in `Led` (#1748); the pre-vote does not apply to a leader that is this node itself or
+    /// no longer eligible (voted out — nothing for the electorate to vouch for), or when this node is the whole electorate (nobody to ask; the verdict would dispatch re-entrantly from inside this handler), and is absent in local mode.
+    private static void loseLeader(LeaderElectionContext ctx,
+                                   Led led,
+                                   TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        ctx.preVote()
+           .filter(_ -> !led.leader()
+                            .equals(ctx.self())
+                        && ctx.isEligible(led.leader())
+                        && ctx.electorate()
+                              .size() > 1)
+           .onPresent(preVote -> tx.handle(() -> preVote.suspect(led.leader())))
+           .onEmpty(() -> tx.transitionTo(ctx.reElecting()));
+    }
+
+    /// A majority of the electorate doubts the leader. Honoured only for the tenure it was asked about and
+    /// only while the follower still suspects that leader on its own evidence (the leader may have come back
+    /// while the round ran).
+    private static void handleLeaderDoubtConfirmedInLed(LeaderElectionContext ctx,
+                                                        Led led,
+                                                        LeaderDoubtConfirmed event,
+                                                        TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        if (!event.leader().equals(led.leader()) || !led.isLeaderSuspected()) {
+            log.info("Led({}): discarding leader-doubt verdict for {} — tenure changed or the leader is back",
+                     led.leader(),
+                     event.leader());
+
+            return;
+        }
+
+        log.warn("Led({}): a majority of the electorate doubts the leader — transitioning to ReElecting", led.leader());
         tx.transitionTo(ctx.reElecting());
     }
 
@@ -583,6 +717,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void onEntry() {
+            ctx.clearProposalInFlight();
             ctx.resetStuckElectionCount();
             clearLeaderAndNotify(ctx);
             adoptLeaderFromKvIfPresent(ctx);
@@ -607,6 +742,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 case ElectionTick _ -> tx.handle(() -> {
                     adoptLeaderFromKvIfPresent(ctx);
                     trySubmitProposal(ctx, this);
@@ -634,6 +771,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
             switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
                 // QuorumEstablished after a transient quorum loss re-enters the AwaitingKvSync
                 // gate. We skip the intermediate QuorumWaiting consensus-readiness re-check
                 // because consensus was already active before the quorum dropped, and remains
@@ -669,6 +808,42 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // Terminal — ignore everything.
             tx.ignore();
         }
+    }
+
+    /// A worker observes committed leadership without entering any core election or quorum state.
+    @Contract
+    record Passive(LeaderElectionContext ctx, java.util.List<NodeId> members) implements LeaderElectionState {
+        @Override
+        public void onEntry() {
+            var previous = ctx.currentLeader();
+
+            ctx.installVoters(members);
+            previous.filter(node -> !ctx.isEligible(node)).onPresent(_ -> clearLeaderAndNotify(ctx));
+        }
+
+        @Override
+        public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            switch (event) {
+                case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
+                                                                                                    directory.members()));
+                case LeaderElectionEvents.VoterReadmitted _ -> tx.transitionTo(ctx.quorumWaiting());
+                case LeaderCommitted committed -> tx.handle(() -> observeCommittedLeader(ctx, committed));
+                case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
+                default -> tx.ignore();
+            }
+        }
+    }
+
+    private static void observeCommittedLeader(LeaderElectionContext ctx, LeaderCommitted committed) {
+        if (!ctx.isEligible(committed.leader()) || committed.leader().equals(ctx.self()) || committed.viewSequence() <= LeaderCommitted.NO_SEQUENCE || committed.viewSequence() < ctx.adoptedViewSequence() || (committed.viewSequence() == ctx.adoptedViewSequence() && ctx.lastAdoptedLeader()
+                                                                                                                                                                                                                                                                            .filter(committed.leader()::equals)
+                                                                                                                                                                                                                                                                            .isEmpty())) {
+            return;
+        }
+
+        ctx.setAdoptedViewSequence(committed.viewSequence());
+        ctx.setCurrentLeader(Option.some(committed.leader()));
+        notifyLeaderChange(ctx);
     }
 
     // --- Shared action helpers ---
@@ -925,6 +1100,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
+        if (ctx.fsm().current() != owner) {
+            // #1797 F1: a tick's own KV-pull adoption moved the FSM out of `owner` before this point;
+            // `owner.onExit` already cleared the guard, `tryStartProposal` just re-set it, and a proposal
+            // sent from the left state would store its timeout on a dead record (so nothing ever
+            // releases the guard) and double-propose the round the commit already settled.
+            ctx.clearProposalInFlight();
+
+            return;
+        }
+
         sendProposal(ctx, owner, handler, candidate);
     }
 
@@ -990,13 +1175,17 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        ctx.clearProposalInFlight();
         if (event.success()) {
-            log.debug("Proposal submitted ({}) — waiting for LeaderCommitted", event.detail());
+            // #1797: "submitted" is NOT "committed". The guard stays held until the commit moves the FSM
+            // out of Electing/ReElecting (their `onExit` clears it) or the proposal timeout settles as a
+            // failure (below) — clearing here let a tick or topology reschedule in the submit-to-commit
+            // gap propose a second time, advancing the committed viewSequence twice for one round.
+            log.debug("Proposal submitted ({}) — guard held until LeaderCommitted or timeout", event.detail());
 
             return;
         }
 
+        ctx.clearProposalInFlight();
         log.debug("Proposal failed ({}) — retry scheduled", event.detail());
         ctx.incrementStuckElectionCount();
         rescheduleCurrentTick(ctx);

@@ -1,5 +1,9 @@
 package org.pragmatica.config;
 
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -27,6 +31,27 @@ public sealed interface ConfigError extends Cause {
 
     static SectionNotFound sectionNotFound(String section) {
         return SectionNotFound.sectionNotFound(section).unwrap();
+    }
+
+    /// A required field is missing from a section that IS present, and nothing supplies a default for it.
+    ///
+    /// Distinct from [SectionNotFound] on purpose (#822): a nested record whose field is missing used to
+    /// fail with `SectionNotFound("Record.field")`, which the enclosing record read as "this component's
+    /// section is absent" and answered with its own `SectionNotFound("Outer.component")` — an operator who
+    /// wrote the section was told it does not exist. Absence is the one cause a `DEFAULT` may satisfy;
+    /// this is not absence, so it propagates.
+    ///
+    /// @param key   the full key that is missing, e.g. `notification.smtp_config.host`
+    /// @param owner the record component that requires it, e.g. `SmtpConfig.host`
+    record MissingField(String key, String owner) implements ConfigError {
+        @Override
+        public String message() {
+            return "Required config field '" + key + "' is missing (" + owner + " has no default)";
+        }
+    }
+
+    static MissingField missingField(String key, String owner) {
+        return new MissingField(key, owner);
     }
 
     /// Failed to parse configuration section.
@@ -134,6 +159,62 @@ public sealed interface ConfigError extends Cause {
 
     static SecretResolutionFailed secretResolutionFailed(String key, String secretPath, Cause underlying) {
         return SecretResolutionFailed.secretResolutionFailed(key, secretPath, underlying).unwrap();
+    }
+
+    /// Unknown key(s) found in a section bound by a [StrictKeys]-annotated config record. Carries
+    /// every unknown key in the section, not just the first, each with its own nearest-match
+    /// suggestion (empty when no known key is within [ProviderBasedConfigService]'s suggestion
+    /// distance bound).
+    record UnknownKey(String section, List<String> keys, Map<String, String> suggestions) implements ConfigError {
+        public static Result<UnknownKey> unknownKey(String section,
+                                                    List<String> keys,
+                                                    Map<String, String> suggestions) {
+            return success(new UnknownKey(section, keys, suggestions));
+        }
+
+        @Override
+        public String message() {
+            var parts = keys.stream().map(k -> describeKey(k, suggestions.get(k))).collect(Collectors.joining(", "));
+
+            return "Unknown config key" + (keys.size() > 1
+                                           ? "s"
+                                           : "") + " in section '" + section + "': " + parts;
+        }
+
+        private static String describeKey(String key, String nearestMatch) {
+            return nearestMatch == null || nearestMatch.isEmpty()
+                   ? key
+                   : key + " (did you mean '" + nearestMatch + "'?)";
+        }
+    }
+
+    static UnknownKey unknownKey(String section, List<String> keys, Map<String, String> suggestions) {
+        return UnknownKey.unknownKey(section, keys, suggestions).unwrap();
+    }
+
+    /// #761 — a record component whose DECLARED type the binder cannot bind at all (an `Option<X>`
+    /// whose X is a nested generic, or a class that is neither primitive, enum nor record). Distinct
+    /// from [TypeMismatch], which is about a present VALUE of the wrong shape: this is a declaration
+    /// error, so it is never satisfied by an absent key or a `DEFAULT` instance and is never
+    /// reported as [SectionNotFound] — [ProviderBasedConfigService] propagates it past those
+    /// fallbacks. It surfaces where the record is bound: at slice activation, as
+    /// `SliceLoadingFailure.Fatal.ConfigurationFailed`, never at node boot.
+    record UnsupportedType(String key, String declaredType) implements ConfigError {
+        public static Result<UnsupportedType> unsupportedType(String key, String declaredType) {
+            return success(new UnsupportedType(key, declaredType));
+        }
+
+        @Override
+        public String message() {
+            return "Config key '" + key
+                 + "' is declared as " + declaredType
+                 + ", which this binder cannot bind (supported inside Option: primitive, enum or record types); "
+                 + "this is a declaration error, not an absent or malformed value";
+        }
+    }
+
+    static UnsupportedType unsupportedType(String key, String declaredType) {
+        return UnsupportedType.unsupportedType(key, declaredType).unwrap();
     }
 
     record unused() implements ConfigError {

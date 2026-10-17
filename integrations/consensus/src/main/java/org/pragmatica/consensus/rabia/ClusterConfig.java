@@ -26,11 +26,8 @@ import org.pragmatica.lang.Verify;
 
 /// Consensus-level cluster membership descriptor.
 ///
-/// Used by [RabiaEngine#reconfigure] as the explicit reset signal: applying a
-/// `ClusterConfig` that differs from the engine's current membership wipes proposal
-/// state and restarts the engine against the new membership. Quorum-loss alone never
-/// resets the engine — it transitions to `Paused`, retaining state until quorum returns
-/// (or until a `reconfigure` call replaces the membership).
+/// A target becomes voting authority only through an agreed checkpoint handoff.
+/// Local health or a provisioning count never changes the installed electorate.
 ///
 /// This is an internal consensus value object, deliberately decoupled from higher-level
 /// deployment configuration (`aether/aether-config/ClusterConfig`) which carries
@@ -55,8 +52,7 @@ public record ClusterConfig(List<NodeId> members) {
     }
 
     /// Strict equality on membership: same node-id set, regardless of order.
-    /// Used to decide whether a `reconfigure` call is a true membership change
-    /// (and thus requires a state reset) or a no-op replay of the same config.
+    /// Used to distinguish a new handoff target from a retry of the installed configuration.
     public boolean sameMembership(ClusterConfig other) {
         return Set.copyOf(members).equals(Set.copyOf(other.members));
     }

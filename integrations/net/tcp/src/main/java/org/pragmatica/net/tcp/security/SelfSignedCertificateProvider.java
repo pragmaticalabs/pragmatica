@@ -15,8 +15,6 @@
  */
 package org.pragmatica.net.tcp.security;
 
-import javax.crypto.Mac;
-import javax.crypto.spec.SecretKeySpec;
 import java.io.StringWriter;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -26,10 +24,13 @@ import java.security.KeyPairGenerator;
 import java.security.SecureRandom;
 import java.security.Security;
 import java.security.cert.X509Certificate;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Date;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -50,8 +51,6 @@ import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
-import static org.pragmatica.lang.Option.some;
-
 
 /// Self-signed certificate provider using BouncyCastle.
 ///
@@ -62,7 +61,7 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     private static final String SIGNATURE_ALGORITHM = "SHA256withECDSA";
     private static final String EC_CURVE = "P-256";
     private static final Duration NODE_CERT_VALIDITY = Duration.ofDays(7);
-    private static final byte[] HKDF_SALT = "aether-ca-seed".getBytes(StandardCharsets.UTF_8);
+    private static final byte[] HKDF_SALT = ClusterSecretDerivation.hkdfSalt();
     private static final byte[] CA_KEY_INFO = "aether-ca-key-v1".getBytes(StandardCharsets.UTF_8);
     private static final String GOSSIP_KEY_PREFIX = "aether-gossip-key-v";
     private static final byte[] KEY_ID_LABEL = "key-id".getBytes(StandardCharsets.UTF_8);
@@ -70,25 +69,25 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     private final KeyPair caKeyPair;
     private final X509Certificate caCert;
     private final byte[] caCertPem;
-    private final GossipKey currentKey;
-    private final GossipKey previousKey;
-    private final GossipKey nextKey;
     private final byte[] clusterSecret;
+    private final Clock clock;
+    private final AtomicReference<DayKeys> dayKeys;
+
+    /// The gossip keys of one calendar day: encrypt under `current`, accept `previous` and `next`.
+    private record DayKeys(long epochDay, GossipKey previous, GossipKey current, GossipKey next) {}
 
     private SelfSignedCertificateProvider(KeyPair caKeyPair,
                                           X509Certificate caCert,
                                           byte[] caCertPem,
-                                          GossipKey currentKey,
-                                          GossipKey previousKey,
-                                          GossipKey nextKey,
-                                          byte[] clusterSecret) {
+                                          DayKeys bootDayKeys,
+                                          byte[] clusterSecret,
+                                          Clock clock) {
         this.caKeyPair = caKeyPair;
         this.caCert = caCert;
         this.caCertPem = caCertPem;
-        this.currentKey = currentKey;
-        this.previousKey = previousKey;
-        this.nextKey = nextKey;
+        this.dayKeys = new AtomicReference<>(bootDayKeys);
         this.clusterSecret = clusterSecret;
+        this.clock = clock;
     }
 
     /// Create a self-signed certificate provider from a cluster secret.
@@ -100,7 +99,15 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     /// @param clusterSecret shared secret for deterministic key derivation
     /// @return configured provider or error
     public static Result<CertificateProvider> selfSignedCertificateProvider(byte[] clusterSecret) {
-        return Result.lift(CertificateProviderError.CaGenerationFailed::new, () -> createProvider(clusterSecret));
+        return selfSignedCertificateProvider(clusterSecret, Clock.systemUTC());
+    }
+
+    /// Clock seam (#1164): the gossip-key day is read from `clock` at every key access, so a test
+    /// can move a provider across UTC midnights without sleeping through them. Only the clock's
+    /// INSTANT is used: the day is the UTC day of that instant ([#utcEpochDay], #1415), whatever the
+    /// clock's or the host's zone.
+    public static Result<CertificateProvider> selfSignedCertificateProvider(byte[] clusterSecret, Clock clock) {
+        return Result.lift(CertificateProviderError.CaGenerationFailed::new, () -> createProvider(clusterSecret, clock));
     }
 
     @Override
@@ -119,17 +126,41 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
 
     @Override
     public Result<GossipKey> currentGossipKey() {
-        return Result.success(currentKey);
+        return keysForToday().map(DayKeys::current);
     }
 
     @Override
     public Option<GossipKey> previousGossipKey() {
-        return some(previousKey);
+        return keysForToday().option()
+                           .map(DayKeys::previous);
     }
 
     @Override
     public Option<GossipKey> nextGossipKey() {
-        return some(nextKey);
+        return keysForToday().option()
+                           .map(DayKeys::next);
+    }
+
+    /// #1164: the day-derived keys are re-derived when the clock's day differs from the cached
+    /// one, so a node up for N days encrypts under TODAY's key and accepts yesterday's and
+    /// tomorrow's — the same prev/current/next window a node booted today holds. Before this the
+    /// three keys were derived once at construction, so two nodes booted ≥2 days apart never
+    /// shared a key. Derivation is deterministic in (secret, day), so a lost race between two
+    /// callers on the same day change installs equal keys either way.
+    private Result<DayKeys> keysForToday() {
+        var cached = dayKeys.get();
+        var today = utcEpochDay(clock);
+
+        if (cached.epochDay() == today) {
+            return Result.success(cached);
+        }
+
+        return deriveDayKeys(today).onSuccess(fresh -> dayKeys.compareAndSet(cached, fresh));
+    }
+
+    private Result<DayKeys> deriveDayKeys(long epochDay) {
+        return Result.lift(CertificateProviderError.CaGenerationFailed::new,
+                           () -> deriveDayKeys(clusterSecret, epochDay));
     }
 
     /// Derive a gossip key for an arbitrary version label.
@@ -143,26 +174,37 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     }
 
     // ===== Provider Initialization =====
-    private static SelfSignedCertificateProvider createProvider(byte[] clusterSecret) throws Exception {
+    private static SelfSignedCertificateProvider createProvider(byte[] clusterSecret, Clock clock) throws Exception {
         ensureBouncyCastle();
         var caKeyPair = deriveKeyPair(clusterSecret);
         var caCert = generateCaCertificate(caKeyPair);
         var caCertPem = toPem(caCert);
-        var today = LocalDate.now().toEpochDay();
-        var currentKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + today);
-        var previousKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + (today - 1));
+        var bootDayKeys = deriveDayKeys(clusterSecret, utcEpochDay(clock));
+
+        return new SelfSignedCertificateProvider(caKeyPair, caCert, caCertPem, bootDayKeys, clusterSecret, clock);
+    }
+
+    /// #1415: the gossip-key day label is the UTC calendar day, as the accept-window reasoning (#256)
+    /// assumes. Reading it in the host's zone put two nodes in different zones a full day apart for
+    /// `|offset|` hours around every local midnight, spending the one-day accept window on the zone
+    /// offset alone.
+    private static long utcEpochDay(Clock clock) {
+        return LocalDate.ofInstant(clock.instant(),
+                                   ZoneOffset.UTC)
+                        .toEpochDay();
+    }
+
+    /// Derives the previous/current/next-day keys for `epochDay`. Deriving at boot (here) and on a
+    /// day change ([#keysForToday]) go through this one method so the two can never differ.
+    private static DayKeys deriveDayKeys(byte[] clusterSecret, long epochDay) throws Exception {
+        var currentKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + epochDay);
+        var previousKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + (epochDay - 1));
         // #256: also pre-derive the NEXT day's key and accept it (without encrypting under it), so a
         // node booted just after UTC midnight on day N+1 — which encrypts under the day-(N+1) key —
         // is decryptable by this day-N node. Closes the asymmetric midnight-rollover lockout.
-        var nextKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + (today + 1));
+        var nextKey = deriveGossipKeyWithLabel(clusterSecret, GOSSIP_KEY_PREFIX + (epochDay + 1));
 
-        return new SelfSignedCertificateProvider(caKeyPair,
-                                                 caCert,
-                                                 caCertPem,
-                                                 currentKey,
-                                                 previousKey,
-                                                 nextKey,
-                                                 clusterSecret);
+        return new DayKeys(epochDay, previousKey, currentKey, nextKey);
     }
 
     // ===== Certificate Generation =====
@@ -216,35 +258,11 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
         builder.addExtension(Extension.subjectAlternativeName, false, san);
     }
 
-    // ===== HKDF Key Derivation =====
+    // ===== HKDF Key Derivation (implementation shared via ClusterSecretDerivation) =====
     private static KeyPair deriveKeyPair(byte[] clusterSecret) throws Exception {
-        var seed = hkdfDerive(clusterSecret, HKDF_SALT, CA_KEY_INFO, 32);
+        var seed = ClusterSecretDerivation.hkdfDerive(clusterSecret, HKDF_SALT, CA_KEY_INFO, 32);
 
         return keyPairFromSeed(seed);
-    }
-
-    private static byte[] hkdfDerive(byte[] ikm, byte[] salt, byte[] info, int length) throws Exception {
-        // HKDF-Extract
-        var prk = hmacSha256(salt, ikm);
-        // HKDF-Expand (single block, length <= 32)
-        var expandInput = new byte[info.length + 1];
-
-        System.arraycopy(info, 0, expandInput, 0, info.length);
-        expandInput[info.length] = 0x01;
-        var okm = hmacSha256(prk, expandInput);
-        var result = new byte[length];
-
-        System.arraycopy(okm, 0, result, 0, length);
-
-        return result;
-    }
-
-    private static byte[] hmacSha256(byte[] key, byte[] data) throws Exception {
-        var mac = Mac.getInstance("HmacSHA256");
-
-        mac.init(new SecretKeySpec(key, "HmacSHA256"));
-
-        return mac.doFinal(data);
     }
 
     private static KeyPair keyPairFromSeed(byte[] seed) throws Exception {
@@ -261,8 +279,8 @@ public final class SelfSignedCertificateProvider implements CertificateProvider 
     // ===== Gossip Key Derivation =====
     private static GossipKey deriveGossipKeyWithLabel(byte[] clusterSecret, String label) throws Exception {
         var info = label.getBytes(StandardCharsets.UTF_8);
-        var key = hkdfDerive(clusterSecret, HKDF_SALT, info, 32);
-        var keyIdBytes = hmacSha256(key, KEY_ID_LABEL);
+        var key = ClusterSecretDerivation.hkdfDerive(clusterSecret, HKDF_SALT, info, 32);
+        var keyIdBytes = ClusterSecretDerivation.hmacSha256(key, KEY_ID_LABEL);
         var keyId = ((keyIdBytes[0] & 0xFF) << 24) | ((keyIdBytes[1] & 0xFF) << 16) | ((keyIdBytes[2] & 0xFF) << 8) | (keyIdBytes[3] & 0xFF);
 
         return GossipKey.gossipKey(key, keyId, Instant.now());

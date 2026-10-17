@@ -194,7 +194,7 @@ class SwimProtocolWave6Test {
                 var faultyEdgeAt = System.currentTimeMillis();
                 // Second-hand (gossip) FAULTY needs local transport-down corroboration to
                 // drive the FAULTY edge (P1 death-path co-confirmation).
-                residencyProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
+                residencyProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
                 residencyProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L))));
                 assertThat(residencyProtocol.members().get(NODE_A).state()).isEqualTo(MemberState.FAULTY);
 
@@ -455,7 +455,7 @@ class SwimProtocolWave6Test {
             gossipFrom(NODE_B, ADDR_B, 1L, updateOf(NODE_A, MemberState.ALIVE, 0L));
             // Second-hand (gossip) FAULTY needs local transport-down corroboration to drive
             // the FAULTY edge (P1 death-path co-confirmation).
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
             gossipFrom(NODE_B, ADDR_B, 2L, updateOf(NODE_A, MemberState.FAULTY, 1L));
 
             assertThat(observations.byType(SwimObservation.FaultyObserved.class)).hasSize(1);
@@ -494,7 +494,7 @@ class SwimProtocolWave6Test {
                 sweepProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 1L, List.of(updateOf(NODE_A, MemberState.ALIVE, 0L))));
                 // Second-hand (gossip) FAULTY needs local transport-down corroboration to
                 // drive the FAULTY edge (P1 death-path co-confirmation).
-                sweepProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down")));
+                sweepProtocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, Causes.cause("test peer down"), TransportObservation.HintOrigin.LINK_LOST));
                 sweepProtocol.onMessage(ADDR_B, Ping.ping(NODE_B, 2L, List.of(updateOf(NODE_A, MemberState.FAULTY, 1L))));
                 assertThat(observations.byType(SwimObservation.DepartedObserved.class))
                     .as("the death broadcast already fired at the FAULTY edge")

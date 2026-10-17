@@ -87,7 +87,7 @@ class QuicClusterServerTest {
             server = serverSslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
+                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, QuicTransportMetrics.quicTransportMetrics(), ssl, Option.empty(),
                     (conn, _, _) -> {
                         connections.add(conn);
                         latch.countDown();
@@ -105,7 +105,7 @@ class QuicClusterServerTest {
             client = clientSslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterClient.quicClusterClient(
-                    CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
+                    CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec, QuicTransportMetrics.quicTransportMetrics(), ssl, Option.empty(),
                     (_, _) -> {}
                 )
             );
@@ -138,7 +138,7 @@ class QuicClusterServerTest {
             server = sslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
+                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, QuicTransportMetrics.quicTransportMetrics(), ssl, Option.empty(),
                     (_, _, _) -> {}, (_, _) -> {}
                 )
             );
@@ -158,7 +158,7 @@ class QuicClusterServerTest {
             server = sslResult.fold(
                 _ -> fail("unreachable"),
                 ssl -> QuicClusterServer.quicClusterServer(
-                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, ssl, Option.empty(),
+                    SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec, QuicTransportMetrics.quicTransportMetrics(), ssl, Option.empty(),
                     (_, _, _) -> {}, (_, _) -> {}
                 )
             );

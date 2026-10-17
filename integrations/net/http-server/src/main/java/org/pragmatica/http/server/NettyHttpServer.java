@@ -15,6 +15,7 @@
  */
 package org.pragmatica.http.server;
 
+import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,8 +28,11 @@ import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.TlsContextFactory;
 import org.pragmatica.utility.IdGenerator;
@@ -47,7 +51,9 @@ import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Promise.resolved;
 
 
 /// Netty-based HTTP server implementation.
@@ -77,69 +83,120 @@ final class NettyHttpServer implements HttpServer {
         return port;
     }
 
+    /// #1612: every step is a DEPENDENT continuation of the one before it. The server channel close is
+    /// bounded; the owned groups are then shut down with no quiet period (see [ServerShutdown]) and awaited,
+    /// bounded. The returned promise resolves only when both have settled, with the first failure among them
+    /// (a timed-out close or termination), typed. Shared groups belong to their owner and are left running.
+    ///
+    /// Before #1612 this already waited for termination (the listener sat on the future `shutdownGracefully()`
+    /// returns, which is the termination future), but nothing was bounded, so a wedged loop hung `stop()`
+    /// forever; the default 2 s quiet period delayed every stop; and a failed termination still reported
+    /// success.
     @Override
     public Promise<Unit> stop() {
-        return Promise.promise(promise -> {
-            log.info("Stopping HTTP server on port {}", port);
-            if (serverChannel.isEmpty()) {
-                cleanupAndComplete(promise);
-            } else {
-                serverChannel.onPresent(channel -> channel.close()
-                                                          .addListener(_ -> cleanupAndComplete(promise)));
-            }
-        });
+        log.info("Stopping HTTP server on port {}", port);
+
+        return serverChannel.map(ServerShutdown::closed)
+                            .or(Promise.unitPromise())
+                            .fold(this::shutdownGroupsThen);
     }
 
-    private void cleanupAndComplete(Promise<Unit> promise) {
-        if (!ownsGroups) {
-            promise.succeed(unit());
+    /// Package-private for the #1612 stop tests: the owned groups, to wedge a loop or confirm termination.
+    Option<EventLoopGroup> bossGroup() {
+        return bossGroup;
+    }
 
-            return;
-        }
+    Option<EventLoopGroup> workerGroup() {
+        return workerGroup;
+    }
 
-        var workerFuture = workerGroup.map(EventLoopGroup::shutdownGracefully);
-        var bossFuture = bossGroup.map(EventLoopGroup::shutdownGracefully);
+    Option<Channel> serverChannel() {
+        return serverChannel;
+    }
 
-        if (workerFuture.isPresent() && bossFuture.isPresent()) {
-            workerFuture.onPresent(wf -> bossFuture.onPresent(bf -> wf.addListener(_ -> bf.addListener(_ -> promise.succeed(unit())))));
-        } else if (workerFuture.isPresent()) {
-            workerFuture.onPresent(wf -> wf.addListener(_ -> promise.succeed(unit())));
-        } else if (bossFuture.isPresent()) {
-            bossFuture.onPresent(bf -> bf.addListener(_ -> promise.succeed(unit())));
-        } else {
-            promise.succeed(unit());
-        }
+    private Promise<Unit> shutdownGroupsThen(Result<Unit> closeOutcome) {
+        return shutdownOwnedGroups().fold(groupsOutcome -> resolved(closeOutcome.flatMap(_ -> groupsOutcome)))
+                                  .onSuccessRun(() -> log.info("HTTP server on port {} stopped", port))
+                                  .onFailure(cause -> log.warn("HTTP server on port {} did not stop cleanly: {}",
+                                                               port,
+                                                               cause.message()));
+    }
+
+    private Promise<Unit> shutdownOwnedGroups() {
+        return ownsGroups
+               ? shutdownGroups(bossGroup, workerGroup)
+               : Promise.unitPromise();
+    }
+
+    /// Both shutdowns are requested before either is awaited; the outcome is the first failure.
+    private static Promise<Unit> shutdownGroups(Option<EventLoopGroup> bossGroup, Option<EventLoopGroup> workerGroup) {
+        var bossTerminated = terminatedIfPresent(bossGroup);
+        var workerTerminated = terminatedIfPresent(workerGroup);
+
+        return bossTerminated.fold(bossOutcome -> ServerShutdown.firstFailureOf(bossOutcome, workerTerminated));
+    }
+
+    private static Promise<Unit> terminatedIfPresent(Option<EventLoopGroup> group) {
+        return group.map(ServerShutdown::terminated)
+                    .or(Promise.unitPromise());
     }
 
     static Promise<HttpServer> create(HttpServerConfig config, BiConsumer<HttpRequest, ResponseWriter> handler) {
-        // Handle TLS
-        var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
-        var bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-        var workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
-        var socketOptions = config.socketOptions();
-        var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
-                                             .channel(NioServerSocketChannel.class)
-                                             .childHandler(new HttpServerInitializer(config, handler, sslContext))
-                                             .option(ChannelOption.SO_BACKLOG,
-                                                     socketOptions.soBacklog())
-                                             .childOption(ChannelOption.SO_KEEPALIVE,
-                                                          socketOptions.soKeepalive());
-
-        return Promise.promise(promise -> bootstrap.bind(config.port())
-                                                   .addListener((ChannelFuture future) -> onBind(config,
-                                                                                                 promise,
-                                                                                                 future,
-                                                                                                 sslContext,
-                                                                                                 bossGroup,
-                                                                                                 workerGroup,
-                                                                                                 true)));
+        return createOwning(config,
+                            handler,
+                            new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()),
+                            new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory()));
     }
 
     static Promise<HttpServer> createShared(HttpServerConfig config,
                                             BiConsumer<HttpRequest, ResponseWriter> handler,
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup) {
-        var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
+        return bind(config, handler, bossGroup, workerGroup, false);
+    }
+
+    /// A server that OWNS `bossGroup` and `workerGroup`: its stop, or a failed bind, terminates them.
+    /// Package-private so the #1612 tests can hold the groups and check termination at the moment a failed
+    /// create reports.
+    static Promise<HttpServer> createOwning(HttpServerConfig config,
+                                            BiConsumer<HttpRequest, ResponseWriter> handler,
+                                            EventLoopGroup bossGroup,
+                                            EventLoopGroup workerGroup) {
+        return bind(config, handler, bossGroup, workerGroup, true);
+    }
+
+    private static Promise<HttpServer> bind(HttpServerConfig config,
+                                            BiConsumer<HttpRequest, ResponseWriter> handler,
+                                            EventLoopGroup bossGroup,
+                                            EventLoopGroup workerGroup,
+                                            boolean ownsGroups) {
+        return config.tls()
+                     .map(tls -> TlsContextFactory.createServer(tls).map(Option::some))
+                     .or(Result.success(Option.<SslContext> empty()))
+                     .fold(cause -> tlsBuildFailed(config, cause, ownsGroups, bossGroup, workerGroup),
+                           sslContext -> bindConfigured(config, handler, bossGroup, workerGroup, ownsGroups, sslContext));
+    }
+
+    /// A TLS configuration that fails to build refuses startup: serving plain HTTP on a port the operator
+    /// configured for TLS would be fail-open.
+    private static Promise<HttpServer> tlsBuildFailed(HttpServerConfig config,
+                                                      Cause cause,
+                                                      boolean ownsGroups,
+                                                      EventLoopGroup bossGroup,
+                                                      EventLoopGroup workerGroup) {
+        var failure = new HttpServerError.TlsFailed(config.name(), config.port(), cause);
+
+        log.error("HTTP server '{}' will not start: {}", config.name(), failure.message());
+
+        return releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).fold(_ -> failure.promise());
+    }
+
+    private static Promise<HttpServer> bindConfigured(HttpServerConfig config,
+                                                      BiConsumer<HttpRequest, ResponseWriter> handler,
+                                                      EventLoopGroup bossGroup,
+                                                      EventLoopGroup workerGroup,
+                                                      boolean ownsGroups,
+                                                      Option<SslContext> sslContext) {
         var socketOptions = config.socketOptions();
         var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
                                              .channel(NioServerSocketChannel.class)
@@ -156,7 +213,7 @@ final class NettyHttpServer implements HttpServer {
                                                                                                  sslContext,
                                                                                                  bossGroup,
                                                                                                  workerGroup,
-                                                                                                 false)));
+                                                                                                 ownsGroups)));
     }
 
     private static void onBind(HttpServerConfig config,
@@ -168,21 +225,31 @@ final class NettyHttpServer implements HttpServer {
                                boolean ownsGroups) {
         if (future.isSuccess()) {
             var protocol = sslContext.map(_ -> "HTTPS").or("HTTP");
+            var boundPort = ((InetSocketAddress) future.channel().localAddress()).getPort();
 
-            log.info("{} server '{}' started on port {}", protocol, config.name(), config.port());
-            promise.succeed(new NettyHttpServer(config.port(),
+            log.info("{} server '{}' started on port {}", protocol, config.name(), boundPort);
+            promise.succeed(new NettyHttpServer(boundPort,
                                                 Option.option(bossGroup),
                                                 Option.option(workerGroup),
                                                 Option.option(future.channel()),
                                                 ownsGroups));
         } else {
-            if (ownsGroups) {
-                bossGroup.shutdownGracefully();
-                workerGroup.shutdownGracefully();
-            }
+            // #1612: the groups this create made are terminated (bounded) BEFORE the failure is reported, so a
+            // caller that retries sees no event-loop threads left over from this attempt. The bind failure is
+            // what the create reports; a termination failure is only logged.
+            var bindFailed = new HttpServerError.BindFailed(config.port(), future.cause());
 
-            promise.fail(new HttpServerError.BindFailed(config.port(), future.cause()));
+            releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).onResultRun(() -> promise.fail(bindFailed));
         }
+    }
+
+    private static Promise<Unit> releaseGroupsOnBindFailure(boolean ownsGroups,
+                                                            EventLoopGroup bossGroup,
+                                                            EventLoopGroup workerGroup) {
+        return ownsGroups
+               ? shutdownGroups(some(bossGroup), some(workerGroup)).onFailure(cause -> log.warn("HTTP server event loops did not terminate after a failed bind: {}",
+                                                                                                cause.message()))
+               : Promise.unitPromise();
     }
 
     private static class HttpServerInitializer extends ChannelInitializer<SocketChannel> {
@@ -213,12 +280,104 @@ final class NettyHttpServer implements HttpServer {
             if (config.chunkedWriteEnabled()) {
                 pipeline.addLast(new ChunkedWriteHandler());
             }
-            // Add WebSocket handlers for each endpoint
-            for (var endpoint : config.webSocketEndpoints()) {
-                pipeline.addLast(new WebSocketServerProtocolHandler(endpoint.path(), null, true));
-            }
+            // #2184: one router per channel installs the protocol handler for the requested endpoint only
+            pipeline.addLast(new WebSocketUpgradeRouter(wsEndpoints, config.maxContentLength()));
             // Create a new handler instance per channel (not @Sharable)
             pipeline.addLast(new HttpRequestHandler(handler, wsEndpoints));
+        }
+    }
+
+    /// #2184: routes a WebSocket upgrade request by path. Netty installs a single handshake handler bound to the
+    /// path of the first `WebSocketServerProtocolHandler` in a pipeline, so one static handler per endpoint
+    /// never handshakes the second and later endpoints. This router, per channel, installs exactly one protocol
+    /// handler for the endpoint the request names and passes the request into its handshake. An upgrade to a
+    /// path with no endpoint is refused with 404 and the connection is closed. Any other message passes through
+    /// untouched.
+    ///
+    /// Once handed over, the handshake either completes or fails with the connection closed: the endpoint is
+    /// matched on the raw path, as Netty's handshake path check is, and a version Netty cannot handshake is
+    /// answered with 426 here, before anything is installed, so a client may retry on the same connection.
+    private static class WebSocketUpgradeRouter extends ChannelInboundHandlerAdapter {
+        private static final Logger log = LoggerFactory.getLogger(WebSocketUpgradeRouter.class);
+
+        private final Map<String, WebSocketEndpoint> wsEndpoints;
+        private final int maxMessageLength;
+
+        WebSocketUpgradeRouter(Map<String, WebSocketEndpoint> wsEndpoints, int maxMessageLength) {
+            this.wsEndpoints = wsEndpoints;
+            this.maxMessageLength = maxMessageLength;
+        }
+
+        @Contract
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+            if (msg instanceof FullHttpRequest request && isWebSocketUpgrade(request)) {
+                route(ctx, request);
+            } else {
+                ctx.fireChannelRead(msg);
+            }
+        }
+
+        private void route(ChannelHandlerContext ctx, FullHttpRequest request) {
+            var path = rawPath(request.uri());
+
+            option(wsEndpoints.get(path)).onPresent(endpoint -> accept(ctx, request, endpoint))
+                  .onEmpty(() -> refuse(ctx, request, path));
+        }
+
+        private void accept(ChannelHandlerContext ctx, FullHttpRequest request, WebSocketEndpoint endpoint) {
+            if (isSupportedVersion(request)) {
+                handOver(ctx, request, endpoint);
+            } else {
+                refuseVersion(ctx, request);
+            }
+        }
+
+        /// The handshake handler releases the request and fires `HandshakeComplete`, which
+        /// [HttpRequestHandler] turns into the endpoint's session and `Open`. The frame aggregator sits after the
+        /// protocol handler, so a fragmented message reaches the handler whole; one longer than the configured
+        /// content length closes the connection.
+        private void handOver(ChannelHandlerContext ctx, FullHttpRequest request, WebSocketEndpoint endpoint) {
+            ctx.pipeline().addAfter(ctx.name(), "ws-frame-aggregator", new WebSocketFrameAggregator(maxMessageLength));
+            ctx.pipeline()
+               .addAfter(ctx.name(),
+                         "ws-protocol",
+                         new WebSocketServerProtocolHandler(protocolConfig(endpoint.path())));
+            ctx.fireChannelRead(request);
+        }
+
+        private static boolean isSupportedVersion(FullHttpRequest request) {
+            return option(new WebSocketServerHandshakerFactory(request.uri(), null, false).newHandshaker(request)).isPresent();
+        }
+
+        /// RFC 6455 4.4: 426 names the supported version and keeps the connection, so the client may retry.
+        private static void refuseVersion(ChannelHandlerContext ctx, FullHttpRequest request) {
+            request.release();
+            WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel());
+        }
+
+        /// `checkStartsWith` lets a query string (`/ws/events?token=...`) through the handshake handler's own
+        /// path check; the endpoint itself was already selected by exact path.
+        private static WebSocketServerProtocolConfig protocolConfig(String path) {
+            return WebSocketServerProtocolConfig.newBuilder()
+                                                .websocketPath(path)
+                                                .checkStartsWith(true)
+                                                .build();
+        }
+
+        private static void refuse(ChannelHandlerContext ctx, FullHttpRequest request, String path) {
+            log.debug("Refusing WebSocket upgrade to {}: no endpoint registered", path);
+            request.release();
+            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.NOT_FOUND);
+
+            response.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
+            response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        }
+
+        private static boolean isWebSocketUpgrade(FullHttpRequest request) {
+            return request.headers()
+                          .contains(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET, true);
         }
     }
 
@@ -247,27 +406,7 @@ final class NettyHttpServer implements HttpServer {
         }
 
         private void handleHttpRequest(ChannelHandlerContext ctx, FullHttpRequest request) {
-            // Check if this is a WebSocket upgrade
-            var path = new QueryStringDecoder(request.uri()).path();
-            var wsEndpoint = Option.option(wsEndpoints.get(path));
-
-            if (wsEndpoint.isPresent() && isWebSocketUpgrade(request)) {
-                // WebSocket upgrade will be handled by WebSocketServerProtocolHandler
-                // Store handler and session in channel attribute for later use
-                wsEndpoint.onPresent(endpoint -> {
-                    var wsHandler = endpoint.handler()
-                                            .get();
-                    var wsSession = new NettyWebSocketSession(ctx.channel());
-
-                    ctx.channel()
-                       .attr(WS_STATE)
-                       .set(Option.some(new WebSocketState(wsHandler, wsSession)));
-                    ctx.fireChannelRead(request.retain());
-                });
-
-                return;
-            }
-            // Regular HTTP request - generate request ID
+            // WebSocket upgrades never reach here: WebSocketUpgradeRouter consumes them
             var requestId = IdGenerator.generate("req");
             var requestContext = createRequestContext(requestId, request);
             var responseWriter = new NettyResponseWriter(ctx, requestId, HttpUtil.isKeepAlive(request));
@@ -278,11 +417,6 @@ final class NettyHttpServer implements HttpServer {
                 log.error("Error handling request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
-        }
-
-        private boolean isWebSocketUpgrade(FullHttpRequest request) {
-            return request.headers()
-                          .contains(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET, true);
         }
 
         private void handleWebSocketFrame(ChannelHandlerContext ctx, WebSocketFrame frame) {
@@ -300,26 +434,43 @@ final class NettyHttpServer implements HttpServer {
                                             .readBytes(bytes);
                                  state.handler.handle(state.session,
                                                       new WebSocketMessage.Binary(bytes));
-                             } else if (frame instanceof CloseWebSocketFrame) {
-                                 state.handler.handle(state.session,
-                                                      new WebSocketMessage.Close());
-                                 ctx.channel()
-                                    .attr(WS_STATE)
-                                    .set(Option.none());
                              }
                              });
         }
 
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-            if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete) {
-                Option.option(ctx.channel().attr(WS_STATE).get())
-                      .flatMap(opt -> opt)
-                      .onPresent(state -> state.handler.handle(state.session,
-                                                               new WebSocketMessage.Open()));
+            if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete handshake) {
+                endpointOf(handshake).onPresent(endpoint -> open(ctx, endpoint));
             }
 
             super.userEventTriggered(ctx, evt);
+        }
+
+        /// #2184: the endpoint is resolved from the handshake itself, so the session exists only once the
+        /// handshake has completed, and `Open` is always the first message the handler sees.
+        private Option<WebSocketEndpoint> endpointOf(WebSocketServerProtocolHandler.HandshakeComplete handshake) {
+            return option(wsEndpoints.get(rawPath(handshake.requestUri())));
+        }
+
+        private static void open(ChannelHandlerContext ctx, WebSocketEndpoint endpoint) {
+            var state = new WebSocketState(endpoint.handler().get(),
+                                           new NettyWebSocketSession(ctx.channel()));
+
+            ctx.channel().attr(WS_STATE).set(Option.some(state));
+            state.handler.handle(state.session, new WebSocketMessage.Open());
+        }
+
+        /// #2184: `Close` is delivered exactly once, when an opened channel goes inactive (Netty fires that event
+        /// once per channel). That covers a client close frame (the protocol handler answers it and closes the
+        /// channel), a server-side [WebSocketSession#close()], and a connection dropped without any close frame.
+        @Contract
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) {
+            option(ctx.channel().attr(WS_STATE).get()).flatMap(opt -> opt)
+                  .onPresent(state -> state.handler.handle(state.session,
+                                                           new WebSocketMessage.Close()));
+            ctx.fireChannelInactive();
         }
 
         @Override
@@ -353,6 +504,16 @@ final class NettyHttpServer implements HttpServer {
 
             return new NettyRequestContext(requestId, method, path, headers, queryParams, body);
         }
+    }
+
+    /// #2184: the request path exactly as sent, without the query. Netty's handshake compares the raw URI, so
+    /// endpoints are matched in the same form: `/ws/%61` is not `/ws/a`.
+    private static String rawPath(String uri) {
+        var query = uri.indexOf('?');
+
+        return query < 0
+               ? uri
+               : uri.substring(0, query);
     }
 
     /// WebSocket state stored per channel.

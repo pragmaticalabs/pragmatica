@@ -34,11 +34,32 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///                             Without it the returned promise has no timeout and a batch that
 ///                             is never answered (e.g. the engine pauses mid-flight, or the
 ///                             correlation answer is dropped) hangs the caller forever.
+/// @param decisionGapTimeout   How long a Decision that arrives past a missing slot waits, buffered, for
+///                             that slot to be applied in order before the replica gives up and resyncs
+///                             from a snapshot. Ordinary reordering resolves well inside it; a slot that
+///                             is lost outright (#1683) is repaired when it expires.
+/// @param participationMarker #1212 — this node's durable first-boot marker, when the deployment
+///                             supplies one. `Option.none()` means the node's history is UNKNOWN and
+///                             it is held to the amnesiac's adoption bound, which is exactly #1171's
+///                             behaviour. Absence NEVER relaxes anything; see [ParticipationMarker].
 public record ProtocolConfig(TimeSpan cleanupInterval,
                              TimeSpan syncRetryInterval,
                              long removeOlderThanPhases,
                              int maxPendingBatches,
-                             TimeSpan applyTimeout) {
+                             TimeSpan applyTimeout,
+                             TimeSpan decisionGapTimeout,
+                             Option<ParticipationMarker> participationMarker) {
+    /// Returns this configuration with another decision-gap timeout.
+    public ProtocolConfig withDecisionGapTimeout(TimeSpan timeout) {
+        return new ProtocolConfig(cleanupInterval,
+                                  syncRetryInterval,
+                                  removeOlderThanPhases,
+                                  maxPendingBatches,
+                                  applyTimeout,
+                                  timeout,
+                                  participationMarker);
+    }
+
     /// Validates and creates a ProtocolConfig.
     public static Result<ProtocolConfig> protocolConfig(TimeSpan cleanupInterval,
                                                         TimeSpan syncRetryInterval,
@@ -65,7 +86,9 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                                                                                                                                sync,
                                                                                                                                                phases,
                                                                                                                                                maxPending.intValue(),
-                                                                                                                                               apply));
+                                                                                                                                               apply,
+                                                                                                                                               DEFAULT_DECISION_GAP_TIMEOUT,
+                                                                                                                                               Option.none()));
     }
 
     private static Result<TimeSpan> validatePositive(TimeSpan value, String name) {
@@ -97,6 +120,9 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
     /// batch (never answered) into a clear `ConsensusError.ApplyTimeout` failure rather
     /// than a forever-pending promise, NOT to enforce a tight latency SLA.
     public static final TimeSpan DEFAULT_APPLY_TIMEOUT = timeSpan(30).seconds();
+    /// Default wait for a missing slot before a buffered later Decision forces a snapshot resync.
+    /// The wait costs nothing while the slot is merely reordered and bounds the stall when it is lost.
+    public static final TimeSpan DEFAULT_DECISION_GAP_TIMEOUT = timeSpan(2).seconds();
 
     /// Creates a default (production) configuration.
     /// Supports `SYNC_RETRY_INTERVAL_MS` environment variable override for E2E testing.
@@ -110,26 +136,46 @@ public record ProtocolConfig(TimeSpan cleanupInterval,
                                   syncRetry,
                                   DEFAULT_REMOVE_OLDER_THAN_PHASES,
                                   DEFAULT_MAX_PENDING_BATCHES,
-                                  DEFAULT_APPLY_TIMEOUT);
+                                  DEFAULT_APPLY_TIMEOUT,
+                                  DEFAULT_DECISION_GAP_TIMEOUT,
+                                  Option.none());
     }
 
     /// Creates a configuration from explicit values, with defaults for unspecified parameters.
     /// Intended for wiring from external configuration (e.g., TOML).
     public static ProtocolConfig consensusConfig(TimeSpan cleanupInterval, TimeSpan syncRetryInterval) {
+        return consensusConfig(cleanupInterval, syncRetryInterval, Option.none());
+    }
+
+    /// #1212 — as above, carrying this node's durable first-boot marker.
+    public static ProtocolConfig consensusConfig(TimeSpan cleanupInterval,
+                                                 TimeSpan syncRetryInterval,
+                                                 Option<ParticipationMarker> participationMarker) {
         return new ProtocolConfig(cleanupInterval,
                                   syncRetryInterval,
                                   DEFAULT_REMOVE_OLDER_THAN_PHASES,
                                   DEFAULT_MAX_PENDING_BATCHES,
-                                  DEFAULT_APPLY_TIMEOUT);
+                                  DEFAULT_APPLY_TIMEOUT,
+                                  DEFAULT_DECISION_GAP_TIMEOUT,
+                                  participationMarker);
     }
 
     /// Creates a test configuration with faster intervals.
     public static ProtocolConfig testConfig() {
+        return testConfig(Option.none());
+    }
+
+    /// #1212 — a test configuration carrying a durable first-boot marker. The in-JVM harness
+    /// (`EmberCluster`) is the only caller that has one to supply: it CREATES the nodes, and only
+    /// whatever creates a node can know that it is new.
+    public static ProtocolConfig testConfig(Option<ParticipationMarker> participationMarker) {
         return new ProtocolConfig(timeSpan(60).seconds(),
                                   timeSpan(100).millis(),
                                   100,
                                   DEFAULT_MAX_PENDING_BATCHES,
-                                  DEFAULT_APPLY_TIMEOUT);
+                                  DEFAULT_APPLY_TIMEOUT,
+                                  DEFAULT_DECISION_GAP_TIMEOUT,
+                                  participationMarker);
     }
 
     /// Configuration validation errors.

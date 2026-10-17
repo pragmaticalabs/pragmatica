@@ -226,7 +226,7 @@ class QuicClusterNetworkConnectingStalenessTest {
 
     private QuicClusterNetwork createNetwork(NodeId nodeId, TopologyObserver topology) {
         var network = new QuicClusterNetwork(topology, codec, codec, MessageRouter.mutable(), serverSsl, clientSsl,
-                                              ClusterFormationConfig.defaults(), QuicDisconnectListener.noop());
+                                              ClusterFormationConfig.defaults());
         networks.add(network);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;
@@ -241,6 +241,9 @@ class QuicClusterNetworkConnectingStalenessTest {
     /// dispatched a dial" (`reconcileDialPeer` calls `topologyManager.get` only after every gate,
     /// including the CONNECTING-staleness escape hatch, allows the attempt).
     private static final class CountingTopology implements TopologyObserver {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
         private final NodeInfo selfInfo;
         private final List<NodeInfo> peers;
         private final Set<NodeId> coreNodes;

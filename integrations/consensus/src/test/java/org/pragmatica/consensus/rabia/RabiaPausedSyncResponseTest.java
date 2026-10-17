@@ -96,8 +96,8 @@ class RabiaPausedSyncResponseTest {
     private void activateEngine() throws InterruptedException {
         engine.clusterState(ClusterStateNotification.active());
         Thread.sleep(150);
-        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty()));
-        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty()));
+        engine.processSyncResponse(new SyncResponse<>(NODE_2, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
+        engine.processSyncResponse(new SyncResponse<>(NODE_3, RabiaPersistence.SavedState.empty(), ResponderState.COLD));
         Thread.sleep(50);
     }
 
@@ -191,6 +191,26 @@ class RabiaPausedSyncResponseTest {
         assertThat(response.state().lastCommittedPhase())
             .as("empty fallback carries Phase.ZERO")
             .isEqualTo(Phase.ZERO);
+        assertThat(response.responder())
+            .as("#667: the producer marks a Stopped/Syncing engine's fallback COLD")
+            .isEqualTo(ResponderState.COLD);
+    }
+
+    /// #667 producer side, live branch: an Active engine answers with `ResponderState.LIVE`. Paired
+    /// with the Stopped case above so the marking is pinned at both ends of the branch the receiver's
+    /// adoption rule now depends on.
+    @Test
+    void activeEngine_marksItsResponseLive() throws InterruptedException {
+        activateEngine();
+        assertThat(engine.isActive()).isTrue();
+
+        network.clearMessages();
+        engine.handleSyncRequest(new SyncRequest(JOINER));
+        Thread.sleep(80);
+
+        assertThat(lastSyncResponseTo().responder())
+            .as("#667: the producer marks a live engine's snapshot LIVE")
+            .isEqualTo(ResponderState.LIVE);
     }
 
     // ==================== Stub Implementations ====================
@@ -206,6 +226,7 @@ class RabiaPausedSyncResponseTest {
         }
 
         @Override public NodeInfo self() { return self; }
+        @Override public boolean isConsensusMember(NodeId node) { return topology().contains(node) || node.equals(JOINER); }
 
         @Override public Option<NodeInfo> get(NodeId id) {
             return Option.option(NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("localhost", 5000).unwrap()));
@@ -225,7 +246,7 @@ class RabiaPausedSyncResponseTest {
 
         @Override public Option<NodeState> getState(NodeId id) { return Option.empty(); }
 
-        @Override public List<NodeId> topology() { return List.of(); }
+        @Override public List<NodeId> topology() { return java.util.stream.IntStream.rangeClosed(1, clusterSize).mapToObj(index -> nodeId("node-" + index).unwrap()).toList(); }
     }
 
     static class TestClusterNetwork implements ClusterNetwork {

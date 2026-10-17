@@ -18,19 +18,40 @@ package org.pragmatica.consensus.net.quic;
 
 import org.pragmatica.net.tcp.TlsConfig;
 import java.net.SocketAddress;
+import java.nio.channels.ClosedChannelException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+
 import io.netty.channel.ChannelFuture;
+import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.Layout;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.NoOfflineBuffering;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -256,6 +277,78 @@ class QuicClusterNetworkStreamZombieTest {
             assertThat(network.quicMetrics().streamZombieEvictionCount())
                 .as("an inactive connection takes the pre-existing dead-connection path, not the BACKSTOP")
                 .isZero();
+            assertThat(network.offlineBufferSizeForTests(peerId))
+                .as("an ordinary (state-convergence) frame is still re-dispatched into the offline buffer: only NoOfflineBuffering opts out (#1973)")
+                .isEqualTo(1);
+        }
+
+        /// #1973 (v-1991 R1): the connection a frame was captured on is dead, but the peer's state is by now bound to a NEW live
+        /// connection (the stale capture lost a race with a reattach). The frame is written on the live one exactly once, and
+        /// the outcome says so: reporting ConnectionDead for a frame that was written told a caller "not sent, safe to retry"
+        /// about a command that was sent.
+        @Test
+        void writeToStream_staleCapture_stateRebound_writesOnTheLiveConnection_andReportsTheWrite() {
+            var network = network();
+            var peerId = new NodeId("rebound-peer");
+            var staleConnection = connectionWithOpener(peerId, failingOpener(), false);
+            var liveConnection = connectionWithOpener(peerId, failingOpener(), true);
+            var liveStream = writableStream();
+
+            liveConnection.registerStream(StreamType.CONTROL, liveStream);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, liveConnection));
+
+            var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), staleConnection);
+
+            assertThat(outcome).as("the frame was written, so the outcome is the write's, not ConnectionDead").isInstanceOf(WriteOutcome.Sent.class);
+            verify(liveStream, times(1)).writeAndFlush(any());
+            assertThat(network.offlineBufferSizeForTests(peerId)).as("and it is not also buffered").isZero();
+        }
+
+        /// The other half: nothing live to rebind to, so nothing is written (a stream registered on the dead connection stays
+        /// untouched) and the outcome is ConnectionDead.
+        @Test
+        void writeToStream_genuinelyDeadConnection_writesNothing_andReportsConnectionDead() {
+            var network = network();
+            var peerId = new NodeId("dead-no-rebind-peer");
+            var deadConnection = connectionWithOpener(peerId, failingOpener(), false);
+            var deadStream = writableStream();
+
+            deadConnection.registerStream(StreamType.CONTROL, deadStream);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, deadConnection));
+
+            var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), deadConnection);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.ConnectionDead.class);
+            verify(deadStream, never()).writeAndFlush(any());
+        }
+
+        /// #1973: a NoOfflineBuffering frame (an entity owner-forward) that finds its connection dead is DROPPED, not re-dispatched
+        /// into the offline buffer. The caller is told ConnectionDead means "not sent", so the frame must not be delivered on
+        /// reattach, after the caller was told nothing was applied. The buffer is empty and a reattach drains nothing.
+        @Test
+        void writeToStream_inactiveConnection_noOfflineBufferingFrame_isDropped_andNothingDrainsOnReattach() {
+            var network = network();
+            var peerId = new NodeId("dead-connection-forward-peer");
+
+            var connection = connectionWithOpener(peerId, failingOpener(), false);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+            var outcome = network.writeToStreamForTests(peerId, new UnbufferedForward(peerId), connection);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.ConnectionDead.class);
+            assertThat(network.offlineBufferSizeForTests(peerId))
+                .as("the dead-connection path must not buffer a NoOfflineBuffering frame")
+                .isZero();
+            assertThat(network.peerStateForTests(peerId).drainOfflineBuffer(System.nanoTime()).live())
+                .as("so a reattach (the drain) has nothing to deliver late")
+                .isEmpty();
+        }
+
+        private record UnbufferedForward(NodeId sender) implements ProtocolMessage, NoOfflineBuffering {
+            @Override
+            public StreamType streamType() {
+                return StreamType.FORWARD;
+            }
         }
     }
 
@@ -285,6 +378,26 @@ class QuicClusterNetworkStreamZombieTest {
                 var aId = new NodeId("aaa-dialer");
                 awaitTrue(() -> nodeB.connectedPeers().contains(aId), "B accepts A");
 
+                // #726: the Hello handshake itself (CONTROL-lane preamble + Hello, both directions)
+                // is hooked, so the payload-byte counters are already positive from the handshake
+                // ALONE — strictly before any application-level write (the keepalive beacon below).
+                // Proves the claim covers handshake bytes, not just post-handshake app traffic.
+                // Awaited rather than asserted synchronously: each increment happens on its owning
+                // node's QUIC event-loop thread, not the test thread, same reasoning as the
+                // receive-side awaits further down. This is a genuine mutation probe, not just a
+                // liveness check: liveNetwork() stretches this test's pingInterval to 30s (see its
+                // javadoc), so the automatic keepalive scheduler cannot fire within AWAIT_TIMEOUT
+                // (10s) and cannot contaminate these counters — a revert of any of the nine #726
+                // hooks makes the corresponding awaitTrue below time out and fail for real.
+                awaitTrue(() -> nodeA.quicMetrics().bytesSentCount() > 0,
+                          "#726: the dialer's CONTROL preamble + Hello writes count before any app write");
+                awaitTrue(() -> nodeA.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the dialer's receipt of the acceptor's Hello response counts before any app write");
+                awaitTrue(() -> nodeB.quicMetrics().bytesSentCount() > 0,
+                          "#726: the acceptor's Hello-response write counts before any app write");
+                awaitTrue(() -> nodeB.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the acceptor's receipt of the dialer's CONTROL preamble + Hello counts before any app write");
+
                 // The transport keepalive scheduler writes a CONTROL-lane beacon to every CONNECTED
                 // peer each pingInterval (via writeToStream), exercising the acceptor's lane table on
                 // both sides. Give it a couple of cadences to drive real writes, then assert neither
@@ -301,6 +414,26 @@ class QuicClusterNetworkStreamZombieTest {
                 assertThat(nodeB.quicMetrics().streamZombieEvictionCount())
                     .as("a live handshake never strands the acceptor with an unhealable lane")
                     .isZero();
+                // #726: the keepalive beacon is a real CONTROL-lane write/read on a live two-node
+                // pipeline — proves the payload-byte counters move at BOTH lane boundaries (send:
+                // QuicClusterNetwork#writeIfWritable, receive: QuicLaneDataHandler#channelRead0),
+                // for BOTH the dialer and the acceptor (the two directions share one handler class).
+                // The send-side counter increments synchronously on the calling thread inside
+                // writeIfWritable/rawBackpressuredWrite, so it is already positive once keepaliveTick()
+                // returns. The receive-side counter only increments once the OTHER node's real QUIC
+                // event loop has scheduled and run channelRead0 for the inbound frame — under
+                // concurrent reactor load that can take longer than "immediately", so it is awaited
+                // like every other cross-node convergence in this test, not asserted synchronously.
+                assertThat(nodeA.quicMetrics().bytesSentCount())
+                    .as("#726: the dialer's keepalive write increments its payload-byte send counter")
+                    .isPositive();
+                awaitTrue(() -> nodeB.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the acceptor's receipt of the dialer's frame increments its payload-byte receive counter");
+                assertThat(nodeB.quicMetrics().bytesSentCount())
+                    .as("#726: the acceptor's own keepalive write increments its payload-byte send counter")
+                    .isPositive();
+                awaitTrue(() -> nodeA.quicMetrics().bytesReceivedCount() > 0,
+                          "#726: the dialer's receipt of the acceptor's frame increments its payload-byte receive counter");
             } finally {
                 nodeA.stop().await(AWAIT_TIMEOUT);
                 nodeB.stop().await(AWAIT_TIMEOUT);
@@ -308,7 +441,380 @@ class QuicClusterNetworkStreamZombieTest {
         }
     }
 
+    /// #718 — the lazy open is ONE PER (peer, lane), not one per message.
+    ///
+    /// The PRIMARY heal above is correct and stays; what was missing is a gate in front of it. Each
+    /// firing created a stream, so a burst of writes arriving inside the open window consumed the
+    /// connection's `initialMaxStreamsBidirectional(64)` credit. The coupling was measured as EQUAL
+    /// counts, not a correlation: failed lazy re-opens == `STREAM_LIMIT_ERROR`s, 857==857 in one
+    /// 72-second run and 639==639 in another.
+    ///
+    /// These tests drive the real `writeToStream` path through a DEFERRING opener — one that records
+    /// the callback and completes only when the test says so. That is what reproduces the defect's
+    /// window: while the open is outstanding nothing is registered on the connection, so every write
+    /// in the burst genuinely finds the lane missing. An opener that registers synchronously (the one
+    /// `PrimaryLazyOpen` uses) would let writes 2..N find the healed lane and could not distinguish a
+    /// deduplicating implementation from a non-deduplicating one.
+    @Nested
+    class LazyOpenDedup {
+        private static final String HEAL_FRAGMENT = "lazily (re)opening the lane";
+        private static final String SENTINEL = "positive control: LazyOpenDedup appender is attached";
+        private static final int BURST = 12;
+
+        /// THE pin. Twelve messages onto a lane whose open has not completed create ONE stream, and
+        /// all twelve are still delivered when it does — the dedup must not cost a message.
+        @Test
+        void writeToStream_burstOnAMissingLane_opensOnceAndDeliversEveryMessage() {
+            var network = network();
+            var peerId = new NodeId("dedup-burst-peer");
+            var opener = new DeferringOpener();
+            var connection = connectionWithOpener(peerId, opener);
+
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+            writeBurst(network, peerId, connection, BURST);
+
+            assertThat(opener.openCount())
+                .as("twelve writes, ONE stream created — before #718 this was twelve, against a "
+                    + "64-stream credit")
+                .isEqualTo(1);
+            assertThat(network.quicMetrics().streamZombieLazyOpenCount())
+                .as("exactly one write owned the open")
+                .isEqualTo(1L);
+            assertThat(network.quicMetrics().streamZombieLazyOpenCoalescedCount())
+                .as("the other eleven coalesced onto it")
+                .isEqualTo(BURST - 1L);
+
+            var opened = writableStream();
+
+            // Mirror the production opener: register the lane, then report it.
+            connection.registerStream(StreamType.CONTROL, opened);
+            opener.completeWith(Option.some(opened));
+
+            verify(opened, times(BURST)).writeAndFlush(any());
+            assertThat(network.quicMetrics().streamZombieLazyOpenDropCount())
+                .as("a burst well inside the pending bound loses nothing")
+                .isZero();
+        }
+
+        /// The volume half of the same claim, and the reason it is worth a separate assertion: the heal
+        /// line is a WARN on a hot send path. One per open cycle is diagnostic; one per message is the
+        /// #718 amplification pattern in a second place.
+        @Test
+        void writeToStream_burstOnAMissingLane_emitsOneHealWarnNotOnePerMessage() {
+            var network = network();
+            var peerId = new NodeId("dedup-warn-volume-peer");
+            var opener = new DeferringOpener();
+            var connection = connectionWithOpener(peerId, opener);
+
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+            emitSentinel();
+            writeBurst(network, peerId, connection, BURST);
+
+            assertSentinelWasCaptured();
+            assertThat(warnsContaining(HEAL_FRAGMENT))
+                .as("one heal WARN for twelve messages — the line announces the OPEN, not the write")
+                .hasSize(1);
+        }
+
+        /// The report's standing risk note, pinned: deduplication must not mask a genuinely dead lane.
+        /// A coalesced message is a distinct admission outcome from a FAILED open, so the BACKSTOP
+        /// eviction is still reached when the open reports empty.
+        @Test
+        void writeToStream_unhealableLaneAfterDedup_stillEvictsViaBackstop() {
+            var network = network();
+            var peerId = new NodeId("dedup-backstop-peer");
+            var opener = new DeferringOpener();
+            var connection = connectionWithOpener(peerId, opener);
+
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+            writeBurst(network, peerId, connection, BURST);
+
+            assertThat(network.quicMetrics().streamZombieEvictionCount())
+                .as("precondition: nothing is evicted while the open is still outstanding")
+                .isZero();
+
+            opener.completeWith(Option.empty());
+
+            assertThat(network.quicMetrics().streamZombieEvictionCount())
+                .as("an unhealable lane still evicts for a clean re-dial — dedup did not swallow it")
+                .isEqualTo(1L);
+            assertThat(network.connectedPeers())
+                .as("and the peer drops out so the reconciler re-dials")
+                .doesNotContain(peerId);
+        }
+
+        /// No marker leak THROUGH THE TRANSPORT. The in-flight marker must be released on the failure
+        /// outcome too, or the first unhealable open would make that lane permanently undealable for
+        /// the rest of the connection's life — trading a stream-credit leak for a worse one.
+        @Test
+        void writeToStream_afterAFailedOpen_nextWriteStartsAFreshOpen() {
+            var network = network();
+            var peerId = new NodeId("dedup-marker-release-peer");
+            var opener = new DeferringOpener();
+            var connection = connectionWithOpener(peerId, opener);
+
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+            writeBurst(network, peerId, connection, 1);
+            opener.completeWith(Option.empty());
+
+            // Re-CONNECT the same (still lane-less) connection: the BACKSTOP evicted it above, and the
+            // marker — not the peer phase — is what this test is about.
+            var state = connectedPeerState(peerId, connection);
+
+            network.seedPeerForTests(peerId, state);
+            writeBurst(network, peerId, connection, 1);
+
+            assertThat(opener.openCount())
+                .as("the second write drove a SECOND open — a leaked marker would have coalesced it "
+                    + "onto an open that already finished")
+                .isEqualTo(2);
+            assertThat(network.quicMetrics().streamZombieLazyOpenCount()).isEqualTo(2L);
+            assertThat(network.quicMetrics().streamZombieLazyOpenCoalescedCount())
+                .as("neither write coalesced — they are separate open cycles")
+                .isZero();
+        }
+
+        /// Overflow of the pending queue is COUNTED and bounded. Retention caps at the bound, the
+        /// oldest are the ones dropped, and the drop is visible in metrics rather than in a WARN —
+        /// deliberately, since an unbounded WARN on this path is the defect being fixed.
+        @Test
+        void writeToStream_burstPastThePendingBound_dropsOldestAndCountsIt() {
+            var network = network();
+            var peerId = new NodeId("dedup-overflow-peer");
+            var opener = new DeferringOpener();
+            var connection = connectionWithOpener(peerId, opener);
+            var bound = QuicPeerConnection.PENDING_LANE_WRITES_MAX;
+
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+            // One owner + (bound - 1) coalesced fills the queue exactly; the final two overflow it.
+            writeBurst(network, peerId, connection, bound + 2);
+
+            assertThat(network.quicMetrics().streamZombieLazyOpenCount())
+                .as("still ONE open, however long the burst")
+                .isEqualTo(1L);
+            assertThat(network.quicMetrics().streamZombieLazyOpenCoalescedCount())
+                .isEqualTo(bound + 1L);
+            assertThat(network.quicMetrics().streamZombieLazyOpenDropCount())
+                .as("exactly the two messages past the bound are dropped")
+                .isEqualTo(2L);
+
+            var opened = writableStream();
+
+            connection.registerStream(StreamType.CONTROL, opened);
+            opener.completeWith(Option.some(opened));
+
+            verify(opened, times(bound)).writeAndFlush(any());
+        }
+
+        // --- dedup fixtures ---
+
+        private CapturingAppender appender;
+        private LoggerConfig loggerConfig;
+
+        @BeforeEach
+        void attachAppender() {
+            appender = CapturingAppender.create("LazyOpenDedupCapture");
+            appender.start();
+
+            var ctx = (LoggerContext) LogManager.getContext(false);
+
+            loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void detachAppender() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+
+            loggerConfig.removeAppender(appender.getName());
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        private static void writeBurst(QuicClusterNetwork network,
+                                       NodeId peerId,
+                                       QuicPeerConnection connection,
+                                       int count) {
+            for (var index = 0; index < count; index++) {
+                network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), connection);
+            }
+        }
+
+        private static void emitSentinel() {
+            LogManager.getLogger(QuicClusterNetwork.class).warn(SENTINEL);
+        }
+
+        /// Load-bearing for the volume assertion: `hasSize(1)` would also be satisfied by a detached
+        /// appender that captured one stray line, and an absent capture would make a `hasSize(0)`
+        /// variant pass vacuously.
+        private void assertSentinelWasCaptured() {
+            assertThat(appender.messages())
+                .as("the appender must be attached to %s, or the volume assertion examines nothing",
+                    QuicClusterNetwork.class.getName())
+                .anyMatch(message -> message.contains(SENTINEL));
+        }
+
+        private List<String> warnsContaining(String fragment) {
+            return appender.messages()
+                           .stream()
+                           .filter(message -> message.contains(fragment))
+                           .toList();
+        }
+
+        private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
+            var name = QuicClusterNetwork.class.getName();
+            var existing = configuration.getLoggerConfig(name);
+
+            if (name.equals(existing.getName())) {
+                return existing;
+            }
+
+            var fresh = new LoggerConfig(name, Level.WARN, true);
+
+            configuration.addLogger(name, fresh);
+
+            return fresh;
+        }
+    }
+
     // --- Helpers ---
+
+    /// A [QuicPeerConnection.LaneOpener] that RECORDS the open and defers its outcome until the test
+    /// calls [#completeWith]. Registering nothing meanwhile is the point: it holds the lane-missing
+    /// window open, which is the state the #718 burst actually arrives in.
+    private static final class DeferringOpener implements QuicPeerConnection.LaneOpener {
+        private final List<Consumer<Option<QuicStreamChannel>>> pending = new CopyOnWriteArrayList<>();
+        /// Counted separately from [#pending], which [#completeWith] drains — the question these tests
+        /// ask is how many opens were EVER driven, across completion cycles.
+        private final AtomicInteger opens = new AtomicInteger();
+
+        @Override
+        public void open(StreamType lane, Consumer<Option<QuicStreamChannel>> onResult) {
+            opens.incrementAndGet();
+            pending.add(onResult);
+        }
+
+        void completeWith(Option<QuicStreamChannel> outcome) {
+            var outstanding = List.copyOf(pending);
+
+            pending.clear();
+            outstanding.forEach(callback -> callback.accept(outcome));
+        }
+
+        int openCount() {
+            return opens.get();
+        }
+    }
+
+    /// In-memory log4j2 appender capturing WARN-and-above messages for the dedup volume assertion.
+    private static final class CapturingAppender extends AbstractAppender {
+        private final List<String> captured = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender(String name, Layout<?> layout) {
+            super(name, (Filter) null, layout, true, Property.EMPTY_ARRAY);
+        }
+
+        static CapturingAppender create(String name) {
+            return new CapturingAppender(name, PatternLayout.createDefaultLayout());
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                captured.add(event.getMessage().getFormattedMessage());
+            }
+        }
+
+        List<String> messages() {
+            return List.copyOf(captured);
+        }
+    }
+
+    /// #1578 — a write that resolved its stream just before the lane moved to another stream, and ran
+    /// after the old one was finished, fails on the event loop. It is re-sent ONCE on the stream the lane
+    /// kept, rather than dropped with only a write-failure line; a failure whose lane still resolves to
+    /// the failed stream is an ordinary failure and is not re-sent.
+    @Nested
+    class RetiredStreamResend {
+
+        @Test
+        void writeToStream_streamRetiredBeforeTheWriteRan_resendsOnceOnTheKeptStream() {
+            var network = network();
+            var peerId = new NodeId("retired-lane-peer");
+            var connection = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+            var kept = writableStream();
+            var retired = streamFailingWritesAfter(() -> connection.registerStream(StreamType.CONTROL, kept));
+
+            connection.registerStream(StreamType.CONTROL, retired);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+            var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), connection);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.Sent.class);
+            verify(kept, times(1)).writeAndFlush(any());
+            assertThat(network.quicMetrics().retiredStreamResendCount()).as("re-sent exactly once").isEqualTo(1L);
+            assertThat(network.quicMetrics().writeFailureCount()).as("a delivered resend is not a failure").isZero();
+        }
+
+        /// The rep-7 route of QuicSimultaneousDialLaneTest: a write captured the LOSING connection of a
+        /// duplicate dial, its lane open failed because that connection was closed, and the BACKSTOP
+        /// evicted whatever was bound — the survivor. Now the survivor stays bound and carries the message.
+        @Test
+        void lazyOpenFailsOnAReplacedConnection_survivorStaysBound_andCarriesTheWaitingMessage() {
+            var network = network();
+            var peerId = new NodeId("replaced-connection-peer");
+            var survivorStream = writableStream();
+            var survivor = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+            var loser = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+
+            survivor.registerStream(StreamType.CONTROL, survivorStream);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, survivor));
+
+            var _ = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), loser);
+
+            verify(survivorStream, times(1)).writeAndFlush(any());
+            assertThat(network.quicMetrics().streamZombieEvictionCount()).as("the survivor is not evicted").isZero();
+            assertThat(network.activeConnectionForTests(peerId)).isEqualTo(Option.some(survivor));
+        }
+
+        @Test
+        void writeToStream_failedWriteWhoseLaneStillResolvesToIt_isReportedNotResent() {
+            var network = network();
+            var peerId = new NodeId("failed-lane-peer");
+            var connection = connectionWithOpener(peerId, QuicPeerConnection.LaneOpener.noop());
+            var failing = streamFailingWritesAfter(() -> {});
+
+            connection.registerStream(StreamType.CONTROL, failing);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+            var _ = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), connection);
+
+            verify(failing, times(1)).writeAndFlush(any());
+            assertThat(network.quicMetrics().retiredStreamResendCount()).isZero();
+            assertThat(network.quicMetrics().writeFailureCount()).as("reported as a write failure").isEqualTo(1L);
+        }
+    }
+
+    /// A live, writable mock stream whose writes FAIL: `beforeFailure` runs first (a test uses it to move
+    /// the lane to another stream, the retirement the write raced), then every listener sees a failed future.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static QuicStreamChannel streamFailingWritesAfter(Runnable beforeFailure) {
+        var stream = mock(QuicStreamChannel.class);
+        var future = mock(ChannelFuture.class);
+
+        lenient().when(future.isSuccess()).thenReturn(false);
+        lenient().when(future.cause()).thenReturn(new ClosedChannelException());
+        lenient().when(future.addListener(any())).thenAnswer(invocation -> {
+            beforeFailure.run();
+            ((GenericFutureListener) invocation.getArgument(0)).operationComplete(future);
+            return future;
+        });
+        lenient().when(stream.writeAndFlush(any())).thenReturn(future);
+        lenient().when(stream.isActive()).thenReturn(true);
+        lenient().when(stream.isWritable()).thenReturn(true);
+        return stream;
+    }
 
     /// A mock QUIC lane stream that is active + writable and returns a self-listening future.
     private static QuicStreamChannel writableStream() {
@@ -392,7 +898,15 @@ class QuicClusterNetworkStreamZombieTest {
     private QuicClusterNetwork liveNetwork(NodeId nodeId, SliceCodec codec, QuicSslContext serverSsl, QuicSslContext clientSsl) {
         var address = NodeAddress.nodeAddress("127.0.0.1", 19995).fold(_ -> fail("bad address"), a -> a);
         var selfInfo = NodeInfo.nodeInfo(nodeId, address);
-        var network = new QuicClusterNetwork(stubTopology(selfInfo), codec, codec,
+        // #726: pingInterval is stretched to 30s (vs. the 1s every other helper in this file uses)
+        // solely so the automatic keepalive scheduler that QuicClusterNetwork#startOnPort starts
+        // internally cannot fire within AWAIT_TIMEOUT (10s). Without this, the scheduler's own
+        // pre-existing byte-counter hooks (QuicClusterNetwork#writeIfWritable, QuicLaneDataHandler)
+        // can independently satisfy "counter > 0" before the test's explicit keepaliveTick() calls
+        // run, making the handshake-phase assertions below pass even with the nine #726 hooks
+        // reverted. `network()` below never calls startOnPort, so its own 1s stub is inert and
+        // unaffected by this change.
+        var network = new QuicClusterNetwork(stubTopology(selfInfo, TimeSpan.timeSpan(30).seconds()), codec, codec,
                                              MessageRouter.mutable(), serverSsl, clientSsl);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;
@@ -420,14 +934,21 @@ class QuicClusterNetworkStreamZombieTest {
     }
 
     private static TopologyObserver stubTopology(NodeInfo self) {
+        return stubTopology(self, TimeSpan.timeSpan(1).seconds());
+    }
+
+    private static TopologyObserver stubTopology(NodeInfo self, TimeSpan pingInterval) {
         return new TopologyObserver() {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {return id.equals(self.id()) ? Option.some(self) : Option.empty();}
             @Override public int clusterSize() {return 1;}
             @Override public Option<NodeId> reverseLookup(SocketAddress socketAddress) {return Option.empty();}
             @Override public Promise<Unit> start() {return Promise.unitPromise();}
             @Override public Promise<Unit> stop() {return Promise.unitPromise();}
-            @Override public TimeSpan pingInterval() {return TimeSpan.timeSpan(1).seconds();}
+            @Override public TimeSpan pingInterval() {return pingInterval;}
             @Override public TimeSpan helloTimeout() {return TimeSpan.timeSpan(5).seconds();}
             @Override public Option<TlsConfig> tls() {return Option.empty();}
             @Override public Option<NodeState> getState(NodeId id) {return Option.empty();}

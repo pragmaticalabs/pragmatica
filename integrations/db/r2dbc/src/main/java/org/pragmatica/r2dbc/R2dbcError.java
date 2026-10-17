@@ -31,7 +31,7 @@ import static org.pragmatica.r2dbc.R2dbcError.DatabaseFailure.databaseFailure;
 /// Maps common R2DBC exceptions to domain-friendly error types.
 public sealed interface R2dbcError extends Cause {
     /// Connection to database failed.
-    record ConnectionFailed(String message) implements R2dbcError {
+    record ConnectionFailed(String message) implements R2dbcError, Cause.Transient {
         @Override
         public String message() {
             return "Connection failed: " + message;
@@ -59,7 +59,7 @@ public sealed interface R2dbcError extends Cause {
     }
 
     /// Operation timeout exceeded.
-    record Timeout(String operation) implements R2dbcError {
+    record Timeout(String operation) implements R2dbcError, Cause.Transient {
         @Override
         public String message() {
             return "Timeout: " + operation;

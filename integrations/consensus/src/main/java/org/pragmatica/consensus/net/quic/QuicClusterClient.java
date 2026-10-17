@@ -22,8 +22,10 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -41,7 +43,6 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -91,9 +92,17 @@ public sealed interface QuicClusterClient {
     /// underlying datagram channel must be closed too — otherwise the kernel-level
     /// socket leaks until JVM exit. Idempotent: a missing entry resolves immediately.
     Promise<Unit> closeDatagramChannel(NodeId peerId);
-
     /// Snapshot the count of currently-tracked datagram channels. Test/diagnostic only.
     int datagramChannelCount();
+
+    /// #1578: the peer went CONNECTED over another link, so a dial to it that is still pending is dropped —
+    /// but ONLY while its QUIC handshake has not completed. That is the safety line: this client sends its
+    /// Hello only after the QUIC connect succeeds (`handleQuicConnect` → `sendHello`), and the acceptor
+    /// registers a connection only on receiving a Hello (`QuicClusterServer` `admitHello` →
+    /// `registerPeerConnection`), so the peer can never have adopted an attempt abandoned here. An attempt
+    /// past its handshake is left alone; the lower-id convergence rule in `PeerState` resolves it. The
+    /// abandoned dial fails with [QuicTransportError.DialAbandoned]. No-op when nothing is pending.
+    Unit abandonPendingDial(NodeId peerId);
 
     /// Create a new QUIC cluster client.
     ///
@@ -102,6 +111,7 @@ public sealed interface QuicClusterClient {
     /// @param selfLabels      this node's metadata labels
     /// @param serializer      message serializer
     /// @param deserializer    message deserializer
+    /// @param quicMetrics     transport metrics sink (payload byte/message counters; #726)
     /// @param sslContext      QUIC client SSL context (TLS 1.3)
     /// @param eventLoop       optional shared event loop group
     /// @param messageReceiver callback invoked for each message received after Hello
@@ -110,17 +120,44 @@ public sealed interface QuicClusterClient {
                                                Map<String, String> selfLabels,
                                                Serializer serializer,
                                                Deserializer deserializer,
+                                               QuicTransportMetrics quicMetrics,
                                                QuicSslContext sslContext,
                                                Option<EventLoopGroup> eventLoop,
                                                QuicClusterServer.MessageReceiver messageReceiver) {
+        return quicClusterClient(selfId,
+                                 selfAddress,
+                                 selfLabels,
+                                 serializer,
+                                 deserializer,
+                                 quicMetrics,
+                                 sslContext,
+                                 eventLoop,
+                                 messageReceiver,
+                                 BootTokens.bootTokens(0L));
+    }
+
+    /// As above, admitting every Hello response through `bootTokens` (shared with SWIM) and
+    /// carrying `bootTokens.self()` on this node's own Hello.
+    static QuicClusterClient quicClusterClient(NodeId selfId,
+                                               NodeAddress selfAddress,
+                                               Map<String, String> selfLabels,
+                                               Serializer serializer,
+                                               Deserializer deserializer,
+                                               QuicTransportMetrics quicMetrics,
+                                               QuicSslContext sslContext,
+                                               Option<EventLoopGroup> eventLoop,
+                                               QuicClusterServer.MessageReceiver messageReceiver,
+                                               BootTokens bootTokens) {
         return new QuicClusterClientInstance(selfId,
                                              selfAddress,
                                              selfLabels,
                                              serializer,
                                              deserializer,
+                                             quicMetrics,
                                              sslContext,
                                              eventLoop,
-                                             messageReceiver);
+                                             messageReceiver,
+                                             bootTokens);
     }
 
     record Unused() implements QuicClusterClient {
@@ -148,15 +185,22 @@ public sealed interface QuicClusterClient {
         public int datagramChannelCount() {
             return 0;
         }
+
+        @Override
+        public Unit abandonPendingDial(NodeId peerId) {
+            return unit();
+        }
     }
 }
 
 final class QuicClusterClientInstance implements QuicClusterClient {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterClientInstance.class);
-    private static final long HELLO_TIMEOUT_MS = 15_000;
+    private static final long DEFAULT_HELLO_TIMEOUT_MS = 15_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 0;  // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 64_000_000;
-    private static final int MAX_FRAME_LENGTH = 32 * 1024 * 1024;
+
+    private static final int MAX_FRAME_LENGTH = org.pragmatica.consensus.net.OutboundMessageLimit.MAX_FRAME_BYTES;
+
     private static final long INITIAL_MAX_STREAM_DATA = 32_000_000;
     private static final long INITIAL_MAX_STREAMS = 64;
 
@@ -170,15 +214,27 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                                                     StreamType.DHT,
                                                     StreamType.SYNC};
 
+    /// The bound on the Hello answer. A field only so a test can shorten it; production leaves the default.
+    private volatile long helloTimeoutMs = DEFAULT_HELLO_TIMEOUT_MS;
+
+    /// Test seam: shorten the Hello bound (applies to dials started after the call).
+    @Contract
+    void helloTimeoutForTest(long millis) {
+        helloTimeoutMs = millis;
+    }
+
     private final NodeId selfId;
     private final NodeAddress selfAddress;
     private final Map<String, String> selfLabels;
     private final Serializer serializer;
     private final Deserializer deserializer;
+    private final QuicTransportMetrics quicMetrics;
     private final QuicSslContext sslContext;
     private final EventLoopGroup eventLoopGroup;
     private final boolean ownsEventLoop;
     private final QuicClusterServer.MessageReceiver messageReceiver;
+    private final BootTokens bootTokens;
+    private final PeerOpenedLaneRouter laneRouter;
     /// Non-blocking DNS resolver backed by the client's Netty event loop. Lazily built on first
     /// [#resolve] so construction stays cheap and tests that never dial never allocate it. The
     /// `DefaultNameResolver` performs the JDK lookup on the supplied [io.netty.util.concurrent.EventExecutor],
@@ -190,24 +246,60 @@ final class QuicClusterClientInstance implements QuicClusterClient {
     /// reconnect. The map is the single ownership root for client-side datagram
     /// channels and is drained by [#closeDatagramChannel] / [#initiateClose].
     private final Map<NodeId, Channel> datagramChannels = new ConcurrentHashMap<>();
+    /// #1578: the newest dial attempt per peer whose promise has not resolved yet, for [#abandonPendingDial].
+    private final Map<NodeId, DialAttempt> pendingDials = new ConcurrentHashMap<>();
+
+    private enum DialStage {
+        PENDING,
+        ESTABLISHED,
+        ABANDONED
+    }
+
+    /// One dial attempt. Its stage leaves PENDING exactly once: to ESTABLISHED when the QUIC connect succeeds
+    /// (before any Hello is sent), or to ABANDONED — the compare-and-set makes the two mutually exclusive, so
+    /// an attempt is never abandoned after its Hello can have gone out.
+    private record DialAttempt(Promise<QuicPeerConnection> promise,
+                               AtomicReference<DialStage> stage,
+                               AtomicReference<Channel> datagram) {
+        static DialAttempt dialAttempt(Promise<QuicPeerConnection> promise) {
+            return new DialAttempt(promise, new AtomicReference<>(DialStage.PENDING), new AtomicReference<>());
+        }
+
+        boolean establish() {
+            return stage.compareAndSet(DialStage.PENDING, DialStage.ESTABLISHED);
+        }
+
+        boolean abandon() {
+            return stage.compareAndSet(DialStage.PENDING, DialStage.ABANDONED);
+        }
+
+        boolean abandoned() {
+            return stage.get() == DialStage.ABANDONED;
+        }
+    }
 
     QuicClusterClientInstance(NodeId selfId,
                               NodeAddress selfAddress,
                               Map<String, String> selfLabels,
                               Serializer serializer,
                               Deserializer deserializer,
+                              QuicTransportMetrics quicMetrics,
                               QuicSslContext sslContext,
                               Option<EventLoopGroup> eventLoop,
-                              QuicClusterServer.MessageReceiver messageReceiver) {
+                              QuicClusterServer.MessageReceiver messageReceiver,
+                              BootTokens bootTokens) {
         this.selfId = selfId;
         this.selfAddress = selfAddress;
         this.selfLabels = Map.copyOf(selfLabels);
         this.serializer = serializer;
         this.deserializer = deserializer;
+        this.quicMetrics = quicMetrics;
         this.sslContext = sslContext;
         this.ownsEventLoop = eventLoop.isEmpty();
         this.eventLoopGroup = eventLoop.or(QuicClusterClientInstance::createEventLoop);
         this.messageReceiver = messageReceiver;
+        this.bootTokens = bootTokens;
+        this.laneRouter = new PeerOpenedLaneRouter(deserializer, quicMetrics, messageReceiver, log);
     }
 
     @Override
@@ -260,6 +352,12 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         return Promise.promise(this::initiateClose);
     }
 
+    /// A resolved address with a real `InetAddress` behind it — the two things Netty's QUIC
+    /// `SockaddrIn` dereferences. Named so the dial guard reads as one question.
+    private static boolean isDialable(InetSocketAddress address) {
+        return ! address.isUnresolved() && address.getAddress() != null;
+    }
+
     @SuppressWarnings("JBCT-PAT-01")  // Netty bootstrap bind
     private void initiateConnection(NodeId peerId, InetSocketAddress address, Promise<QuicPeerConnection> promise) {
         // Guard against an unresolved/null peer address (e.g. a stale or unknown DNS name).
@@ -267,7 +365,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // InetAddress and crash the node with an NPE. Instead fail the dial cleanly down the
         // same connection-failure path a normal dial failure takes, so the caller retries on
         // a later tick.
-        if (address == null || address.isUnresolved() || address.getAddress() == null) {
+        // #1442: wrapped at the boundary rather than null-checked in place. Behaviour is unchanged —
+        // the same three conditions still refuse the dial, and `String.valueOf` still renders a null
+        // address as "null" in the cause.
+        if (Option.option(address).filter(QuicClusterClientInstance::isDialable).isEmpty()) {
             log.debug("Skipping QUIC dial to peer {}: unresolved address {}", peerId, address);
             promise.fail(QuicTransportError.UnresolvedAddress.FACTORY.apply(String.valueOf(address)));
 
@@ -282,22 +383,53 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             stale.close();
         }
 
-        var codec = buildQuicCodec();
-        var bootstrap = new Bootstrap().group(eventLoopGroup)
-                                       .channel(NioDatagramChannel.class)
-                                       // SO_REUSEADDR: defensive on the client side — eliminates rebind hangs if a previous
-                                       // ephemeral binding lingers in TIME_WAIT during rapid reconnect storms.
-                                       .option(ChannelOption.SO_REUSEADDR, true)
-                                       .handler(codec);
+        var attempt = DialAttempt.dialAttempt(promise);
 
-        bootstrap.bind(0).addListener(future -> handleBind(peerId, address, promise, future));
+        pendingDials.put(peerId, attempt);
+        promise.onResultRun(() -> pendingDials.remove(peerId, attempt));
+        var codec = buildQuicCodec();
+        // NO SO_REUSEADDR on the dial socket (#1578). UDP has no TIME_WAIT to escape, and on Linux a reuse-enabled
+        // bind(0) may be handed the port of another reuse-enabled socket — a QUIC server's — after which that port's
+        // inbound datagrams go to this socket, silencing the server. Measured: 7 of 36,000 such binds landed on one of
+        // 5 server ports; 0 of 20,000 without the option.
+        var bootstrap = new Bootstrap().group(eventLoopGroup).channel(NioDatagramChannel.class).handler(codec);
+
+        bootstrap.bind(0).addListener(future -> handleBind(peerId, address, attempt, future));
+    }
+
+    @Override
+    public Unit abandonPendingDial(NodeId peerId) {
+        option(pendingDials.get(peerId)).filter(DialAttempt::abandon)
+              .onPresent(attempt -> releaseAbandoned(peerId, attempt));
+
+        return unit();
+    }
+
+    /// The attempt is ABANDONED (its QUIC handshake never completed, so no Hello went out on it): release its
+    /// socket if it has one yet, and fail its dial with the typed cause. A socket bound later is released
+    /// by [#handleBind], which sees the stage.
+    private void releaseAbandoned(NodeId peerId, DialAttempt attempt) {
+        log.debug("Abandoning pending QUIC dial to {}: the peer is connected over another link", peerId);
+        // Fail the dial BEFORE closing its socket: the close fails Netty's pending connect on the client event loop
+        // (QuicClosedChannelException → a generic ConnectFailed), and whichever resolves the promise first wins. The
+        // typed cause must win, or the abandoned dial is reported as a connect failure of a CONNECTED peer.
+        attempt.promise().fail(QuicTransportError.DialAbandoned.FACTORY.apply(peerId));
+        option(attempt.datagram().get()).onPresent(channel -> releaseDatagram(peerId, channel));
+    }
+
+    private void releaseDatagram(NodeId peerId, Channel channel) {
+        var _ = datagramChannels.remove(peerId, channel);
+
+        channel.close();
     }
 
     @SuppressWarnings("JBCT-PAT-01")  // Netty future callback
     private void handleBind(NodeId peerId,
                             InetSocketAddress address,
-                            Promise<QuicPeerConnection> promise,
+                            DialAttempt attempt,
                             io.netty.util.concurrent.Future<? super Void> future) {
+        var promise = attempt.promise();
+
         if (!future.isSuccess()) {
             promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(),
                                                                         Causes.fromThrowable(future.cause())));
@@ -306,6 +438,13 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         }
 
         var newChannel = ((io.netty.channel.ChannelFuture) future).channel();
+
+        attempt.datagram().set(newChannel);
+        if (attempt.abandoned()) {
+            newChannel.close();
+
+            return;
+        }
         // Stash by peerId so eviction / shutdown can close it deterministically. If a
         // concurrent connect for the same peer raced ahead, close the previous entry
         // (defence-in-depth — initiateConnection already removed any stale entry).
@@ -318,34 +457,54 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             racedOut.close();
         }
 
-        connectQuicChannel(newChannel, peerId, address, promise);
+        connectQuicChannel(newChannel, peerId, address, attempt);
     }
 
     @SuppressWarnings("JBCT-PAT-01")  // Netty QUIC channel bootstrap
-    private void connectQuicChannel(Channel channel,
-                                    NodeId peerId,
-                                    InetSocketAddress address,
-                                    Promise<QuicPeerConnection> promise) {
+    private void connectQuicChannel(Channel channel, NodeId peerId, InetSocketAddress address, DialAttempt attempt) {
         QuicChannel.newBootstrap(channel)
                    .handler(new ClientConnectionInitializer())
+                   .streamHandler(new DialerStreamInitializer())
                    .remoteAddress(address)
                    .connect()
-                   .addListener(future -> handleQuicConnect(peerId, address, promise, future));
+                   .addListener(future -> handleQuicConnect(peerId, address, attempt, future));
+    }
+
+    /// #1489: a TLS handshake failure (an [javax.net.ssl.SSLException] anywhere in the cause chain) is reported as
+    /// [QuicTransportError.HandshakeFailed]; every other connect failure stays [QuicTransportError.ConnectFailed].
+    private static QuicTransportError connectFailure(InetSocketAddress address, Throwable failure) {
+        return isTlsFailure(failure)
+               ? QuicTransportError.HandshakeFailed.FACTORY.apply(address.toString(), Causes.fromThrowable(failure))
+               : QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(), Causes.fromThrowable(failure));
+    }
+
+    private static boolean isTlsFailure(Throwable failure) {
+        return java.util.stream.Stream.iterate(failure, java.util.Objects::nonNull, Throwable::getCause)
+                                      .limit(16)
+                                      .anyMatch(javax.net.ssl.SSLException.class::isInstance);
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "unchecked"})  // Netty future callback
     private void handleQuicConnect(NodeId peerId,
                                    InetSocketAddress address,
-                                   Promise<QuicPeerConnection> promise,
+                                   DialAttempt attempt,
                                    io.netty.util.concurrent.Future<?> future) {
+        var promise = attempt.promise();
+
         if (!future.isSuccess()) {
-            promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(address.toString(),
-                                                                        Causes.fromThrowable(future.cause())));
+            promise.fail(connectFailure(address, future.cause()));
 
             return;
         }
 
         var quicChannel = (QuicChannel) future.getNow();
+        // #1578: the QUIC handshake is complete. Leave PENDING before any Hello can be written; if the attempt
+        // was abandoned first, nothing has been sent on this connection, so close it and send nothing.
+        if (!attempt.establish()) {
+            quicChannel.close();
+
+            return;
+        }
 
         openStreamAndHandshake(quicChannel, peerId, promise);
     }
@@ -387,10 +546,20 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         // The handshake stream is now the CONTROL lane. Write the 1-byte lane preamble first
         // (its own framed message), then the Hello frame, so the acceptor attributes this
         // stream to CONTROL before reading the Hello.
-        streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) StreamType.CONTROL.streamIndex()}));
-        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId, selfAddress, selfLabels));
+        var preamble = new byte[]{(byte) StreamType.CONTROL.streamIndex()};
+
+        streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
+        // #726: PAYLOAD bytes at the lane boundary — the handshake preamble is a real frame
+        // handed to the channel, same honesty boundary as every other write.
+        quicMetrics.onBytesSent(preamble.length);
+        var helloBytes = serializer.encode(new NetworkMessage.Hello(selfId,
+                                                                    selfAddress,
+                                                                    selfLabels,
+                                                                    bootTokens.self(),
+                                                                    Option.some(peerId)));
 
         streamChannel.writeAndFlush(Unpooled.wrappedBuffer(helloBytes));
+        quicMetrics.onBytesSent(helloBytes.length);
         log.debug("Sent CONTROL preamble + Hello to peer {} on stream", peerId);
     }
 
@@ -475,6 +644,44 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         }
     }
 
+    /// #1578 — initializer for streams the ACCEPTOR opens on this connection. There was none: a lane
+    /// the acceptor lazily opened (a write racing this dialer's preamble frames) was read by nobody,
+    /// so everything written on it vanished while the acceptor saw successful writes. Same framing as
+    /// every other lane; the preamble is routed through the acceptor's own [PeerOpenedLaneRouter].
+    private class DialerStreamInitializer extends ChannelInitializer<QuicStreamChannel> {
+        @Override
+        @Contract
+        protected void initChannel(QuicStreamChannel ch) {
+            ch.pipeline()
+              .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
+              .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
+              .addLast(new DialerStreamHandler());
+        }
+    }
+
+    /// Reads the 1-byte lane preamble of an acceptor-opened stream and hands the stream to
+    /// [PeerOpenedLaneRouter]. CONTROL is refused: the handshake lane is always dialer-opened.
+    private class DialerStreamHandler extends SimpleChannelInboundHandler<ByteBuf> {
+        @Override
+        @Contract
+        protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
+            // #726: the preamble is a real frame at the lane boundary, counted like the acceptor's.
+            quicMetrics.onBytesReceived(buf.readableBytes());
+            PeerOpenedLaneRouter.preambleLane(buf)
+                                .filter(lane -> lane != StreamType.CONTROL)
+                                .fold(() -> refusePreamble(ctx),
+                                      lane -> laneRouter.attach(ctx, this, lane));
+        }
+
+        private Unit refusePreamble(ChannelHandlerContext ctx) {
+            log.warn("Missing, invalid or CONTROL preamble on an acceptor-opened stream from {} — closing",
+                     ctx.channel().remoteAddress());
+            ctx.close();
+
+            return unit();
+        }
+    }
+
     /// Handles the Hello handshake on the client side.
     ///
     /// After sending Hello, waits for the server's Hello response,
@@ -499,6 +706,10 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             }
 
             helloReceived = true;
+            // #726: PAYLOAD bytes at the lane boundary — the Hello-response frame received on
+            // CONTROL before the pipeline hands off to QuicLaneDataHandler for ongoing traffic.
+            // Read before processHelloResponse touches the buffer, so it reflects the full frame.
+            quicMetrics.onBytesReceived(buf.readableBytes());
             processHelloResponse(ctx, buf);
         }
 
@@ -517,14 +728,38 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             ctx.close();
         }
 
-        private void scheduleHelloTimeout(ChannelHandlerContext ctx) {
-            ctx.executor().schedule(() -> onHelloTimeout(ctx), HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        /// #1694: the peer closed the connection before answering our Hello — e.g. the server refused our client
+        /// certificate after the TLS handshake had completed on our side. Nothing failed the dial on this path: the
+        /// Hello timeout below guarded on the channel still being active, so the connect promise never settled.
+        /// Failing an already-settled promise is a no-op, so a close after the Hello answer changes nothing.
+        @Override
+        @Contract
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            if (!helloReceived) {
+                promise.fail(QuicTransportError.ConnectFailed.FACTORY.apply(peerId.id(),
+                                                                            Causes.cause("the peer closed the connection before answering the Hello")));
+            }
+
+            super.channelInactive(ctx);
         }
 
+        private void scheduleHelloTimeout(ChannelHandlerContext ctx) {
+            ctx.executor().schedule(() -> onHelloTimeout(ctx), helloTimeoutMs, TimeUnit.MILLISECONDS);
+        }
+
+        /// #1694: the timeout settles the dial whether or not the channel is still active; it only closes an active one.
         private void onHelloTimeout(ChannelHandlerContext ctx) {
-            if (!helloReceived && ctx.channel().isActive()) {
-                log.warn("Hello response timeout for peer {}", peerId);
-                promise.fail(HELLO_TIMEOUT);
+            if (helloReceived) {
+                return;
+            }
+
+            log.warn("Hello response timeout for peer {}", peerId);
+            promise.fail(HELLO_TIMEOUT);
+            // #1933: close the CONNECTION, not just the stream. The QUIC idle timeout is disabled, so a connection whose dial failed
+            // here would otherwise stay "active" for the life of the process, orphaned from every table that could evict it.
+            if (quicChannel.isActive()) {
+                quicChannel.close();
+            } else if (ctx.channel().isActive()) {
                 ctx.close();
             }
         }
@@ -545,6 +780,8 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
             if (message instanceof NetworkMessage.Hello hello) {
                 completePeerConnection(ctx, hello);
+            } else if (message instanceof NetworkMessage.HelloRefused refused) {
+                onHelloRefused(ctx, refused);
             } else {
                 log.warn("Expected Hello response from peer {} but received: {}",
                          peerId,
@@ -552,6 +789,21 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                 promise.fail(UNEXPECTED_MESSAGE);
                 ctx.close();
             }
+        }
+
+        /// The acceptor refused THIS process's identity (terminal removal). Hand it to the shared registry,
+        /// whose self-refusal listener makes the node log ERROR and exit, and fail the dial.
+        private void onHelloRefused(ChannelHandlerContext ctx, NetworkMessage.HelloRefused refused) {
+            if (refused.refused().equals(selfId)) {
+                log.error("QUIC peer {} refused this process's identity {}: {}",
+                          refused.sender(),
+                          selfId,
+                          refused.reason());
+                bootTokens.selfRefused(refused.reason());
+            }
+
+            promise.fail(QuicTransportError.BootTokenRefused.FACTORY.apply(selfId, "SELF_REFUSED"));
+            ctx.close();
         }
 
         private Object decodeMessage(ByteBuf buf) {
@@ -587,13 +839,32 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
                 return;
             }
+            // Boot-token gate (terminal removal): a different process answering for a known
+            // NodeId — or any process for a retired one — is refused before any attach, on the
+            // same connect-failure path as an identity mismatch.
+            var admission = bootTokens.admit(peerId, hello.bootToken());
+
+            if (!admission.admitted()) {
+                log.warn("QUIC dialer refused {} (token {}) by the boot-token gate: {} (refusals={})",
+                         peerId,
+                         hello.bootToken(),
+                         admission,
+                         bootTokens.refusals());
+                promise.fail(QuicTransportError.BootTokenRefused.FACTORY.apply(peerId, admission.name()));
+                quicChannel.close();
+
+                return;
+            }
             // peerId == hello.sender() (verified above): the connection is registered under the
             // VERIFIED identity, consistent with `datagramChannels` (keyed by the dialed peerId
             // at bind time) — eviction closes the right channel, and no code path can register
             // a connection under an unverified id.
-            var peerConnection = quicPeerConnection(peerId, quicChannel);
+            var peerConnection = quicPeerConnection(peerId, selfId, quicChannel);
             // The handshake stream is the CONTROL lane.
-            peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
+            var _ = peerConnection.registerStream(StreamType.CONTROL, (QuicStreamChannel) ctx.channel());
+            // #1578: stamp the VERIFIED connection so a lane the acceptor opens finds it (the acceptor
+            // opens lanes only after answering this Hello, so the stamp precedes them).
+            quicChannel.attr(PeerOpenedLaneRouter.PEER_CONNECTION).set(peerConnection);
             // Install the lazy lane-opener so a write that finds a lost data lane can re-open it on
             // the live channel instead of failing "No stream available" (symmetry with the acceptor).
             peerConnection.laneOpener((lane, onResult) -> openLaneStream(peerConnection, peerId, lane, onResult));
@@ -601,7 +872,12 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             ctx.pipeline()
                .replace(this,
                         "data-handler",
-                        new QuicLaneDataHandler(peerId, StreamType.CONTROL, deserializer, messageReceiver, log));
+                        new QuicLaneDataHandler(peerId,
+                                                StreamType.CONTROL,
+                                                deserializer,
+                                                quicMetrics,
+                                                messageReceiver,
+                                                log));
             log.info("QUIC Hello handshake complete with peer {} — opening data lanes", peerId);
             openDataLanes(peerConnection, peerId);
         }
@@ -629,7 +905,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                     ch.pipeline()
                       .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                       .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, messageReceiver, log));
+                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, quicMetrics, messageReceiver, log));
                 }
             };
 
@@ -654,8 +930,13 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             var streamChannel = (QuicStreamChannel) future.getNow();
             // Write this lane's 1-byte preamble (opener→acceptor, once) so the acceptor
             // attributes the inbound stream to its lane.
-            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
-            peerConnection.registerStream(lane, streamChannel);
+            var preamble = new byte[]{(byte) lane.streamIndex()};
+
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
+            // #726: PAYLOAD bytes at the lane boundary — the lane preamble is a real frame.
+            quicMetrics.onBytesSent(preamble.length);
+            var _ = peerConnection.registerStream(lane, streamChannel);
+
             if (pending.decrementAndGet() == 0) {
                 log.info("All 8 lanes registered for peer {} — connection ready", peerNodeId);
                 promise.succeed(peerConnection);
@@ -683,7 +964,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                     ch.pipeline()
                       .addLast(new io.netty.handler.codec.LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, 4, 0, 4))
                       .addLast(new io.netty.handler.codec.LengthFieldPrepender(4))
-                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, messageReceiver, log));
+                      .addLast(new QuicLaneDataHandler(peerNodeId, lane, deserializer, quicMetrics, messageReceiver, log));
                 }
             };
 
@@ -705,11 +986,16 @@ final class QuicClusterClientInstance implements QuicClusterClient {
             }
 
             var streamChannel = (QuicStreamChannel) future.getNow();
+            var preamble = new byte[]{(byte) lane.streamIndex()};
 
-            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(new byte[]{(byte) lane.streamIndex()}));
-            peerConnection.registerStream(lane, streamChannel);
+            streamChannel.writeAndFlush(Unpooled.wrappedBuffer(preamble));
+            // #726: PAYLOAD bytes at the lane boundary — lazy-reopen preamble is a real frame too.
+            quicMetrics.onBytesSent(preamble.length);
+            // #1578: report the stream the lane KEEPS, which is where messages waiting on this open belong.
+            var kept = peerConnection.registerStream(lane, streamChannel);
+
             log.info("Lazily (re)opened {} lane to peer {} — stream-zombie healed without re-dial", lane, peerNodeId);
-            onResult.accept(option(streamChannel));
+            onResult.accept(option(kept));
         }
     }
 }

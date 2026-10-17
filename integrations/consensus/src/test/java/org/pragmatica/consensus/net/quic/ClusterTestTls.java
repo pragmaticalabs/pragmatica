@@ -36,8 +36,10 @@ import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 /// Nodes built from the SAME secret can connect; nodes built from a DIFFERENT secret cannot, which
 /// is the property under test.
 public final class ClusterTestTls {
-    /// Distinct from Ember's `aether-forge-cluster-secret` and from any deployment secret, so a
-    /// stray in-JVM node from another suite cannot accidentally authenticate into a test cluster.
+    /// Distinct from any real Ember/Forge instance's secret — since #715, every `EmberCluster`
+    /// derives a fresh `SecureRandom` secret per instance rather than sharing one literal, so this
+    /// fixed string cannot collide with one — and from any deployment secret, so a stray in-JVM
+    /// node from another suite cannot accidentally authenticate into a test cluster.
     private static final String DEFAULT_TEST_SECRET = "consensus-test-cluster-secret";
 
     private ClusterTestTls() {}

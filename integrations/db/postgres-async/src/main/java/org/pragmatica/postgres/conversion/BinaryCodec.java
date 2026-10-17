@@ -207,7 +207,7 @@ public sealed interface BinaryCodec<T> {
 
         @Override
         public LocalDate decode(ByteBuffer buffer, int length) {
-            return PG_EPOCH.plusDays(buffer.getInt());
+            return PgTemporal.date(buffer.getInt());
         }
 
         @Override
@@ -279,11 +279,8 @@ public sealed interface BinaryCodec<T> {
         @Override
         public LocalDateTime decode(ByteBuffer buffer, int length) {
             long pgMicros = buffer.getLong();
-            long epochMicros = pgMicros + PG_EPOCH_MICROS_OFFSET;
-            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-            int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-            return LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+            return LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC);
         }
 
         @Override
@@ -309,11 +306,8 @@ public sealed interface BinaryCodec<T> {
         @Override
         public Instant decode(ByteBuffer buffer, int length) {
             long pgMicros = buffer.getLong();
-            long epochMicros = pgMicros + PG_EPOCH_MICROS_OFFSET;
-            long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-            int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-            return Instant.ofEpochSecond(epochSecs, nanoAdj);
+            return PgTemporal.timestamp(pgMicros);
         }
 
         @Override

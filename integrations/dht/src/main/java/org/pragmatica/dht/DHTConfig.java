@@ -112,8 +112,8 @@ public record DHTConfig(int replicationFactor,
     ///
     /// Consistency: **eventually consistent, NOT linearizable.** A write acks after `writeQuorum`=1 node and
     /// replicates to the rest asynchronously (fire-and-forget; see `DistributedDHTClient.put`); a read returns
-    /// the first of `readQuorum`=1 response with no version reconciliation and no read-repair (see
-    /// `QuorumCollector.selectBest`). A read may therefore observe a stale replica until async replication
+    /// the first of `readQuorum`=1 response, so there is no cross-replica reconciliation (see
+    /// `QuorumCollector.newestEntryCollector`, which can pick only among the responses collected). A read may therefore observe a stale replica until async replication
     /// lands, and — because FULL also disables background anti-entropy (`DHTAntiEntropy`) and rebalancing — a
     /// dropped replication is not self-healed. Suitable for ephemeral / cache-like data, not for state that
     /// requires read-your-writes across nodes.
@@ -155,17 +155,16 @@ public record DHTConfig(int replicationFactor,
         return Result.success(new DHTConfig(replicationFactor, writeQuorum, readQuorum, operationTimeout, retryPolicy));
     }
 
-    /// Create a config with the given replication factor and majority quorum.
-    /// Use 0 for full replication.
-    /// Returns the pre-defined FULL config for full replication, otherwise calculates majority quorum.
-    public static Result<DHTConfig> withReplication(int replicationFactor) {
-        if (replicationFactor == FULL_REPLICATION) {
-            return Result.success(FULL);
-        }
-
-        int quorum = (replicationFactor / 2) + 1;
-
-        return dhtConfig(replicationFactor, quorum, quorum);
+    /// This config with the replication semantics of streams (#1777 track 1): `replicationFactor` copies, a write
+    /// acked by `confirmationFactor` of them, and a read of `replicationFactor - confirmationFactor + 1`, so
+    /// R + W = RF + 1 > RF and every read meets at least one replica that acked the last write. Timeout and
+    /// retry policy are kept. Validated like any other config: `1 <= confirmationFactor <= replicationFactor`.
+    public Result<DHTConfig> withFactors(int replicationFactor, int confirmationFactor) {
+        return dhtConfig(replicationFactor,
+                         confirmationFactor,
+                         replicationFactor - confirmationFactor + 1,
+                         operationTimeout,
+                         retryPolicy);
     }
 
     /// Check if this is full replication mode (all nodes store everything).
@@ -177,9 +176,11 @@ public record DHTConfig(int replicationFactor,
     ///
     /// Quorum overlap guarantees the read set intersects the last quorum-acked write set, so at least one
     /// responding replica HOLDS the most recent write. It is **necessary but NOT sufficient for linearizable
-    /// reads** in this implementation: the read path (`QuorumCollector.selectBest`) returns first-response-wins
-    /// with no version reconciliation, and there is no read-repair, so a stale replica in the read set may
-    /// still be returned. FULL replication (replicationFactor sentinel 0) is excluded — it is eventually
+    /// reads** in this implementation: nothing at runtime enforces the overlap, so the replicas read may all miss
+    /// the latest acked write. The read path (`QuorumCollector.newestEntryCollector`) returns the entry newest
+    /// by (owner epoch, version) among the `readQuorum` responses collected, tombstones included; there is no
+    /// read-repair on the normal hit path (a bounded fallback on a quorum miss does read-repair a stranded
+    /// copy), so a stale replica can still be returned. FULL replication (replicationFactor sentinel 0) is excluded — it is eventually
     /// consistent regardless (see the `FULL` constant). Configuration introspection only; no runtime path
     /// consumes this.
     public boolean hasQuorumOverlap() {

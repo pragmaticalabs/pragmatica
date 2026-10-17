@@ -17,6 +17,8 @@ package org.pragmatica.dht;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -28,7 +30,12 @@ import org.pragmatica.lang.Option;
 /// Consistent hash ring for distributing data across nodes.
 /// Uses virtual nodes for even distribution and MurmurHash3-like hashing.
 ///
-/// The ring maps keys to partitions (0-1023), and partitions to nodes.
+/// The ring maps keys to partitions (0-1023), and partitions to nodes — and that is the ONLY
+/// placement: a key's nodes are its partition's nodes ([#nodesFor(byte[], int)] resolves through
+/// [#nodesFor(Partition, int)]). Until #420 a key was placed at its own hash position while
+/// anti-entropy and the rebalancer placed its partition at `hash("partition:<p>")`, so the repair
+/// machinery moved data among nodes that owned the partition but not the key (measured: the two
+/// owner sets agreed for ~10% of keys on a 5-node ring — chance level).
 /// Each physical node has multiple virtual nodes spread across the ring
 /// for better load distribution.
 ///
@@ -37,9 +44,14 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     private static final int VIRTUAL_NODES_PER_PHYSICAL = 150;
 
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
-    private final NavigableMap<Integer, N> ring = new TreeMap<>();
+    /// Each ring point holds EVERY node with a virtual node there, in the nodes' natural order (#1324).
+    /// Two virtual nodes can hash to one point; keeping one node per point let the later insertion
+    /// overwrite the earlier, so identical memberships placed differently by insertion order, and removing
+    /// either node deleted the shared point even while it belonged to the other.
+    private final NavigableMap<Integer, SortedSet<N>> ring = new TreeMap<>();
     private final Map<N, List<Integer>> nodeToVirtualNodes = new HashMap<>();
     private final int virtualNodesPerPhysical;
+    private final Map<Object, Consumer<N>> removalListeners = new ConcurrentHashMap<>();
 
     private ConsistentHashRing(int virtualNodesPerPhysical) {
         this.virtualNodesPerPhysical = virtualNodesPerPhysical;
@@ -69,7 +81,7 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
             for (int i = 0; i < virtualNodesPerPhysical; i++) {
                 int hash = hash(node.toString() + "#" + i);
 
-                ring.put(hash, node);
+                ring.computeIfAbsent(hash, _ -> new TreeSet<>()).add(node);
                 virtualNodes.add(hash);
             }
 
@@ -79,15 +91,45 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         }
     }
 
-    /// Remove a node from the ring.
+    /// Remove a node from the ring. Removal listeners registered via [#onNodeRemoved] run after the
+    /// write lock is released, and only when the node was actually in the ring.
     @Contract
     public void removeNode(N node) {
+        if (removeUnderLock(node)) {
+            removalListeners.values().forEach(listener -> listener.accept(node));
+        }
+    }
+
+    /// Register a listener invoked with each node that leaves the ring (any removal path: DEPARTING
+    /// prune, decommission, node-removed, self-shutdown). Lets an in-flight quorum read learn that a
+    /// target departed without being wired into every membership callback.
+    ///
+    /// @param listener invoked on the removing thread, outside the ring lock
+    /// @return handle that unregisters the listener when run
+    public Runnable onNodeRemoved(Consumer<N> listener) {
+        var token = new Object();
+
+        removalListeners.put(token, listener);
+
+        return () -> removalListeners.remove(token);
+    }
+
+    private boolean removeUnderLock(N node) {
         lock.writeLock().lock();
         try {
-            Option.option(nodeToVirtualNodes.remove(node)).onPresent(virtualNodes -> virtualNodes.forEach(ring::remove));
+            return Option.option(nodeToVirtualNodes.remove(node))
+                         .onPresent(virtualNodes -> virtualNodes.forEach(point -> removeFromPoint(point, node)))
+                         .isPresent();
         } finally {
             lock.writeLock().unlock();
         }
+    }
+
+    /// Removes `node` from `point` only; the point stays while another node still holds it.
+    private void removeFromPoint(int point, N node) {
+        ring.computeIfPresent(point, (_, holders) -> holders.remove(node) && holders.isEmpty()
+                                                     ? null
+                                                     : holders);
     }
 
     /// Get the partition for a given key.
@@ -103,18 +145,22 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         return partitionFor(key.getBytes(StandardCharsets.UTF_8));
     }
 
-    /// Get the primary node for a given key.
+    /// Get the primary node for a given key: the primary of the key's partition.
     /// Returns empty if no nodes are in the ring.
     public Option<N> primaryFor(byte[] key) {
+        return primaryFor(partitionFor(key));
+    }
+
+    /// Get the primary node for a partition.
+    /// Returns empty if no nodes are in the ring.
+    public Option<N> primaryFor(Partition partition) {
         lock.readLock().lock();
         try {
             if (ring.isEmpty()) {
                 return Option.none();
             }
 
-            int hash = hash(key);
-
-            return Option.some(getNodeForHash(hash));
+            return Option.some(getNodeForHash(positionOf(partition)));
         } finally {
             lock.readLock().unlock();
         }
@@ -125,9 +171,21 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         return primaryFor(key.getBytes(StandardCharsets.UTF_8));
     }
 
-    /// Get the primary and replica nodes for a given key.
+    /// Get the primary and replica nodes for a given key: the nodes of the key's partition.
     /// Returns up to replicaCount nodes, starting with primary.
     public List<N> nodesFor(byte[] key, int replicaCount) {
+        return nodesFor(partitionFor(key), replicaCount);
+    }
+
+    /// Get the primary and replica nodes for a partition.
+    /// Returns up to replicaCount nodes, starting with primary.
+    public List<N> nodesFor(Partition partition, int replicaCount) {
+        return nodesForPosition(positionOf(partition), replicaCount);
+    }
+
+    /// Up to replicaCount nodes met walking clockwise from ring position `hash`, starting with the
+    /// primary. Package-private so a test can address an exact ring point (#1324).
+    List<N> nodesForPosition(int hash, int replicaCount) {
         lock.readLock().lock();
         try {
             if (ring.isEmpty()) {
@@ -138,15 +196,17 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
                 return List.of();
             }
 
-            int hash = hash(key);
             Set<N> seen = new LinkedHashSet<>();
-            // Start from the hash position and walk clockwise
+            // Start from the hash position and walk clockwise; a shared point yields its nodes in order
             int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
 
             while (seen.size() < replicaCount && seen.size() < nodeToVirtualNodes.size()) {
-                N node = ring.get(current);
+                for (var node : ring.get(current)) {
+                    if (seen.size() < replicaCount) {
+                        seen.add(node);
+                    }
+                }
 
-                seen.add(node);
                 current = Option.option(ring.higherKey(current)).or(ring::firstKey);
             }
 
@@ -157,28 +217,34 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
     }
 
     /// Get the primary and replica nodes for a given key, excluding filtered nodes.
-    /// Returns up to replicaCount nodes that pass the filter, starting with primary.
+    /// Returns up to replicaCount nodes of the key's partition that pass the filter, starting
+    /// with primary.
     ///
     /// @param key          the key to look up
     /// @param replicaCount maximum number of nodes to return
     /// @param filter       predicate that must return true for a node to be included
     public List<N> nodesFor(byte[] key, int replicaCount, Predicate<N> filter) {
+        return nodesFor(partitionFor(key), replicaCount, filter);
+    }
+
+    /// Returns up to replicaCount nodes of the partition that pass the filter, starting with primary.
+    public List<N> nodesFor(Partition partition, int replicaCount, Predicate<N> filter) {
         lock.readLock().lock();
         try {
             if (ring.isEmpty() || replicaCount <= 0) {
                 return List.of();
             }
 
-            int hash = hash(key);
+            int hash = positionOf(partition);
             Set<N> seen = new LinkedHashSet<>();
             Set<N> visited = new HashSet<>();
             int current = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
 
             while (seen.size() < replicaCount && visited.size() < nodeToVirtualNodes.size()) {
-                N node = ring.get(current);
-
-                if (visited.add(node) && filter.test(node)) {
-                    seen.add(node);
+                for (var node : ring.get(current)) {
+                    if (seen.size() < replicaCount && visited.add(node) && filter.test(node)) {
+                        seen.add(node);
+                    }
                 }
 
                 current = Option.option(ring.higherKey(current)).or(ring::firstKey);
@@ -225,13 +291,29 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         }
     }
 
+    /// The nodes holding a virtual node exactly at ring point `point`; empty when there is none (#1324).
+    Set<N> nodesAtPoint(int point) {
+        lock.readLock().lock();
+        try {
+            return Option.option(ring.get(point)).<Set<N>>map(holders -> new LinkedHashSet<>(holders))
+                         .or(Set.of());
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
     private N getNodeForHash(int hash) {
         int key = Option.option(ring.ceilingKey(hash)).or(ring::firstKey);
 
-        return ring.get(key);
+        return ring.get(key).first();
     }
 
-    /// MurmurHash3-like hash function.
+    /// The ring position of a partition — the one place the partition-to-position mapping lives.
+    private static int positionOf(Partition partition) {
+        return hash("partition:" + partition.value());
+    }
+
+    /// FNV-1a over the bytes with a MurmurHash3 finaliser.
     /// Provides good distribution for consistent hashing.
     private static int hash(byte[] data) {
         int h = 0x811c9dc5;
@@ -250,7 +332,8 @@ public final class ConsistentHashRing<N extends Comparable<N>> {
         return h;
     }
 
-    private static int hash(String data) {
+    /// Package-private so a test can pin a real collision against this exact function (#1324).
+    static int hash(String data) {
         return hash(data.getBytes(StandardCharsets.UTF_8));
     }
 }
