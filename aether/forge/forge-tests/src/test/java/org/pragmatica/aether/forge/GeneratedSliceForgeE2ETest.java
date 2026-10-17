@@ -77,11 +77,7 @@ class GeneratedSliceForgeE2ETest {
         var scaffold = generateAndBuildScaffold();
 
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "ge");
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader()
                                                                                     .isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
@@ -91,7 +87,7 @@ class GeneratedSliceForgeE2ETest {
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            cluster.stop().await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 

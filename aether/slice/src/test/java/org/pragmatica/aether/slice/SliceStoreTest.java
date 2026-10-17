@@ -1,13 +1,13 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.slice;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStore.EntryState;
 import org.pragmatica.aether.slice.SliceStore.LoadedSliceEntry;
@@ -23,9 +23,21 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.JarURLConnection;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.jar.JarOutputStream;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -363,6 +375,223 @@ class SliceStoreTest {
         assertThat(composite.isEmpty()).isTrue();
     }
 
+    // === Slice-composite absence branches (#889 review S1) ===
+    //
+    // `AbsentCompositeConfigFacade` names four load-time conditions. Three of them leave the node
+    // WITH a provider, so a refusal that blamed "no configuration provider" was false there. The
+    // parse-failure branch is pinned here: the malformed slice file drops the whole composite (node
+    // keys included — the layering is all-or-nothing), and the refusal the slice receives must be
+    // true for that branch, i.e. it must name the slice's own layer as a candidate.
+
+    @Test
+    void buildSliceCompositeFromClassLoader_dropsWholeComposite_whenResourcesTomlIsMalformed() {
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+
+        // Positive control: the same store and a parseable file yield a composite carrying BOTH
+        // layers. Without this, an empty result below could mean the loader stub never answered.
+        var composite = store.buildSliceCompositeFromClassLoader(artifact, resourcesTomlLoader(WELL_FORMED_TOML));
+
+        assertThat(composite.isPresent()).isTrue();
+        assertThat(composite.unwrap().getString("deployed.endpoint.port").unwrap()).isEqualTo("8080");
+        assertThat(composite.unwrap().getString("deployed.endpoint.host").unwrap()).isEqualTo("node.internal");
+
+        // The branch under test.
+        assertThat(store.buildSliceCompositeFromClassLoader(artifact, resourcesTomlLoader(MALFORMED_TOML)).isEmpty())
+                .describedAs("a malformed resources.toml drops the WHOLE composite, node keys included")
+                .isTrue();
+    }
+
+    @Test
+    void configRefusal_namesTheSliceLayer_whenResourcesTomlIsMalformed() {
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+        var context = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER, REFUSING_RESOURCES, artifact.asString());
+
+        context.setCompositeBuilder(loader -> store.buildSliceCompositeFromClassLoader(artifact, loader));
+        context.materializeComposite(resourcesTomlLoader(MALFORMED_TOML));
+
+        var result = context.config().requireString("deployed.endpoint", "host");
+
+        assertThat(result.isFailure()).describedAs("node.toml carries the key, but the dropped composite took it away").isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause.message()).contains("No configuration composite");
+            assertThat(cause.message()).describedAs("the node HAS a provider here; the refusal must not blame it alone")
+                                       .contains("resources.toml");
+            assertThat(cause.message()).contains(artifact.asString());
+        });
+    }
+
+    // === Intrinsic layer comes from the slice's OWN jar, never from a dependency jar (#1067 review SF-1) ===
+    //
+    // The slice classloader is composed over [own jar, conflicting shared jars…] and every `[slices]`
+    // dependency jar is appended to it before the slice class loads. A lookup of META-INF/resources.toml
+    // THROUGH that loader answers from the first jar that ships one — so a slice without a file of its own
+    // silently inherited a dependency's file as its intrinsic layer, while the deploy-time pre-flight
+    // reads the own jar alone. The two readers must agree, and the own jar is the layer that was ever
+    // meant.
+
+    @Test
+    void buildSliceCompositeFromClassLoader_ignoresDependencyJarToml_whenOwnJarShipsNone() throws IOException {
+        var ownJar = jar("own.jar", Option.none());
+        var dependencyJar = jar("dependency.jar", Option.some(DEPENDENCY_TOML));
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+
+        try (var loader = new SliceClassLoader(new URL[]{ownJar}, sharedLoader)) {
+            loader.addSliceDependencyUrl(dependencyJar);
+
+            // Control, inside the same run: the composed loader CAN see the dependency's file, so an
+            // empty layer below is a choice of the reader, not an artefact of the fixture.
+            assertThat(loader.getResourceAsStream("META-INF/resources.toml")).isNotNull();
+
+            var composite = store.buildSliceCompositeFromClassLoader(artifact, loader);
+
+            assertThat(composite.isPresent()).describedAs("no own file is an EMPTY layer, not a dropped composite").isTrue();
+            assertThat(composite.unwrap().getString("deployed.endpoint.host").unwrap()).isEqualTo("node.internal");
+            assertThat(composite.unwrap().getString("database.orders.url").isEmpty())
+                    .describedAs("the dependency jar's [database.orders] is NOT this slice's intrinsic layer")
+                    .isTrue();
+        }
+    }
+
+    @Test
+    void buildSliceCompositeFromClassLoader_readsOwnJarToml_ignoringDependencyJar() throws IOException {
+        var ownJar = jar("own.jar", Option.some(WELL_FORMED_TOML));
+        var dependencyJar = jar("dependency.jar", Option.some(DEPENDENCY_TOML));
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+
+        try (var loader = new SliceClassLoader(new URL[]{ownJar}, sharedLoader)) {
+            loader.addSliceDependencyUrl(dependencyJar);
+
+            var composite = store.buildSliceCompositeFromClassLoader(artifact, loader);
+
+            assertThat(composite.isPresent()).isTrue();
+            assertThat(composite.unwrap().getString("deployed.endpoint.port").unwrap()).isEqualTo("8080");
+            assertThat(composite.unwrap().getString("database.orders.url").isEmpty())
+                    .describedAs("the own jar's file is the whole intrinsic layer; the dependency's is not merged in")
+                    .isTrue();
+        }
+    }
+
+    // s25-inv1277: the own-jar pre-flight reads resources.toml through a throwaway loader and closes it.
+    // An unfixed loader registered the JVM-shared cached JarFile of the own jar in its closeables, so
+    // that close() closed a jar every other reader in the forge JVM shares — and a jar: open racing it
+    // re-cached the closed instance for good. J1 held here IS that shared instance; it must survive.
+    @Test
+    void buildSliceCompositeFromClassLoader_readingOwnJarToml_leavesTheSharedJarUsable() throws IOException {
+        var ownJar = jar("own.jar", Option.some(WELL_FORMED_TOML));
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"));
+        var shared = sharedJarFile(ownJar);
+
+        try (var loader = new SliceClassLoader(new URL[]{ownJar}, sharedLoader)) {
+            var composite = store.buildSliceCompositeFromClassLoader(artifact, loader);
+
+            assertThat(composite.unwrap().getString("deployed.endpoint.port").unwrap()).isEqualTo("8080");
+        }
+
+        // Unfixed: IllegalStateException: zip file closed
+        assertThat(shared.getEntry("META-INF/resources.toml"))
+                .describedAs("the pre-flight's throwaway loader must not close the JVM-shared jar")
+                .isNotNull();
+    }
+
+    /// J1: the instance every caching `jar:` opener of this jar in the JVM shares.
+    private static JarFile sharedJarFile(URL jar) throws IOException {
+        try {
+            var connection = (JarURLConnection) new URI("jar:" + jar + "!/META-INF/resources.toml").toURL().openConnection();
+
+            connection.setUseCaches(true);
+
+            return connection.getJarFile();
+        } catch (URISyntaxException e) {
+            throw new IOException(e);
+        }
+    }
+
+    private static final String DEPENDENCY_TOML = """
+            [database.orders]
+            url = "from-dependency-jar"
+            """;
+
+    @TempDir
+    Path tempDir;
+
+    /// A jar under the temp dir carrying `META-INF/resources.toml` with the given text, or no such entry.
+    private URL jar(String name, Option<String> resourcesToml) throws IOException {
+        var path = tempDir.resolve(name);
+
+        try (var out = new JarOutputStream(Files.newOutputStream(path))) {
+            out.putNextEntry(new JarEntry("META-INF/MANIFEST.MF"));
+            out.closeEntry();
+
+            if (resourcesToml.isPresent()) {
+                out.putNextEntry(new JarEntry("META-INF/resources.toml"));
+                out.write(resourcesToml.unwrap().getBytes(StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+        }
+
+        return path.toUri().toURL();
+    }
+
+    private static final String WELL_FORMED_TOML = """
+            [deployed.endpoint]
+            port = 8080
+            """;
+
+    // An unterminated array is a parse error by TomlParser's own contract (TomlError.unterminatedArray).
+    private static final String MALFORMED_TOML = """
+            [deployed.endpoint]
+            host = [
+            """;
+
+    private sliceStore storeWithNodeComposite(Map<String, String> nodeValues) {
+        return storeWithNodeComposite(nodeValues, Option.empty());
+    }
+
+    private sliceStore storeWithNodeComposite(Map<String, String> nodeValues,
+                                              Option<Fn1<Promise<String>, String>> secretResolver) {
+        return (sliceStore) SliceStore.sliceStore(registry,
+                                                  List.of(),
+                                                  sharedLoader,
+                                                  STUB_INVOKER,
+                                                  REFUSING_RESOURCES,
+                                                  SliceActionConfig.sliceActionConfig(),
+                                                  Option.some(IntrinsicConfigProvider.intrinsicConfigProvider("node.toml", nodeValues)),
+                                                  Option.empty(),
+                                                  secretResolver,
+                                                  SliceLoadingContext.noResourceOverlay());
+    }
+
+    /// A classloader whose `META-INF/resources.toml` is the given text — the only resource the
+    /// composite builder reads through the slice loader.
+    private static ClassLoader resourcesTomlLoader(String content) {
+        return new ClassLoader(SliceStoreTest.class.getClassLoader()) {
+            @Override
+            public InputStream getResourceAsStream(String name) {
+                return "META-INF/resources.toml".equals(name)
+                       ? new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8))
+                       : super.getResourceAsStream(name);
+            }
+        };
+    }
+
+    private static final ResourceProviderFacade REFUSING_RESOURCES = new ResourceProviderFacade() {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return Causes.cause("no resources in this test").promise();
+        }
+
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
+            return Causes.cause("no resources in this test").promise();
+        }
+
+        /// Explicit no-op (#892): this stub refuses every provisioning, so nothing can need closing.
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
+            return Promise.unitPromise();
+        }
+    };
+
     // === Slice-intrinsic secret resolution (#269) ===
     //
     // No log-scraping here — this codebase's log backend (log4j2) doesn't support capturing
@@ -413,6 +642,26 @@ class SliceStoreTest {
 
         assertThat(resolved.isEmpty()).isTrue();
     }
+
+    /// #1067 moved the loader's parse onto `SliceStore.sliceIntrinsicLayer`, which the deploy-time pre-flight
+    /// shares, and kept secret resolution as the loader's own following step. The tests above pin
+    /// `resolveIntrinsicSecrets` in isolation; this pins that the LOAD path still applies it — deleting the step
+    /// from `loadSliceIntrinsicProviderFromClassLoader` left every other test in this module green.
+    @Test
+    void buildSliceCompositeFromClassLoader_resolvesIntrinsicSecrets_whenResolverConfigured() {
+        Fn1<Promise<String>, String> resolver = path -> Promise.success("resolved-" + path);
+        var store = storeWithNodeComposite(Map.of("deployed.endpoint.host", "node.internal"), Option.some(resolver));
+
+        var composite = store.buildSliceCompositeFromClassLoader(artifact, resourcesTomlLoader(SECRET_TOML));
+
+        assertThat(composite.isPresent()).isTrue();
+        assertThat(composite.unwrap().getString("database.password").unwrap()).isEqualTo("resolved-db/password");
+    }
+
+    private static final String SECRET_TOML = """
+            [database]
+            password = "${secrets:db/password}"
+            """;
 
     @Test
     void intrinsicSecretsDroppedMessage_namesSliceFailedKeyAndConsequence() {

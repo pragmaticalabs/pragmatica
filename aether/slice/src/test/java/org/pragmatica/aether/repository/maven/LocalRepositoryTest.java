@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.repository.maven;
 
@@ -9,6 +8,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.repository.maven.LocalRepository;
 
 import java.io.IOException;
@@ -61,6 +61,8 @@ class LocalRepositoryTest {
                       // Then: error message indicates artifact not found
                       assertThat(cause.message()).contains("Artifact not found");
                       assertThat(cause.message()).contains("org.example:missing:1.0.0");
+                      // an ANSWER ("absent"), not an inability to answer: the composite lookup keys on this
+                      assertThat(cause).isInstanceOf(Repository.Absent.class);
                   });
     }
 

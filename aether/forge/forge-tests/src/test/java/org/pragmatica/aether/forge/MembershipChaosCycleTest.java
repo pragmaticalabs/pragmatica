@@ -20,7 +20,6 @@ import org.pragmatica.aether.environment.ProviderDefaults;
 import org.pragmatica.aether.environment.ProvisionRequest;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.TerminalOperation;
@@ -141,7 +140,7 @@ class MembershipChaosCycleTest {
     void setUp() {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "chaos");
         cluster.withComputeProviderDecorator(recorder::wrap);
-        cluster.start().await().onFailure(MembershipChaosCycleTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == SIZE);
@@ -152,7 +151,7 @@ class MembershipChaosCycleTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -167,7 +166,10 @@ class MembershipChaosCycleTest {
 
         var t0 = System.nanoTime();
 
-        cluster.killNode(victim, false).await().onFailure(MembershipChaosCycleTest::failScenario);
+        LifecycleAwait.nodeSettled("kill node " + victim
+                                  + " in killedCoreNode_isDecommissioned_andTheClusterHealsItselfBackToFullMembership()",
+                                   cluster,
+                                   cluster.killNode(victim, false));
 
         var decommissionMs = awaitMillis("DECOMMISSION",
                                          t0,
@@ -302,13 +304,7 @@ class MembershipChaosCycleTest {
                   .toString();
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
-    private static void failScenario(Cause cause) {
-        throw new AssertionError("Scenario step failed: " + cause.message());
-    }
 
     /// Counts every provision and ALWAYS delegates — this class must not inject provider faults, it
     /// is measuring the healthy heal path.

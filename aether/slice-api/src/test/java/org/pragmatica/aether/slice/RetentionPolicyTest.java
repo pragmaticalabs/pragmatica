@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.slice;
 
@@ -145,6 +144,30 @@ class RetentionPolicyTest {
             var policy = retentionPolicy(500, 1024L, 60_000L, tierAware);
 
             assertThat(policy.mode()).isEqualTo(RetentionMode.ANY);
+        }
+    }
+
+    /// #964, fail closed. `shouldEvict` authorises DELETING DATA, so a retention mode this node cannot
+    /// read must not be resolved into either ALL or ANY. The limits below are all exceeded, so both
+    /// real modes would evict — which is what makes `false` here a statement about the sentinel rather
+    /// than about the numbers.
+    @Nested
+    class UnknownModeNeverEvicts {
+
+        @Test
+        void shouldEvict_isFalse_whenEveryLimitIsExceededButTheModeIsUnknown() {
+            var policy = new RetentionPolicy(10, 10, 10, RetentionMode.UNKNOWN, org.pragmatica.lang.Option.none());
+
+            assertThat(policy.shouldEvict(1_000, 1_000, 1_000)).isFalse();
+        }
+
+        /// The control: the identical inputs under a mode this node CAN read do evict. Without it a
+        /// green result above could mean the limits were never exceeded.
+        @Test
+        void shouldEvict_isTrue_forTheSameInputsUnderAKnownMode() {
+            var policy = new RetentionPolicy(10, 10, 10, RetentionMode.ANY, org.pragmatica.lang.Option.none());
+
+            assertThat(policy.shouldEvict(1_000, 1_000, 1_000)).isTrue();
         }
     }
 }

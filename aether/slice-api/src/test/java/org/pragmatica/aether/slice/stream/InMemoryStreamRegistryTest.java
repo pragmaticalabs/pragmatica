@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceVersion;
@@ -44,6 +43,10 @@ class InMemoryStreamRegistryTest {
 
     private static StreamRegistryEntry blueprintEntry(ResourceAddress address) {
         return StreamRegistryEntry.blueprint(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
+    }
+
+    private static StreamRegistryEntry operatorEntry(ResourceAddress address) {
+        return StreamRegistryEntry.operator(address, RetentionPolicy.retentionPolicy(), Instant.EPOCH);
     }
 
     private InMemoryStreamRegistry registry;
@@ -209,6 +212,26 @@ class InMemoryStreamRegistryTest {
             var result = registry.releaseReference(addr("system:cluster-events:1.0.0"));
 
             assertThat(errorOf(result)).isEqualTo(General.NOT_FOUND);
+        }
+
+        /// #1224: the registry does NOT special-case [StreamRegistryEntry.RegisteredByKind#OPERATOR]
+        /// in `releaseReference` — an operator-created entry decrements/removes on refcount exactly
+        /// like a framework or blueprint one. The "permanent reference" guarantee this kind
+        /// documents is therefore structural, not enforced HERE: nothing in the blueprint-release
+        /// path ever resolves an operator-created address in the first place (it resolves release
+        /// targets from `BlueprintStreamBindings`, which `aether stream create` never populates), so
+        /// `releaseReference` is only ever called for it by the explicit `stream delete` route. This
+        /// test pins that the registry itself would happily release one if asked — the unreachability
+        /// is what carries the guarantee, and that half lives outside this class.
+        @Test
+        void releaseOnOperatorEntry_registryDoesNotDistinguishKind_removesLikeAnyOther() {
+            var address = addr("com.example.app:orders:1.0.0");
+            registry.register(operatorEntry(address));
+
+            var outcome = registry.releaseReference(address).await().unwrap();
+
+            assertThat(outcome.removed()).isTrue();
+            assertThat(registry.lookup(address).isEmpty()).isTrue();
         }
     }
 

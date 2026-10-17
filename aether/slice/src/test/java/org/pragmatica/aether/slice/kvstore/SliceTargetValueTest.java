@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.slice.kvstore;
 
@@ -21,7 +20,8 @@ class SliceTargetValueTest {
 
         assertThat(value.currentVersion()).isEqualTo(version);
         assertThat(value.targetInstances()).isEqualTo(3);
-        assertThat(value.minInstances()).isEqualTo(3);
+        // #1497: this asserted 3, i.e. the floor equal to the count — the defect, not the requirement.
+        assertThat(value.minInstances()).isEqualTo(2);
         assertThat(value.owningBlueprint()).isEqualTo(Option.none());
         assertThat(value.updatedAt()).isGreaterThan(0);
     }
@@ -46,7 +46,7 @@ class SliceTargetValueTest {
 
         assertThat(updated.currentVersion()).isEqualTo(version);
         assertThat(updated.targetInstances()).isEqualTo(10);
-        assertThat(updated.minInstances()).isEqualTo(3);
+        assertThat(updated.minInstances()).as("withInstances carries the floor untouched").isEqualTo(value.minInstances());
         assertThat(updated.owningBlueprint()).isEqualTo(value.owningBlueprint());
         assertThat(updated.updatedAt()).isGreaterThanOrEqualTo(value.updatedAt());
     }
@@ -62,7 +62,7 @@ class SliceTargetValueTest {
     @Test
     void sliceTargetValue_effectiveMinInstances_returnsMinInstances() {
         var version = Version.version("1.0.0").unwrap();
-        var value = SliceTargetValue.sliceTargetValue(version, 5);
+        var value = SliceTargetValue.sliceTargetValue(version, 5, 5);
 
         assertThat(value.effectiveMinInstances()).isEqualTo(5);
     }
@@ -193,5 +193,49 @@ class SliceTargetValueTest {
         var value2 = new SliceTargetValue(version, 5, 5, Option.none(), "CORE_ONLY", now);
 
         assertThat(value1).isNotEqualTo(value2);
+    }
+
+    /// #1497 — the one availability floor: `ceil(n/2)`, the same number a blueprint slice gets when it
+    /// omits `minAvailable`. The blueprint parser keeps its own `Math.ceilDiv` (it cannot import this
+    /// package without a cycle), so the parity is pinned here rather than shared.
+    /// Parity is checked from the #1495 floor up: a blueprint below 3 instances is refused, so it has no default to
+    /// compare with.
+    @Test
+    void defaultMinInstances_isCeilHalf_andMatchesTheBlueprintDefault() {
+        java.util.stream.IntStream.rangeClosed(1, 9)
+                                  .forEach(n -> assertThat(SliceTargetValue.defaultMinInstances(n)).as("n=" + n)
+                                                                                                  .isEqualTo((n + 1) / 2));
+        java.util.stream.IntStream.rangeClosed(org.pragmatica.aether.slice.blueprint.SliceSpec.MIN_INSTANCES, 9)
+                                  .forEach(n -> assertThat(SliceTargetValue.defaultMinInstances(n)).as("blueprint parity, n=" + n)
+                                                                                                  .isEqualTo(blueprintMinAvailable(n)));
+    }
+
+    /// #1497 — both factories that take no explicit floor use the default, so a writer that reaches for them
+    /// cannot write `min == instances` by accident.
+    @Test
+    void sliceTargetValue_withoutAnExplicitFloor_takesTheDefault() {
+        var version = Version.version("1.0.0").unwrap();
+        var blueprintId = BlueprintId.blueprintId("org.example:app:1.0.0").unwrap();
+
+        assertThat(SliceTargetValue.sliceTargetValue(version, 4).minInstances()).isEqualTo(2);
+        assertThat(SliceTargetValue.sliceTargetValue(version, 5, Option.some(blueprintId)).minInstances()).isEqualTo(3);
+        assertThat(SliceTargetValue.sliceTargetValue(version, 4, 4).minInstances()).as("an explicit floor is honoured")
+                                                                                .isEqualTo(4);
+    }
+
+    private static int blueprintMinAvailable(int instances) {
+        var dsl = """
+                  id = "org.example:app:1.0.0"
+
+                  [[slices]]
+                  artifact = "org.example:svc:1.0.0"
+                  instances = %d
+                  """.formatted(instances);
+
+        return org.pragmatica.aether.slice.blueprint.BlueprintParser.parse(dsl)
+                                                                    .map(blueprint -> blueprint.slices()
+                                                                                               .getFirst()
+                                                                                               .minAvailable())
+                                                                    .unwrap();
     }
 }

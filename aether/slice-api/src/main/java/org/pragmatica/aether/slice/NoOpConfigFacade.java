@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import java.util.List;
@@ -44,19 +43,19 @@ enum NoOpConfigFacade implements ConfigFacade {
         return Option.none();
     }
     @Override
-    public Option<Integer> getInt(String section, String key) {
-        return Option.none();
+    public Result<Option<Integer>> getInt(String section, String key) {
+        return Result.success(Option.none());
     }
     @Override
-    public Option<Long> getLong(String section, String key) {
-        return Option.none();
+    public Result<Option<Long>> getLong(String section, String key) {
+        return Result.success(Option.none());
     }
     @Override
-    public Option<Double> getDouble(String section, String key) {
-        return Option.none();
+    public Result<Option<Double>> getDouble(String section, String key) {
+        return Result.success(Option.none());
     }
     @Override
-    public Option<Boolean> getBoolean(String section, String key) {
-        return Option.none();
+    public Result<Option<Boolean>> getBoolean(String section, String key) {
+        return Result.success(Option.none());
     }
 }

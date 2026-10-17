@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
 import java.time.Instant;
@@ -34,7 +33,16 @@ public record StreamRegistryEntry(ResourceAddress address,
         /// Framework-internal streams (system namespace) registered at cluster bootstrap.
         FRAMEWORK,
         /// Application streams registered by blueprint deploy.
-        BLUEPRINT
+        BLUEPRINT,
+        /// Operator-created streams (`aether stream create` / `POST /streams/{ns}/{stream}/{version}`).
+        /// No deployment owns this address, so nothing in the blueprint release path can ever reach it
+        /// (#1224) — the entry is a PERMANENT reference, removable only by explicit `stream delete`.
+        OPERATOR,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Provenance only; nothing branches on it.
+        /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+        /// by an older node either way.
+        UNKNOWN
     }
 
     public Instant registeredAt() {
@@ -51,6 +59,12 @@ public record StreamRegistryEntry(ResourceAddress address,
                                                 RetentionPolicy retention,
                                                 Instant registeredAt) {
         return new StreamRegistryEntry(address, retention, registeredAt.toEpochMilli(), RegisteredByKind.BLUEPRINT, 1);
+    }
+
+    public static StreamRegistryEntry operator(ResourceAddress address,
+                                               RetentionPolicy retention,
+                                               Instant registeredAt) {
+        return new StreamRegistryEntry(address, retention, registeredAt.toEpochMilli(), RegisteredByKind.OPERATOR, 1);
     }
 
     public StreamRegistryEntry withRefCount(int newRefCount) {

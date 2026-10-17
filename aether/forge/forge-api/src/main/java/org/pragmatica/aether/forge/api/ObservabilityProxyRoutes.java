@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
-import java.net.URI;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.List;
@@ -12,7 +11,6 @@ import java.util.Map;
 import java.util.StringJoiner;
 
 import org.pragmatica.aether.ember.EmberCluster;
-import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -36,8 +34,8 @@ public sealed interface ObservabilityProxyRoutes {
 
     record DepthDeleteResponse(boolean success, String body) {}
 
-    static RouteSource observabilityProxyRoutes(EmberCluster cluster) {
-        var http = JdkHttpOperations.jdkHttpOperations();
+    static RouteSource observabilityProxyRoutes(EmberCluster cluster, OperatorKey operatorKey) {
+        var http = NodeHttp.nodeHttp(operatorKey);
 
         return RouteSource.routeSource(in("/api/traces").serve(listTracesRoute(cluster, http),
                                                                traceStatsRoute(cluster, http),
@@ -47,7 +45,7 @@ public sealed interface ObservabilityProxyRoutes {
                                                                       deleteDepthRoute(cluster, http)));
     }
 
-    private static Route<TraceListResponse> listTracesRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<TraceListResponse> listTracesRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<TraceListResponse> get("")
                     .to(ctx -> proxyGetWithQuery(cluster,
                                                  http,
@@ -56,26 +54,26 @@ public sealed interface ObservabilityProxyRoutes {
                     .asJson();
     }
 
-    private static Route<TraceStatsResponse> traceStatsRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<TraceStatsResponse> traceStatsRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<TraceStatsResponse> get("/stats")
                     .to(_ -> proxyGetStats(cluster, http))
                     .asJson();
     }
 
-    private static Route<TraceListResponse> traceByRequestIdRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<TraceListResponse> traceByRequestIdRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<TraceListResponse> get("")
                     .withPath(aString())
                     .to(requestId -> proxyGetTraceById(cluster, http, requestId))
                     .asJson();
     }
 
-    private static Route<DepthListResponse> listDepthRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<DepthListResponse> listDepthRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<DepthListResponse> get("/depth")
                     .to(_ -> proxyGetDepth(cluster, http))
                     .asJson();
     }
 
-    private static Route<DepthSetResponse> setDepthRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<DepthSetResponse> setDepthRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<DepthSetResponse> post("/depth")
                     .to(ctx -> proxyPostDepth(cluster,
                                               http,
@@ -83,7 +81,7 @@ public sealed interface ObservabilityProxyRoutes {
                     .asJson();
     }
 
-    private static Route<DepthDeleteResponse> deleteDepthRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<DepthDeleteResponse> deleteDepthRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<DepthDeleteResponse> delete("/depth")
                     .withPath(aString(),
                               aString())
@@ -92,7 +90,7 @@ public sealed interface ObservabilityProxyRoutes {
     }
 
     private static Promise<TraceListResponse> proxyGetWithQuery(EmberCluster cluster,
-                                                                JdkHttpOperations http,
+                                                                NodeHttp http,
                                                                 String path,
                                                                 Map<String, List<String>> queryParams) {
         var fullPath = buildPathWithQuery(path, queryParams);
@@ -103,39 +101,35 @@ public sealed interface ObservabilityProxyRoutes {
                       .map(TraceListResponse::new);
     }
 
-    private static Promise<TraceStatsResponse> proxyGetStats(EmberCluster cluster, JdkHttpOperations http) {
+    private static Promise<TraceStatsResponse> proxyGetStats(EmberCluster cluster, NodeHttp http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendGet(http, port, "/api/v1/traces/stats"))
                       .map(TraceStatsResponse::new);
     }
 
-    private static Promise<TraceListResponse> proxyGetTraceById(EmberCluster cluster,
-                                                                JdkHttpOperations http,
-                                                                String requestId) {
+    private static Promise<TraceListResponse> proxyGetTraceById(EmberCluster cluster, NodeHttp http, String requestId) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendGet(http, port, "/api/v1/traces/" + requestId))
                       .map(TraceListResponse::new);
     }
 
-    private static Promise<DepthListResponse> proxyGetDepth(EmberCluster cluster, JdkHttpOperations http) {
+    private static Promise<DepthListResponse> proxyGetDepth(EmberCluster cluster, NodeHttp http) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendGet(http, port, "/api/v1/observability/depth"))
                       .map(DepthListResponse::new);
     }
 
-    private static Promise<DepthSetResponse> proxyPostDepth(EmberCluster cluster, JdkHttpOperations http, String body) {
+    private static Promise<DepthSetResponse> proxyPostDepth(EmberCluster cluster, NodeHttp http, String body) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendPostWithBody(http, port, "/api/v1/observability/depth", body))
                       .map(resp -> new DepthSetResponse(true, resp));
     }
 
-    private static Promise<DepthDeleteResponse> proxyDeleteDepth(EmberCluster cluster,
-                                                                 JdkHttpOperations http,
-                                                                 String key) {
+    private static Promise<DepthDeleteResponse> proxyDeleteDepth(EmberCluster cluster, NodeHttp http, String key) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendDelete(http, port, "/api/v1/observability/depth/" + key))
@@ -154,37 +148,28 @@ public sealed interface ObservabilityProxyRoutes {
         return joiner.toString();
     }
 
-    private static Promise<String> sendGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .GET()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
+    private static Promise<String> sendGet(NodeHttp http, int port, String path) {
+        var request = http.request(port, path).GET().timeout(HTTP_TIMEOUT).build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
                                             .async());
     }
 
-    private static Promise<String> sendPostWithBody(JdkHttpOperations http, int port, String path, String body) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(Option.option(body).or("")))
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
+    private static Promise<String> sendPostWithBody(NodeHttp http, int port, String path, String body) {
+        var request = http.request(port, path)
+                          .header("Content-Type", "application/json")
+                          .POST(HttpRequest.BodyPublishers.ofString(Option.option(body).or("")))
+                          .timeout(HTTP_TIMEOUT)
+                          .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
                                             .async());
     }
 
-    private static Promise<String> sendDelete(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .DELETE()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
+    private static Promise<String> sendDelete(NodeHttp http, int port, String path) {
+        var request = http.request(port, path).DELETE().timeout(HTTP_TIMEOUT).build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()

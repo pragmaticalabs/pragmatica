@@ -1,12 +1,12 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.lang.Cause;
@@ -21,9 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// non-transitional / FAILED / legacy paths, and is preserved through `withState`
 /// transitions.
 ///
-/// `SliceNodeKey` and `NodeArtifactKey` are filtered out of TOML snapshots
-/// (`EphemeralKeys.EPHEMERAL_SECTIONS`) so their values are not exercised here
-/// via a TOML round-trip; the wire format is verified directly through the
+/// `SliceNodeKey` and `NodeArtifactKey` are runtime keys (`AetherKey.RuntimeKey`), excluded from
+/// KV backups, so their values are not exercised here via a backup round-trip; the wire format is verified directly through the
 /// constructor / accessor pair (the same pair used by `restoreSliceStateFromNodeArtifact`
 /// in `ClusterDeploymentState`).
 class SliceNodeValueTest {
@@ -87,7 +86,7 @@ class SliceNodeValueTest {
         @Test
         void failedSliceNodeValue_transitionedAtIsZero() {
             Cause cause = Causes.cause("test failure");
-            var v = SliceNodeValue.failedSliceNodeValue(cause);
+            var v = SliceNodeValue.failedSliceNodeValue(cause, Unrecognised.PERMANENT);
 
             assertThat(v.state()).isEqualTo(SliceState.FAILED);
             assertThat(v.transitionedAt()).isZero();
@@ -136,7 +135,7 @@ class SliceNodeValueTest {
 
         @Test
         void failedNodeArtifactValue_transitionedAtIsZero() {
-            var v = NodeArtifactValue.failedNodeArtifactValue(Causes.cause("boom"));
+            var v = NodeArtifactValue.failedNodeArtifactValue(Causes.cause("boom"), Unrecognised.PERMANENT);
 
             assertThat(v.state()).isEqualTo(SliceState.FAILED);
             assertThat(v.transitionedAt()).isZero();

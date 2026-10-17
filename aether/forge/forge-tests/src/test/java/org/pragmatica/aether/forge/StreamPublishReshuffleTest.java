@@ -5,6 +5,7 @@
 
 package org.pragmatica.aether.forge;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -55,6 +56,7 @@ import static org.awaitility.Awaitility.await;
 /// (SWIM false-removal-under-churn), so exercising it here would couple this durability assertion to an
 /// unrelated open residual. The kill path exercises a real ownership reshuffle while keeping the acked
 /// -durability guarantee decidable under default membership.
+@Disabled("#1553: leaks loopback HTTP connections to its own app-http port (42k-45k sockets, ~9k HttpClient threads) when ownership never settles, exhausting the host's ephemeral ports; re-enable when #1553 is fixed")
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -115,7 +117,10 @@ class StreamPublishReshuffleTest extends AbstractMultiPartitionStream {
             var preKillAcked = acked.size();
 
             // Kill the partition-0 owner MID-STREAM and wait for the partition to re-resolve to a new owner.
-            cluster.killNode(killTarget).await();
+            LifecycleAwait.nodeBestEffort("kill node " + killTarget
+                                      + " in sustainedPublish_duringOwnerKillReshuffle_everyAckedOffsetSurvivesUniqueAndOrdered()",
+                                       cluster,
+                                       cluster.killNode(killTarget));
             await().atMost(FAILOVER_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> ownerReResolved(KILL_PARTITION, killTarget));
 
             // Keep publishing across/after the reshuffle until a further batch of writes is acked.

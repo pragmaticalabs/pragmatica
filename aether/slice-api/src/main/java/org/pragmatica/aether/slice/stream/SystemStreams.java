@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
 import java.util.List;
@@ -26,14 +25,15 @@ public final class SystemStreams {
     public static final List<ResourceAddress> ALL = List.of(CLUSTER_EVENTS);
 
     /// Whether `engineKey` names one of [#ALL] — what the management-api write-gate (`ManagementServer`)
-    /// checks a resolved stream identity against. Every member of `ALL` lives in the `system`
-    /// namespace by construction, so its engine key is just its bare stream name (mirrors
-    /// `StreamManager#engineKey`'s reduction for the `system` namespace; recomputed locally here
-    /// since this module cannot depend on `aether-node`, where `StreamManager` lives).
+    /// checks a resolved stream identity against.
+    ///
+    /// This used to recompute `address.name().value()` locally, on the reasoning that a system stream's
+    /// engine key is its bare name. It is not (#1338): the key is the full address, which is also the name the
+    /// framework creates the stream under, and the bare name of a system stream is an ordinary stream name that is
+    /// not forbidden. Since #1040 both sides call [StreamEngineKey#engineKey], so the gate cannot disagree with the
+    /// identity the routes resolve. The owner's append path refuses a write to ANY `system:` stream, not only these.
     public static boolean isForbiddenEngineKey(String engineKey) {
-        return ALL.stream().anyMatch(address -> address.name()
-                                                       .value()
-                                                       .equals(engineKey));
+        return ALL.stream().anyMatch(address -> StreamEngineKey.engineKey(address).equals(engineKey));
     }
 
     private SystemStreams() {}

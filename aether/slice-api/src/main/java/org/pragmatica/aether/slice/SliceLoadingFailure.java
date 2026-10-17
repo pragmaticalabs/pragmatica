@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice;
+
+import java.util.List;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -12,6 +13,10 @@ import static org.pragmatica.lang.Option.some;
 
 
 public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFailure.Fatal, SliceLoadingFailure.Intermittent {
+    /// #882 — mirrors `SliceRouterFactory.ROUTE_SECURITY_CONTRACT` (this module cannot see it);
+    /// `HttpRoutePublisherStaleContractTest` (which sees both) pins the two equal.
+    int CURRENT_ROUTE_SECURITY_CONTRACT = 1;
+
     non-sealed interface Fatal extends SliceLoadingFailure {
         record FactoryMethodNotFound(String className, String methodName) implements Fatal {
             @Override
@@ -101,6 +106,82 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// #1195 — a class the slice references is unresolvable although a loader above the slice's own
+        /// SERVES its package. A class-resolution failure, not a parameter mismatch: an operator reading
+        /// "parameter mismatch" investigates the factory's signature, which is not where the problem is.
+        /// `detail` carries the evidence and both causes that reach this state (#758).
+        record ServedPackageLacksClass(String context, String detail) implements Fatal {
+            @Override
+            public String message() {
+                return "Class resolution failed in " + context + ": " + detail;
+            }
+        }
+
+        /// #758 — a class the slice references is unresolvable and NO loader above the slice's own
+        /// (shared/infra loader, runtime loader) serves its package: none has defined a class in it or
+        /// holds its directory. The message states that and asserts no cause; the loader chain is
+        /// listed so the gap can be seen rather than inferred, and every section a dependency jar can
+        /// come from is named so the operator's next action is right.
+        record DependencyClassNotOnClasspath(String context,
+                                             String className,
+                                             String packageName,
+                                             List<String> loaderChain) implements Fatal {
+            @Override
+            public String message() {
+                return "Class " + className
+                     + " referenced by " + context
+                     + " is not on this slice's classloader, and no loader above it serves package " + packageName
+                     + " (none has defined a class in it or holds its directory). Loader chain: " + loaderChain
+                     + ". Check the slice's declared dependencies in META-INF/dependencies/<FactoryClass>:"
+                     + " [slices] jars are appended to the slice's loader; [shared] jars go to the shared loader,"
+                     + " or to the slice's loader on a version conflict, and a [shared] artifact found in no"
+                     + " repository is registered as runtime-provided and loads NOTHING; [infra] jars go to the"
+                     + " shared loader. Confirm the artifact that ships " + className
+                     + " is declared there and resolved to a jar (#758).";
+            }
+        }
+
+        /// #1184 — a slice declares an artifact the shared classloader already holds at a version its
+        /// pattern does not accept. The shared loader keeps ONE version per `groupId:artifactId` for
+        /// the life of the process, so admitting the slice would silently run it against
+        /// `loadedVersion`; refusing is the only honest outcome, and it is Fatal because no retry can
+        /// change what the loader holds. Both requesters are named so the operator sees which two
+        /// slices disagree, not just which one arrived second.
+        record SharedLoaderVersionConflict(String requester, String requested, String loadedVersion, String loadedBy) implements Fatal {
+            @Override
+            public String message() {
+                return "Shared classloader version conflict: slice " + requester
+                     + " requires " + requested
+                     + " but " + loadedVersion
+                     + " is already loaded by " + loadedBy
+                     + ". The shared classloader holds one version per artifact for the process lifetime,"
+                     + " so " + requester
+                     + " would silently run against " + loadedVersion
+                     + "; refusing to load it. Align the version across the slices that declare it,"
+                     + " declare it [shared] so the conflicting version loads into the slice's own loader,"
+                     + " or restart the node — a same-node upgrade is refused against its own predecessor's load,"
+                     + " and only a restart releases what the shared classloader holds (#1184).";
+            }
+        }
+
+        /// #882 — the slice JAR was generated before the #763 route-security contract and declares
+        /// at least one PUBLIC route. The node cannot tell a declared `public` from the old default
+        /// (both compiled to `publicRoute()`), so it refuses rather than serve the route open under
+        /// an `API_KEY`/`JWT` global mode. Fatal: nothing at runtime can change the JAR.
+        record RouteSecurityContractStale(String artifact, int contract, List<String> publicRoutes) implements Fatal {
+            @Override
+            public String message() {
+                return "Slice " + artifact
+                     + " was compiled with a slice-processor before the route-security contract "
+                     + "(routeSecurityContract=" + contract
+                     + ", current " + CURRENT_ROUTE_SECURITY_CONTRACT
+                     + ") and declares PUBLIC route(s) " + publicRoutes
+                     + " — a route with no [security] section was baked in as public by that processor, so these "
+                     + "may be silently open under an API_KEY/JWT security mode; refusing to publish. "
+                     + "Recompile the slice with the current jbct slice-processor (#763/#882).";
+            }
+        }
+
         record UnexpectedError(Cause causeSource) implements Fatal {
             @Override
             public String message() {
@@ -121,6 +202,18 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             @Override
             public String message() {
                 return "Artifact not found in any repository: " + artifact;
+            }
+        }
+
+        /// At least one repository could not answer (timeout, network, write failure), so the
+        /// artifact is not known to be absent. [ArtifactNotFound] is reserved for the case where EVERY
+        /// repository answered "absent"; this cause carries every repository's outcome, in lookup order,
+        /// so a log line says which repository answered what. Retried exactly as [ArtifactNotFound] is —
+        /// both are `Intermittent`, and the disposition is decided by that type alone.
+        record ArtifactUnavailable(String artifact, List<String> repositoryOutcomes) implements Intermittent {
+            @Override
+            public String message() {
+                return "Artifact unavailable, not every repository answered: " + artifact + " " + repositoryOutcomes;
             }
         }
 
@@ -148,6 +241,37 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// #916 — the slice is absent from the node's `SliceStore` at a point in the activation
+        /// chain that requires it to be present. This is a race, not a defect: an unload issued for
+        /// a previous deployment of the same artifact can still be in flight when the ACTIVATE for
+        /// the new one arrives, and a retry after the unload settles succeeds.
+        ///
+        /// Typed `Intermittent` at the raise site rather than left to
+        /// [SliceLoadingFailure#classify(Cause, Unrecognised)]. Untyped, this cause reached
+        /// `Fatal.UnexpectedError`, and the cluster leader rolled the whole blueprint back under
+        /// `ALL_OR_NOTHING` for a collision a bounded retry would have cleared. Same reasoning and
+        /// same remedy as `SliceInvoker.verifyEndpointExists`, which typed its own activation-order
+        /// race `Intermittent` for exactly this reason.
+        ///
+        /// #930 UPDATE — this paragraph used to end "whose catch-all is deliberately permanent".
+        /// There is no catch-all: the permanence of an unrecognised cause is now supplied by the
+        /// caller. Typing the cause here is still the right call and for a stronger reason than
+        /// before — permanence here is a property of the CAUSE (an in-flight unload always clears)
+        /// rather than of the operation, so it must classify the same way at every raise site,
+        /// including one that declares [Unrecognised#PERMANENT].
+        record SliceNotInStore(String artifact, String operation) implements Intermittent {
+            public static SliceNotInStore sliceNotInStore(String artifact, String operation) {
+                return new SliceNotInStore(artifact, operation);
+            }
+
+            @Override
+            public String message() {
+                return "Slice " + artifact
+                     + " not present in SliceStore during " + operation
+                     + " (a concurrent unload may still be in flight)";
+            }
+        }
+
         record ResourceUnavailable(String resource, Cause causeSource) implements Intermittent {
             @Override
             public String message() {
@@ -160,10 +284,70 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             }
         }
 
+        /// #930 — a cause [SliceLoadingFailure#classify(Cause, Unrecognised)] does not recognise,
+        /// raised at a site that declared [Unrecognised#RETRY].
+        ///
+        /// The `Intermittent` counterpart of [Fatal.UnexpectedError], and it exists so the two
+        /// dispositions are equally expressible. Naming the cause "unrecognised" rather than
+        /// borrowing [ResourceUnavailable] is deliberate: the classifier knows nothing about this
+        /// cause beyond the raise site's declaration, and an operator reading `failureReason()`
+        /// must not be told a resource was unavailable when nothing established that.
+        record UnrecognisedFailure(Cause causeSource) implements Intermittent {
+            @Override
+            public String message() {
+                return "Unrecognised slice loading error, retryable at this site: " + causeSource.message();
+            }
+
+            @Override
+            public Option<Cause> source() {
+                return some(causeSource);
+            }
+        }
+
         interface Custom extends Intermittent {}
     }
 
-    static SliceLoadingFailure classify(Cause cause) {
+    /// The permanence a raise site declares for a cause [#classify(Cause, Unrecognised)] does not
+    /// recognise (#930).
+    ///
+    /// It exists so that permanence is an input to the operation rather than an inference from a
+    /// value's Java type. Before #930 this method carried a catch-all that returned
+    /// [Fatal.UnexpectedError] for everything unrecognised, and because almost no cause raised on
+    /// the deployment path is constructed as a `SliceLoadingFailure` at all, that catch-all — not
+    /// the raise site — was what decided whether a blueprint rolled back. There is deliberately no
+    /// default here: a new raise site must name one or fail to compile.
+    enum Unrecognised {
+        /// The operation is retryable at this site: an unrecognised cause is reported
+        /// [Intermittent] and the cluster re-drives it under the retry budget.
+        RETRY,
+        /// The operation is not retryable at this site: an unrecognised cause is reported
+        /// [Fatal] and settles without consuming a retry budget.
+        PERMANENT
+    }
+
+    /// Classifies an arbitrary `Cause` raised on a slice loading or activation path, with the
+    /// permanence of an UNRECOGNISED cause supplied by the caller (#930).
+    ///
+    /// Three shapes are recognised regardless of what the caller declares, because each is
+    /// evidence about the cause itself rather than about the operation: an already-typed
+    /// `SliceLoadingFailure` (the raise site already decided), transient capacity exhaustion, and
+    /// `CoreError.Timeout`. Everything else is unrecognised, and `unrecognised` decides it.
+    ///
+    /// **What replaced the #916 ruling.** #916 argued the catch-all must stay permanent, because an
+    /// intermittent default would retry a genuinely fatal cause and then abandon it without a
+    /// rollback. #930 removes the catch-all rather than re-aiming it, and #922 removes the
+    /// abandonment: retry exhaustion now consults the owning blueprint's own durable apply record,
+    /// so a spent budget on a deployment that never applied settles permanently WITH a rollback and
+    /// a `DeploymentOutcomeValue`, while a workload that already applied keeps being reconciled.
+    /// `ALL_OR_NOTHING` is therefore bounded by the apply's durable terminal, not by the Java type
+    /// of whatever cause happened to surface — which is what let a consensus outage roll a
+    /// blueprint back (#923).
+    ///
+    /// The obligation #916 created still stands and is unchanged: **a cause whose permanence is a
+    /// property of the CAUSE rather than of the operation should be typed where it is raised**, so
+    /// it classifies the same way at every site. [Intermittent.SliceNotInStore] (#916) and
+    /// `SliceInvoker.verifyEndpointExists` are the two already paid for this way.
+    static SliceLoadingFailure classify(Cause cause, Unrecognised unrecognised) {
         if (cause instanceof SliceLoadingFailure failure) {
             return failure;
         }
@@ -176,7 +360,9 @@ public sealed interface SliceLoadingFailure extends Cause permits SliceLoadingFa
             return new Intermittent.Timeout("slice activation", cause);
         }
 
-        return new Fatal.UnexpectedError(cause);
+        return unrecognised == Unrecognised.RETRY
+               ? new Intermittent.UnrecognisedFailure(cause)
+               : new Fatal.UnexpectedError(cause);
     }
 
     default boolean isFatal() {

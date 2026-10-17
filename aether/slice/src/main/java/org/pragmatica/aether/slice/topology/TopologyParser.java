@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.topology;
 
 import java.net.URL;
@@ -125,7 +124,7 @@ public final class TopologyParser {
 
             return Option.some(buildTopology(props, artifact));
         } catch (Exception e) {
-            log.debug("Could not read topology from manifest {}: {}", manifestPath, e.getMessage());
+            log.warn("Could not read topology from manifest {} of {}: {}", manifestPath, artifact, e.toString());
 
             return Option.none();
         }
@@ -158,7 +157,8 @@ public final class TopologyParser {
                                                    path,
                                                    handler != null
                                                    ? handler
-                                                   : ""));
+                                                   : "",
+                                                   intProp(props, prefix + "version")));
             }
         }
 

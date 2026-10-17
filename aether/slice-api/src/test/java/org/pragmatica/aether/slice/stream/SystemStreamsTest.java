@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
 import java.util.Set;
@@ -19,9 +18,10 @@ class SystemStreamsTest {
     /// here"), and [SystemStreamBootstrap] registers exactly what it iterates. This test hardcodes the
     /// expected engine-key set so a future addition to `ALL` requires a conscious update here too,
     /// rather than silently changing what the management-api write-gate (`ManagementServer`) and
-    /// bootstrap both treat as "framework-internal." Deliberately does NOT include
-    /// `audit.lifecycle.commands` or any other stream not already in `ALL` — whether such streams
-    /// belong in `ALL` at all depends on their own bootstrap mechanism, which is out of scope here.
+    /// bootstrap both treat as "framework-internal." Deliberately does NOT include any stream not
+    /// already in `ALL` — whether such a stream belongs in `ALL` at all depends on its own bootstrap
+    /// mechanism, which is out of scope here (the `audit.lifecycle.commands` constant that once
+    /// described a third creation path was deleted in #734).
     @Test
     void all_engineKeys_matchExpectedEnumeratedSet() {
         var actual = SystemStreams.ALL.stream()
@@ -33,7 +33,13 @@ class SystemStreamsTest {
 
     @Test
     void isForbiddenEngineKey_clusterEvents_isTrue() {
-        assertThat(SystemStreams.isForbiddenEngineKey("cluster-events")).isTrue();
+        assertThat(SystemStreams.isForbiddenEngineKey("system:cluster-events:1.0.0")).isTrue();
+    }
+
+    /// #1338: a user stream whose bare name is a system stream's bare name is NOT the system stream.
+    @Test
+    void isForbiddenEngineKey_bareNameOfASystemStream_isFalse() {
+        assertThat(SystemStreams.isForbiddenEngineKey("cluster-events")).isFalse();
     }
 
     @Test

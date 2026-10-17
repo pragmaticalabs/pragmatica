@@ -19,9 +19,9 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// membership split timeouts on the cluster ([EmberCluster#withRaisedSwimTimeouts]) so the stale-link
 /// eviction + SWIM-DEAD cascade + quorum-loss self-fence do not fire in the transient (the killed owner
 /// still departs via graceful SWIM leave, so real failover is NOT slowed); (2) once member-complete it
-/// disables auto-heal on EVERY node's CTM (defense-in-depth vs replacement churn — the killed HRW owner
-/// MAY be the leader, and only the leader's CTM acts, so whichever node becomes leader post-failover must
-/// also have the flag off). Auto-heal-off ALONE was empirically insufficient (swimDeadStuck cascaded
+/// pins auto-heal OFF cluster-wide (defense-in-depth vs replacement churn). The switch is one replicated
+/// value written through the leader ([AutoHealPin]), so whichever node becomes leader post-failover — the
+/// killed HRW owner MAY be the leader — reads it off too. Auto-heal-off ALONE was empirically insufficient (swimDeadStuck cascaded
 /// into a self-fence); the raised timeouts keep swimDeadStuck EMPTY through the failover — this suppresses
 /// #498 (SWIM false-removal).
 ///
@@ -59,9 +59,9 @@ class StreamOwnerFailoverPinnedTest extends AbstractStreamOwnerFailover {
 
     @Override
     void pinMembership(EmberCluster cluster) {
-        cluster.allNodes()
-               .forEach(node -> node.clusterTopologyManager()
-                                    .onPresent(ctm -> ctm.setAutoHealEnabled(false, PIN_REASON)));
+        // The switch is one leader-written, replicated value since #1390; AutoHealPin writes it through the
+        // current leader and fails the test unless every node reads it back OFF.
+        AutoHealPin.pinOff(cluster, PIN_REASON);
     }
 
     @Override

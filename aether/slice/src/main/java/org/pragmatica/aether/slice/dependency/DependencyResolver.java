@@ -1,10 +1,8 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -18,7 +16,6 @@ import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.DefaultSliceBridge;
-import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingContext;
@@ -27,11 +24,15 @@ import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.SliceManifest.SliceManifestInfo;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -80,22 +81,31 @@ public interface DependencyResolver {
     /// the #773 defect for writing less code, which is the same silence the ticket is about moved
     /// one level out. A caller that wants no overlay says so with
     /// [SliceLoadingContext#noResourceOverlay].
+    ///
+    /// `compositeBuilder` takes the ARTIFACT as well as the classloader because every slice this
+    /// call loads — the one asked for and each `[slices]` dependency it pulls in — gets a
+    /// [SliceLoadingContext] of its own, built by [#loadingContextFor] (#889 review S2). One
+    /// context shared down the dependency chain meant the dependency's generated factory read
+    /// `ctx.config()` from the PARENT's composite (first-wins materialization, builder closed over
+    /// the parent artifact) and its refusals named the parent; with the codec, the parent's later
+    /// `bind` overwrote the dependency's. Per-slice contexts remove both: each composite closes
+    /// over its own artifact and each deferred codec is bound exactly once, by its own slice.
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
                                                      Repository repository,
                                                      SliceRegistry registry,
                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                      SliceInvokerFacade invokerFacade,
                                                      ResourceProviderFacade resourceFacade,
-                                                     Option<org.pragmatica.lang.Functions.Fn1<Option<org.pragmatica.config.ConfigurationProvider>, ClassLoader>> compositeBuilder,
+                                                     Option<Fn2<Option<ConfigurationProvider>, Artifact, ClassLoader>> compositeBuilder,
                                                      Option<SliceCodec> nodeCodec,
-                                                     org.pragmatica.lang.Functions.Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
-        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade,
-                                                                     resourceFacade,
-                                                                     artifact.asString(),
-                                                                     nodeCodec);
-
-        compositeBuilder.onPresent(loadingContext::setCompositeBuilder);
-        loadingContext.setResourceOverlayBuilder(resourceOverlayBuilder);
+                                                     Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
+        Fn1<SliceLoadingContext, Artifact> contextFor = slice -> loadingContextFor(slice,
+                                                                                   invokerFacade,
+                                                                                   resourceFacade,
+                                                                                   compositeBuilder,
+                                                                                   nodeCodec,
+                                                                                   resourceOverlayBuilder);
+        var loadingContext = contextFor.apply(artifact);
 
         return registry.lookup(artifact)
                        .map(slice -> Promise.success(resolvedSlice(slice, loadingContext)))
@@ -104,7 +114,29 @@ public interface DependencyResolver {
                                                                    registry,
                                                                    sharedLibraryLoader,
                                                                    loadingContext,
+                                                                   contextFor,
                                                                    new HashSet<>()));
+    }
+
+    /// One loading context per slice, whether it is the artifact asked for or a `[slices]`
+    /// dependency reached on the way. The composite builder is closed over THIS artifact, so the
+    /// context's `config()` serves `this-slice.toml ⊕ node` and names this slice when it refuses.
+    private static SliceLoadingContext loadingContextFor(Artifact artifact,
+                                                         SliceInvokerFacade invokerFacade,
+                                                         ResourceProviderFacade resourceFacade,
+                                                         Option<Fn2<Option<ConfigurationProvider>, Artifact, ClassLoader>> compositeBuilder,
+                                                         Option<SliceCodec> nodeCodec,
+                                                         Fn1<Option<ResourceProviderFacade>, ClassLoader> resourceOverlayBuilder) {
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade,
+                                                                     resourceFacade,
+                                                                     artifact.asString(),
+                                                                     nodeCodec);
+
+        compositeBuilder.onPresent(builder -> loadingContext.setCompositeBuilder(classLoader -> builder.apply(artifact,
+                                                                                                              classLoader)));
+        loadingContext.setResourceOverlayBuilder(resourceOverlayBuilder);
+
+        return loadingContext;
     }
 
     /// Pair a freshly created slice with its loading context, binding the slice's codec on the way
@@ -148,6 +180,13 @@ public interface DependencyResolver {
             public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
                 return NOT_CONFIGURED.promise();
             }
+
+            /// Deliberate no-op, not an inherited one (#892): this provider refuses every
+            /// provisioning, so there is provably nothing for a release to close.
+            @Override
+            public Promise<Unit> releaseAll(String sliceId) {
+                return Promise.unitPromise();
+            }
         };
     }
 
@@ -156,6 +195,7 @@ public interface DependencyResolver {
                                                                             SliceRegistry registry,
                                                                             SharedLibraryClassLoader sharedLibraryLoader,
                                                                             SliceLoadingContext loadingContext,
+                                                                            Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                             Set<String> resolutionPath) {
         log.info("Resolving artifact {} with shared loader and context", artifact.asString());
         var artifactKey = artifact.asString();
@@ -178,6 +218,7 @@ public interface DependencyResolver {
                                                                                    registry,
                                                                                    sharedLibraryLoader,
                                                                                    loadingContext,
+                                                                                   contextFor,
                                                                                    resolutionPath))
                          .onSuccess(_ -> {
                                         log.info("Resolved artifact {} with context",
@@ -198,6 +239,7 @@ public interface DependencyResolver {
                                                                                SliceRegistry registry,
                                                                                SharedLibraryClassLoader sharedLibraryLoader,
                                                                                SliceLoadingContext loadingContext,
+                                                                               Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                                Set<String> resolutionPath) {
         return SliceManifest.read(location.url())
                             .flatMap(manifest -> SliceManifest.checkEnvelopeCompatibility(manifest.envelopeVersion()).map(_ -> manifest))
@@ -212,6 +254,7 @@ public interface DependencyResolver {
                                                                                      registry,
                                                                                      sharedLibraryLoader,
                                                                                      loadingContext,
+                                                                                     contextFor,
                                                                                      resolutionPath));
     }
 
@@ -222,6 +265,7 @@ public interface DependencyResolver {
                                                                               SliceRegistry registry,
                                                                               SharedLibraryClassLoader sharedLibraryLoader,
                                                                               SliceLoadingContext loadingContext,
+                                                                              Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                               Set<String> resolutionPath) {
         if (!manifest.artifact().equals(artifact)) {
             log.error("Artifact mismatch: requested {} but JAR declares {}", artifact, manifest.artifact());
@@ -229,9 +273,9 @@ public interface DependencyResolver {
             return artifactMismatch(artifact, manifest.artifact()).promise();
         }
 
-        return DependencyFile.load(manifest.sliceClassName(),
-                                   createTempLoader(location.url(),
-                                                    sharedLibraryLoader))
+        return DependencyFile.loadFromJar(manifest.sliceClassName(),
+                                          location.url(),
+                                          sharedLibraryLoader)
                              .async()
                              .flatMap(depFile -> processSharedAndLoadSliceWithContext(manifest,
                                                                                       location,
@@ -240,6 +284,7 @@ public interface DependencyResolver {
                                                                                       registry,
                                                                                       sharedLibraryLoader,
                                                                                       loadingContext,
+                                                                                      contextFor,
                                                                                       resolutionPath));
     }
 
@@ -250,14 +295,19 @@ public interface DependencyResolver {
                                                                                SliceRegistry registry,
                                                                                SharedLibraryClassLoader sharedLibraryLoader,
                                                                                SliceLoadingContext loadingContext,
+                                                                               Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                                Set<String> resolutionPath) {
+        var requester = manifest.artifact().asString();
+
         return SharedDependencyLoader.processSharedDependencies(depFile.shared(),
                                                                 sharedLibraryLoader,
                                                                 repository,
-                                                                location.url())
+                                                                location.url(),
+                                                                requester)
                                      .flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
                                                                                                               sharedLibraryLoader,
-                                                                                                              repository)
+                                                                                                              repository,
+                                                                                                              requester)
                                                                                     .map(_ -> sharedResult))
                                      .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
                                                                                                   sharedResult,
@@ -269,6 +319,7 @@ public interface DependencyResolver {
                                                                                                       registry,
                                                                                                       sharedLibraryLoader,
                                                                                                       loadingContext,
+                                                                                                      contextFor,
                                                                                                       resolutionPath));
     }
 
@@ -279,6 +330,7 @@ public interface DependencyResolver {
                                                                                   SliceRegistry registry,
                                                                                   SharedLibraryClassLoader sharedLibraryLoader,
                                                                                   SliceLoadingContext loadingContext,
+                                                                                  Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                                   Set<String> resolutionPath) {
         return loadClass(manifest.sliceClassName(), sharedResult.sliceClassLoader()).flatMap(sliceClass -> materializeThenResolve(manifest,
                                                                                                                                   depFile,
@@ -288,6 +340,7 @@ public interface DependencyResolver {
                                                                                                                                   registry,
                                                                                                                                   sharedLibraryLoader,
                                                                                                                                   loadingContext,
+                                                                                                                                  contextFor,
                                                                                                                                   resolutionPath));
     }
 
@@ -305,6 +358,7 @@ public interface DependencyResolver {
                                                                  SliceRegistry registry,
                                                                  SharedLibraryClassLoader sharedLibraryLoader,
                                                                  SliceLoadingContext loadingContext,
+                                                                 Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                  Set<String> resolutionPath) {
         loadingContext.materializeComposite(sharedResult.sliceClassLoader());
 
@@ -316,6 +370,7 @@ public interface DependencyResolver {
                                                    registry,
                                                    sharedLibraryLoader,
                                                    loadingContext,
+                                                   contextFor,
                                                    resolutionPath);
     }
 
@@ -327,6 +382,7 @@ public interface DependencyResolver {
                                                                               SliceRegistry registry,
                                                                               SharedLibraryClassLoader sharedLibraryLoader,
                                                                               SliceLoadingContext loadingContext,
+                                                                              Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                               Set<String> resolutionPath) {
         log.info("Resolving {} slice dependencies for {} with context", sliceDeps.size(), artifact.asString());
         if (sliceDeps.isEmpty()) {
@@ -344,6 +400,7 @@ public interface DependencyResolver {
                                                                   registry,
                                                                   sharedLibraryLoader,
                                                                   loadingContext,
+                                                                  contextFor,
                                                                   resolutionPath,
                                                                   List.of()).onSuccess(resolved -> log.info("Resolved all {} slice dependencies for {} with context",
                                                                                                             resolved.size(),
@@ -459,9 +516,9 @@ public interface DependencyResolver {
             return artifactMismatch(artifact, manifest.artifact()).promise();
         }
 
-        return DependencyFile.load(manifest.sliceClassName(),
-                                   createTempLoader(location.url(),
-                                                    sharedLibraryLoader))
+        return DependencyFile.loadFromJar(manifest.sliceClassName(),
+                                          location.url(),
+                                          sharedLibraryLoader)
                              .async()
                              .flatMap(depFile -> processSharedAndLoadSlice(manifest,
                                                                            location,
@@ -473,10 +530,6 @@ public interface DependencyResolver {
                                                                            resolutionPath));
     }
 
-    private static SliceClassLoader createTempLoader(URL jarUrl, SharedLibraryClassLoader parent) {
-        return new SliceClassLoader(new URL[]{jarUrl}, parent);
-    }
-
     private static Promise<Slice> processSharedAndLoadSlice(SliceManifestInfo manifest,
                                                             Location location,
                                                             DependencyFile depFile,
@@ -485,13 +538,17 @@ public interface DependencyResolver {
                                                             SharedLibraryClassLoader sharedLibraryLoader,
                                                             SliceInvokerFacade invokerFacade,
                                                             Set<String> resolutionPath) {
+        var requester = manifest.artifact().asString();
+
         return SharedDependencyLoader.processSharedDependencies(depFile.shared(),
                                                                 sharedLibraryLoader,
                                                                 repository,
-                                                                location.url())
+                                                                location.url(),
+                                                                requester)
                                      .flatMap(sharedResult -> SharedDependencyLoader.processInfraDependencies(depFile.infra(),
                                                                                                               sharedLibraryLoader,
-                                                                                                              repository)
+                                                                                                              repository,
+                                                                                                              requester)
                                                                                     .map(_ -> sharedResult))
                                      .flatMap(sharedResult -> addSliceDependencyJarsToClassLoader(depFile.slices(),
                                                                                                   sharedResult,
@@ -685,6 +742,7 @@ public interface DependencyResolver {
                                                                                            SliceRegistry registry,
                                                                                            SharedLibraryClassLoader sharedLibraryLoader,
                                                                                            SliceLoadingContext loadingContext,
+                                                                                           Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                                            Set<String> resolutionPath,
                                                                                            List<Slice> accumulated) {
         if (dependencies.isEmpty()) {
@@ -699,11 +757,13 @@ public interface DependencyResolver {
                                                     registry,
                                                     sharedLibraryLoader,
                                                     loadingContext,
+                                                    contextFor,
                                                     resolutionPath).flatMap(slice -> resolveArtifactDependenciesWithContextSequentially(remaining,
                                                                                                                                         repository,
                                                                                                                                         registry,
                                                                                                                                         sharedLibraryLoader,
                                                                                                                                         loadingContext,
+                                                                                                                                        contextFor,
                                                                                                                                         resolutionPath,
                                                                                                                                         appendToList(accumulated,
                                                                                                                                                      slice)));
@@ -714,6 +774,7 @@ public interface DependencyResolver {
                                                                        SliceRegistry registry,
                                                                        SharedLibraryClassLoader sharedLibraryLoader,
                                                                        SliceLoadingContext loadingContext,
+                                                                       Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                        Set<String> resolutionPath) {
         var inRegistry = registry.findByArtifactKey(dependency.groupId(),
                                                     dependency.artifactId(),
@@ -732,6 +793,7 @@ public interface DependencyResolver {
                                                         registry,
                                                         sharedLibraryLoader,
                                                         loadingContext,
+                                                        contextFor,
                                                         resolutionPath);
     }
 
@@ -740,13 +802,15 @@ public interface DependencyResolver {
                                                                            SliceRegistry registry,
                                                                            SharedLibraryClassLoader sharedLibraryLoader,
                                                                            SliceLoadingContext loadingContext,
+                                                                           Fn1<SliceLoadingContext, Artifact> contextFor,
                                                                            Set<String> resolutionPath) {
         return toArtifact(dependency).async()
                          .flatMap(artifact -> resolveWithSharedLoaderAndContext(artifact,
                                                                                 repository,
                                                                                 registry,
                                                                                 sharedLibraryLoader,
-                                                                                loadingContext,
+                                                                                contextFor.apply(artifact),
+                                                                                contextFor,
                                                                                 resolutionPath))
                          .map(ResolvedSlice::slice);
     }

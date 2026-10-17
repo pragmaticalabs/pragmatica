@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.topic;
 
 /// Delivery context handed to a durable-topic subscriber alongside the event it is processing
@@ -12,8 +11,9 @@ package org.pragmatica.aether.slice.topic;
 /// The four fields do NOT carry the same guarantee, and the difference is the whole point of the
 /// type — read it before using any of them as a key:
 ///
-/// **`messageId` — stable identity, usable as a deduplication key.** The publisher mints one KSUID
-/// per `publish` and stores it in the event's envelope, so it identifies the EVENT rather than the
+/// **`messageId` — stable identity, usable as a deduplication key.** The publisher assigns one per
+/// `publish` — a fresh KSUID from `publish(T)`, or the caller's key from `publish(T, idempotencyKey)`
+/// (#1237), so it is NOT always a KSUID — and stores it in the event's envelope, so it identifies the EVENT rather than the
 /// place a copy of it happens to sit. It is the §8 idempotency key: the key the idempotency aspect
 /// extracts, and the `messageId` component of a projection's `(projectionName, generation,
 /// messageId)` key. It is preserved across the dead-letter hop by construction — the same id is
@@ -44,7 +44,11 @@ package org.pragmatica.aether.slice.topic;
 /// accepted, and there is no failure for a slice to recover from at this point. This matches [Topic],
 /// which is likewise a descriptor rather than a parsed value.
 ///
-/// @param messageId publisher-assigned KSUID identifying the event; the §8 idempotency key, stable
+/// Delivery status: no production dispatcher constructs a context yet, so a durable handler does not
+/// receive this `messageId` today. [unverified: messageId is not yet delivered to subscribers — #1295]
+///
+/// @param messageId publisher-assigned identity of the event (a KSUID, or the caller's idempotency key);
+///                  the §8 idempotency key, stable
 ///                  across the dead-letter hop
 /// @param topic     canonical `namespace:name:version` address the event was published to
 /// @param partition source partition of this delivery; positional, not stable across redelivery or

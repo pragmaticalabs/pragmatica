@@ -61,11 +61,7 @@ class SliceDeploymentTest {
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "sd");
 
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -89,8 +85,7 @@ class SliceDeploymentTest {
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -98,7 +93,7 @@ class SliceDeploymentTest {
     void deploySlice_becomesActive() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
 
-        var response = deploy(leaderPort, TEST_ARTIFACT, 1);
+        var response = deploy(leaderPort, TEST_ARTIFACT, 3);
         assertThat(response).doesNotContain("\"error\"");
 
         await().atMost(DEPLOY_TIMEOUT)
@@ -129,18 +124,23 @@ class SliceDeploymentTest {
     }
 
     @Test
-    void scaleSlice_adjustsInstanceCount() {
+    void scaleSlice_belowTheFloor_isRefusedWhileAtTheFloorIsAccepted() {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
 
-        // Deploy with 1 instance
-        deploy(leaderPort, TEST_ARTIFACT, 1);
+        // Deploy at the blueprint floor of 3 instances (#1495), one per node of this 3-node cluster
+        deploy(leaderPort, TEST_ARTIFACT, 3);
         await().atMost(DEPLOY_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> sliceIsActive(TEST_ARTIFACT));
 
-        // Scale to 3 instances
+        // The floor holds at runtime too (#1495, owner ruling): the scale API refuses 2, naming the floor
+        var refused = scale(leaderPort, TEST_ARTIFACT, 2);
+        assertThat(refused).contains("must run at least 3 instances");
+
+        // and accepts a count at the floor; a 3-node cluster leaves no room to scale above 3
         var scaleResponse = scale(leaderPort, TEST_ARTIFACT, 3);
-        assertThat(scaleResponse).doesNotContain("\"error\"");
+        assertThat(scaleResponse).doesNotContain("\"error\"")
+                                 .doesNotContain("must run at least");
 
         // Wait for scale operation to complete
         await().atMost(DEPLOY_TIMEOUT)
@@ -156,7 +156,7 @@ class SliceDeploymentTest {
         var leaderPort = cluster.getLeaderManagementPort().unwrap();
 
         // Deploy
-        deploy(leaderPort, TEST_ARTIFACT, 1);
+        deploy(leaderPort, TEST_ARTIFACT, 3);
         await().atMost(DEPLOY_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> sliceIsActive(TEST_ARTIFACT));
@@ -183,7 +183,7 @@ class SliceDeploymentTest {
 
             [[slices]]
             artifact = "%s"
-            instances = 2
+            instances = 3
             """.formatted(TEST_ARTIFACT);
 
         var response = applyBlueprint(leaderPort, blueprint);

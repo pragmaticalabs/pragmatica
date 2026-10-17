@@ -4,9 +4,9 @@ Compile-time annotations for Aether slice development.
 
 ## Overview
 
-Provides the `@Slice` annotation for declarative slice development. When used with the slice-processor annotation processor, it generates API interfaces for typed inter-slice calls, proxy implementations, factory methods, and JAR manifest entries.
+Provides the `@Slice` annotation for declarative slice development. When used with the slice-processor annotation processor, it generates a factory class (with proxies for slice dependencies), a routes class (when a `routes.toml` is present), and a slice manifest.
 
-This module has no runtime dependencies -- it is purely compile-time metadata.
+This module has no dependencies. `@Slice` is retained at runtime (`RetentionPolicy.RUNTIME`).
 
 ## Usage
 
@@ -20,18 +20,22 @@ public interface OrderService {
 
 ### Generated Output
 
-1. **API Interface** - `OrderServiceApi.java` for typed client access
-2. **Proxy Class** - Handles serialization and remote invocation
-3. **Factory Method** - For obtaining service instances
-4. **Manifest Entries** - For runtime discovery
+1. **Factory** - `OrderServiceFactory`, which creates the slice and proxies for the slices it depends on. The `@Slice` interface itself is the API; no separate `*Api` file is generated.
+2. **Routes** - `OrderServiceRoutes`, generated when a `routes.toml` is present for the package.
+3. **Manifest** - `META-INF/slice/OrderService.manifest`, for runtime discovery.
 
 ### Build Configuration
 
 ```xml
 <dependency>
+    <groupId>org.pragmatica-lite.aether</groupId>
+    <artifactId>slice-annotations</artifactId>
+    <version>1.0.0-rc4</version>
+</dependency>
+<dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>slice-processor</artifactId>
-    <version>${jbct.version}</version>
+    <version>1.0.0-rc4</version>
     <scope>provided</scope>
 </dependency>
 ```

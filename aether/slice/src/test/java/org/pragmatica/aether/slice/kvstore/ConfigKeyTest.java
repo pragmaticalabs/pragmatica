@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.slice.kvstore;
 
@@ -52,7 +51,7 @@ class ConfigKeyTest {
         void forKey_with_nodeId_asString_produces_correct_format() {
             var nodeId = NodeId.nodeId("node-42").unwrap();
             var key = ConfigKey.forKey("max-retries", nodeId);
-            assertThat(key.asString()).isEqualTo("config/node/node-42/max-retries");
+            assertThat(key.asString()).isEqualTo("config-node/node-42/max-retries");
         }
     }
 
@@ -67,7 +66,7 @@ class ConfigKeyTest {
 
         @Test
         void configKey_parses_node_scoped_key() {
-            ConfigKey.configKey("config/node/node-42/max-retries")
+            ConfigKey.configKey("config-node/node-42/max-retries")
                      .onSuccess(this::assertNodeScopedMaxRetries)
                      .onFailureRun(Assertions::fail);
         }
@@ -98,14 +97,14 @@ class ConfigKeyTest {
 
         @Test
         void configKey_from_string_with_empty_node_scoped_key_fails() {
-            ConfigKey.configKey("config/node/node-42/")
+            ConfigKey.configKey("config-node/node-42/")
                      .onSuccessRun(Assertions::fail)
                      .onFailure(cause -> assertThat(cause.message()).contains("Invalid config key format"));
         }
 
         @Test
         void configKey_from_string_with_empty_nodeId_fails() {
-            ConfigKey.configKey("config/node//max-retries")
+            ConfigKey.configKey("config-node//max-retries")
                      .onSuccessRun(Assertions::fail)
                      .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }

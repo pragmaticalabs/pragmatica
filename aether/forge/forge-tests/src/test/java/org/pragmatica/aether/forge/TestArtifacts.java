@@ -25,23 +25,25 @@ final class TestArtifacts {
     /// (independent of the platform `project.version`), so the coordinate is hardcoded.
     static final String STREAM_SLICE = "org.pragmatica.aether.test:test-stream-stream-slice:1.0.0";
 
-    /// RF=2 / min-sync-replicas=2 replicated stream blueprint (`test-stream-repl`), used by
-    /// `StreamOwnerFailoverTest` for the #457 in-JVM owner-kill failover proof. A synchronously
-    /// replicated stream (owner + 1 in-sync replica) is the ONLY topology with a promotable CAUGHT_UP
-    /// non-owner replica; `POST /api/v1/streams` can only mint RF=1 (owner-only), so the RF=2 config MUST
-    /// come from a blueprint that declares `min-sync-replicas=2`. Mirrors the RF=1 [#STREAM_SLICE]
+    /// RF=3 / min-sync-replicas=2 replicated stream blueprint (`test-stream-repl`), used by
+    /// `StreamOwnerFailoverTest` for the #457 in-JVM owner-kill failover proof (RF=2 until #1547 made 3
+    /// the stream replication minimum). Mirrors the default-RF [#STREAM_SLICE]
     /// coordinate (the `-stream-slice` artifact, fixed `1.0.0` blueprint version, resolved from the
     /// local Maven repo) — the sibling `aether/tests/blueprints/test-stream-repl` module the cloud
     /// suite `02-chaos/test-stream-replica-failover.sh` deploys.
     static final String STREAM_REPL_SLICE = "org.pragmatica.aether.test:test-stream-repl-stream-slice:1.0.0";
 
-    /// partitions=4 / RF=2 / min-sync-replicas=2 replicated stream blueprint (`test-stream-multipart`),
+    /// replicas=3 / min-sync-replicas=3 stream blueprint (`test-stream-acked`), used by
+    /// `StreamAckedRecordsOwnerKillTest` for the #1549 acked-record proof: every acked event is on every
+    /// replica, and the declared min-sync reaches the runtime only since #1549. A dedicated fixture so no
+    /// other test's semantics move with it.
+    static final String STREAM_ACKED_SLICE = "org.pragmatica.aether.test:test-stream-acked-stream-slice:1.0.0";
+
+    /// partitions=4 / RF=3 / min-sync-replicas=2 replicated stream blueprint (`test-stream-multipart`),
     /// used by `MultiPartitionStreamTest` for the #429 multi-partition e2e fixture (partition→owner
     /// distribution, per-partition ordering, local/forwarded reads + read-preference arms) and by
     /// `StreamPublishReshuffleTest` for the #430 publish-under-ownership-reshuffle chaos test. Four
-    /// partitions give HRW placement room to spread owners across the 5-node cluster; RF=2 +
-    /// synchronous replication (min-sync-2) is the only topology whose ACKED writes survive a single
-    /// owner kill. Mirrors the [#STREAM_REPL_SLICE] coordinate (the `-stream-slice` artifact, fixed
+    /// partitions give HRW placement room to spread owners across the 5-node cluster. Mirrors the [#STREAM_REPL_SLICE] coordinate (the `-stream-slice` artifact, fixed
     /// `1.0.0` blueprint version, resolved from the local Maven repo) — the sibling
     /// `aether/tests/blueprints/test-stream-multipart` module.
     static final String STREAM_MULTIPART_SLICE = "org.pragmatica.aether.test:test-stream-multipart-stream-slice:1.0.0";
@@ -66,7 +68,7 @@ final class TestArtifacts {
     /// failure by its cause type (`EntityAlreadyExists`, `EntityNotFound`) — so [DurableEntityForgeTest]
     /// asserts on the entity's real behavior rather than on the absence of an exception. Timers are real
     /// on a node: `DurableEntityFactory` provisions only the fenced-log backing, which schedules them as
-    /// ordinary fenced writes, so `TimerNotSupported` — the in-memory backings' answer — never appears
+    /// ordinary fenced writes, so the in-memory fixtures' refusal never appears
     /// here. It also COUNTS timer fires in
     /// `OrderState.expiries`, which is what lets [DurableEntityTimerDurabilityTest] hold a durable
     /// timer to exactly-once across an owner handover and a full-cluster restart. Mirrors the
@@ -80,9 +82,9 @@ final class TestArtifacts {
     /// different key convention — underscores (`topic_name`, `min_sync_replicas`) rather than the
     /// streams family's dashes.
     ///
-    /// Both its topics are `partitions = 1, replicas = 2, min_sync_replicas = 2`. That is the durable
-    /// tier's only proven scoping (a durable declaration outside `min-sync == replicas >= 2` is
-    /// rejected at parse), and the single partition is what makes the delivery count a discriminator:
+    /// Its topics are `partitions = 1, replicas = 3, min_sync_replicas = 3`. That is the durable
+    /// tier's only accepted scoping (a durable declaration outside `min-sync == replicas >= 3` is
+    /// rejected at parse, #1547), and the single partition is what makes the delivery count a discriminator:
     /// with the slice on every node, a correctly gated consumer records each event once cluster-wide
     /// while an ungated one records it once per node. Two subscriber methods bind to the SAME
     /// `poison-events` topic — one that can never ack and one that always can — making them two
@@ -90,6 +92,32 @@ final class TestArtifacts {
     /// dead-letter claims need. Mirrors the [#STREAM_CONSUMER_SLICE] coordinate (fixed `1.0.0`
     /// blueprint version, resolved from the local Maven repo).
     static final String DURABLE_TOPIC_SLICE = "org.pragmatica.aether.test:test-durable-topic-durable-topic-slice:1.0.0";
+
+    /// The second slice of the same fixture module (#1333): a [Projection] over the single-partition
+    /// durable topic `projection-events`, attached through the provisioned `ProjectionRuntime`, with an
+    /// order-sensitive fold and a poison arm — what `DurableProjectionRebuildForgeTest` drives.
+    static final String DURABLE_PROJECTION_SLICE = "org.pragmatica.aether.test:test-durable-topic-projection-slice:1.0.0";
+
+    /// The version every `[streams.X]` declaration in `aether/tests/blueprints` leaves implicit —
+    /// `ResourceVersion.defaultVersion()`. It is the STREAM's version, not the blueprint's; the two
+    /// merely coincide in this repository (`BlueprintStreamAddresses` on why they need not).
+    private static final String DEFAULT_STREAM_VERSION = "1.0.0";
+
+    /// The engine key a blueprint-declared `[streams.<alias>]` ring is materialized under since #1041:
+    /// `namespace:alias:version`, with the namespace the blueprint's `groupId.artifactId`
+    /// (`BlueprintNamespace.deriveNamespace`) and the reduction `StreamEngineKey.engineKey` — never the
+    /// bare alias, which only `system` streams keep. Every in-JVM sensor a Heavy fixture reads
+    /// (`StreamReadRouter.replicaSnapshot`, `read`), the `/api/v1/streams/declarative-consumers`
+    /// `stream` field and the per-partition WAL directory all carry this spelling. `blueprintId` is the
+    /// `group:artifact:version` the fixture posts; the blueprint version is deliberately unused.
+    ///
+    /// Until #1066 the body publish wrote no bindings, so a bare-alias lookup died in `setUp` before
+    /// it could be seen to match nothing; the fixtures were corrected to this key once it did.
+    static String streamEngineKey(String blueprintId, String alias) {
+        var coordinates = blueprintId.split(":");
+
+        return coordinates[0] + "." + coordinates[1] + ":" + alias + ":" + DEFAULT_STREAM_VERSION;
+    }
 
     private TestArtifacts() {}
 }

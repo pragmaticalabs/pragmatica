@@ -1,0 +1,416 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.ember;
+
+import java.io.IOException;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.ProviderDefaults;
+import org.pragmatica.aether.environment.ProvisionRequest;
+import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
+
+/// #1528 / #1545 — a NEW process launched under a killed core's NodeId must not restore quorum, and a
+/// partitioned-but-live process (same boot token) still heals.
+///
+/// The verifier's scenario on real transport, SWIM and Rabia: three cores `btk-1..3`; kill `btk-3`;
+/// start a new process as `btk-3` (fresh boot token); kill `btk-2`. Without the boot-token gate at the
+/// QUIC handshake, the survivors refused the new process in SWIM but re-admitted it over QUIC as a
+/// RECONNECT of the EVICTED peer, it synchronized and voted, and `btk-1` plus the refused process
+/// committed a write. With the gate the only live voter set is `{btk-1}` and the write cannot commit.
+///
+/// Run for both addresses of the relaunched process: a different port (next free slot) and the killed
+/// node's own port (same address, the container-restart shape).
+@PortBudget
+class EmberSameIdentityRelaunchTest {
+    private static final int CLUSTER_SIZE = 3;
+    private static final int SLOTS = 2 * CLUSTER_SIZE;
+    private static final int MGMT_OFFSET = 40;
+    private static final int APP_HTTP_OFFSET = 80;
+    /// The shared probed pool ([EmberTestPorts#POOL_FIRST]..[EmberTestPorts#POOL_LAST], registered in forge-tests'
+    /// `TEST_PORT_ALLOCATION.md`), like every other Ember class that starts clusters. The class used to scan four private
+    /// blocks at 23000-23300, step 100: SWIM binds UDP at the QUIC port plus `EmberTestPorts.SWIM_PORT_OFFSET` (100), so every
+    /// neighbouring pair overlapped, and with this class starting five or more clusters (a refused or force-killed node's
+    /// sockets can stay bound until the JVM exits) the four candidates ran out ("no free port block ... after 90000 ms"). The pool
+    /// has 17 candidates, and its probe binds every port of a candidate, so a candidate overlapping a live or leaked cluster is
+    /// skipped instead of colliding.
+    private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
+                                                                                EmberTestPorts.POOL_LAST,
+                                                                                EmberTestPorts.POOL_STEP,
+                                                                                SLOTS,
+                                                                                MGMT_OFFSET,
+                                                                                APP_HTTP_OFFSET);
+    private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
+    private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
+    private static final TimeSpan WRITE_BOUND = TimeSpan.timeSpan(20).seconds();
+    /// Longer than the ~65 s the verifier measured between the SWIM refusal and the QUIC re-admission.
+    private static final long READMIT_WINDOW_MS = 90_000L;
+    private static final long HEAL_BOUND_MS = 180_000L;
+    private static final long DEMOTION_BOUND_MS = 30_000L;
+    private static final long REFUSAL_BOUND_MS = 20_000L;
+    /// Attempts of the forming-kill scenario: 0.5^14 = 6.1e-5 never reach it, see the test's doc.
+    private static final int SCENARIO_ATTEMPTS = 14;
+    private static final long LINK_BOUND_MS = 30_000L;
+
+    private EmberCluster cluster;
+    private int relaunchesMade;
+
+    @AfterEach
+    void tearDown() {
+        if (cluster != null) {
+            cluster.stop().await(STOP_BOUND);
+        }
+    }
+
+
+    /// Auto-heal is not this class's subject, and a replacement core is a legitimate FOURTH voter with a fresh NodeId: the leader's
+    /// reconciler provisions one 15 s after a core's death whenever its first pass saw the full membership (a race against the
+    /// early kill), and that core plus btk-1 then commit the post-kill write that these tests read as "a refused or healed
+    /// process voted". So no process can be provisioned here. The counter records the attempts that were refused.
+    private final AtomicInteger refusedProvisions = new AtomicInteger();
+
+    private ComputeProvider refuseProvisioning(ComputeProvider delegate) {
+        return new ComputeProvider() {
+            @Override
+            public ProviderDefaults providerDefaults() {
+                return delegate.providerDefaults();
+            }
+
+            @Override
+            public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+                refusedProvisions.incrementAndGet();
+
+                return EnvironmentError.capacityUnavailable("", new IllegalStateException("provisioning is blocked: auto-heal is not this test's subject")).promise();
+            }
+
+            @Override
+            public Promise<Unit> terminate(InstanceId id) {
+                return delegate.terminate(id);
+            }
+
+            @Override
+            public Promise<List<InstanceInfo>> listInstances() {
+                return delegate.listInstances();
+            }
+
+            @Override
+            public Promise<InstanceInfo> instanceStatus(InstanceId id) {
+                return delegate.instanceStatus(id);
+            }
+        };
+    }
+
+    /// The electorate precondition: the live processes AND the survivor's effective set (the records that
+    /// `countsTowardEffective`, so MEMBER and SUSPECT) are exactly `expected`. Without it the post-kill write proves nothing about
+    /// WHICH processes voted. Not "records named Member": a killed original that was only evicted to SUSPECT still votes in the count.
+    private void requireElectorate(AetherNode survivor, Set<String> expected) {
+        assertThat(cluster.allNodes().stream().map(node -> node.self().id()).collect(Collectors.toSet())).as("the live processes").isEqualTo(expected);
+        assertThat(survivor.membershipFsm()
+                           .countedMembers()
+                           .stream()
+                           .map(NodeId::id)
+                           .collect(Collectors.toSet())).as("the survivor's effective set").isEqualTo(expected);
+    }
+
+    @Test
+    @Timeout(480)
+    void relaunchedSameIdentityProcess_atNewAddress_neverRestoresQuorum() {
+        relaunchedProcessNeverRestoresQuorum(false);
+    }
+
+    @Test
+    @Timeout(480)
+    void relaunchedSameIdentityProcess_atSameAddress_neverRestoresQuorum() {
+        relaunchedProcessNeverRestoresQuorum(true);
+    }
+
+    /// #2173: the survivor must register the death of a core that was killed while the cluster was still forming and whose
+    /// NodeId a new process then took over. A core killed that early leaves the survivors' QUIC link to it unclosed; the takeover
+    /// is then retired by a boot-token conflict, a death-path removal that feeds the membership FSM nothing, and the SWIM FAULTY
+    /// was turned into UNKNOWN by the cold-boot rule and dropped when the member was swept, so the survivor's record for the
+    /// NodeId stayed MEMBER for good. The kill has to win a race against the link establishment, so one attempt does not always
+    /// hit it (about half did before the fix); it kills btk-3 the moment btk-1 reports it as a connected peer, not on a clock. The test therefore attempts the scenario up to [#SCENARIO_ATTEMPTS] times, each on
+    /// a fresh cluster, until an attempt REACHES it (the relaunch is refused), and fails only on a wrong outcome there (the
+    /// survivor still counts the killed original as MEMBER) or on never reaching it. With a per-attempt miss probability of at
+    /// most 0.5 (a conservative reading of "about half"), 14 attempts never reach it with probability 0.5^14 = 6.1e-5, under
+    /// 1e-4. The deterministic regression is `SwimRetiredIdentityDeathTest`.
+    @Test
+    @Timeout(1500)
+    void coreKilledWhileForming_andSupersededByTheSameNodeId_isDemotedOnTheSurvivor() {
+        for (var attempt = 1; attempt <= SCENARIO_ATTEMPTS; attempt++) {
+            if (attemptTheScenario()) {
+                return;
+            }
+            cluster.stop().await(STOP_BOUND);
+        }
+
+        throw new AssertionError(neverReachedMessage());
+    }
+
+    /// Two distinct ways to never reach the scenario: no kill-and-relaunch ever happened (btk-3 was never seen linked, e.g. every
+    /// start aborted), or relaunches happened and none was refused (the boot-token refusal itself never fired, which is not a race
+    /// miss).
+    private String neverReachedMessage() {
+        return relaunchesMade == 0
+               ? "none of " + SCENARIO_ATTEMPTS + " attempts killed btk-3 and relaunched it (it never showed as a linked peer within "
+                 + LINK_BOUND_MS + " ms): the scenario was not reached, the regression never ran"
+               : "none of " + SCENARIO_ATTEMPTS + " attempts saw a relaunch refused although " + relaunchesMade
+                 + " relaunches were made: the boot-token refusal never happened (at most a 6.1e-5 race miss, otherwise the gate is disabled); the regression never ran";
+    }
+
+    /// One attempt. False when the race was not reached (the original was killed before its token was seen, or the forming
+    /// cluster's start aborted); true after the demotion was asserted.
+    private boolean attemptTheScenario() {
+        var basePort = EmberTestPorts.freeBase(PORTS);
+        cluster = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
+        cluster.start();
+        // The kill must land AFTER the survivors learned btk-3's boot token (its QUIC link is up) and while the cluster is still
+        // forming. Killed any earlier (the old trigger: as soon as the nodes exist) the original may never be seen and the relaunch
+        // is then the first process they meet and joins. Whether that miss repeats depends on the box (a verifier's blind trigger
+        // reached the refusal 4 of 4 runs on a loaded Mac, via the retry loop); the link trigger makes the reach deterministic
+        // instead of leaving it to the loop alone. Trigger on the link, not on the clock.
+        if (!awaitLinkedWithin(LINK_BOUND_MS)) {
+            return false;
+        }
+
+        var survivor = cluster.getNode("btk-1").unwrap();
+        var killedId = cluster.getNode("btk-3").unwrap().self();
+
+        assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
+        cluster.relaunchNode("btk-3", false);
+        relaunchesMade++;
+
+        if (!refusedWithin(REFUSAL_BOUND_MS)) {
+            return false;
+        }
+
+        awaitDemoted(survivor, killedId, DEMOTION_BOUND_MS);
+
+        return true;
+    }
+
+    /// The positive arm on the same transport: a partitioned-but-LIVE process keeps its boot token, so
+    /// when the partition heals (higher SWIM incarnation, same token) it is re-admitted over QUIC and
+    /// counts toward quorum again — btk-1 plus the healed btk-3 commit after btk-2 is killed. No
+    /// boot-token refusal may be recorded anywhere on the path.
+    @Test
+    @Timeout(480)
+    void partitionedLiveProcess_sameToken_healsAndRestoresQuorum() {
+        cluster = EmberTestPorts.startedCluster(PORTS, this::clusterWithoutAutoHeal, START_BOUND);
+        var survivor = cluster.getNode("btk-1").unwrap();
+        var partitioned = cluster.getNode("btk-3").unwrap();
+        var partitionedId = partitioned.self();
+
+        assertThat(write(survivor, "control-before").isSuccess()).as("control: a three-core cluster commits").isTrue();
+
+        partitioned.blackhole(true);
+        awaitCondition("the survivor's membership stops counting the partitioned node as MEMBER",
+                       () -> !"Member".equals(survivor.membershipFsm().memberStates().get(partitionedId)));
+        partitioned.blackhole(false);
+        awaitCondition("the same process, same token, heals back to MEMBER on the survivor",
+                       () -> "Member".equals(survivor.membershipFsm().memberStates().get(partitionedId)));
+
+        requireElectorate(survivor, Set.of("btk-1", "btk-2", "btk-3"));
+        assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
+
+        assertThat(write(survivor, "after-heal").isSuccess())
+            .as("btk-1 plus the healed btk-3 (same process) form a quorum")
+            .isTrue();
+        assertThat(survivor.transportMetrics().get("boot_token_refusals_total").longValue())
+            .as("a same-token heal is never refused")
+            .isZero();
+    }
+
+    /// True once btk-1 has btk-3 among its connected peers, false when the bound passes first (an aborted start never links).
+    private boolean awaitLinkedWithin(long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
+
+        while (System.currentTimeMillis() < deadline) {
+            if (cluster.getNode("btk-1").isPresent() && cluster.getNode("btk-3").isPresent()
+                && cluster.getNode("btk-1").unwrap().connectedPeerIds().stream().anyMatch(peer -> "btk-3".equals(peer.id()))) {
+                return true;
+            }
+            sleep(5);
+        }
+
+        return false;
+    }
+
+    /// Refused means the relaunched process exited with the identity-refused code. Its absence from the cluster is not
+    /// evidence: a start aborted by the early kill clears the cluster too, and the survivor, then stopped, keeps its seeded
+    /// MEMBER record (CI run 38336812709, "Cluster startup aborted on first node failure").
+    private boolean refusedWithin(long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
+
+        while (!cluster.exitCodeOf("btk-3").equals(Option.some(AetherNode.EXIT_IDENTITY_REFUSED))) {
+            if (System.currentTimeMillis() > deadline) {
+                return false;
+            }
+            sleep(250);
+        }
+
+        return true;
+    }
+
+    private EmberCluster clusterWithoutAutoHeal(int basePort) {
+        var built = emberCluster(CLUSTER_SIZE, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, "btk");
+
+        built.withComputeProviderDecorator(this::refuseProvisioning);
+
+        return built;
+    }
+
+    private static void awaitCondition(String what, java.util.function.BooleanSupplier condition) {
+        var deadline = System.currentTimeMillis() + HEAL_BOUND_MS;
+
+        while (!condition.getAsBoolean()) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("timed out waiting: " + what);
+            }
+            sleep(250);
+        }
+    }
+
+    private void relaunchedProcessNeverRestoresQuorum(boolean sameAddress) {
+        var basePort = EmberTestPorts.freeBase(PORTS);
+        cluster = clusterWithoutAutoHeal(basePort);
+        assertThat(cluster.start().await(START_BOUND).fold(Cause::message, _ -> "started")).isEqualTo("started");
+        var survivor = cluster.getNode("btk-1").unwrap();
+
+        assertThat(write(survivor, "control-before").isSuccess()).as("control: a three-core cluster commits").isTrue();
+
+        var killedId = cluster.getNode("btk-3").unwrap().self();
+
+        assertThat(cluster.killNode("btk-3", false).await(STOP_BOUND).isSuccess()).isTrue();
+        // The survivor must have registered the original's death before the same NodeId reappears. Its record is demoted by the
+        // organic close of the original's QUIC link; a relaunch that connects first supersedes that link, and the retirement that
+        // follows is a death-path removal, which by design feeds the membership FSM nothing (AetherNode.connectivityWiring), so
+        // the record can stay MEMBER for good. That race is a separate product defect, not this test's subject.
+        awaitDemoted(survivor, killedId, HEAL_BOUND_MS);
+        if (sameAddress) {
+            awaitSlotFree(basePort, 2);
+        }
+
+        var launch = cluster.relaunchNode("btk-3", sameAddress);
+        // The node is registered before its start runs; the refused process may exit within seconds.
+        var relaunched = cluster.getNode("btk-3").unwrap();
+
+        // The start promise of a refused process never resolves (the node stops during its start), so awaiting it is a
+        // pure START_BOUND timeout of 120 s, after which the window below used to open. The signal is the exit.
+        awaitCondition("the refused process exits", () -> cluster.getNode("btk-3").isEmpty());
+        assertThat(launch.await(TimeSpan.timeSpan(1).seconds()).fold(Cause::message, _ -> "launched"))
+            .as("the refused process never completes a start")
+            .isNotEqualTo("launched");
+
+        var relaunchedId = relaunched.self();
+
+        awaitRefusedNeverParticipates(survivor, relaunched, relaunchedId);
+        assertThat(relaunched.isReady()).as("the refused process must never become consensus-active").isFalse();
+        assertThat(cluster.getNode("btk-3").isEmpty())
+            .as("the refused process learns it was refused (explicit HelloRefused/IdentityRefused) and exits")
+            .isTrue();
+        assertThat(cluster.exitCodeOf("btk-3"))
+            .as("#1558: a refused identity exits with its own code, distinct from a drain's")
+            .isEqualTo(Option.some(AetherNode.EXIT_IDENTITY_REFUSED));
+
+        requireElectorate(survivor, Set.of("btk-1", "btk-2"));
+        assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
+
+        assertThat(write(survivor, "after-kill").isSuccess())
+            .as("btk-1 plus a refused same-NodeId process must NOT form a quorum")
+            .isFalse();
+        assertThat(cluster.allNodes().stream().map(node -> node.self().id())).as("no live process answers to the refused NodeId")
+                                                                                .doesNotContain("btk-3");
+    }
+
+    /// Waits for the survivor to drop `id` from its effective set (DEPARTING or DEAD). Not merely "no longer MEMBER": the
+    /// eviction of a killed core's QUIC link moves it to SUSPECT, which still `countsTowardEffective` and still votes in the count,
+    /// so that is exactly the #2173 defect and must not pass. A bound reached with the record still counted fails naming its state,
+    /// so a stuck record is reported as itself and not as a generic timeout.
+    private static void awaitDemoted(AetherNode survivor, NodeId id, long boundMs) {
+        var deadline = System.currentTimeMillis() + boundMs;
+
+        while (survivor.membershipFsm().isCountedMember(id)) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("the survivor still counts the killed original " + id.id() + " toward its effective set " + boundMs
+                                         + " ms after it was killed (stuck state: " + survivor.membershipFsm().memberStates().get(id)
+                                         + "): its death was never registered");
+            }
+            sleep(250);
+        }
+    }
+
+    /// From the moment the killed original was demoted, and for the whole readmission window, the survivor never
+    /// counts the refused identity as a member again and the refused process never becomes consensus-active. Sampled, so a process admitted at any moment of the window
+    /// fails the test, not only one still admitted at its end.
+    private static void awaitRefusedNeverParticipates(AetherNode survivor, AetherNode relaunched, NodeId relaunchedId) {
+        var deadline = System.currentTimeMillis() + READMIT_WINDOW_MS;
+
+        while (System.currentTimeMillis() < deadline) {
+            assertThat(relaunched.isReady()).as("the refused process became consensus-active during the window").isFalse();
+            assertThat(survivor.membershipFsm().memberStates().get(relaunchedId))
+                .as("the survivor re-admitted the refused identity as a member during the window")
+                .isNotEqualTo("Member");
+            sleep(250);
+        }
+    }
+
+    private static org.pragmatica.lang.Result<List<Object>> write(AetherNode node, String keyId) {
+        KVCommand<AetherKey> put = new KVCommand.Put<>(AetherKey.ApiKeyKey.apiKeyKey(keyId),
+                                                       AetherValue.ApiKeyValue.apiKeyValue(keyId, "00", 0L));
+
+        return node.<Object>apply(List.of(put))
+                   .await(WRITE_BOUND);
+    }
+
+    private static void sleep(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// A hard kill resolves after a 1 s bound while the killed node may still hold its sockets; the
+    /// same-address relaunch waits until every port of btk-3's slot (slot 2) is free again. It FAILS on its
+    /// deadline: since #1719 the QUIC bind is exclusive, so relaunching onto a still-held port fails with
+    /// BindFailed, and "the refused process never completes a start" would then pass for the wrong reason.
+    private static void awaitSlotFree(int base, int slot) {
+        var deadline = System.currentTimeMillis() + 60_000L;
+
+        while (!EmberTestPorts.slotFree(PORTS, base, slot) && System.currentTimeMillis() < deadline) {
+            sleep(250);
+        }
+        if (!EmberTestPorts.slotFree(PORTS, base, slot)) {
+            throw new AssertionError("slot " + slot + " of base port " + base + " is still held 60 s after the kill: a relaunch "
+                                     + "there would be refused by the bind (BindFailed), not by the boot token");
+        }
+    }
+}

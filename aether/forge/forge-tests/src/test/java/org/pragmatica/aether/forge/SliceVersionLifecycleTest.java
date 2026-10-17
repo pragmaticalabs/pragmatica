@@ -32,7 +32,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// non-deprecated `[v2]` (with `defaultIfMissing = true`). A path-mode request to `v1` MUST carry
 /// `Deprecation: true`, `Sunset: Thu, 31 Dec 2026 00:00:00 GMT`, and a `Link` header naming `v2` as
 /// the successor; a request to the non-deprecated `v2` MUST carry none of them. The management
-/// `GET /api/v1/versions` endpoint MUST report the slice's registry: `v1` deprecated+sunset and `v2`
+/// `GET /api/v1/versions` endpoint on the hosting node MUST report the slice's registry: `v1` deprecated+sunset and `v2`
 /// defaultIfMissing.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -53,11 +53,7 @@ class SliceVersionLifecycleTest {
     @BeforeAll
     void setUp() {
         cluster = emberCluster(3, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "svl");
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -69,8 +65,7 @@ class SliceVersionLifecycleTest {
     @AfterAll
     void tearDown() {
         if (cluster != null) {
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -97,17 +92,67 @@ class SliceVersionLifecycleTest {
 
     @Test
     void versionsEndpoint_reportsDeployedSliceRegistry() {
-        get(anyMgmtPort(), "/api/v1/versions").onSuccess(result -> {
-            var body = result.body();
+        var body = awaitVersionsFromHostingNode();
 
-            assertThat(body).doesNotContain("\"error\"");
-            assertThat(body).contains("\"apiPrefix\":\"/api/orders\"");
-            assertThat(body).contains("\"version\":1");
-            assertThat(body).contains("\"deprecated\":true");
-            assertThat(body).contains("\"sunset\":\"2026-12-31\"");
-            assertThat(body).contains("\"version\":2");
-            assertThat(body).contains("\"defaultIfMissing\":true");
-        });
+        assertThat(body).doesNotContain("\"error\"");
+        assertThat(body).contains("\"apiPrefix\":\"/api/orders\"");
+        assertThat(body).contains("\"version\":1");
+        assertThat(body).contains("\"deprecated\":true");
+        assertThat(body).contains("\"sunset\":\"2026-12-31\"");
+        assertThat(body).contains("\"version\":2");
+        assertThat(body).contains("\"defaultIfMissing\":true");
+    }
+
+    /// #1462 — ask the node that HOSTS the slice, not whichever node happens to be listed first.
+    ///
+    /// `GET /versions` is declared `LOCAL` (`ManagementRoute:114`) and projects only **this node's**
+    /// `HttpRoutePublisher.versionRegistries()`, so a node hosting no versioned slice answers `{}` —
+    /// that is the endpoint's documented contract, not a failure. The blueprint here deploys
+    /// `instances = 3` (the #1495 floor), so on this 3-node cluster every node holds that registry; on a
+    /// larger cluster some nodes would not, which is why the gate still polls every port. The app-HTTP
+    /// route does not help identify it: that one IS forwarded (`AppHttpServer`'s `HttpForwarder`), so
+    /// `deployVersionedSlice()`'s readiness gate is satisfied by any node. The previous
+    /// `anyMgmtPort()` — `status().nodes().getFirst()` over a `ConcurrentHashMap`, i.e. hash order,
+    /// neither readiness-filtered nor sorted — had no relation to the hosting node and passed only
+    /// when the two coincided.
+    ///
+    /// Do NOT "fix" a failure here by sleeping or by retrying one port: that lowers the failure rate
+    /// of a test asking the wrong node and buys back the same bug. Poll every port instead.
+    ///
+    /// The gate is keyed on the ARTIFACT COORDINATE, deliberately nothing this test asserts, so it
+    /// establishes *which node hosts the slice* without being able to confirm the assertions about
+    /// what that node reports.
+    private String awaitVersionsFromHostingNode() {
+        return await().atMost(WAIT_TIMEOUT)
+                      .pollInterval(POLL_INTERVAL)
+                      .alias("no node's LOCAL /api/v1/versions named " + TEST_ARTIFACT
+                             + " — only the nodes hosting the slice hold that registry, so ask every node, "
+                             + "never one node twice; the quoted input below is every management port's body "
+                             + "joined by ' | '")
+                      .until(this::hostingNodeVersionsBody, body -> body.contains(TEST_ARTIFACT));
+    }
+
+    /// The body of the first management port whose `/versions` names the deployed slice; when no port
+    /// does, every body joined, so a timeout renders the real responses rather than an empty string.
+    private String hostingNodeVersionsBody() {
+        var bodies = cluster.status()
+                            .nodes()
+                            .stream()
+                            .map(node -> versionsBody(node.mgmtPort()))
+                            .toList();
+
+        return bodies.stream()
+                     .filter(body -> body.contains(TEST_ARTIFACT))
+                     .findFirst()
+                     .orElseGet(() -> String.join(" | ", bodies));
+    }
+
+    /// Non-throwing sibling of [#get]: a transient failure while polling must retry, not abort.
+    private String versionsBody(int port) {
+        return http.sendString(getRequest(port, "/api/v1/versions"))
+                   .await()
+                   .map(HttpResult::body)
+                   .or(ERROR_FALLBACK);
     }
 
     private Result<HttpResult<String>> get(int port, String path) {
@@ -165,7 +210,7 @@ class SliceVersionLifecycleTest {
 
             [[slices]]
             artifact = "%s"
-            instances = 1
+            instances = 3
             """.formatted(BLUEPRINT_ID, artifact);
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
         return postBlueprintWithRetry(leaderPort, blueprint);

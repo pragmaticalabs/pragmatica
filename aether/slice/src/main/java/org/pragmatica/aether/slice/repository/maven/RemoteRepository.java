@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.repository.maven;
 
 import java.net.URI;
@@ -10,6 +9,7 @@ import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.repository.Location;
@@ -26,12 +26,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.lang.io.FileOps.createDirectories;
-import static org.pragmatica.lang.io.FileOps.createTempFile;
-import static org.pragmatica.lang.io.FileOps.deleteIfExists;
 import static org.pragmatica.lang.io.FileOps.exists;
-import static org.pragmatica.lang.io.FileOps.moveReplace;
-import static org.pragmatica.lang.io.FileOps.writeBytes;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
 
@@ -45,42 +40,68 @@ public interface RemoteRepository extends Repository {
     }
 
     static RemoteRepository remoteRepository(String repoId, String baseUrl, Duration httpTimeout) {
+        return remoteRepository(repoId,
+                                baseUrl,
+                                httpTimeout,
+                                () -> JdkHttpOperations.jdkHttpOperations(httpTimeout,
+                                                                          HttpClient.Redirect.NORMAL,
+                                                                          Option.none()));
+    }
+
+    /// `httpOpsFactory` builds the client for ONE download; the download closes it when it settles (#1097).
+    /// A seam so a test can hold the very client it checks, which a GC cannot then release behind its back.
+    static RemoteRepository remoteRepository(String repoId,
+                                             String baseUrl,
+                                             Duration httpTimeout,
+                                             Supplier<JdkHttpOperations> httpOpsFactory) {
         var normalizedUrl = baseUrl.endsWith("/")
                             ? baseUrl
                             : baseUrl + "/";
         var credentials = MavenSettingsCredentials.forServer(repoId);
         var localRepo = Path.of(MavenLocalRepoLocator.findLocalRepository());
 
-        return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo, httpTimeout);
+        return artifact -> resolveArtifact(artifact, normalizedUrl, credentials, localRepo, httpTimeout, httpOpsFactory);
     }
 
     private static Promise<Location> resolveArtifact(Artifact artifact,
                                                      String baseUrl,
                                                      Option<MavenSettingsCredentials.Credentials> credentials,
                                                      Path localRepo,
-                                                     Duration httpTimeout) {
+                                                     Duration httpTimeout,
+                                                     Supplier<JdkHttpOperations> httpOpsFactory) {
         var cachedPath = localPath(artifact, localRepo);
-
+        // #1599: a cached jar is loaded only if it still matches its checksum sidecar. One that does not — whether the
+        // node's own mark or a Maven checksum — is refused and left untouched, never fetched over (v1617 M1, #1725
+        // ruling): it may be the operator's local build, installed over a jar the node once wrote.
         if (exists(cachedPath)) {
-            log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
-
-            return toLocation(artifact, cachedPath);
+            return switch (ArtifactCache.check(cachedPath)) {
+                case USABLE -> cacheHit(artifact, cachedPath);
+                case MISMATCH -> new RemoteRepositoryError.CachedArtifactChecksumMismatch(artifact.asString(),
+                                                                                          cachedPath.toString()).promise();
+            };
         }
 
-        return downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout);
+        return downloadAndCache(artifact, baseUrl, credentials, cachedPath, httpTimeout, httpOpsFactory);
+    }
+
+    private static Promise<Location> cacheHit(Artifact artifact, Path cachedPath) {
+        log.debug("Cache hit for {} at {}", artifact.asString(), cachedPath);
+
+        return toLocation(artifact, cachedPath);
     }
 
     private static Promise<Location> downloadAndCache(Artifact artifact,
                                                       String baseUrl,
                                                       Option<MavenSettingsCredentials.Credentials> credentials,
                                                       Path targetPath,
-                                                      Duration httpTimeout) {
-        var httpOps = JdkHttpOperations.jdkHttpOperations(httpTimeout, HttpClient.Redirect.NORMAL, Option.none());
+                                                      Duration httpTimeout,
+                                                      Supplier<JdkHttpOperations> httpOpsFactory) {
+        var httpOps = httpOpsFactory.get();
         var artifactPath = remotePath(artifact);
         var jarUrl = baseUrl + artifactPath;
         var sha256Url = jarUrl + ".sha256";
         var sha1Url = jarUrl + ".sha1";
-
+        // One client per download, so it is released when that download settles (#1097).
         return downloadJar(httpOps, jarUrl, credentials, artifact, httpTimeout).flatMap(jarBytes -> verifyChecksumAndCache(httpOps,
                                                                                                                            sha256Url,
                                                                                                                            sha1Url,
@@ -89,7 +110,8 @@ public interface RemoteRepository extends Repository {
                                                                                                                            artifact,
                                                                                                                            targetPath,
                                                                                                                            httpTimeout))
-                          .flatMap(path -> toLocation(artifact, path));
+                          .flatMap(path -> toLocation(artifact, path))
+                          .onResult(_ -> httpOps.close());
     }
 
     private static Promise<byte[]> downloadJar(HttpOperations httpOps,
@@ -104,6 +126,10 @@ public interface RemoteRepository extends Repository {
     }
 
     private static Promise<byte[]> handleJarResponse(HttpResult<byte[]> result, String jarUrl, Artifact artifact) {
+        if (result.statusCode() == HTTP_NOT_FOUND) {
+            return new RemoteRepositoryError.NotOnRemote(jarUrl).promise();
+        }
+
         if (result.statusCode() != 200) {
             return new RemoteRepositoryError.DownloadFailed(jarUrl,
                                                             new RemoteDownloadException(jarUrl, result.statusCode())).promise();
@@ -219,17 +245,14 @@ public interface RemoteRepository extends Repository {
         return Promise.success(jarBytes);
     }
 
+    /// #1599: published durably and atomically by [ArtifactCache#store]; a failed write leaves nothing at
+    /// `targetPath`.
     private static Promise<Path> cacheAndReturn(Path targetPath, byte[] jarBytes, Artifact artifact) {
-        return Promise.lift(cause -> new RemoteRepositoryError.DownloadFailed(artifact.asString(), cause),
-                            () -> cacheAndReturnPath(targetPath, jarBytes, artifact));
-    }
-
-    private static Path cacheAndReturnPath(Path targetPath, byte[] jarBytes, Artifact artifact) {
-        var result = cacheArtifact(targetPath, jarBytes);
-
-        log.info("Cached {} to {}", artifact.asString(), targetPath);
-
-        return result;
+        return ArtifactCache.store(targetPath, jarBytes)
+                            .onSuccessRun(() -> log.info("Cached {} to {}",
+                                                         artifact.asString(),
+                                                         targetPath))
+                            .async();
     }
 
     private static HttpRequest buildRequest(String url,
@@ -252,14 +275,6 @@ public interface RemoteRepository extends Repository {
         }
 
         return sb.toString();
-    }
-
-    private static Path cacheArtifact(Path targetPath, byte[] content) {
-        return createDirectories(targetPath.getParent()).flatMap(_ -> createTempFile(".download-", ".tmp"))
-                                .flatMap(tempFile -> writeBytes(tempFile, content).flatMap(_ -> moveReplace(tempFile,
-                                                                                                            targetPath))
-                                                               .onFailure(_ -> deleteIfExists(tempFile)))
-                                .unwrap();
     }
 
     private static Path localPath(Artifact artifact, Path localRepo) {
@@ -294,8 +309,18 @@ public interface RemoteRepository extends Repository {
     }
 
     Fn1<Cause, String> LOCATION_ERROR = Causes.forOneValue("Failed to create location for artifact %s");
+    int HTTP_NOT_FOUND = 404;
 
     sealed interface RemoteRepositoryError extends Cause {
+        /// The remote ANSWERED 404 for the jar: an "absent" answer, unlike every other non-200
+        /// status, which is a [DownloadFailed] (the remote could not serve it).
+        record NotOnRemote(String url) implements RemoteRepositoryError, Absent {
+            @Override
+            public String message() {
+                return "Artifact not found on remote: HTTP 404 from " + url;
+            }
+        }
+
         record DownloadFailed(String url, Throwable cause) implements RemoteRepositoryError {
             @Override
             public String message() {
@@ -310,6 +335,19 @@ public interface RemoteRepository extends Repository {
                 }
 
                 return "Download failed from " + url + ": " + cause.getMessage();
+            }
+        }
+
+        /// #1599 (v1617 M1, #1725 ruling): a jar in the local Maven repository fails its checksum — a Maven one, or the mark
+        /// this node wrote with it, whose bytes then changed. It is neither loaded nor deleted nor overwritten; the operator
+        /// decides.
+        record CachedArtifactChecksumMismatch(String artifact, String path) implements RemoteRepositoryError {
+            @Override
+            public String message() {
+                return "Cached artifact " + artifact
+                     + " at " + path
+                     + " does not match its checksum sidecar; it was left untouched and not loaded."
+                     + " Rebuild or reinstall it, or remove it and its sidecar so it can be fetched";
             }
         }
 

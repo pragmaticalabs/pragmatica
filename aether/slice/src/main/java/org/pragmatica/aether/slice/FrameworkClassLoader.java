@@ -1,12 +1,10 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import java.io.IOException;
 import java.net.URL;
-import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,7 +23,7 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
-public class FrameworkClassLoader extends URLClassLoader {
+public class FrameworkClassLoader extends UncachedResourceClassLoader {
     private static final Logger log = LoggerFactory.getLogger(FrameworkClassLoader.class);
 
     private final List<String> loadedJars = new ArrayList<>();
