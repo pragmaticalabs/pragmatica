@@ -86,7 +86,9 @@ class JsonCodecFallbackDiagnosticsTest {
 
         @Test
         void nothingAnalysedUnderTheRefusedRootIsLeftBehind() throws Exception {
+            // Not vacuous: the holder is complete (it registers the supported roots) and still lacks them.
             assertThat(generated("com/example/rollbackfixture/RollbackSliceRoutesJsonCodecs.java"))
+                .contains("com.example.rollbackfixture.OkRequest.class")
                 .doesNotContain("com.example.rollbackfixture.B.class")
                 .doesNotContain("com.example.rollbackfixture.RootA");
         }
