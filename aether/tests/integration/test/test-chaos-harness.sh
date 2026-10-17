@@ -648,10 +648,21 @@ k_setup() {
 export CLUSTER_ID=b
 export CLOUD_TOML_B="\$STUB_DIR/b.toml"
 : > "\$CLOUD_TOML_B"
-printf '#!/bin/sh\necho "\$*" >> "%s/reaper-args"\nexit 0\n' "\$STUB_DIR" > "\$STUB_DIR/reaper.sh"
+# Per-case HOME: the unregister step (#2213) moves \$HOME/.aether/clusters/<name> aside; the real one must stay untouched.
+export HOME="\$STUB_DIR/home"
+mkdir -p "\$HOME/.aether/clusters/${TEST_CLUSTER}"
+# \$STUB_DIR/events: one line per observable step in call order, each recording whether the local state dir still exists.
+state_now() { [ -d "\$HOME/.aether/clusters/${TEST_CLUSTER}" ] && echo yes || echo no; }
+cat > "\$STUB_DIR/reaper.sh" <<'REAPER'
+#!/bin/sh
+echo "\$*" >> "\$STUB_DIR/reaper-args"
+if [ -d "\$HOME/.aether/clusters/\$2" ]; then p=yes; else p=no; fi
+echo "reap state=\$p" >> "\$STUB_DIR/events"
+exit \${REAPER_RC:-0}
+REAPER
 chmod +x "\$STUB_DIR/reaper.sh"
 export AETHER_CLOUD_REAPER="\$STUB_DIR/reaper.sh"
-aether() { echo "\$*" >> "\$STUB_DIR/aether-calls"; echo "Step 12/12: Done."; }
+aether() { echo "\$*" >> "\$STUB_DIR/aether-calls"; echo "aether \$1 \$2 state=\$(state_now)" >> "\$STUB_DIR/events"; echo "Step 12/12: Done."; [ "\$2" != remove ] || return \${REMOVE_RC:-0}; }
 EOF
 }
 
@@ -679,6 +690,41 @@ d=$(new_case); k_setup "$d"; echo "export CLUSTER_ID=zz" >> "$d/setup.sh"
 run_in "$d" "$CLUSTER_LIB" _cloud_full_drain_recover
 check "$d" "K5 unrecognized CLUSTER_ID -> rc 2 (preflight), the reaper never runs" \
     eval '[ "$(rc_of "$d")" = 2 ] && [ ! -f "$d/reaper-args" ] && has "$d" "unrecognized CLUSTER_ID='"'"'zz'"'"'" && has "$d" "nothing destroyed"'
+
+d=$(new_case); k_setup "$d"
+run_in "$d" "$CLUSTER_LIB" _cloud_full_drain_recover
+check "$d" "K6 #2213: reap, then registry remove, then state moved aside, then bootstrap on a clean name (.reaped-* kept, never deleted)" \
+    eval '[ "$(rc_of "$d")" = 0 ] && [ "$(tr "\n" "|" < "$d/events")" = "reap state=yes|aether cluster remove state=yes|aether cluster bootstrap state=no|" ] && grep -qxF "cluster remove ${TEST_CLUSTER}" "$d/aether-calls" && ls -d "$d"/home/.aether/clusters/${TEST_CLUSTER}.reaped-* >/dev/null 2>&1 && [ ! -d "$d/home/.aether/clusters/${TEST_CLUSTER}" ]'
+
+d=$(new_case); k_setup "$d"; echo "export REMOVE_RC=1" >> "$d/setup.sh"
+run_in "$d" "$CLUSTER_LIB" _cloud_full_drain_recover
+check "$d" "K7 a failing registry remove (entry absent) is tolerated: state still moved, bootstrap still attempted" \
+    eval '[ "$(rc_of "$d")" = 0 ] && [ "$(tr "\n" "|" < "$d/events")" = "reap state=yes|aether cluster remove state=yes|aether cluster bootstrap state=no|" ] && has "$d" "(tolerated; entry may be absent)"'
+
+d=$(new_case); k_setup "$d"; echo "unset CLOUD_TOML_B" >> "$d/setup.sh"
+run_in "$d" "$CLUSTER_LIB" _cloud_full_drain_recover
+check "$d" "K8 #2213: preflight refusal (rc 2) removes nothing and moves nothing" \
+    eval '[ "$(rc_of "$d")" = 2 ] && [ ! -f "$d/aether-calls" ] && [ ! -f "$d/events" ] && [ -d "$d/home/.aether/clusters/${TEST_CLUSTER}" ] && ! ls -d "$d"/home/.aether/clusters/*.reaped-* >/dev/null 2>&1'
+
+d=$(new_case); k_setup "$d"; echo "export REAPER_RC=1" >> "$d/setup.sh"
+run_in "$d" "$CLUSTER_LIB" _cloud_full_drain_recover
+check "$d" "K9 a fatal reap (rc 1) returns before unregistering: registry and state untouched, no bootstrap" \
+    eval '[ "$(rc_of "$d")" = 1 ] && [ ! -f "$d/aether-calls" ] && [ -d "$d/home/.aether/clusters/${TEST_CLUSTER}" ]'
+
+d=$(new_case); k_setup "$d"
+echo 'teardown_both() { _cloud_teardown_reap_cluster "${BOOTSTRAP_CLUSTER_NAME}"; mkdir -p "$HOME/.aether/clusters/other-a"; _cloud_teardown_reap_cluster other-a; }' >> "$d/setup.sh"
+run_in "$d" "$CLUSTER_LIB" teardown_both
+check "$d" "K10 #2213: end-of-run teardown reaps then unregisters BOTH names, state moved aside for both" \
+    eval '[ "$(tr "\n" "|" < "$d/events")" = "reap state=yes|aether cluster remove state=yes|reap state=yes|aether cluster remove state=no|" ] && grep -qxF "cluster remove ${TEST_CLUSTER}" "$d/aether-calls" && grep -qxF "cluster remove other-a" "$d/aether-calls" && ls -d "$d"/home/.aether/clusters/${TEST_CLUSTER}.reaped-* "$d"/home/.aether/clusters/other-a.reaped-* >/dev/null 2>&1'
+
+d=$(new_case); k_setup "$d"; echo "export REAPER_RC=1" >> "$d/setup.sh"
+run_in "$d" "$CLUSTER_LIB" _cloud_teardown_reap_cluster "$TEST_CLUSTER"
+check "$d" "K11 teardown reap failing outright (rc 1, nothing deleted) keeps the registry entry and state" \
+    eval '[ "$(rc_of "$d")" = 0 ] && [ ! -f "$d/aether-calls" ] && [ -d "$d/home/.aether/clusters/${TEST_CLUSTER}" ]'
+
+d=$(new_case)
+check "$d" "K12 run-tests.sh teardown reaps both clusters through the unregistering helper, under the provisioned-this-run guards" \
+    eval 'grep -qF "[ \"\${A_SUITES_SELECTED:-0}\" -gt 0 ] && _cloud_teardown_reap_cluster \"\$CLUSTER_A_NAME\"" "$INTEG_DIR/run-tests.sh" && grep -qF "[ \${#B_SUITES[@]} -gt 0 ] && _cloud_teardown_reap_cluster \"\$CLUSTER_B_NAME\"" "$INTEG_DIR/run-tests.sh"'
 
 echo "== W. every reap in the harness goes through positive per-VM confirmation (CTO ruling 3)"
 

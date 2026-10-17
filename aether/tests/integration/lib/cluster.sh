@@ -3374,6 +3374,49 @@ _cloud_reap_after_confirmed_drain() {
     return "$rc"
 }
 
+## Unregister a cluster whose VMs were just reaped, so a later `aether cluster bootstrap <name>` is not
+## refused by BootstrapExistingClusterGuard (#2213): the guard refuses a fresh bootstrap while the CLI
+## registry (~/.aether/clusters.toml) holds the name or ~/.aether/clusters/<name>/ exists. The registry entry
+## is removed (registry-only; a missing entry is tolerated) and the local bootstrap state is MOVED aside to
+## <name>.reaped-<UTC stamp> (reversible, keeps the evidence) — never deleted. Always returns 0: a failure here
+## surfaces as the guard's own refusal at the next bootstrap, which names the cause.
+_cloud_unregister_reaped_cluster() {
+    local name="$1" out state_dir stamp
+    if out=$(aether cluster remove "$name" 2>&1); then
+        log_info "_cloud_unregister_reaped_cluster: '${name}' removed from the cluster registry"
+    else
+        log_warn "_cloud_unregister_reaped_cluster: 'aether cluster remove ${name}' failed (tolerated; entry may be absent): ${out}"
+    fi
+    state_dir="${HOME}/.aether/clusters/${name}"
+    if [ -d "$state_dir" ]; then
+        stamp=$(date -u +%Y%m%dT%H%M%SZ)
+        if mv "$state_dir" "${state_dir}.reaped-${stamp}"; then
+            log_info "_cloud_unregister_reaped_cluster: bootstrap state of '${name}' moved to ${state_dir}.reaped-${stamp}"
+        else
+            log_warn "_cloud_unregister_reaped_cluster: could not move ${state_dir} aside — the next bootstrap of '${name}' will be refused"
+        fi
+    fi
+    return 0
+}
+
+## End-of-run teardown reap of one named cluster (run-tests.sh cloud teardown), then unregister it. The reap is
+## the planned destruction of a finished run's cluster, so unlike _cloud_full_drain_recover it is not gated on
+## drain evidence. rc 0 (clean) and rc 2 (orphans left) both leave the cluster gone, so both unregister; rc 1 is
+## a usage/setup error (e.g. no HCLOUD_TOKEN) that deleted nothing, so the registry entry is kept. Always returns
+## 0 (teardown is best effort). AETHER_CLOUD_REAPER overrides the reaper path (same test seam as above).
+_cloud_teardown_reap_cluster() {
+    local name="$1" reaper out rc
+    reaper="${AETHER_CLOUD_REAPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../tools" 2>/dev/null && pwd)/cloud-reaper.sh}"
+    out=$("$reaper" --cluster "$name" --destroy --force 2>&1)
+    rc=$?
+    printf '%s\n' "$out" | tail -3
+    case "$rc" in
+        0|2) _cloud_unregister_reaped_cluster "$name" ;;
+        *) log_warn "_cloud_teardown_reap_cluster: reaper failed for '${name}' (rc=${rc}) — registry entry kept" ;;
+    esac
+    return 0
+}
+
 ## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
 ## docker/compose branch's `docker compose down -v && up -d` full reset. This is
 ## the ONLY path capable of recovering a CONFIRMED FULL self-drain: every core
@@ -3456,6 +3499,9 @@ _cloud_full_drain_recover() {
         2) log_warn "_cloud_full_drain_recover: reap of '${cluster_name}' left orphan resources behind (rc=2) — proceeding to rebootstrap anyway: ${reap_out}" ;;
         *) log_fail "_cloud_full_drain_recover: cloud-reaper.sh --cluster ${cluster_name} --strict-cluster --destroy --force failed (rc=${reap_rc}): ${reap_out}"; return 1 ;;
     esac
+
+    # #2213: the fresh bootstrap below is refused while the registry or local state still holds this name.
+    _cloud_unregister_reaped_cluster "$cluster_name"
 
     # Bare `aether` resolved from PATH — the gate run environment prepends its
     # own CLI shim to PATH; a hardcoded path would silently bypass it. PG env
