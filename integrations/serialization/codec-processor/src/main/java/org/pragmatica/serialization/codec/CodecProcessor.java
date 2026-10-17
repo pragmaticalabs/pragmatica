@@ -160,21 +160,21 @@ public class CodecProcessor extends AbstractProcessor {
             return;
         }
         var type = (TypeElement) element;
-        var json = new JsonCodecGenerator(processingEnv);
+        var packageName = processingEnv.getElementUtils()
+                                       .getPackageOf(type)
+                                       .getQualifiedName()
+                                       .toString();
+        var json = new JsonCodecGenerator(processingEnv, packageName);
         var unsupported = json.addRoot(type.asType());
 
         if (unsupported.isPresent()) {
             error(element, "@Json type '" + type.getQualifiedName() + "' cannot get a generated codec: " + unsupported.get());
             return;
         }
-        var packageName = processingEnv.getElementUtils()
-                                       .getPackageOf(type)
-                                       .getQualifiedName()
-                                       .toString();
         var holder = jsonHolderName(type);
 
         try {
-            json.write(packageName, holder, "CodecProcessor", type);
+            json.write(holder, "CodecProcessor", type);
             note(element, "Generated JSON codecs: " + holder);
         } catch (java.io.IOException e) {
             error(element, "Cannot write " + holder + ": " + e.getMessage());

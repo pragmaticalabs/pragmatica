@@ -49,9 +49,14 @@ final class JsonTypeAnalyzer {
     private final Map<String, String> unsupported = new LinkedHashMap<>();
     private final Set<String> inProgress = new HashSet<>();
 
-    JsonTypeAnalyzer(Elements elements, Types types) {
+    private final String holderPackage;
+
+    /// `holderPackage` is where the generated codecs will live: types and factories there need only be
+    /// non-private; anywhere else they must be public.
+    JsonTypeAnalyzer(Elements elements, Types types, String holderPackage) {
         this.elements = elements;
         this.types = types;
+        this.holderPackage = holderPackage;
     }
 
     Map<String, JsonType.RecordDefinition> records() {
@@ -141,7 +146,7 @@ final class JsonTypeAnalyzer {
             return Optional.empty();
         }
         if (!isAccessible(element)) {
-            return fail(name, "not public (generated codecs may live in another package)");
+            return fail(name, "not accessible from package '" + holderPackage + "' where its codec is generated");
         }
         if (element.getKind() == ElementKind.ENUM) {
             enums.computeIfAbsent(name, _ -> enumDefinition(element));
@@ -196,7 +201,9 @@ final class JsonTypeAnalyzer {
             }
             var method = (ExecutableElement) enclosed;
 
-            if (!method.getModifiers().contains(Modifier.STATIC) || !method.getModifiers().contains(Modifier.PUBLIC)
+            var samePackage = elements.getPackageOf(element).getQualifiedName().contentEquals(holderPackage);
+
+            if (!method.getModifiers().contains(Modifier.STATIC) || !isAccessible(method.getModifiers(), samePackage)
                 || method.getParameters().size() != components.size() || !returnsResultOf(method, element)) {
                 continue;
             }
@@ -222,17 +229,20 @@ final class JsonTypeAnalyzer {
                && types.isSameType(declared.getTypeArguments().getFirst(), element.asType());
     }
 
-    private static boolean isAccessible(TypeElement element) {
-        for (Element current = element; current instanceof TypeElement type; current = current.getEnclosingElement()) {
-            var publicOrInterfaceMember = type.getModifiers().contains(Modifier.PUBLIC)
-                                          || (type.getNestingKind() == NestingKind.MEMBER
-                                              && type.getEnclosingElement().getKind().isInterface());
+    private boolean isAccessible(TypeElement element) {
+        var samePackage = elements.getPackageOf(element).getQualifiedName().contentEquals(holderPackage);
 
-            if (!publicOrInterfaceMember) {
+        for (Element current = element; current instanceof TypeElement type; current = current.getEnclosingElement()) {
+            if (!isAccessible(type.getModifiers(), samePackage)
+                && !(type.getNestingKind() == NestingKind.MEMBER && type.getEnclosingElement().getKind().isInterface())) {
                 return false;
             }
         }
         return true;
+    }
+
+    private static boolean isAccessible(Set<Modifier> modifiers, boolean samePackage) {
+        return modifiers.contains(Modifier.PUBLIC) || (samePackage && !modifiers.contains(Modifier.PRIVATE));
     }
 
     private Optional<TypeMirror> single(List<? extends TypeMirror> args, String owner) {

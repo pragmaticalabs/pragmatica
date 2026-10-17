@@ -32,9 +32,13 @@ public final class JsonCodecGenerator {
     private final JsonTypeAnalyzer analyzer;
     private final List<TypeMirror> roots = new ArrayList<>();
 
-    public JsonCodecGenerator(ProcessingEnvironment env) {
+    private final String packageName;
+
+    /// `packageName` is where the holder will be written; it decides which types and factories are reachable.
+    public JsonCodecGenerator(ProcessingEnvironment env, String packageName) {
         this.env = env;
-        this.analyzer = new JsonTypeAnalyzer(env.getElementUtils(), env.getTypeUtils());
+        this.packageName = packageName;
+        this.analyzer = new JsonTypeAnalyzer(env.getElementUtils(), env.getTypeUtils(), packageName);
     }
 
     /// Adds a root type; empty when supported, otherwise why it is not.
@@ -54,19 +58,19 @@ public final class JsonCodecGenerator {
         return List.copyOf(roots);
     }
 
-    public String source(String packageName, String holderName, String generatedBy) {
+    public String source(String holderName, String generatedBy) {
         return new JsonCodecEmitter(analyzer).emit(packageName, holderName, generatedBy);
     }
 
     /// Writes `packageName.holderName` through the Filer.
-    public void write(String packageName, String holderName, String generatedBy, Element... originatingElements) throws IOException {
+    public void write(String holderName, String generatedBy, Element... originatingElements) throws IOException {
         var qualified = packageName.isEmpty()
                         ? holderName
                         : packageName + "." + holderName;
         var file = env.getFiler().createSourceFile(qualified, originatingElements);
 
         try (var writer = new PrintWriter(file.openWriter())) {
-            writer.print(source(packageName, holderName, generatedBy));
+            writer.print(source(holderName, generatedBy));
         }
     }
 }
