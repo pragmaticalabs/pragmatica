@@ -46,17 +46,39 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
         return REQUIRES_CONTEXT.promise();
     }
 
+    /// #1549: the `[streams.X]` section is bound by the SAME parse deploy validation runs, so the committed
+    /// config carries every declared key, and an unread key fails activation instead of defaulting.
+    @Override
+    public Option<SectionBinder<StreamConfig>> sectionBinder() {
+        return Option.some(StreamSectionBinding::bindStreamSection);
+    }
+
+    /// #1040: qualified on the SAME rule as the publish path ([StreamAddressResolver#qualify]).
+    ///
+    /// Qualifying only the writer would have been worse than qualifying neither — publishers would
+    /// have moved to the catalog's ring while readers stayed on the bare one, splitting the world
+    /// differently instead of healing it. The read and write sides of a declaration resolve through
+    /// one function so they cannot be fixed apart.
     @Override
     public Promise<StreamAccess> provision(StreamConfig config, ProvisioningContext context) {
-        return context.extension(StreamPartitionManager.class)
-                      .flatMap(manager -> context.extension(Serializer.class)
-                                                 .flatMap(serializer -> context.extension(Deserializer.class)
-                                                                               .flatMap(deserializer -> buildAccess(manager,
-                                                                                                                    serializer,
-                                                                                                                    deserializer,
-                                                                                                                    config,
-                                                                                                                    context))))
-                      .async();
+        return StreamAddressResolver.qualify(config, context)
+                                    .flatMap(engineConfig -> context.extension(StreamPartitionManager.class)
+                                                                    .flatMap(manager -> buildWithCodec(manager,
+                                                                                                       engineConfig,
+                                                                                                       context)))
+                                    .async();
+    }
+
+    private static Result<StreamAccess> buildWithCodec(StreamPartitionManager manager,
+                                                       StreamConfig config,
+                                                       ProvisioningContext context) {
+        return context.extension(Serializer.class)
+                      .flatMap(serializer -> context.extension(Deserializer.class)
+                                                    .flatMap(deserializer -> buildAccess(manager,
+                                                                                         serializer,
+                                                                                         deserializer,
+                                                                                         config,
+                                                                                         context)));
     }
 
     @SuppressWarnings("unchecked")
@@ -150,7 +172,6 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
                                                     self,
                                                     ownerResolver,
                                                     partitionOwnerResolver,
-                                                    config.minSyncReplicas(),
                                                     tieredReader,
                                                     cursorStore,
                                                     replicaRegistry,
@@ -185,6 +206,6 @@ public final class StreamAccessFactory implements ResourceFactory<StreamAccess, 
     }
 
     private static Result<Unit> ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
-        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(config));
+        return StreamCreateOutcome.ensureExists(manager, config);
     }
 }

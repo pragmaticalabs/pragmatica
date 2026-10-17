@@ -1,17 +1,22 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
+import org.pragmatica.aether.config.ConsensusTierBounds;
+import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.aether.config.JwksUrl;
+import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -20,17 +25,22 @@ import static org.pragmatica.lang.Result.success;
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 public final class ClusterBootstrapConfigValidator {
-    private static final Pattern SEMVER_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
+    /// #585: full semver 2.0.0 grammar (semver.org), not a bare `X.Y.Z` triplet — pre-release
+    /// (`-rc3`, `-alpha.1`) and build metadata (`+build.5`) are valid semver and CL-02 must accept
+    /// them; the project's own current version string (`1.0.0-rc3`/`1.0.0-rc4`) was being rejected
+    /// at bootstrap VALIDATE. Still rejects what semver rejects: leading zeros in numeric
+    /// identifiers (`1.0.0-01`), empty identifiers (`1.0.0-`), and characters outside
+    /// `[0-9A-Za-z-]` (`1.0.0-rc_4`).
+    private static final Pattern SEMVER_PATTERN = Pattern.compile("^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)"
+                                                                 + "(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)"
+                                                                 + "(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?"
+                                                                 + "(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$");
 
     private static final Pattern CIDR_PATTERN = Pattern.compile("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}/\\d{1,2}$");
 
     private static final Set<String> VALID_PROTOCOLS = Set.of("tcp", "udp", "tcp+udp");
 
     private static final Set<RuntimeType> CLOUD_RUNTIME_TYPES = EnumSet.of(RuntimeType.CONTAINER, RuntimeType.JVM);
-
-    private static final Set<RuntimeType> SSH_RUNTIME_TYPES = EnumSet.of(RuntimeType.CONTAINER,
-                                                                         RuntimeType.JVM,
-                                                                         RuntimeType.EMBER);
 
     private ClusterBootstrapConfigValidator() {}
 
@@ -40,6 +50,7 @@ public final class ClusterBootstrapConfigValidator {
         validateClusterLevel(config, errors);
         validateCoreTopology(config, errors);
         validateSources(config, errors);
+        validateSshHostsUniqueAcrossSources(config, errors);
         validatePortDistinctness(config, errors);
         validateAutoHealDisableHonesty(config, errors);
         if (errors.isEmpty()) {
@@ -75,9 +86,10 @@ public final class ClusterBootstrapConfigValidator {
     /// equally inert.
     ///
     /// This does not leave auto-heal impossible to disable — [ClusterTopologyManager
-    /// #setAutoHealEnabled] (`aether cluster topology auto-heal disable`, #603) is a real,
-    /// already-wired runtime switch; it is simply a different mechanism (an imperative, per-leader
-    /// -term toggle) from this bootstrap-time declarative key.
+    /// #setAutoHealEnabled] (`aether cluster topology auto-heal disable`, #603, made durable by
+    /// #685) is a real, already-wired runtime switch; it is simply a different mechanism (an
+    /// imperative operator toggle, persisted as a cluster fact in the consensus KV — not scoped to
+    /// a leader's term) from this bootstrap-time declarative key.
     private static void validateAutoHealDisableHonesty(ClusterBootstrapConfig config, List<String> errors) {
         if (config.operations().autoHeal().enabled()) {
             return;
@@ -105,10 +117,22 @@ public final class ClusterBootstrapConfigValidator {
 
     private static void validateClusterVersion(String version, List<String> errors) {
         if (!SEMVER_PATTERN.matcher(version).matches()) {
-            errors.add("CL-02: Cluster version '" + version + "' must be valid semver X.Y.Z");
+            errors.add("CL-02: Cluster version '" + version
+                      + "' must be valid semver 2.0.0 —"
+                      + " MAJOR.MINOR.PATCH (no leading zeros), with an optional -pre-release"
+                      + " (e.g. '-rc3', '-alpha.1') and/or +build metadata (e.g. '+build.5')");
         }
     }
 
+    /// #1019 — the ceiling is here, not only at `aether cluster init`. Round 1 of #1019 bounded the
+    /// consensus tier in the CLI alone, and this validator then ACCEPTED a hand-written bootstrap
+    /// config with a derived core count of 11: it was provisioned, and each provisioned node dropped
+    /// the resulting per-node config on boot. A cap only one authoring command applies is a
+    /// convention, not a bound.
+    ///
+    /// The floor stays STRUCTURAL at 3 rather than the supported minimum of 5 — an existing 3-node
+    /// cluster must still be able to re-bootstrap — so the two ends of this range answer different
+    /// questions and deliberately do not match `CoreWorkerSplit`'s.
     private static void validateDerivedCoreCount(int coreCount, List<String> errors) {
         if (coreCount < 3) {
             errors.add("CL-04: Derived core count " + coreCount + " must be >= 3");
@@ -116,6 +140,14 @@ public final class ClusterBootstrapConfigValidator {
 
         if (coreCount % 2 == 0) {
             errors.add("CL-04: Derived core count " + coreCount + " must be odd");
+        }
+
+        if (coreCount > ConsensusTierBounds.MAXIMUM_CORE_NODES) {
+            errors.add("CL-04: Derived core count " + coreCount
+                      + " must be <= " + ConsensusTierBounds.MAXIMUM_CORE_NODES
+                      + ". This sizes the CONSENSUS tier, which every consensus round is broadcast"
+                      + " across — it is not the fleet, which is unbounded. Add further capacity as"
+                      + " worker sub-tables.");
         }
     }
 
@@ -128,9 +160,23 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// CL-08, second half (#296 review SF-1): node ids are minted as `<source>-<role>-<index>`,
+    /// and every surface that attributes a node to its source parses that id. A source whose name
+    /// is a dash-prefix of another (`eu` / `eu-1`) is refused up front, so two sources can never
+    /// disagree about which of them a node belongs to.
     private static void validateSourceNamesNonEmpty(ClusterBootstrapConfig config, List<String> errors) {
         if (config.sources().containsKey("")) {
             errors.add("CL-08: Source names must not be empty");
+        }
+
+        for (var name : config.sources().keySet()) {
+            config.sources()
+                  .keySet()
+                  .stream()
+                  .filter(other -> !other.equals(name) && other.startsWith(name + "-"))
+                  .forEach(other -> errors.add("CL-08: Source name '" + name
+                                              + "' is a prefix of source '" + other
+                                              + "' under the node-id form <source>-<role>-<index>; rename one of them"));
         }
     }
 
@@ -200,6 +246,11 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// #1019 — `core_topology.max` is the ceiling the stage-5 reconciler is allowed to GROW the
+    /// consensus tier to, so leaving it unbounded while bounding the derived count would let a cluster
+    /// reach an unsupported tier size by scaling rather than by authoring. Five shipped harness TOMLs
+    /// carried `max = 15` under the old rule and are moved to 9 by this change; their derived count is
+    /// 5, so the bound they actually exercise is unchanged.
     private static void validateCoreMax(int max, int derivedCount, List<String> errors) {
         if (max % 2 == 0) {
             errors.add("REQ-3.3.3: core_topology.max " + max + " must be odd");
@@ -207,6 +258,13 @@ public final class ClusterBootstrapConfigValidator {
 
         if (max < derivedCount) {
             errors.add("REQ-3.3.3: core_topology.max " + max + " must be >= derived core count " + derivedCount);
+        }
+
+        if (max > ConsensusTierBounds.MAXIMUM_CORE_NODES) {
+            errors.add("REQ-3.3.3: core_topology.max " + max
+                      + " must be <= " + ConsensusTierBounds.MAXIMUM_CORE_NODES
+                      + ". core_topology.max is the ceiling a scale may grow the CONSENSUS tier to;"
+                      + " capacity beyond it is added as workers.");
         }
     }
 
@@ -241,9 +299,28 @@ public final class ClusterBootstrapConfigValidator {
         validateSpotRestriction(name, source, errors);
         validateElectedLbRestriction(name, source, errors);
         validateElectedLbHasNonSpot(name, source, errors);
+        validateCloudCredentials(source, errors);
         validateFirewallRules(name, source, managementPort, errors);
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
+        rejectReplacementCeilingOffCloud(name, source, errors);
+    }
+
+    /// #1049 — the runtime reads `replacement_ceiling` only from the CLOUD source backing a replacement's
+    /// role (`ClusterTopologyManagerRecord.replacementCeiling`, the same lookup that resolves its zones and
+    /// instance type). On any other source type the value would parse and never be read — the #675 shape —
+    /// so it is refused rather than accepted as a silent no-op.
+    private static void rejectReplacementCeilingOffCloud(String name, SourceProfile source, List<String> errors) {
+        if (source.replacementCeiling().isEmpty() || source.type() == SourceType.CLOUD) {
+            return;
+        }
+
+        errors.add("PF-26: Source '" + name
+                  + "' is type '" + source.type().value()
+                  + "' and sets replacement_ceiling, which only a cloud source's auto-heal replacements read"
+                  + " — the value would be silently ignored. Remove it; replacements outside a cloud source"
+                  + " use the " + SourceProfile.DEFAULT_REPLACEMENT_CEILING.duration().toMinutes()
+                  + "-minute default.");
     }
 
     private static void validateRoleConstraints(String name, SourceProfile source, List<String> errors) {
@@ -322,6 +399,12 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// PF-28 (#2059): a cloud source must carry every credential key its provider's integration factory
+    /// requires, so the operator learns the missing key at validate time, before any node is provisioned.
+    private static void validateCloudCredentials(SourceProfile source, List<String> errors) {
+        CloudCredentialSchema.validate(source).onFailure(cause -> errors.add("PF-28: " + cause.message()));
+    }
+
     private static void validateElectedLbHasNonSpot(String name, SourceProfile source, List<String> errors) {
         if (source.loadBalancer() != LoadBalancerMode.ELECTED) {
             return;
@@ -340,6 +423,7 @@ public final class ClusterBootstrapConfigValidator {
                                               List<String> errors) {
         checkIngressProviderSupport(name, source, errors);
         checkPublicManagementWithoutAuth(name, source, managementPort, errors);
+        checkJwtWithoutJwks(name, source, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
     }
 
@@ -388,6 +472,52 @@ public final class ClusterBootstrapConfigValidator {
                   + " unauthenticated management API on the public internet — anyone who can reach it"
                   + " can deploy, scale and reconfigure the cluster. Scope source_cidr to your operator"
                   + " network, or enable authentication.");
+    }
+
+    /// PF-34 (#909) — a node refuses to boot on `security_mode = "jwt"` with no usable `jwks_url`. Caught here, before any server is
+    /// provisioned, so a cloud bootstrap does not pay for a fleet that will all refuse to start.
+    ///
+    /// Judged on the COMPOSED document (global default + source-type default + the source's `node_config`), the composition a node loads: the
+    /// global default sets `[app-http] enabled = true`, so an overlay that only says `security_mode = "jwt"` IS an enabled server. Reading the
+    /// raw overlay let that shape through. A server the operator disabled explicitly (`enabled = false`) serves nothing and is not refused. The
+    /// URL is judged by [JwksUrl], the predicate config load applies.
+    private static void checkJwtWithoutJwks(String name, SourceProfile source, List<String> errors) {
+        composedAppHttp(source).filter(doc -> isJwtServer(doc))
+                       .flatMap(doc -> jwksProblem(doc))
+                       .onPresent(problem -> errors.add("PF-34: Source '" + name
+                                                       + "' sets [app-http] security_mode = \"jwt\" but " + problem
+                                                       + ". Every node would refuse to start: there is nothing to verify"
+                                                       + " tokens against. jwks_url is required (issuer/audience optional); set it, or change"
+                                                       + " security_mode."));
+    }
+
+    private static Option<TomlDocument> composedAppHttp(SourceProfile source) {
+        return Result.all(DefaultNodeConfig.globalDefault(),
+                          DefaultNodeConfig.sourceTypeDefault(source.type()))
+                     .map((global, typeDefault) -> NodeConfigComposer.compose(global,
+                                                                              typeDefault,
+                                                                              source.nodeConfig(),
+                                                                              TomlDocument.EMPTY))
+                     .option();
+    }
+
+    /// `security_mode` and `enabled` are parsed by the functions the node uses ([SecurityMode#securityMode], [ConfigLoader#toBooleanValue]), so
+    /// the bootstrap check and a booting node cannot disagree about a padded or odd-cased value.
+    private static boolean isJwtServer(TomlDocument doc) {
+        var jwt = doc.getString("app-http", "security_mode")
+                     .flatMap(SecurityMode::securityMode)
+                     .map(mode -> mode == SecurityMode.JWT)
+                     .or(false);
+        var enabled = doc.getString("app-http", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+
+        return jwt && enabled;
+    }
+
+    private static Option<String> jwksProblem(TomlDocument doc) {
+        return doc.getString("app-http", "jwks_url")
+                  .fold(() -> Option.some("jwks_url is missing"),
+                        url -> JwksUrl.jwksUrl(url).fold(cause -> Option.some(cause.message()),
+                                                         _ -> Option.empty()));
     }
 
     private static boolean securityDisabled(SourceProfile source) {
@@ -552,11 +682,13 @@ public final class ClusterBootstrapConfigValidator {
                                         String runtimeRef,
                                         RuntimeType runtimeType,
                                         List<String> errors) {
-        if (!SSH_RUNTIME_TYPES.contains(runtimeType)) {
+        // #1090 review SF-2: the deploy phase launches only a container over SSH; admitting JVM/EMBER
+        // here meant every other source provisioned before DEPLOY_RUNTIME refused the profile by name.
+        if (runtimeType != RuntimeType.CONTAINER) {
             errors.add("PF-22: SSH source '" + sourceName
                       + "' role '" + role.value()
                       + "' runtime '" + runtimeRef
-                      + "' must be CONTAINER, JVM, or EMBER, got " + runtimeType.value());
+                      + "' must be CONTAINER (only a container is launched over SSH), got " + runtimeType.value());
         }
     }
 
@@ -579,6 +711,35 @@ public final class ClusterBootstrapConfigValidator {
 
     private static void collectDuplicateHosts(List<String> hosts, Set<String> seen, Set<String> duplicates) {
         hosts.stream().filter(host -> !seen.add(host)).forEach(duplicates::add);
+    }
+
+    /// PF-27 (#1090 review SF-3): PF-09 is intra-source; a host declared by two SSH sources was
+    /// launched by both deploys, the second `docker run` replacing the first. One host runs one node.
+    private static void validateSshHostsUniqueAcrossSources(ClusterBootstrapConfig config, List<String> errors) {
+        var owners = new HashMap<String, String>();
+
+        config.sources()
+              .forEach((name, source) -> sshHosts(source).forEach(host -> Option.option(owners.putIfAbsent(host, name))
+                                                                                .filter(owner -> !owner.equals(name))
+                                                                                .onPresent(owner -> errors.add("PF-27: Host '" + host
+                                                                                                              + "' is declared by SSH sources '" + owner
+                                                                                                              + "' and '" + name
+                                                                                                              + "' — one host runs one node"))));
+    }
+
+    private static List<String> sshHosts(SourceProfile source) {
+        if (source.type() != SourceType.SSH) {
+            return List.of();
+        }
+
+        return source.roles()
+                     .values()
+                     .stream()
+                     .flatMap(sub -> sub.hosts()
+                                        .stream()
+                                        .flatMap(List::stream))
+                     .distinct()
+                     .toList();
     }
 
     private static void validatePortDistinctness(ClusterBootstrapConfig config, List<String> errors) {

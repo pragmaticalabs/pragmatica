@@ -8,6 +8,8 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.MetadataStore;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -125,6 +127,68 @@ class SegmentIndexTest {
             var result = index.segmentRange(STREAM, 0, 0, 9);
 
             assertThat(result).hasSize(1);
+        }
+    }
+
+    /// #1234: the sealed watermark drives WAL truncation and recovery seeding, both of which discard
+    /// everything at or below it — so it must be CONTIGUOUS (every offset at or below it sealed), never
+    /// the maximum `endOffset`, which a later successful seal pushes past a failed one.
+    @Nested
+    class ContiguousSealedWatermark {
+
+        @Test
+        void lastSealedOffset_stopsBelowHole_whenLaterSegmentSealed() {
+            index.addSegment(STREAM, PARTITION, 0, 99);
+            index.addSegment(STREAM, PARTITION, 200, 299);
+
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(99L);
+        }
+
+        @Test
+        void lastSealedOffset_isMinusOne_whenFirstSegmentMissing() {
+            index.addSegment(STREAM, PARTITION, 100, 199);
+
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(-1L);
+        }
+
+        @Test
+        void lastSealedOffset_advancesThroughLaterSegments_whenHoleIsSealed() {
+            index.addSegment(STREAM, PARTITION, 0, 99);
+            index.addSegment(STREAM, PARTITION, 200, 299);
+            index.addSegment(STREAM, PARTITION, 100, 199);
+
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(299L);
+        }
+
+        /// Retention reclaiming a sealed segment does not un-seal it: lowering the watermark would let
+        /// recovery seed a ring below a WAL that was already truncated past it.
+        @Test
+        void lastSealedOffset_doesNotRegress_whenSealedSegmentRemoved() {
+            index.addSegment(STREAM, PARTITION, 0, 99);
+            index.addSegment(STREAM, PARTITION, 100, 199);
+            index.removeSegment(STREAM, PARTITION, 0);
+            index.removeSegment(STREAM, PARTITION, 100);
+
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(199L);
+        }
+
+        /// After a restart only surviving refs are known. A prefix retention reclaimed is recorded by its persisted
+        /// floor (#1278), so the rebuilt watermark is anchored at the floor and still stops at the first hole above
+        /// it. Without the floor the same refs rebuild to -1 (ReclaimedThroughFloorTest: an unrecorded missing
+        /// prefix is lost refs, not reclaimed history).
+        @Test
+        void rebuildFromRefs_anchorsAtTheReclaimedFloor_andStopsAtHole() {
+            var store = MetadataStore.inMemoryMetadataStore("rebuild");
+            var block = BlockId.blockId(new byte[]{1}).unwrap();
+
+            store.putRef(SegmentIndex.floorRefName(STREAM, PARTITION, 99), block);
+            store.putRef("streams/" + STREAM + "/" + PARTITION + "/100-199", block);
+            store.putRef("streams/" + STREAM + "/" + PARTITION + "/200-299", block);
+            store.putRef("streams/" + STREAM + "/" + PARTITION + "/400-499", block);
+
+            index.rebuildFromRefs(store);
+
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(299L);
         }
     }
 

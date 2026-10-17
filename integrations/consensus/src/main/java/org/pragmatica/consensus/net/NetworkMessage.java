@@ -18,6 +18,7 @@ package org.pragmatica.consensus.net;
 import java.util.Map;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -36,8 +37,22 @@ public sealed interface NetworkMessage extends Message.Wired {
     /// Hello - connection handshake, sent by both sides on channel activation.
     /// Carries the sender's cluster address and metadata labels (including the CORE/WORKER/SPOT
     /// `role` label) so receiving nodes can add dynamically provisioned nodes to their topology
-    /// with full metadata.
-    record Hello(NodeId sender, NodeAddress address, Map<String, String> labels) implements NetworkMessage {}
+    /// with full metadata, and the sender's per-process random `bootToken` (`0` = none), which the
+    /// receiver admits through [BootTokens] before attaching the connection (terminal removal).
+    /// `intendedPeer` is the identity the DIALER meant to reach (empty on the acceptor's response and
+    /// where the dialer named nobody): an acceptor that is not that identity refuses the Hello before
+    /// attaching, so a dial aimed at a peer whose address was recycled to another node never attaches
+    /// to, or supersedes a healthy link of, whichever node now answers there.
+    record Hello(NodeId sender,
+                 NodeAddress address,
+                 Map<String, String> labels,
+                 long bootToken,
+                 Option<NodeId> intendedPeer) implements NetworkMessage {}
+
+    /// Explicit refusal of a Hello by the boot-token gate (terminal removal): the acceptor tells the
+    /// dialing process that its NodeId belongs to a retired or different process, so the refused
+    /// process can exit instead of retrying forever. Sent in place of the Hello response.
+    record HelloRefused(NodeId sender, NodeId refused, String reason) implements NetworkMessage {}
 
     /// Topology discovery request - asks recipient to share their known nodes
     record DiscoverNodes(NodeId self) implements NetworkMessage {}
@@ -71,4 +86,15 @@ public sealed interface NetworkMessage extends Message.Wired {
             return StreamType.KV;
         }
     }
+
+    /// Leader pre-vote question (#1748): "do you still see `leader` healthy?". Sent by a follower that
+    /// lost its own view of the committed leader, BEFORE it elects, so one follower's broken link cannot
+    /// depose a leader the rest of the electorate still reaches. `round` pairs the answer with the
+    /// asking round.
+    record LeaderPreVoteRequest(NodeId sender, NodeId leader, long round) implements NetworkMessage {}
+
+    /// Answer to a [LeaderPreVoteRequest]. `leaderHealthy` is the responder's own view: it follows `leader`
+    /// and still sees it reachable and fresh. A responder with no view of the leadership at all (booting,
+    /// quorum lost, passive) does not answer.
+    record LeaderPreVoteResponse(NodeId sender, NodeId leader, long round, boolean leaderHealthy) implements NetworkMessage {}
 }

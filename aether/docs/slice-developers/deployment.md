@@ -52,12 +52,12 @@ id = "org.example:commerce:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 1
+instances = 3
 # transitive dependency
 
 [[slices]]
 artifact = "org.example:commerce-payment-service:1.0.0"
-instances = 2
+instances = 3
 timeout_ms = 30000
 load_balancing = "round_robin"
 
@@ -85,13 +85,27 @@ affinity_key = "customerId"
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `instances` | int | `1` | Number of slice instances |
+| `instances` | int | `3` | Number of slice instances. At least 3; fewer is refused when the blueprint is parsed (#1495), so one drain or node failure leaves a slice at two or more instances `[mechanism: placement puts at most one instance of a slice on a node]`. The floor also holds at runtime: `aether scale` refuses fewer than 3, and the autoscaler never scales a slice below 3 |
+| `minAvailable` | int | `ceil(instances/2)` | Fewest ACTIVE instances a scale-down or an automatic drain may leave. At least 2 and at most `instances`; fewer is refused when the blueprint is parsed (#1495) |
 | `timeout_ms` | int | - | Request timeout in milliseconds |
 | `memory_mb` | int | - | Memory allocation per instance |
 | `load_balancing` | string | - | Load balancing strategy (`round_robin`, `least_connections`) |
 | `affinity_key` | string | - | Request field for sticky routing |
 
 If a slice config file is missing, default values are used (logged as info message).
+
+How far each operation can take a running slice down (#1495):
+
+| Operation | Lower bound | Mechanism |
+|-----------|-------------|-----------|
+| `aether scale` / `POST /api/v1/scale` | 3, and the slice's `minAvailable` | refused with `400` before the node is read |
+| Autoscaler scale-down | `max(minAvailable, 3)` | clamped; the decision is recorded `HELD` by the `MIN_INSTANCES` guard |
+| Automatic drain (leader reconciler) | `minAvailable` ACTIVE instances on the remaining nodes | the victim is deferred `[mechanism: SliceOwnershipQuery.minAvailableDrainGuard, SliceOwnershipQuery.java:104]` |
+| Operator drain or shutdown (`aether nodes drain`, `POST /api/v1/nodes/drain\|shutdown`) | `minAvailable` ACTIVE instances on the remaining nodes (`members - pending drains - target`), on top of the core disruption budget | refused `409` naming the slice and its counts; serialised against concurrent operator drains `[mechanism: NodeLifecycleRoutes.admitOperatorDrain (synchronized), SliceOwnershipQuery.minAvailableDrainViolations]` |
+| Forced operator drain or shutdown (`--override-floor`, `?force=true`) | **none** for the slice floor; the core disruption budget still applies | admitted, and the breach is reported as an operator warning `slice-floor-breached-by-force` naming each slice, never silent |
+| `aether cluster destroy` | **none**, by definition: it drains and shuts down every node without undeploying | passes `force` on every drain and shutdown it sends, so each node's breach raises the warning |
+| Automatic rollback (#1573) | 3 when it has to create the slice target; otherwise the existing count | a missing target is written at `SliceSpec.MIN_INSTANCES` |
+| A/B test (#1721) | 3: the variant is written onto the slice's own target at `SliceSpec.MIN_INSTANCES`; the conclusion writes `max(minAvailable, 3)` | `AbTestManager.VARIANT_INSTANCES` |
 
 ### Topological Ordering
 
@@ -187,7 +201,7 @@ The plugin scans all dependency JARs for slice manifests (`META-INF/slice/*.mani
 **Deploy:**
 
 ```bash
-aether blueprint deploy com.acme:order-system-blueprint:1.0.0
+aether blueprints deploy com.acme:order-system-blueprint:1.0.0
 ```
 
 At deploy time, the Aether runtime resolves each slice artifact from Maven and loads them in dependency order.
@@ -263,11 +277,13 @@ Build-time resource config validation (above) checks a blueprint against its own
 `resources.toml` — the defaults the publishing team shipped. It cannot know what the *target
 cluster* actually has configured, so a second, independent check runs at deploy time against the
 live cluster: `ConfigSectionPreflightValidator` re-checks every `@ResourceQualifier(config = "X")`
-dependency against the leader's composite configuration view (KV-Store operator overlay layered
-over the leader's own `aether.toml`), once up front for the whole blueprint, before any node starts
-activating slices (#547). A blueprint that passed build-time validation can still fail (correctly)
-here if the target cluster's real configuration omits a section the blueprint depends on — that is
-the check doing its job, not a regression.
+dependency over the layers the slice loader consults for that slice — the leader's composite
+configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`) and, beneath
+it, the slice jar's own `META-INF/resources.toml` — once up front for the whole blueprint, before any
+node starts activating slices (#547, #1067). A section a slice ships in its own jar therefore passes,
+exactly as it resolves at load. The deploy is refused only when a section is in none of those layers;
+then the target cluster must configure it or the slice must ship it, and the refusal is the check doing
+its job, not a regression.
 
 Scope is deliberately narrower than the build-time check: only generic resources
 (`SliceTopology.resources()`) are covered. Pub-sub topics (`publishes()`/`subscribes()`) are exempt
@@ -288,8 +304,8 @@ Generated by `jbct init --slice`:
 | Script | Environment | Mechanism |
 |--------|-------------|-----------|
 | `deploy-forge.sh` | Local development Forge | `mvn install` → local .m2 |
-| `deploy-test.sh` | Test environment | `aether artifact push` + `aether blueprint apply` |
-| `deploy-prod.sh` | Production (with confirmation) | `aether artifact push` + `aether blueprint apply` |
+| `deploy-test.sh` | Test environment | `aether artifacts push` + `aether blueprints apply` |
+| `deploy-prod.sh` | Production (with confirmation) | `aether artifacts push` + `aether blueprints apply` |
 
 ### deploy-forge.sh
 
@@ -324,10 +340,10 @@ echo "Building..."
 mvn clean verify
 
 echo "Pushing artifact to test..."
-aether -c "$AETHER_URL" artifact push target/*.jar
+aether -c "$AETHER_URL" artifacts push target/*.jar
 
 echo "Applying blueprint..."
-aether -c "$AETHER_URL" blueprint apply target/blueprint.toml
+aether -c "$AETHER_URL" blueprints apply target/blueprint.toml
 
 echo ""
 echo "Deployed to test: $AETHER_URL"
@@ -345,7 +361,7 @@ VERSION="1.0.0"
 curl -X PUT "${AETHER_URL}/repository/${GROUP_PATH}/${ARTIFACT}/${VERSION}/${ARTIFACT}-${VERSION}.jar" \
   --data-binary @target/${ARTIFACT}-${VERSION}.jar
 
-curl -X POST "${AETHER_URL}/api/blueprint" \
+curl -X POST "${AETHER_URL}/api/v1/blueprints" \
   -H "Content-Type: application/toml" \
   --data-binary @target/blueprint.toml
 ```
@@ -375,10 +391,10 @@ echo "Building..."
 mvn clean verify
 
 echo "Pushing artifact to production..."
-aether -c "$AETHER_URL" artifact push target/*.jar
+aether -c "$AETHER_URL" artifacts push target/*.jar
 
 echo "Applying blueprint..."
-aether -c "$AETHER_URL" blueprint apply target/blueprint.toml
+aether -c "$AETHER_URL" blueprints apply target/blueprint.toml
 
 echo ""
 echo "Deployed to production: $AETHER_URL"
@@ -396,7 +412,7 @@ VERSION="1.0.0"
 curl -X PUT "${AETHER_URL}/repository/${GROUP_PATH}/${ARTIFACT}/${VERSION}/${ARTIFACT}-${VERSION}.jar" \
   --data-binary @target/${ARTIFACT}-${VERSION}.jar
 
-curl -X POST "${AETHER_URL}/api/blueprint" \
+curl -X POST "${AETHER_URL}/api/v1/blueprints" \
   -H "Content-Type: application/toml" \
   --data-binary @target/blueprint.toml
 ```
@@ -432,12 +448,14 @@ Aether Forge is the local development environment for slices:
 ./run-forge.sh
 ```
 
-Or manually:
+Or manually, with the Forge the installer put on your `PATH` (`aether/install.sh`):
 
 ```bash
-mvn package -pl aether/forge/forge-core -am -DskipTests
-java -jar aether/forge/forge-core/target/aether-forge.jar
+aether-forge
 ```
+
+Contributors running a Forge built from a monorepo checkout: `mvn package -pl aether/forge/forge-core -am -DskipTests`,
+then `java -jar aether/forge/forge-core/target/aether-forge.jar`.
 
 Default dashboard port: 8888. Management ports start at 5150.
 
@@ -493,11 +511,11 @@ id = "org.example:commerce-system:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 2
+instances = 3
 
 [[slices]]
 artifact = "org.example:payment-service:1.0.0"
-instances = 1
+instances = 3
 
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
@@ -513,7 +531,7 @@ Modify `instances` in blueprint for different environments:
 # Development
 [[slices]]
 artifact = "org.example:order-service:1.0.0"
-instances = 1
+instances = 3
 
 # Production
 [[slices]]
@@ -551,7 +569,7 @@ org.example\:pricing-engine\:api=2.1.0
 ### Check Deployed Slices
 
 ```bash
-curl http://localhost:5150/api/blueprints
+curl http://localhost:5150/api/v1/blueprints
 ```
 
 Response:
@@ -561,7 +579,7 @@ Response:
     {
       "artifact": "org.example:order-service:1.0.0",
       "status": "running",
-      "instances": 1
+      "instances": 3
     }
   ]
 }
@@ -606,7 +624,7 @@ mvn verify && ./deploy-prod.sh
 2. Or use the Management API to apply a previous blueprint version:
 ```bash
 # Re-apply the previous blueprint pointing to the older artifact version
-curl -X POST "${AETHER_PROD_URL}/api/blueprint" \
+curl -X POST "${AETHER_PROD_URL}/api/v1/blueprints" \
   -H "Content-Type: application/toml" \
   --data-binary @target/blueprint-v1.0.0.toml
 ```
@@ -637,7 +655,7 @@ When a blueprint deployment fails:
 
 ```bash
 # If deployment fails, you'll see the cause:
-aether -c $URL blueprint apply blueprint.toml
+aether -c $URL blueprints apply blueprint.toml
 # Error: Deployment failed: SliceLoadingFailure(OrderService) - ClassNotFoundException: ...
 # All slices rolled back to previous state.
 ```

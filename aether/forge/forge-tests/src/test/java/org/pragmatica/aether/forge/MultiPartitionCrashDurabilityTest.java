@@ -13,6 +13,7 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -53,7 +54,8 @@ import org.pragmatica.aether.ember.EmberCluster;
 ///
 /// The cluster is built with a writable, restart-stable per-node data dir
 /// (`EmberCluster.withDataBaseDir(@TempDir)`) so each node's disk tier and per-partition WALs
-/// (`<baseDir>/<nodeId>/stream-segments/<nodeId>/wal/multipart-events/{0,1,2,3}.wal`) are live. Forge's
+/// (`<baseDir>/<nodeId>/stream-segments/<nodeId>/wal/<engine key>/{0,1,2,3}.wal`, the engine key
+/// being [#STREAM_NAME]) are live. Forge's
 /// Rabia persistence is in-memory, so the restart wipes the KV; the test re-deploys the same blueprint,
 /// each partition's HRW owner re-materializes and replays its WAL tail before serving reads.
 ///
@@ -95,8 +97,11 @@ class MultiPartitionCrashDurabilityTest {
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
     private static final String STREAM_SLICE = TestArtifacts.STREAM_MULTIPART_SLICE;
-    private static final String STREAM_NAME = "multipart-events";
     private static final String BLUEPRINT_ID = "forge.test:multipart-crash-durability:1.0.0";
+    /// The engine key of the blueprint's `[streams.multipart-events]` ring ([TestArtifacts#streamEngineKey]):
+    /// what `replicaSnapshot` keys by AND the name of each partition's WAL directory
+    /// (`StreamPartitionManager` opens `<walBaseDir>/<config.name()>/<partition>.wal`).
+    private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "multipart-events");
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
@@ -127,8 +132,37 @@ class MultiPartitionCrashDurabilityTest {
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "mpcd", Option.some(configProvider));
         // Opt in to a writable, restart-stable per-node data dir -> disk tier + per-partition WALs ON.
         cluster.withDataBaseDir(baseDir);
+        // The supported restart configuration (#1532/#1533): the KV is backed up to a git remote and restored, so the stream comes
+        // back with the SAME incarnation and finds its WAL directory (`<engine key>@<incarnation>`, #1567). Without it a restart
+        // starts from an empty KV, the stream is created afresh under a new incarnation, and the old log is never looked up
+        // (#1569, StreamCrashDurabilityTest holds the tripwire for that gap).
+        var remote = baseDir.resolve("kv-backup-remote.git");
+
+        runGit(baseDir, "init", "--quiet", "--bare", remote.toString());
+        cluster.withKvBackup(baseDir.resolve("kv-backup-nodes"), remote.toString(), BackupConfig.RestoreMode.AUTO);
 
         startAndAwaitReady();
+    }
+
+    private static void runGit(Path cwd, String... args) {
+        var command = new ArrayList<String>();
+
+        command.add("git");
+        command.addAll(List.of(args));
+
+        try {
+            var process = new ProcessBuilder(command).directory(cwd.toFile()).redirectErrorStream(true).start();
+
+            process.getInputStream().readAllBytes();
+
+            if (process.waitFor() != 0) {
+                throw new IllegalStateException("git " + String.join(" ", args) + " failed");
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @AfterAll
@@ -136,8 +170,7 @@ class MultiPartitionCrashDurabilityTest {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -181,21 +214,13 @@ class MultiPartitionCrashDurabilityTest {
     // --- restart ------------------------------------------------------------
 
     private void restartCluster() {
-        cluster.stop()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster stop failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster stop in restartCluster()", cluster, cluster.stop());
 
         startAndAwaitReady();
     }
 
     private void startAndAwaitReady() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -284,7 +309,13 @@ class MultiPartitionCrashDurabilityTest {
     private static boolean isMultipartWal(Path walFile) {
         var parent = walFile.getParent();
 
-        return parent != null && parent.getFileName().toString().equals("multipart-events");
+        return parent != null && isRingDirectoryOf(parent.getFileName().toString(), STREAM_NAME);
+    }
+
+    /// The WAL directory of a ring is `<engine key>[@<stream incarnation>]` (#1567): a stream with a committed incarnation keeps its
+    /// log under the suffixed name, so a stream re-created after a KV wipe never reopens the old life's WAL.
+    private static boolean isRingDirectoryOf(String directoryName, String engineKey) {
+        return directoryName.equals(engineKey) || directoryName.startsWith(engineKey + "@");
     }
 
     private static List<Path> walFiles(Path base) throws IOException {

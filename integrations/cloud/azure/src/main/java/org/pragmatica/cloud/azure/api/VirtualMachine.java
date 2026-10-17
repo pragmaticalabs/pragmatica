@@ -28,7 +28,8 @@ public record VirtualMachine(String id,
                              String name,
                              String location,
                              Map<String, String> tags,
-                             VmProperties properties) {
+                             VmProperties properties,
+                             List<String> zones) {
     /// VM properties containing provisioning state and instance view.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record VmProperties(String vmId, String provisioningState, InstanceViewStatus instanceView) {}

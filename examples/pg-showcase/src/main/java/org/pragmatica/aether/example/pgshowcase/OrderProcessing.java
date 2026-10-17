@@ -17,9 +17,8 @@ import org.pragmatica.lang.Verify;
 /// UserPersistence before inserting an order, and the two persistence styles side by side --
 /// explicit @Query SQL and CRUD derived from method names.
 ///
-/// Does NOT demonstrate: transactions, and none of the SQL constructs README.md lists under
-/// "Validator notes" as deliberately avoided (CTEs, :record expansion, import-requiring @Query
-/// parameter types).
+/// Does NOT demonstrate: transactions, CTEs, :record expansion, or import-requiring @Query
+/// parameter types (see the comprehensive-persistence example for those).
 @Slice
 public interface OrderProcessing {
     record PlaceOrderRequest(String userId, String total) {

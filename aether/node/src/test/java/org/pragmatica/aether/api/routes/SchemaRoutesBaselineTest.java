@@ -4,22 +4,56 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.lang.reflect.Proxy;
+import java.net.SocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactId;
+import org.pragmatica.aether.artifact.GroupId;
+import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
+import org.pragmatica.aether.deployment.schema.SchemaError;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.resource.artifact.ArtifactFile;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
+import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
+import org.pragmatica.aether.resource.db.PoolConfig;
+import org.pragmatica.aether.resource.db.RowMapper;
+import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.NodeState;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -31,6 +65,7 @@ import org.junit.jupiter.api.Test;
 import io.netty.buffer.ByteBuf;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #542 adjacent defect — `POST /api/schema/{ds}/baseline` used the coordinates-less
 /// `SchemaVersionValue` factory, which reset `artifactCoords` to `""`. That silently broke
@@ -43,9 +78,40 @@ class SchemaRoutesBaselineTest {
     private static final String COORDS = "org.example:orders-app:1.0.0";
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
     private static final String LAST_MIGRATION = "V003__add_index.sql";
+    private static final NodeId SELF = new NodeId("node-a");
+
+    private static final DatabaseConnectorConfig STUB_CONFIG = new DatabaseConnectorConfig(Option.none(),
+                                                                                            Option.some(DatabaseType.POSTGRESQL),
+                                                                                            Option.some("localhost"),
+                                                                                            Option.none(),
+                                                                                            Option.some("test"),
+                                                                                            Option.none(),
+                                                                                            Option.none(),
+                                                                                            PoolConfig.DEFAULT,
+                                                                                            Map.of(),
+                                                                                            Option.none(),
+                                                                                            Option.none(),
+                                                                                            Option.none());
+
+    /// `schema/orders/*.sql` is the layout `BlueprintArtifactParser` maps to the exact key
+    /// `"database.orders"` this file baselines — folder name becomes the `"database."`-prefixed
+    /// datasource key. The script CONTENT never runs: [BaselineOnlySchemaManager] fakes the actual
+    /// SQL execution, so only `scripts.isEmpty() == false` matters for resolution to succeed.
+    private static final String BLUEPRINT_TOML = """
+            id = "org.example:orders-app:1.0.0"
+
+            [[slices]]
+            artifact = "org.example:orders-service:1.0.0"
+            """;
 
     private InMemoryKvStore store;
     private SchemaRoutes routes;
+    /// Runs inside the fake schema manager's baseline, i.e. under the orchestrator's fence, after the route's check.
+    private Runnable duringBaseline = () -> {};
+    /// Runs when the orchestrator writes its migration lock: under the fence, BEFORE the database is touched.
+    private Runnable onLockWrite = () -> {};
+    /// Counts the fake schema manager's baseline calls: the database work.
+    private final java.util.concurrent.atomic.AtomicInteger baselineCalls = new java.util.concurrent.atomic.AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -90,6 +156,90 @@ class SchemaRoutesBaselineTest {
             assertThat(recorded().currentVersion()).isEqualTo(7);
             assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
             assertThat(recorded().lastMigration()).isEqualTo("V007__baseline");
+        }
+    }
+
+    /// #217 — a baseline over an in-flight migration writes COMPLETED, and the orchestrator dispatches only
+    /// PENDING records, so the migration silently never runs (the RC1 parallel-suite race). Refused with a 409
+    /// unless `force=true`. The Preservation cases above (COMPLETED, FAILED) are the controls: those still
+    /// baseline. Mutation that reddens the refusals: make `guardBaseline` return the record unconditionally.
+    @Nested
+    class InFlightGuard {
+        @Test
+        void baselineDatasource_isRefused_whenMigrationIsPending() {
+            assertRefusedAndUntouched(SchemaStatus.PENDING);
+        }
+
+        @Test
+        void baselineDatasource_isRefused_whenMigrationIsMigrating() {
+            assertRefusedAndUntouched(SchemaStatus.MIGRATING);
+        }
+
+        @Test
+        void baselineDatasource_proceeds_whenForcedOverAPendingMigration() {
+            seed(SchemaStatus.PENDING);
+
+            routes.baselineDatasource(DATASOURCE, Option.some("7"), Option.some(true))
+                  .await()
+                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
+
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
+            assertThat(recorded().currentVersion()).isEqualTo(7);
+        }
+
+        /// #217 race (v1617): the route checks the status BEFORE the orchestrator's fence. A deploy that arms a
+        /// migration (writes PENDING) while the baseline runs used to be overwritten with COMPLETED, so that
+        /// migration never ran. The fake schema manager writes PENDING mid-baseline, after the route's check.
+        /// Mutation that reddens it: drop the re-check before `recordOutcome`.
+        @Test
+        void baselineDatasource_doesNotOverwrite_aMigrationArmedWhileTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            duringBaseline = () -> seed(SchemaStatus.PENDING);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("the fenced re-check must refuse: %s", result).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.BaselineOverInFlightMigration.class));
+            assertThat(recorded().status()).as("the armed migration's PENDING record survives").isEqualTo(SchemaStatus.PENDING);
+        }
+
+        /// v1617 NIT 2 — the FIRST fenced re-check: a migration armed after the route's check but before the database
+        /// work (here, the moment the orchestrator writes its lock) is refused BEFORE the database is touched. Mutation
+        /// that reddens it: drop that first re-check — the second still refuses, but only after the baseline ran.
+        @Test
+        void baselineDatasource_refusesBeforeTheDatabase_aMigrationArmedBeforeTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            onLockWrite = () -> seed(SchemaStatus.PENDING);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("the first fenced re-check must refuse: %s", result).isTrue();
+            assertThat(baselineCalls.get()).as("refused BEFORE the database baseline ran").isZero();
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.PENDING);
+        }
+
+        @Test
+        void baselineDatasource_forced_overwritesAMigrationArmedWhileTheBaselineRuns() {
+            seed(SchemaStatus.COMPLETED);
+            duringBaseline = () -> seed(SchemaStatus.PENDING);
+
+            routes.baselineDatasource(DATASOURCE, Option.some("7"), Option.some(true))
+                  .await()
+                  .onFailure(SchemaRoutesBaselineTest::failOnUnexpectedFailure);
+
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.COMPLETED);
+        }
+
+        private void assertRefusedAndUntouched(SchemaStatus inFlight) {
+            seed(inFlight);
+
+            var result = routes.baselineDatasource(DATASOURCE, Option.some("7")).await();
+
+            assertThat(result.isFailure()).as("#217: baseline over %s must be refused: %s", inFlight, result).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(SchemaError.BaselineOverInFlightMigration.class)
+                                                       .satisfies(refusal -> assertThat(((HttpStatusAware) refusal).httpStatus()
+                                                                                                                   .code()).isEqualTo(409)));
+            assertThat(recorded().status()).as("the in-flight record is left as it was").isEqualTo(inFlight);
         }
     }
 
@@ -138,12 +288,35 @@ class SchemaRoutesBaselineTest {
         return Assertions.fail("No schema version record was written");
     }
 
+    /// #543: `SchemaRoutes.baselineAtVersion` now calls `requireLeader` before delegating to
+    /// `ManageableNode.schemaOrchestrator()`, so the proxy must answer both — and, per the brief's
+    /// "real handler, not fixture-rebuilding helpers" requirement, `schemaOrchestrator()` hands back a
+    /// REAL `SchemaOrchestratorService` (the same production factory `AetherNode` wires up), not a
+    /// fake that just echoes what the test wants. Only the boundary collaborators genuinely external
+    /// to this fix — the artifact store, the DB connector, and [BaselineOnlySchemaManager]'s actual SQL
+    /// execution — are stubbed. Every assertion in [Preservation] is therefore produced by the real
+    /// route → orchestrator → KV-write path, condition 3's evidence included (the written
+    /// `currentVersion` comes from `SchemaResult.currentVersion()`, not the raw request parameter).
     private ManageableNode nodeOver(InMemoryKvStore kvStore) {
+        var orchestrator = SchemaOrchestratorService.schemaOrchestratorService(new PlainClusterNode(SELF, kvStore, () -> onLockWrite.run()),
+                                                                               kvStore,
+                                                                               artifactStoreServing(),
+                                                                               noLocalRepository(),
+                                                                               new BaselineOnlySchemaManager(() -> {
+                                                                                   baselineCalls.incrementAndGet();
+                                                                                   duringBaseline.run();
+                                                                               }),
+                                                                               stubConnectionProvider(),
+                                                                               SELF);
+
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, args) -> switch (method.getName()) {
                                                            case "kvStore" -> kvStore;
                                                            case "apply" -> applyBatch(args);
+                                                           case "isLeader" -> true;
+                                                           case "leader" -> Option.none();
+                                                           case "schemaOrchestrator" -> orchestrator;
                                                            default -> throw new UnsupportedOperationException("Not implemented in test proxy: "
                                                                                                               + method.getName());
                                                        });
@@ -154,6 +327,229 @@ class SchemaRoutesBaselineTest {
         ((List<KVCommand<AetherKey>>) args[0]).forEach(store::apply);
 
         return Promise.success(List.of());
+    }
+
+    /// Mirrors `SchemaOrchestratorRetrySingleFlightTest`'s `Repository repository = _ ->
+    /// NOT_IN_REPOSITORY.promise();` — a repository miss is the common case, forcing resolution to
+    /// fall back to [#artifactStoreServing].
+    private static Repository noLocalRepository() {
+        return _ -> ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
+    }
+
+    private static byte[] blueprintJar() {
+        var bytes = new ByteArrayOutputStream();
+
+        try (var zip = new ZipOutputStream(bytes)) {
+            writeEntry(zip, "META-INF/blueprint.toml", BLUEPRINT_TOML);
+            writeEntry(zip, "schema/orders/V001__init.sql", "CREATE TABLE orders(id INT);");
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to build test blueprint jar", e);
+        }
+
+        return bytes.toByteArray();
+    }
+
+    private static void writeEntry(ZipOutputStream zip, String name, String content) throws IOException {
+        zip.putNextEntry(new ZipEntry(name));
+        zip.write(content.getBytes(StandardCharsets.UTF_8));
+        zip.closeEntry();
+    }
+
+    private static ArtifactStore artifactStoreServing() {
+        var jarBytes = blueprintJar();
+
+        return new ArtifactStore() {
+            @Override public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
+                return Causes.cause("Not supported in this stub").promise();
+            }
+
+            @Override public Promise<byte[]> resolve(ArtifactFile file) {
+                return Promise.success(jarBytes);
+            }
+
+            @Override public Promise<ResolvedArtifact> resolveWithMetadata(ArtifactFile file) {
+                return Causes.cause("Not supported in this stub").promise();
+            }
+
+            @Override public Promise<Boolean> exists(ArtifactFile file) {
+                return Promise.success(true);
+            }
+
+            @Override public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
+                return Promise.success(Option.none());
+            }
+
+            @Override public Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId) {
+                return Promise.success(List.of());
+            }
+
+            @Override public Promise<Unit> archive(Artifact artifact) {
+                return Promise.unitPromise();
+            }
+
+            @Override public Metrics metrics() {
+                return new Metrics(0, 0, 0L);
+            }
+        };
+    }
+
+    private static DatasourceConnectionProvider stubConnectionProvider() {
+        return new DatasourceConnectionProvider() {
+            @Override public Promise<SqlConnector> connector(String datasourceName) {
+                return Promise.success(stubConnector());
+            }
+
+            @Override public Promise<Unit> release(String datasourceName) {
+                return Promise.unitPromise();
+            }
+
+            @Override public Promise<Unit> releaseAll() {
+                return Promise.unitPromise();
+            }
+        };
+    }
+
+    private static SqlConnector stubConnector() {
+        return new SqlConnector() {
+            @Override public DatabaseConnectorConfig config() {
+                return STUB_CONFIG;
+            }
+
+            @Override public Promise<Boolean> isHealthy() {
+                return Promise.success(true);
+            }
+
+            @Override public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
+                return Causes.cause("Not supported in this stub").promise();
+            }
+
+            @Override public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
+                return Promise.success(Option.none());
+            }
+
+            @Override public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
+                return Promise.success(List.of());
+            }
+
+            @Override public Promise<Integer> update(String sql, Object... params) {
+                return Promise.success(0);
+            }
+
+            @Override public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
+                return Promise.success(new int[0]);
+            }
+
+            @Override public <T> Promise<T> transactional(TransactionCallback<T> callback) {
+                return callback.execute(this);
+            }
+        };
+    }
+
+    /// Echoes the requested version back as `SchemaResult.currentVersion()` — exactly what a real
+    /// baseline implementation does (baseline sets the current version to the requested one). `undo`
+    /// and `migrate` are never exercised by this file's tests and fail loudly if they ever are, so a
+    /// wiring mistake shows up as a test failure instead of a silently wrong result.
+    private static final class BaselineOnlySchemaManager implements AetherSchemaManager {
+        private final Runnable duringBaseline;
+
+        BaselineOnlySchemaManager(Runnable duringBaseline) {
+            this.duringBaseline = duringBaseline;
+        }
+
+        @Override
+        public Promise<SchemaResult> migrate(String datasource, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
+            return Causes.cause("migrate() not exercised by SchemaRoutesBaselineTest").promise();
+        }
+
+        @Override
+        public Promise<SchemaResult> undo(String datasource, int targetVersion, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
+            return Causes.cause("undo() not exercised by SchemaRoutesBaselineTest").promise();
+        }
+
+        @Override
+        public Promise<SchemaResult> baseline(String datasource, int baselineVersion, List<MigrationEntry> scripts, SqlConnector connector, String nodeId, BlueprintId owner) {
+            duringBaseline.run();
+
+            return Promise.success(SchemaResult.schemaResult(scripts.size(), baselineVersion, 1L));
+        }
+    }
+
+    /// Applies commands straight to the test's own `InMemoryKvStore` — no blocking, no dispatch
+    /// recording, unlike `SchemaOrchestratorRetrySingleFlightTest`'s `RecordingClusterNode`, since no
+    /// test here needs either.
+    private static final class PlainClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        private final NodeId self;
+        private final InMemoryKvStore kvStore;
+
+        private final Runnable onLockWrite;
+
+        PlainClusterNode(NodeId self, InMemoryKvStore kvStore, Runnable onLockWrite) {
+            this.self = self;
+            this.kvStore = kvStore;
+            this.onLockWrite = onLockWrite;
+        }
+
+        @Override public NodeId self() {return self;}
+
+        @Override public TopologyManager topologyManager() {return stubTopologyManager(self);}
+
+        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+
+        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+
+        @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            batch.forEach(kvStore::apply);
+            if (batch.stream().anyMatch(command -> command instanceof KVCommand.Put<?, ?> put
+                                                  && put.key() instanceof AetherKey.SchemaMigrationLockKey)) {
+                onLockWrite.run();
+            }
+
+            return Promise.success(List.of());
+        }
+    }
+
+    private static TopologyManager stubTopologyManager(NodeId self) {
+        return new TopologyManager() {
+            @Override public NodeInfo self() {
+                return NodeInfo.nodeInfo(self, new NodeAddress("localhost", 9000));
+            }
+
+            @Override public Option<NodeInfo> get(NodeId id) {
+                return Option.some(NodeInfo.nodeInfo(id, new NodeAddress("localhost", 9000)));
+            }
+
+            @Override public int clusterSize() {
+                return 1;
+            }
+
+            @Override public Option<NodeId> reverseLookup(SocketAddress socketAddress) {
+                return Option.empty();
+            }
+
+            @Override public Promise<Unit> start() {
+                return Promise.unitPromise();
+            }
+
+            @Override public Promise<Unit> stop() {
+                return Promise.unitPromise();
+            }
+
+            @Override public TimeSpan pingInterval() {
+                return timeSpan(5).seconds();
+            }
+
+            @Override public TimeSpan helloTimeout() {
+                return timeSpan(5).seconds();
+            }
+
+            @Override public Option<NodeState> getState(NodeId id) {
+                return Option.empty();
+            }
+
+            @Override public List<NodeId> topology() {
+                return List.of(self);
+            }
+        };
     }
 
     private static final class InMemoryKvStore extends KVStore<AetherKey, AetherValue> {

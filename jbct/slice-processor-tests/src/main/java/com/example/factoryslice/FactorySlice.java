@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package com.example.factoryslice;
 
 import org.pragmatica.aether.slice.annotation.Slice;
@@ -26,6 +25,11 @@ public interface FactorySlice {
     Promise<ShortResponse> updateItem(UpdateItemRequest request);
     // Path only, request record declares a validating factory
     Promise<ShortResponse> lookup(LookupRequest request);
+    // Path only, request record declares NO factory and its constructor throws on bad input (#1573 R2-2)
+    Promise<ShortResponse> strict(StrictRequest request);
+
+    // POST bound ENTIRELY from the path: no body parameter exists, so none may be demanded (#1214)
+    Promise<ShortResponse> openCode(LookupRequest request);
 
     static FactorySlice factorySlice() {
         return new FactorySlice() {
@@ -46,6 +50,16 @@ public interface FactorySlice {
 
             @Override
             public Promise<ShortResponse> lookup(LookupRequest request) {
+                return Promise.success(new ShortResponse(request.code()));
+            }
+
+            @Override
+            public Promise<ShortResponse> strict(StrictRequest request) {
+                return Promise.success(new ShortResponse(request.code()));
+            }
+
+            @Override
+            public Promise<ShortResponse> openCode(LookupRequest request) {
                 return Promise.success(new ShortResponse(request.code()));
             }
         };

@@ -34,7 +34,7 @@ public sealed interface JpaError extends Cause {
     }
 
     /// Optimistic locking conflict - entity was modified by another transaction.
-    record OptimisticLock(String entityType, Object id) implements JpaError {
+    record OptimisticLock(String entityType, Object id) implements JpaError, Cause.Transient {
         @Override
         public String message() {
             return "Optimistic lock failure for " + entityType + " with id=" + id;
@@ -42,7 +42,7 @@ public sealed interface JpaError extends Cause {
     }
 
     /// Pessimistic locking timeout or failure.
-    record PessimisticLock(String details) implements JpaError {
+    record PessimisticLock(String details) implements JpaError, Cause.Transient {
         @Override
         public String message() {
             return "Pessimistic lock failure: " + details;
@@ -75,7 +75,7 @@ public sealed interface JpaError extends Cause {
     }
 
     /// Query timeout exceeded.
-    record QueryTimeout(String query) implements JpaError {
+    record QueryTimeout(String query) implements JpaError, Cause.Transient {
         @Override
         public String message() {
             return "Query timeout: " + query;

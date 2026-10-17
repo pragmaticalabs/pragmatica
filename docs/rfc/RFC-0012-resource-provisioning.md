@@ -141,8 +141,8 @@ public interface ConfigService {
     <T> Promise<T> configAsync(String section, Class<T> configClass);
     boolean hasSection(String section);
     Option<String> getString(String key);
-    Option<Integer> getInt(String key);
-    Option<Boolean> getBoolean(String key);
+    Result<Option<Integer>> getInt(String key);   // #1098: absent → Success(None); malformed → TypeMismatch
+    Result<Option<Boolean>> getBoolean(String key);
 
     static Option<ConfigService> instance();
     static void setInstance(ConfigService service);
@@ -568,6 +568,6 @@ Candidates for version bump:
 
 - [RFC-0001: Core Slice Contract](RFC-0001-core-slice-contract.md) - Factory method naming
 - [RFC-0004: Slice Packaging](RFC-0004-slice-packaging.md) - Slice JAR structure
-- [RFC-0003: Invoker Protocol](RFC-0003-invoker-protocol.md) - Cross-slice method invocation
+- RFC-0003: Invoker Protocol - Cross-slice method invocation
 - Pragmatica Lite Promise/Result: https://github.com/siy/pragmatica-lite
 - Aether configuration: docs/aether/configuration.md

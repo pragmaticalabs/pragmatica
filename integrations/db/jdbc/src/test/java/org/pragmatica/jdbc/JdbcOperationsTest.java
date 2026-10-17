@@ -50,6 +50,16 @@ class JdbcOperationsTest {
     }
 
     @Test
+    void batch_instantParameters_roundTripsNanoseconds() throws Exception {
+        var instant = java.time.Instant.parse("2026-01-02T03:04:05.123456789Z");
+        jdbc.update("CREATE TABLE instant_parameters(event_time TIMESTAMP(9))").await().unwrap();
+        try {
+            jdbc.batch("INSERT INTO instant_parameters VALUES (?)", java.util.Collections.singletonList(new Object[]{instant})).await().unwrap();
+            assertThat(jdbc.queryOne("SELECT event_time FROM instant_parameters WHERE event_time = ?", rows -> rows.getTimestamp(1, java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))).toInstant(), instant).await().unwrap()).isEqualTo(instant);
+        } finally { jdbc.update("DROP TABLE instant_parameters").await().unwrap(); }
+    }
+
+    @Test
     void queryOne_returnsResult() {
         insert("Alice", "alice@test.com");
 

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.config;
 
@@ -14,6 +13,172 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ConfigLoaderTest {
+
+    /// #957 — `[alerts]`. Before this ticket NO `.toml` in the repo carried an `[alert...]` section and
+    /// `AlertConfig` was not a component of `AetherConfig`, so webhook delivery was unreachable by any
+    /// configuration and the #969 hysteresis margin had nowhere to live.
+    @Test
+    void loadFromString_parsesAlertsSection() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [alerts]
+            enabled = true
+            hysteresis_margin = 0.10
+
+            [alerts.webhook]
+            enabled = true
+            urls = ["https://example.invalid/hook"]
+            retry_count = 5
+            timeout = "9s"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts] must populate AetherConfig.alerts()"))
+                                       .onPresent(alerts -> {
+                                           assertThat(alerts.hysteresisMargin()).isEqualTo(0.10);
+                                           assertThat(alerts.webhook().enabled()).isTrue();
+                                           assertThat(alerts.webhook().urls()).containsExactly("https://example.invalid/hook");
+                                           assertThat(alerts.webhook().retryCount()).isEqualTo(5);
+                                           assertThat(alerts.check().isSuccess()).isTrue();
+                                       }));
+    }
+
+    /// #1302: the checkpoint-lag alert thresholds are read from `[alerts]`, and each defaults on its own
+    /// when absent.
+    @Test
+    void loadFromString_alertsEntityCheckpointLag_readsBothKeys_andDefaultsEachWhenAbsent() {
+        var both = """
+            [cluster]
+            environment = "docker"
+
+            [alerts]
+            entity_checkpoint_lag_warning = 2000
+            entity_checkpoint_lag_critical = 4000
+            """;
+        var warningOnly = """
+            [cluster]
+            environment = "docker"
+
+            [alerts]
+            entity_checkpoint_lag_warning = 3000
+            """;
+
+        ConfigLoader.loadFromString(both)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts] must populate AetherConfig.alerts()"))
+                                       .onPresent(alerts -> assertThat(alerts.entityCheckpointLag())
+                                                                .isEqualTo(AlertConfig.EntityCheckpointLag.entityCheckpointLag(2000, 4000))));
+        ConfigLoader.loadFromString(warningOnly)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts] must populate AetherConfig.alerts()"))
+                                       .onPresent(alerts -> assertThat(alerts.entityCheckpointLag())
+                                                                .isEqualTo(AlertConfig.EntityCheckpointLag.entityCheckpointLag(3000,
+                                                                                                                             AlertConfig.EntityCheckpointLag.DEFAULT_CRITICAL))));
+    }
+
+    /// An `[alerts]` section that sets only the margin must NOT switch webhooks on. This is what keeps
+    /// plumbing the config from enabling delivery by side effect — the operator opts in per section.
+    @Test
+    void loadFromString_alertsWithoutWebhookSection_leavesDeliveryDisabled() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [alerts]
+            hysteresis_margin = 0.02
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts] must populate AetherConfig.alerts()"))
+                                       .onPresent(alerts -> {
+                                           assertThat(alerts.hysteresisMargin()).isEqualTo(0.02);
+                                           assertThat(alerts.webhook().enabled())
+                                                   .describedAs("webhooks stay opt-in when no [alerts.webhook] section is given")
+                                                   .isFalse();
+                                           assertThat(alerts.webhook().urls()).isEmpty();
+                                       }));
+    }
+
+    /// `[alerts.webhook]` written WITHOUT a bare `[alerts]` header — the natural thing an operator
+    /// writes when all they want is a webhook.
+    ///
+    /// `TomlDocument.hasSection` is an exact key match, so `[alerts.webhook]` alone does not make
+    /// `hasSection("alerts")` true. Keying the populate on the bare header therefore discarded this
+    /// file's entire alert config **silently, with the boot gate never running** — no webhook, no
+    /// error. A silent config trap inside the plumbing added to make configuration reachable.
+    @Test
+    void loadFromString_acceptsWebhookSubSectionWithoutABareAlertsHeader() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [alerts.webhook]
+            enabled = true
+            urls = ["https://example.invalid/hook"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts.webhook] alone must still populate "
+                                                                      + "AetherConfig.alerts() — otherwise the whole "
+                                                                      + "section is silently discarded"))
+                                       .onPresent(alerts -> {
+                                           assertThat(alerts.webhook().enabled()).isTrue();
+                                           assertThat(alerts.webhook().urls()).containsExactly("https://example.invalid/hook");
+                                           assertThat(alerts.hysteresisMargin())
+                                                   .describedAs("unstated margin falls back to the shipped default")
+                                                   .isEqualTo(AlertConfig.DEFAULT_HYSTERESIS_MARGIN);
+                                           assertThat(alerts.check().isSuccess())
+                                                   .describedAs("and the boot gate runs on it")
+                                                   .isTrue();
+                                       }));
+    }
+
+    /// The same trap for the other sub-section, so a fix that special-cased only `webhook` is caught.
+    @Test
+    void loadFromString_acceptsEventsSubSectionWithoutABareAlertsHeader() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [alerts.events]
+            enabled = true
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> config.alerts()
+                                       .onEmpty(() -> Assertions.fail("[alerts.events] alone must populate alerts()"))
+                                       .onPresent(alerts -> assertThat(alerts.events().enabled()).isTrue()));
+    }
+
+    /// The control for both tests above: no `[alerts]` section leaves `alerts()` absent, and the node
+    /// falls back to the shipped defaults rather than to a half-populated config.
+    @Test
+    void loadFromString_withoutAlertsSection_leavesAlertsAbsent() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.alerts().isEmpty()).isTrue());
+    }
 
     @Test
     void loadFromString_parsesMinimalConfig() {
@@ -237,7 +402,7 @@ class ConfigLoaderTest {
         ConfigLoader.loadFromString(toml)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Node count must be odd"));
+                .contains("which is even"));
     }
 
     @Test
@@ -289,7 +454,6 @@ class ConfigLoaderTest {
             [dht.replication]
             cooldown_delay_ms = 5000
             cooldown_rate = 5000
-            target_rf = 5
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -297,7 +461,6 @@ class ConfigLoaderTest {
             .onSuccess(config -> {
                 assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(5000);
                 assertThat(config.dhtReplication().cooldownRate()).isEqualTo(5000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(5);
             });
     }
 
@@ -314,28 +477,26 @@ class ConfigLoaderTest {
             .onSuccess(config -> {
                 assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(10_000);
                 assertThat(config.dhtReplication().cooldownRate()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(3);
             });
     }
 
+    /// #1777 track 1: the DHT's factors come from the cluster's committed `[replication]`; a node-local
+    /// `target_rf` would be a second source of truth, so it is refused, naming where the setting lives now.
     @Test
-    void loadFromString_parsesPartialDhtReplicationConfig() {
+    void loadFromString_targetRf_isRefusedNamingReplication() {
         var toml = """
             [cluster]
             environment = "docker"
             nodes = 3
 
             [dht.replication]
-            target_rf = 0
+            target_rf = 5
             """;
 
-        ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
-            .onSuccess(config -> {
-                assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().cooldownRate()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(0);
-            });
+        var message = ConfigLoader.loadFromString(toml)
+                                  .fold(cause -> cause.message(), _ -> "loaded");
+
+        assertThat(message).contains("target_rf").contains("[replication]");
     }
 
     @Test
@@ -396,6 +557,103 @@ class ConfigLoaderTest {
                 assertThat(config.slice().repositories().get(0)).isInstanceOf(RepositoryType.Local.class);
                 assertThat(config.slice().repositories().get(1)).isInstanceOf(RepositoryType.Builtin.class);
             });
+    }
+
+    @Test
+    void loadFromString_artifactArchiveRetention_defaultsToSevenDays_whenAbsent() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            repositories = ["builtin"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.slice().artifactArchiveRetention().millis())
+                .isEqualTo(7L * 24 * 60 * 60 * 1000));
+    }
+
+    @Test
+    void loadFromString_artifactArchiveRetention_readsTheConfiguredPeriod_andKeepsTheRepositories() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            repositories = ["local", "builtin"]
+            artifact_archive_retention = "30d"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.slice().artifactArchiveRetention().millis()).isEqualTo(30L * 24 * 60 * 60 * 1000);
+                assertThat(config.slice().repositories()).hasSize(2);
+            });
+    }
+
+    @Test
+    void loadFromString_artifactArchiveRetention_applies_withoutARepositoriesKey() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            artifact_archive_retention = "12h"
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.slice().artifactArchiveRetention().millis()).isEqualTo(12L * 60 * 60 * 1000);
+                assertThat(config.slice().repositories().getFirst()).isInstanceOf(RepositoryType.Local.class);
+            });
+    }
+
+    @Test
+    void loadFromString_artifactMaxVersions_defaultsTo10000_readsTheConfiguredBound_andValidates() {
+        var base = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            """;
+
+        ConfigLoader.loadFromString(base)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.slice().artifactMaxVersions()).isEqualTo(10_000));
+        ConfigLoader.loadFromString(base + "artifact_max_versions = 250\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.slice().artifactMaxVersions()).isEqualTo(250));
+        ConfigLoader.loadFromString(base + "artifact_max_versions = 0\n")
+            .flatMap(ConfigValidator::validate)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message()).contains("artifact_max_versions"));
+    }
+
+    @Test
+    void validate_rejectsAnUnparseableOrNonPositiveArtifactArchiveRetention() {
+        for (var value : new String[]{"soon", "0s"}) {
+            var toml = """
+                [cluster]
+                environment = "docker"
+                nodes = 3
+
+                [slice]
+                artifact_archive_retention = "%s"
+                """.formatted(value);
+
+            ConfigLoader.loadFromString(toml)
+                .flatMap(ConfigValidator::validate)
+                .onSuccessRun(Assertions::fail)
+                .onFailure(cause -> assertThat(cause.message()).as(value).contains("artifact_archive_retention"));
+        }
     }
 
     @Test
@@ -466,6 +724,125 @@ class ConfigLoaderTest {
                 assertThat(config.streaming().readForwardTimeout().millis()).isEqualTo(500L);
                 assertThat(config.streaming().maxReadResponseBytes()).isEqualTo(16L * 1024 * 1024);
             });
+    }
+
+    /// #1604: the streams disk-tier cap is a per-node knob; unset means "derive from the filesystem" (0).
+    @Test
+    void loadFromString_segmentDiskMaxBytes_parsedAsDataSize_andDefaultsToDerive() {
+        var withCap = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            segment_disk_max_bytes = "8GB"
+            """;
+        var withoutCap = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            reshuffle_concurrency = 2
+            """;
+
+        ConfigLoader.loadFromString(withCap)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().segmentDiskMaxBytes()).isEqualTo(8L * 1024 * 1024 * 1024));
+        ConfigLoader.loadFromString(withoutCap)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().segmentDiskMaxBytes())
+                                     .isEqualTo(StreamingConfig.DERIVE_SEGMENT_DISK_MAX_BYTES));
+    }
+
+    /// #1730: the ISR lag bound is configurable; unset keeps the 30 s default.
+    @Test
+    void loadFromString_isrLagMax_parsedAsDuration_andDefaultsTo30Seconds() {
+        var withBound = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            isr_lag_max = "45s"
+            """;
+        var withoutBound = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            reshuffle_concurrency = 2
+            """;
+
+        ConfigLoader.loadFromString(withBound)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().isrLagMax().millis()).isEqualTo(45_000L));
+        ConfigLoader.loadFromString(withoutBound)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().isrLagMax()).isEqualTo(StreamingConfig.DEFAULT_ISR_LAG_MAX));
+    }
+
+    /// #2080: the promotion escape bound is configurable, defaults to 120 s (a guess, see the default's doc) and may not be below the
+    /// alarm bounds (two SWIM suspect windows, 20 s; the replica contest's 20 s source wait).
+    @Test
+    void loadFromString_promotionEscapeAfter_parsed_defaultsTo120Seconds_andIsNotAllowedBelowTheAlarm() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"45s\"\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().promotionEscapeAfter().millis()).isEqualTo(45_000L));
+        ConfigLoader.loadFromString(header + "reshuffle_concurrency = 2\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().promotionEscapeAfter()).isEqualTo(StreamingConfig.DEFAULT_PROMOTION_ESCAPE_AFTER));
+        assertThat(StreamingConfig.DEFAULT_PROMOTION_ESCAPE_AFTER.millis()).isEqualTo(120_000L);
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"19s\"\n")
+            .onSuccess(config -> Assertions.fail("19 s is below the 20 s alarm bound and must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after"));
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"20s\"\n")
+            .onFailure(cause -> Assertions.fail("exactly the alarm bound is allowed: " + cause.message()));
+    }
+
+    /// #2084 F3: the validation floor is the LARGER of two swim suspect windows and the replica contest's source-wait bound; pinned with
+    /// non-default values so neither term, nor a single suspect window, can stand in for the other. Mutations: alarm-only, contest-only and
+    /// one-window floors each turn a case red.
+    @Test
+    void loadFromString_promotionEscapeAfter_floorIsTheLargerOfTheAlarmAndTheContestWait() {
+        var suspect30 = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [timeouts.swim]
+            suspect_timeout = "30s"
+
+            [streaming]
+            promotion_escape_after = "%s"
+            """;
+        var readTimeout10 = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            read_forward_timeout = "10s"
+            promotion_escape_after = "%s"
+            """;
+
+        ConfigLoader.loadFromString(suspect30.formatted("59s"))
+            .onSuccess(config -> Assertions.fail("two 30 s suspect windows give a 60 s floor; 59 s must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after").contains("60000"));
+        ConfigLoader.loadFromString(suspect30.formatted("60s")).onFailure(cause -> Assertions.fail("exactly the 60 s floor is allowed: " + cause.message()));
+        ConfigLoader.loadFromString(readTimeout10.formatted("99s"))
+            .onSuccess(config -> Assertions.fail("a 10 s read timeout gives a 100 s contest wait; 99 s must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after").contains("100000"));
+        ConfigLoader.loadFromString(readTimeout10.formatted("100s")).onFailure(cause -> Assertions.fail("exactly the 100 s floor is allowed: " + cause.message()));
     }
 
     // SPEC: §8.3 absence of [streaming] section → defaults
@@ -548,5 +925,100 @@ class ConfigLoaderTest {
         assertThat(storage).as("the [storage.streams] instance must be parsed at all").isNotNull();
         assertThat(storage.walPath()).isEqualTo(expected);
         assertThat(storage.hasExplicitWalPath()).isEqualTo(explicit);
+    }
+
+    /// #967. The app-HTTP listener must be able to carry an operator-supplied certificate. Reusing
+    /// the cluster identity there presents `CN=<node-id>` signed by an internal CA that no public
+    /// client trusts, so an operator has no way to serve real traffic over TLS.
+    @Test
+    void loadFromString_parsesAppHttpTlsSection() {
+        var toml = """
+                   [app-http]
+                   enabled = true
+
+                   [app-http.tls]
+                   cert_path = "/etc/aether/app.crt"
+                   key_path = "/etc/aether/app.key"
+                   """;
+
+        ConfigLoader.loadFromString(toml)
+                    .onFailure(cause -> Assertions.fail(cause.message()))
+                    .onSuccess(config -> {
+                        var tls = config.appHttp().tls();
+
+                        assertThat(tls.isPresent())
+                                .describedAs("[app-http.tls] with both keys must produce an identity")
+                                .isTrue();
+                        tls.onPresent(appTls -> {
+                            assertThat(appTls.certPath()).isEqualTo("/etc/aether/app.crt");
+                            assertThat(appTls.keyPath()).isEqualTo("/etc/aether/app.key");
+                        });
+                    });
+    }
+
+    /// Control for the test above, and the case that decides the failure mode: half an identity is a
+    /// configuration mistake. Falling back to the cluster certificate silently would hide it behind a
+    /// listener that starts and then rejects every real client.
+    @Test
+    void loadFromString_appHttpTlsWithOnlyOneKey_yieldsNoIdentity() {
+        var toml = """
+                   [app-http]
+                   enabled = true
+
+                   [app-http.tls]
+                   cert_path = "/etc/aether/app.crt"
+                   """;
+
+        ConfigLoader.loadFromString(toml)
+                    .onFailure(cause -> Assertions.fail(cause.message()))
+                    .onSuccess(config -> assertThat(config.appHttp().tls().isPresent())
+                            .describedAs("cert_path without key_path must not yield a partial identity")
+                            .isFalse());
+    }
+
+    @Test
+    void loadFromString_withoutAppHttpTlsSection_yieldsNoIdentity() {
+        var toml = """
+                   [app-http]
+                   enabled = true
+                   """;
+
+        ConfigLoader.loadFromString(toml)
+                    .onFailure(cause -> Assertions.fail(cause.message()))
+                    .onSuccess(config -> assertThat(config.appHttp().tls().isPresent()).isFalse());
+    }
+
+    /// #1019 round-1 review S1, corrected by #2052 — what a boot-time config validation failure DOES.
+    ///
+    /// It used to be discarded: `Main#loadConfigFile` applied `.option()` and the node booted on defaults, so this test pinned
+    /// "a rejected config yields an EMPTY Option". That was true of the composition and false as a safety property, and it let a
+    /// node boot without its TLS, port and secret settings. Since #2052 `Main#resolveConfig` keeps the failure and
+    /// `Main#refuseConfig` exits 65; the process-level refusal is pinned by `MainConfigGivenBootTest` (a child JVM). What is
+    /// observable from this module, and pinned here, is the half those depend on: a rejected config is a FAILURE result with a cause,
+    /// not an empty value, so nothing downstream can mistake "config rejected" for "no config supplied".
+    ///
+    /// `nodes = 2` is below the structural floor and would be rejected by any floor this class might ever carry, so the test speaks
+    /// about the failure, not about the value of the floor.
+    @Test
+    void load_validationFailure_isAFailureResultWithACause_notAnEmptyValue() {
+        var rejected = """
+            [cluster]
+            environment = "docker"
+            nodes = 2
+            """;
+
+        var result = ConfigLoader.loadFromString(rejected);
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).isNotBlank());
+
+        // Positive control: an accepted count loads, so the failure above is the rejection and not an always-failing loader.
+        var accepted = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            """;
+
+        assertThat(ConfigLoader.loadFromString(accepted).isSuccess()).isTrue();
     }
 }

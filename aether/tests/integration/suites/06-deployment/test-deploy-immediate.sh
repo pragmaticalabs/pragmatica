@@ -20,7 +20,7 @@ test_cluster_ready() {
 
 test_immediate_deploy() {
     local result
-    result=$(aether_failover deploy "$BLUEPRINT" --instances 1)
+    result=$(aether_failover deploy "$BLUEPRINT" --instances 3)
     assert_ne "$result" "" "Immediate deployment returned response"
     log_info "Deploy result: $result"
 }

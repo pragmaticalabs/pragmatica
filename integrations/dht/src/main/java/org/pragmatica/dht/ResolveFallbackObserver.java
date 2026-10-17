@@ -36,10 +36,9 @@ public interface ResolveFallbackObserver {
 
     /// Report that neither the R-set nor the bounded fallback probe holds the key (all-miss).
     ///
-    /// @param keyHex hex-encoded key that stayed unresolved after the fallback probe
-    /// @param probed number of non-R-set ring members probed (bounded)
+    /// @param miss the key and the counts that say whether it is lost or merely unreachable
     @Contract
-    void onUnresolvedAfterFallback(String keyHex, int probed);
+    void onUnresolvedAfterFallback(ResolveMiss miss);
 
     /// No-op observer for non-cluster DHT paths and tests.
     static ResolveFallbackObserver noop() {
@@ -48,7 +47,7 @@ public interface ResolveFallbackObserver {
             public void onResolvedViaFallback(String keyHex, int probed) {}
 
             @Override
-            public void onUnresolvedAfterFallback(String keyHex, int probed) {}
+            public void onUnresolvedAfterFallback(ResolveMiss miss) {}
         };
     }
 }

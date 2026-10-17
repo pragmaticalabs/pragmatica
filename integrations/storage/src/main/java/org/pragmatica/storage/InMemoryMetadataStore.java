@@ -100,6 +100,15 @@ final class InMemoryMetadataStore implements MetadataStore {
     }
 
     @Override
+    public Option<BlockId> replaceRef(String refName, BlockId blockId) {
+        var result = option(refs.put(refName, blockId));
+
+        epoch.incrementAndGet();
+
+        return result;
+    }
+
+    @Override
     public boolean containsBlock(BlockId blockId) {
         return lifecycle.containsKey(blockId);
     }
@@ -147,5 +156,11 @@ final class InMemoryMetadataStore implements MetadataStore {
         refs.clear();
         refs.putAll(newRefs);
         epoch.incrementAndGet();
+    }
+
+    @Override
+    @Contract
+    public void restoreEpoch(long snapshotEpoch) {
+        epoch.updateAndGet(current -> Math.max(current, snapshotEpoch));
     }
 }

@@ -7,6 +7,7 @@ package org.pragmatica.aether.http;
 import java.util.List;
 
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
+import org.pragmatica.aether.http.handler.RouteIdentity;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -37,21 +38,20 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
                                    extractPathPrefix(route.path()),
                                    artifactCoord,
                                    deriveSliceMethod(route),
-                                   security);
+                                   security,
+                                   route.pathParamCount(),
+                                   route.spacers(),
+                                   route.spacerSlots());
     }
 
     private static SecurityPolicy resolveSecurityPolicy(Route<?> route) {
         return route.security() instanceof SecurityPolicy sp
                ? sp
-               : SecurityPolicy.publicRoute();
+               : SecurityPolicy.unspecified();
     }
 
     private String extractPathPrefix(String path) {
-        int placeholderIndex = path.indexOf('{');
-
-        return placeholderIndex > 0
-               ? path.substring(0, placeholderIndex)
-               : path;
+        return RouteIdentity.prefixOf(path);
     }
 
     private String deriveSliceMethod(Route<?> route) {

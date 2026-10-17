@@ -74,7 +74,7 @@ Decompose every feature into **layers** with hard correctness gates. Each layer 
 | 1 | `StreamPublisher<T>`, `StreamSubscriber`, `@PartitionKey`, `StreamAccess<T>`, config records | 1 day | Types compile, factory tests pass |
 | 2 | `OffHeapRingBuffer` — produce, consume, wrap, retention eviction | 2 days | Unit tests + benchmark, single-threaded and concurrent |
 | 3 | `StreamPartitionManager`, KV types, governor-local produce/consume, annotation processor | 2 days | Forge integration test: produce 1000 events, consume all, verify order |
-| 4 | REST endpoints (`/api/streams/*`), CLI commands (`aether stream`), docs | 1 day | REST round-trip, CLI output |
+| 4 | REST endpoints (`/api/v1/streams/*`), CLI commands (`aether stream`), docs | 1 day | REST round-trip, CLI output |
 | 5 | Consumer groups, rebalancing, error handling (retry/skip/stall), dead-letter | 2 days | Multi-consumer Forge test, failure injection |
 
 **Total: 8 days** with each day's output verified before the next begins.

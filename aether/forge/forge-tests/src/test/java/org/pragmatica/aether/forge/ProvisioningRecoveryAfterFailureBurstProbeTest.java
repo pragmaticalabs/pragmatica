@@ -120,9 +120,7 @@ class ProvisioningRecoveryAfterFailureBurstProbeTest {
     void setUp() {
         cluster = emberCluster(INITIAL_CORES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "recover");
         cluster.withComputeProviderDecorator(faultFactory::wrap);
-        cluster.start()
-               .await()
-               .onFailure(ProvisioningRecoveryAfterFailureBurstProbeTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(FORM_TIMEOUT).pollInterval(POLL).until(() -> countedCores() == INITIAL_CORES);
@@ -138,7 +136,7 @@ class ProvisioningRecoveryAfterFailureBurstProbeTest {
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     @Test
@@ -149,9 +147,10 @@ class ProvisioningRecoveryAfterFailureBurstProbeTest {
         log.info("RECOVERY-PROBE: leader={} FORCE-killing NON-LEADER core victim={} to open a 1-core deficit (auto-heal path)",
                  leaderId, victim);
 
-        cluster.killNode(victim, false)
-               .await()
-               .onFailure(ProvisioningRecoveryAfterFailureBurstProbeTest::failScenario);
+        LifecycleAwait.nodeSettled("kill node " + victim
+                                  + " in provisioningRecoversAfterTransientFailureBurst_breakerTripsThenDeficitRefills()",
+                                   cluster,
+                                   cluster.killNode(victim, false));
 
         var t0 = System.nanoTime();
         var probe = new ProbeState();
@@ -344,13 +343,7 @@ class ProvisioningRecoveryAfterFailureBurstProbeTest {
                                                     node.self().id(), node.isLeader()));
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
-    private static void failScenario(Cause cause) {
-        throw new AssertionError("Scenario setup failed: " + cause.message());
-    }
 
     /// Fault-injecting [ComputeProvider] decorator factory (authorized test seam consumer). Fails the
     /// first `injectedFailures` `provision()` calls with a transient `CapacityUnavailable` cause, then

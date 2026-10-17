@@ -4,11 +4,24 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.stream.Stream;
 import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.zip.ZipInputStream;
 
+import org.pragmatica.aether.slice.ReplicationWarning;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintArtifactParser;
@@ -17,11 +30,14 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
+import org.pragmatica.aether.slice.blueprint.ExpanderError;
 import org.pragmatica.aether.slice.blueprint.PubSubValidator;
+import org.pragmatica.aether.slice.blueprint.RoutePrefixCollisionValidator;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
@@ -35,8 +51,14 @@ import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator;
+import org.pragmatica.aether.deployment.validation.ConfigSectionPreflightValidator.SliceJar;
 import org.pragmatica.aether.deployment.validation.StreamResourceValidator;
-import org.pragmatica.aether.deployment.validation.ValidatedStreamResources;
+import org.pragmatica.aether.deployment.validation.ReplicationPreflight;
+import org.pragmatica.aether.deployment.validation.StreamValidationWarning;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
+import org.pragmatica.aether.deployment.validation.StreamValidationFailure;
+import org.pragmatica.aether.deployment.validation.StreamValidationFailures;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.topology.SliceTopology;
@@ -60,8 +82,11 @@ import org.slf4j.LoggerFactory;
 
 
 public interface BlueprintService {
-    Promise<ExpandedBlueprint> publish(String dsl);
-    Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords);
+    /// #1336: the answer carries the stream declarations the publish did not bind, by field and rule —
+    /// see [PublishedBlueprint]. A rule whose violation leaves nothing to bind fails the publish instead
+    /// ([org.pragmatica.aether.deployment.validation.StreamResourceValidator#partition]).
+    Promise<PublishedBlueprint> publish(String dsl);
+    Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords);
     /// Publish an artifact-based blueprint with explicit register-only semantics.
     /// When `registerOnly == true`, the blueprint definition is stored in KV (so the
     /// strategy-based deploy can later locate the upgrade target), but the
@@ -72,8 +97,81 @@ public interface BlueprintService {
     /// (register-only cannot suppress fresh-slice bootstrap).
     /// When `registerOnly == false`, behaves as the default `publishFromArtifact` —
     /// the new version is immediately activated.
-    Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
+    Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly);
     Option<ExpandedBlueprint> get(BlueprintId id);
+    /// Durable terminal outcome of `id`'s last deployment attempt (#759 review, BLOCKING 3). Bounded
+    /// to exactly one record per blueprint id: the FSM writes via `KVCommand.Put` at
+    /// `AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id)`, and a Put at the same key replaces
+    /// the prior value — subject, since #805 item 2, to the `VersionFenced` successor check, which
+    /// rejects a Put built on a stale read rather than letting it overwrite. The store therefore holds
+    /// only the latest outcome — cardinality is the number of
+    /// distinct blueprint ids ever deployed, not the number of attempts. Survives
+    /// `unloadBlueprintSlices`'s ALL_OR_NOTHING rollback, which removes only `AppBlueprintKey`, never
+    /// this key — the intended read path for the node's blueprint-status route after a rollback
+    /// leaves `get(id)` empty while this stays populated.
+    ///
+    /// #760/#724 review round 2 item i: `Option.empty()` conflates four distinct situations a caller
+    /// (e.g. the blueprint-status API route) cannot tell apart from this return value alone:
+    ///
+    ///   1. **Never deployed** — `id` has never been published/deployed; no attempt was ever made.
+    ///   2. **In flight, progressing normally** — a deployment is underway right now and has not yet
+    ///      reached a terminal transition; an outcome will land once it does.
+    ///   3. **Orphaned by a crash** — the FSM host crashed before issuing the terminal
+    ///      `submitBatch`/`apply` call, so no `DeploymentOutcomeKey` entry was ever written; nothing
+    ///      further will happen without operator intervention (e.g. a redeploy), but the record looks
+    ///      identical to case 2.
+    ///   4. **Stuck, never resolving** — no crash occurred, but the FSM is waiting on an event (e.g. a
+    ///      `NodeArtifactPutReceived`) that never arrives, so it never reaches a terminal transition
+    ///      either; also indistinguishable from case 2 by this method alone.
+    ///
+    /// A caller needing to tell "will complete soon" (case 2) apart from "permanently stuck, needs
+    /// intervention" (cases 3-4) must consult additional state — e.g. `get(id)`'s presence plus how
+    /// long the blueprint has been in that state — `outcome()` alone cannot make that distinction.
+    ///
+    /// #759 review, BLOCKING 3 (fix): `publishFromArtifact` bundles a `KVCommand.Remove` of this key
+    /// into the SAME consensus batch as the `AppBlueprintKey` Put that starts the new attempt, so the
+    /// two land atomically. This closes the retry gap above case 2: before this fix, publishing a new
+    /// attempt of an `id` that had already reached a terminal FAILED/ROLLED_BACK outcome left the STALE
+    /// prior record in place until the new attempt's own terminal write, so a caller polling mid-flight
+    /// saw the LAST attempt's failure while the new one was actively converging. The guarantee is now:
+    /// at any instant, `id` is either in flight with `outcome(id)` empty, or terminal with exactly one
+    /// record for the CURRENT attempt — never in flight while this method still reports a previous
+    /// attempt's result. This does not resolve cases 3-4 above; it only ensures case 2 is never
+    /// confused with a stale case-3/4-shaped terminal record from an earlier attempt of the same id.
+    ///
+    /// #759 review round 2, BLOCKING 1/2 (scope extended): the same-batch Remove above originally
+    /// covered only `buildAllCommands` (`publishFromArtifact`). Two other live paths write or remove
+    /// `AppBlueprintKey` without going through it — DSL `publish(String)` (`SliceRoutes.handleBlueprint`)
+    /// via `storeBlueprintWithKey`, and `delete(id)` via `removeFromStore` — and both left the same
+    /// stale-outcome gap open (a deleted id's outcome record never clears at all, since nothing ever
+    /// writes that id's `AppBlueprintKey` again to trigger it). Both methods now bundle the same
+    /// `DeploymentOutcomeKey` Remove into their own single-`apply` batch, so the guarantee above holds
+    /// for all three ways `AppBlueprintKey` changes on a live path: `publishFromArtifact`, DSL
+    /// `publish`, and `delete`. [mechanism: same-batch `cluster.apply` in `buildAllCommands`,
+    /// `storeBlueprintWithKey`, `removeFromStore`]
+    ///
+    /// **Scope — one documented exception:** `ClusterDeploymentState.restorePreviousBlueprint`. An
+    /// ALL_OR_NOTHING rollback with a previous blueprint re-Puts `previous.id()`'s `AppBlueprintKey`
+    /// (making it live again) in the SAME batch as a ROLLED_BACK outcome Put keyed by `inflight.id()`
+    /// — the FAILING id, not `previous.id()`. `previous.id()`'s own `DeploymentOutcomeKey` is
+    /// untouched by that batch, and `restoringBlueprints` suppresses `previous.id()`'s normal
+    /// in-flight FSM tracking while the restore is pending, so no later terminal write ever
+    /// supersedes whatever `outcome(previous.id())` already held from an earlier deployment attempt
+    /// of that same id. A restored blueprint can therefore be live and actively serving while
+    /// `outcome(previous.id())` still reports a stale, unrelated-in-time terminal record — this is
+    /// the same recovery shape as cases 3-4 above: an operator (or caller) must consult
+    /// `get(previous.id())`'s presence alongside this method, not this method alone. [mechanism:
+    /// `ClusterDeploymentState.restorePreviousBlueprint` / `rolledBackOutcomeCommand` keys the
+    /// outcome Put on `inflight.id()`, never `previous.id()`; `restoringBlueprints` gates the
+    /// in-flight-tracking checks that would otherwise produce a new terminal write for `previous.id()`]
+    Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id);
+    /// #972 — [#outcome] attributed to the committed blueprint. The record when it closes the attempt of
+    /// the committed `AppBlueprintValue`, or when no blueprint is committed (rolled back or deleted, the
+    /// case [#outcome]'s rollback paragraph describes); EMPTY when it closes an EARLIER attempt of a
+    /// blueprint that has since been published again. That earlier attempt's FAILED or ROLLED_BACK says
+    /// nothing about the live deployment, and reporting it against the live blueprint is the "healthy
+    /// deployment reported as the previous attempt's failure" #972 names.
+    Option<AetherValue.DeploymentOutcomeValue> attributedOutcome(BlueprintId id);
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
     Result<Blueprint> validate(String dsl);
@@ -84,27 +182,67 @@ public interface BlueprintService {
                                              Repository repository,
                                              ArtifactStore artifactStore,
                                              Option<ConfigurationProvider> nodeComposite) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), nodeComposite);
+        return blueprintService(cluster, store, repository, artifactStore, nodeComposite, OperatorWarningSink.logOnly());
+    }
+
+    /// The node's factory: deploy warnings are raised through `operatorWarnings` as `deploy-warning` operator
+    /// warnings (#1564 / #1617), so they reach the cluster event log as well as the WARN log and the response.
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             ArtifactStore artifactStore,
+                                             Option<ConfigurationProvider> nodeComposite,
+                                             OperatorWarningSink operatorWarnings) {
+        return blueprintService(cluster, store, repository, artifactStore, nodeComposite, operatorWarnings, false);
+    }
+
+    /// `routeVersionInHeader`: the cluster mounts versioned routes in HEADER mode (#198), where a route's `/v{N}` path segment is
+    /// not part of its mounted path; blueprint admission needs it to tell the same route from different ones (#1206).
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             ArtifactStore artifactStore,
+                                             Option<ConfigurationProvider> nodeComposite,
+                                             OperatorWarningSink operatorWarnings,
+                                             boolean routeVersionInHeader) {
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.some(artifactStore),
+                                            nodeComposite,
+                                            operatorWarnings,
+                                            routeVersionInHeader);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository,
                                              ArtifactStore artifactStore) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.some(artifactStore), Option.empty());
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.some(artifactStore),
+                                            Option.empty(),
+                                            OperatorWarningSink.logOnly());
+    }
+
+    /// No artifact store; deploy warnings raised through `operatorWarnings` (#1564 / #1617).
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             OperatorWarningSink operatorWarnings) {
+        return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty(), operatorWarnings);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository) {
-        return new BlueprintServiceInstance(cluster, store, repository, Option.empty(), Option.empty());
-    }
-
-    static List<SliceTopology> flattenTopologyResults(List<Result<List<SliceTopology>>> results) {
-        return results.stream()
-                      .flatMap(result -> result.or(List.of())
-                                               .stream())
-                      .toList();
+        return new BlueprintServiceInstance(cluster,
+                                            store,
+                                            repository,
+                                            Option.empty(),
+                                            Option.empty(),
+                                            OperatorWarningSink.logOnly());
     }
 
     static int extractVersionNumber(String filename) {
@@ -123,50 +261,71 @@ public interface BlueprintService {
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 class BlueprintServiceInstance implements BlueprintService {
     private static final Logger log = LoggerFactory.getLogger(BlueprintServiceInstance.class);
+    private static final String SLICE_RESOURCES_TOML = "META-INF/resources.toml";
+    private static final String RULE_CONFLICTING_STREAM_DECLARATION = "conflicting-stream-declaration";
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> store;
     private final Repository repository;
     private final Option<ArtifactStore> artifactStore;
     private final Option<ConfigurationProvider> nodeComposite;
+    private final OperatorWarningSink operatorWarnings;
+    private final boolean routeVersionInHeader;
 
     BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                              KVStore<AetherKey, AetherValue> store,
                              Repository repository,
                              Option<ArtifactStore> artifactStore,
-                             Option<ConfigurationProvider> nodeComposite) {
+                             Option<ConfigurationProvider> nodeComposite,
+                             OperatorWarningSink operatorWarnings) {
+        this(cluster, store, repository, artifactStore, nodeComposite, operatorWarnings, false);
+    }
+
+    BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
+                             KVStore<AetherKey, AetherValue> store,
+                             Repository repository,
+                             Option<ArtifactStore> artifactStore,
+                             Option<ConfigurationProvider> nodeComposite,
+                             OperatorWarningSink operatorWarnings,
+                             boolean routeVersionInHeader) {
+        this.routeVersionInHeader = routeVersionInHeader;
         this.cluster = cluster;
         this.store = store;
         this.repository = repository;
         this.artifactStore = artifactStore;
         this.nodeComposite = nodeComposite;
+        this.operatorWarnings = operatorWarnings;
     }
 
     @Override
-    public Promise<ExpandedBlueprint> publish(String dsl) {
+    public Promise<PublishedBlueprint> publish(String dsl) {
         return BlueprintParser.parse(dsl)
+                              .mapError(BlueprintRejected.FACTORY)
                               .async()
                               .flatMap(blueprint -> BlueprintExpander.expand(blueprint, repository))
                               .flatMap(this::validatePubSub)
                               .flatMap(this::storeBlueprint)
+                              .onSuccess(this::raiseDeployWarnings)
                               .onFailure(cause -> log.warn("Failed to publish blueprint: {}",
                                                            cause.message()));
     }
 
     @Override
-    public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
+    public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords) {
         return publishFromArtifact(artifactCoords, false);
     }
 
     @Override
-    public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
+    public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords, boolean registerOnly) {
         var parsed = parseArtifactWithClassifier(artifactCoords);
 
         return parsed.artifact()
                      .async()
                      .flatMap(artifact -> resolveArtifactBytes(artifact,
                                                                parsed.classifier()))
-                     .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
+                     .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes)
+                                                                 .mapError(BlueprintRejected.FACTORY)
+                                                                 .async())
                      .flatMap(artifact -> expandAndStoreArtifact(artifact,
                                                                  parsed.baseCoords(),
                                                                  registerOnly))
@@ -176,9 +335,9 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact, String classifier) {
-        return repository.locate(artifact, classifier)
-                         .flatMap(BlueprintServiceInstance::readLocationBytes)
-                         .orElse(() -> resolveFromArtifactStore(artifact));
+        return Repository.orElseWhenAbsent(repository.locate(artifact, classifier)
+                                                     .flatMap(BlueprintServiceInstance::readLocationBytes),
+                                           () -> resolveFromArtifactStore(artifact));
     }
 
     private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {
@@ -231,6 +390,28 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     @Override
+    public Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id) {
+        return store.get(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id))
+                    .filter(AetherValue.DeploymentOutcomeValue.class::isInstance)
+                    .map(AetherValue.DeploymentOutcomeValue.class::cast);
+    }
+
+    @Override
+    public Option<AetherValue.DeploymentOutcomeValue> attributedOutcome(BlueprintId id) {
+        var committedAttempt = committedAttempt(id);
+
+        return outcome(id).filter(outcome -> committedAttempt.map(outcome::describesAttempt)
+                                                             .or(true));
+    }
+
+    private Option<String> committedAttempt(BlueprintId id) {
+        return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
+                    .filter(AppBlueprintValue.class::isInstance)
+                    .map(AppBlueprintValue.class::cast)
+                    .map(AppBlueprintValue::attemptId);
+    }
+
+    @Override
     public List<ExpandedBlueprint> list() {
         var result = new ArrayList<ExpandedBlueprint>();
 
@@ -239,6 +420,118 @@ class BlueprintServiceInstance implements BlueprintService {
                       (_, value) -> result.add(value.blueprint()));
 
         return result;
+    }
+
+    /// #963 × #956 — the apply-start record, carrying the SUCCESSOR fence version.
+    ///
+    /// `DeploymentOutcomeValue` became [VersionFenced] in #805 item 2 while #963 was in flight, and
+    /// the applier rejects any write whose version is not the immediate successor of the committed
+    /// one. The two publish paths write this record over a **possibly-committed** value — replacing a
+    /// stale terminal is precisely why the write exists — so the first-write form
+    /// (`inProgress(startedAtMs)`, carrying `FIRST_VERSION`) is wrong here: against an existing
+    /// record the applier would drop it silently and the stale terminal would survive, defeating
+    /// both #818 and #963's presence-gate, which would then read the PREVIOUS attempt's status.
+    ///
+    /// Mirrors `ClusterDeploymentState.Active.nextOutcomeVersion`, which is the same derivation for
+    /// the FSM's own write sites.
+    ///
+    /// **This is a read-then-write, the lost-update shape #956 fences, so it is paired with the same
+    /// bounded confirm-and-retry — see [#confirmOutcomeStart].**
+    ///
+    /// An earlier version of this argued no retry was needed, because every racing writer produces
+    /// an identical value (IN_PROGRESS, empty `failingSlices`, empty cause) differing only in
+    /// `startedAtMs`, so losing one loses nothing. **That premise covers publish racing publish and
+    /// does not reach publish racing a TERMINAL write.** Nothing orders the two: terminals are
+    /// written from four sites in `ClusterDeploymentState.Active`, driven asynchronously by KV
+    /// notifications, while a publish is admitted by the Management API with no in-flight gate. A
+    /// redeploy of id X issued while the previous apply of X is still settling therefore races its
+    /// completion — and those two writers do NOT produce the same value. If the terminal wins, the
+    /// publish's IN_PROGRESS is dropped, the previous attempt's terminal survives, and
+    /// `applyNotYetTerminal` reads it as the state of the NEW apply. That is #818 broken and #963's
+    /// gate reading the wrong attempt.
+    /// Retry budget for the fenced apply-start write, mirroring
+    /// `ClusterDeploymentState.Active.MAX_OUTCOME_MERGE_ATTEMPTS`. Each attempt re-reads committed
+    /// state, so this bounds CONTENTION, not transport failure.
+    int MAX_OUTCOME_START_ATTEMPTS = 5;
+
+    private AetherValue.DeploymentOutcomeValue startedOutcome(BlueprintId id, String attemptId) {
+        var successor = outcome(id).map(AetherValue.DeploymentOutcomeValue::outcomeVersion)
+                               .map(version -> version + 1)
+                               .or(AetherValue.DeploymentOutcomeValue.FIRST_VERSION);
+
+        return AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis(), successor, attemptId);
+    }
+
+    /// #972 — the id of one publish attempt, stamped into its `AppBlueprintValue` and its apply-start
+    /// record. Random rather than derived from committed state: two publishes of one id must never share
+    /// an attempt, and nothing committed is available to derive one from before the publish batch lands.
+    private static String newAttemptId() {
+        return UUID.randomUUID().toString();
+    }
+
+    /// The confirmation step [VersionFenced] prescribes, and the reason the publish path is safe
+    /// against a racing terminal write.
+    ///
+    /// A fenced rejection mutates nothing, emits no notification and does NOT fail the batch it rode
+    /// in — `KVStore.handlePut` returns the committed value untouched — so `cluster.apply`
+    /// succeeding says nothing about whether the apply-start record landed. The only way to know is
+    /// to re-read committed state after the apply resolves.
+    ///
+    /// "Landed" is `status == IN_PROGRESS`, not "the value I wrote". A competing PUBLISH writes an
+    /// identical record, so its win is as good as ours and needs no retry; a competing TERMINAL
+    /// leaves SUCCEEDED/FAILED/ROLLED_BACK, which is the case that must retry — and it retries with
+    /// a freshly derived successor, so it makes progress against a moving committed version.
+    ///
+    /// Bounded, for the same reason #956 bounds its merge: each attempt is a fresh read, so progress
+    /// needs only that some attempt find no competing writer, and a budget stops a pathological
+    /// contender turning a publish into an unbounded resubmission loop.
+    ///
+    /// #972: exhaustion no longer fails the publish. The record left behind is a terminal for an EARLIER
+    /// attempt, and since every terminal carries the attempt it closes, that terminal no longer
+    /// attributes to this apply: the FSM's gate reads this apply as not yet terminal, so its own
+    /// completion or failure still writes its own terminal, and the status route does not report the
+    /// earlier attempt's outcome against the live blueprint. Failing the caller here would tell it the
+    /// opposite of what the cluster does.
+    private Promise<ExpandedBlueprint> confirmOutcomeStart(ExpandedBlueprint expanded, String attemptId, int attempt) {
+        if (outcomeStartSettled(expanded.id(), attemptId)) {
+            return Promise.success(expanded);
+        }
+
+        if (attempt >= MAX_OUTCOME_START_ATTEMPTS) {
+            log.warn("Blueprint {} is published; its apply-start record was fenced out after {} attempts by"
+                    + " terminal writes for a previous apply. That terminal belongs to an earlier attempt, so"
+                    + " this apply is still treated as in progress and records its own outcome when it settles.",
+                     expanded.id().asString(),
+                     attempt);
+
+            return Promise.success(expanded);
+        }
+
+        log.debug("Apply-start record for blueprint {} was fenced out (attempt {}), retrying against the"
+                 + " current committed value",
+                  expanded.id().asString(),
+                  attempt);
+
+        return cluster.apply(List.<KVCommand<AetherKey>> of(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                      startedOutcome(expanded.id(),
+                                                                                     attemptId))))
+                      .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, attempt + 1));
+    }
+
+    /// #1974 — no apply-start write may regress a terminal, so the retry stops on any of:
+    ///   - an IN_PROGRESS record (ours, or a competing publish's identical one);
+    ///   - a record that describes THIS attempt: the apply this publish started has already settled, and
+    ///     replacing its SUCCEEDED/FAILED/ROLLED_BACK with IN_PROGRESS would erase the real outcome
+    ///     (the retry used to do exactly that when the apply finished before the confirmation read);
+    ///   - a committed blueprint of ANOTHER attempt: a newer publish owns the id and its record is not ours
+    ///     to replace.
+    /// Only a terminal of an EARLIER attempt, beside this attempt's own blueprint, is retried over.
+    private boolean outcomeStartSettled(BlueprintId id, String attemptId) {
+        var inProgressOrOwn = outcome(id).filter(outcome -> outcome.status() == AetherValue.DeploymentOutcomeStatus.IN_PROGRESS || outcome.describesAttempt(attemptId))
+                                     .isPresent();
+        var superseded = committedAttempt(id).filter(committed -> !committed.equals(attemptId)).isPresent();
+
+        return inProgressOrOwn || superseded;
     }
 
     @Override
@@ -253,48 +546,68 @@ class BlueprintServiceInstance implements BlueprintService {
         return BlueprintParser.parse(dsl);
     }
 
-    private Promise<ExpandedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
-                                                              String artifactCoords,
-                                                              boolean registerOnly) {
+    private Promise<PublishedBlueprint> expandAndStoreArtifact(BlueprintArtifact blueprintArtifact,
+                                                               String artifactCoords,
+                                                               boolean registerOnly) {
         return BlueprintExpander.expand(blueprintArtifact.blueprint(),
                                         repository)
                                 .flatMap(expanded -> applyResourcesConfig(expanded,
                                                                           blueprintArtifact.resourcesConfig()))
                                 .flatMap(this::validatePubSub)
-                                .flatMap(expanded -> storeAllInSingleBatch(expanded,
-                                                                           blueprintArtifact.resourcesConfig(),
-                                                                           blueprintArtifact.roleHints(),
-                                                                           blueprintArtifact.schemaMigrations(),
-                                                                           artifactCoords,
-                                                                           registerOnly));
+                                .flatMap(preflighted -> storeAllInSingleBatch(preflighted,
+                                                                              blueprintArtifact.resourcesConfig(),
+                                                                              blueprintArtifact.roleHints(),
+                                                                              blueprintArtifact.schemaMigrations(),
+                                                                              artifactCoords,
+                                                                              registerOnly))
+                                .onSuccess(this::raiseDeployWarnings);
     }
 
-    private Promise<ExpandedBlueprint> storeAllInSingleBatch(ExpandedBlueprint expanded,
-                                                             Option<String> resourcesConfig,
-                                                             Map<String, String> roleHints,
-                                                             Map<String, List<MigrationEntry>> migrations,
-                                                             String artifactCoords,
-                                                             boolean registerOnly) {
+    /// #1336: the stream bindings are derived BEFORE any command is built, so a gating stream rule
+    /// refuses the publish with its named cause and nothing is applied; the rejected declarations
+    /// ride out on the answer.
+    private Promise<PublishedBlueprint> storeAllInSingleBatch(Preflighted preflighted,
+                                                              Option<String> resourcesConfig,
+                                                              Map<String, String> roleHints,
+                                                              Map<String, List<MigrationEntry>> migrations,
+                                                              String artifactCoords,
+                                                              boolean registerOnly) {
+        var expanded = preflighted.expanded();
+
         return ensureMigrationOwnership(expanded.id(),
-                                        migrations).async()
-                                       .flatMap(_ -> applyAllCommands(expanded,
-                                                                      resourcesConfig,
-                                                                      roleHints,
-                                                                      migrations,
-                                                                      artifactCoords,
-                                                                      registerOnly));
+                                        migrations).flatMap(_ -> StreamResourceValidator.ensureHonourableConsistency(resourcesConfig))
+                                       .flatMap(_ -> replicationContext())
+                                       .flatMap(replication -> streamBindings(expanded.id(),
+                                                                              resourcesConfig,
+                                                                              roleHints,
+                                                                              replication))
+                                       .map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
+                                       .async()
+                                       .flatMap(bindings -> applyAllCommands(expanded,
+                                                                             bindings,
+                                                                             migrations,
+                                                                             artifactCoords,
+                                                                             registerOnly));
     }
 
-    private Promise<ExpandedBlueprint> applyAllCommands(ExpandedBlueprint expanded,
-                                                        Option<String> resourcesConfig,
-                                                        Map<String, String> roleHints,
-                                                        Map<String, List<MigrationEntry>> migrations,
-                                                        String artifactCoords,
-                                                        boolean registerOnly) {
-        var commands = buildAllCommands(expanded, resourcesConfig, roleHints, migrations, artifactCoords, registerOnly);
+    private Promise<PublishedBlueprint> applyAllCommands(ExpandedBlueprint expanded,
+                                                         StreamBindings bindings,
+                                                         Map<String, List<MigrationEntry>> migrations,
+                                                         String artifactCoords,
+                                                         boolean registerOnly) {
+        var attemptId = newAttemptId();
+        var commands = buildAllCommands(expanded,
+                                        streamBindingsPut(expanded.id(), bindings.bound()),
+                                        migrations,
+                                        artifactCoords,
+                                        registerOnly,
+                                        attemptId);
 
         return cluster.apply(commands)
-                      .map(_ -> expanded);
+                      .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0))
+                      .map(stored -> PublishedBlueprint.publishedBlueprint(stored,
+                                                                           bindings.rejected(),
+                                                                           bindings.warnings()));
     }
 
     /// Deploy-time single-migrator gate. Every datasource this artifact declares migrations for must
@@ -337,14 +650,31 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private List<KVCommand<AetherKey>> buildAllCommands(ExpandedBlueprint expanded,
-                                                        Option<String> resourcesConfig,
-                                                        Map<String, String> roleHints,
+                                                        KVCommand<AetherKey> streamBindings,
                                                         Map<String, List<MigrationEntry>> migrations,
                                                         String artifactCoords,
-                                                        boolean registerOnly) {
+                                                        boolean registerOnly,
+                                                        String attemptId) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
-        commands.add(buildBlueprintPutCommand(expanded, registerOnly));
+        commands.add(buildBlueprintPutCommand(expanded, registerOnly, attemptId));
+        // #759 review, BLOCKING: a fresh publish reuses `expanded.id()` on a retry after a prior
+        // FAILED/ROLLED_BACK attempt of the SAME blueprint id, and `outcome(id)` otherwise keeps
+        // returning that stale terminal record — indistinguishable from the new attempt already
+        // having failed — until the new attempt itself reaches a terminal transition. Bundling this
+        // Remove into the SAME consensus batch as the AppBlueprintKey Put above makes the two land
+        // atomically, so at any instant `id` is either in flight with no outcome, or terminal with
+        // exactly one, never "in flight" while `outcome(id)` still shows the LAST attempt's result.
+        // `DeploymentOutcomeValue` is not fenced (no `EpochBearing`/`LeaderValue`), so the witnessless
+        // `Remove(key)` constructor is admitted unconditionally by the applier. No FSM event is wired
+        // for `DeploymentOutcomeKey` changes (unlike `AppBlueprintKey`'s `handleAppBlueprintChange`/
+        // `handleAppBlueprintRemoval`), so this Remove's position in the batch relative to the Put
+        // above is NOT load-bearing — nothing subscribes to either notification.
+        // #963: was a bare Remove. A Put of IN_PROGRESS clears the stale terminal exactly as the
+        // Remove did AND records that THIS attempt started, so "no terminal yet" is a positive fact
+        // rather than an absence. Absence was what five rounds of #924 condemned deployments on.
+        commands.add(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                               startedOutcome(expanded.id(), attemptId)));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -352,11 +682,13 @@ class BlueprintServiceInstance implements BlueprintService {
         //
         // Stage-3 (stream-namespaces §8.5): the per-blueprint alias→ResourceAddress bindings ARE
         // published to KV (replicated), so the per-slice runtime FSM can resolve refcount targets.
-        // rc1's deploy chain has no stream-resource validation gate, so the resolved resource map is
-        // (re-)derived here from the embedded resources.toml + roleHints. Derivation is best-effort:
-        // on validation failure an empty bindings entry is still written, preserving rc1's deploy
-        // semantics (the gate that would HTTP-422 on bad stream config is a separate stage).
-        commands.add(buildStreamBindingsCommand(expanded, resourcesConfig, roleHints));
+        // #1336: the bindings were derived from the embedded resources.toml + roleHints by
+        // `streamBindings` before this batch was built. A section failing a per-alias rule is left
+        // out of the entry and reported on the answer; a rule leaving nothing to bind has already
+        // refused the publish, so no batch reaches here for it. #1262's STRONG refusal
+        // (StreamResourceValidator.ensureHonourableConsistency in storeAllInSingleBatch) runs before
+        // that derivation — registerOnly included: a STRONG blueprint is not even registered.
+        commands.add(streamBindings);
         if (!migrations.isEmpty()) {
             commands.addAll(buildSchemaMigrationCommands(migrations, artifactCoords, expanded.id()));
         }
@@ -364,26 +696,95 @@ class BlueprintServiceInstance implements BlueprintService {
         return commands;
     }
 
-    private static KVCommand<AetherKey> buildStreamBindingsCommand(ExpandedBlueprint expanded,
-                                                                   Option<String> resourcesConfig,
-                                                                   Map<String, String> roleHints) {
-        var bindings = StreamResourceValidator.validate(resourcesConfig,
-                                                        expanded.id().artifact(),
-                                                        roleHints)
-                                              .map(validated -> toNamedAddresses(expanded.id(),
-                                                                                 validated))
-                                              .or(List.<NamedAddress> of());
+    /// #1336 — one derivation's answer: the aliases that bind and the declarations that did not, by
+    /// field and rule.
+    private record StreamBindings(List<NamedAddress> bound,
+                                  List<StreamValidationFailure> rejected,
+                                  List<StreamValidationWarning> warnings) {
+        static StreamBindings streamBindings(List<NamedAddress> bound,
+                                             List<StreamValidationFailure> rejected,
+                                             List<StreamValidationWarning> warnings) {
+            return new StreamBindings(bound, rejected, warnings);
+        }
 
-        return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(expanded.id()),
+        /// These bindings with `more` warnings appended (#1564: the slice-jar replication preflight's).
+        StreamBindings withWarnings(List<StreamValidationWarning> more) {
+            return new StreamBindings(bound,
+                                      rejected,
+                                      Stream.concat(warnings.stream(), more.stream()).toList());
+        }
+    }
+
+    /// #1564: the slice-jar pre-flights passed, with the replication warnings they raised — carried to the
+    /// publish answer, since the blueprint record itself must not hold deploy-response data.
+    private record Preflighted(ExpandedBlueprint expanded, List<StreamValidationWarning> replicationWarnings) {}
+
+    /// #1564: the committed cluster config read as replication state — the `[replication]` defaults and the
+    /// desired core count — the same conversion the nodes resolve resource declarations with at activation.
+    private Result<ReplicationContext> replicationContext() {
+        return ClusterReplication.context(store.getTyped(AetherKey.ClusterConfigKey.CURRENT, ClusterConfigValue.class));
+    }
+
+    /// #1564 (owner ruling, know 596bdfd07(3)): every deploy warning is LOUD — the deploy response carries it,
+    /// and it is raised as a `deploy-warning` operator warning (#1617, R10): a WARN log plus a cluster event.
+    @Contract
+    /// The LOUD warning (an explicitly declared RF below 3) is the CRITICAL `replication-factor-below-three`, as at
+    /// activation (v1735); every other deploy warning is `deploy-warning` (WARNING).
+    private static OperatorWarningCode deployWarningCode(String rule) {
+        return ReplicationWarning.FACTOR_BELOW_THREE.code().equals(rule)
+               ? OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE
+               : OperatorWarningCode.DEPLOY_WARNING;
+    }
+
+    private void raiseDeployWarnings(PublishedBlueprint published) {
+        var blueprint = published.blueprint().id().asString();
+
+        published.warnings()
+                 .forEach(warning -> OperatorWarnings.raise(log,
+                                                            operatorWarnings,
+                                                            deployWarningCode(warning.rule()),
+                                                            blueprint,
+                                                            "Blueprint {} deploy warning [{}] at {}: {}",
+                                                            blueprint,
+                                                            warning.rule(),
+                                                            warning.field(),
+                                                            warning.message()));
+    }
+
+    /// The ONE derivation of a blueprint's alias→address bindings, shared by both publish paths (#1066).
+    /// `publishFromArtifact` feeds it the blueprint jar's `resources.toml`; the body publish feeds it each
+    /// distinct slice-jar `resources.toml` (see [#sliceStreamBindingsCommand]). Both paths calling one
+    /// function is what makes them store the same bindings for the same declaration by construction.
+    ///
+    /// #1336: this used to fold the validator's all-or-nothing result with `.or(List.of())`, so ONE
+    /// invalid section emptied the whole entry and every slice then failed with a generic
+    /// `UnboundStreamAlias`. It now partitions: a section failing a per-alias rule is dropped and
+    /// returned in `rejected`; a rule leaving nothing to bind is the `Result` failure and refuses the
+    /// publish — see [StreamResourceValidator#partition] for which rules are which.
+    private static Result<StreamBindings> streamBindings(BlueprintId blueprintId,
+                                                         Option<String> resourcesConfig,
+                                                         Map<String, String> roleHints,
+                                                         ReplicationContext replication) {
+        return StreamResourceValidator.partition(resourcesConfig,
+                                                 blueprintId.artifact(),
+                                                 roleHints,
+                                                 replication)
+                                      .map(partition -> StreamBindings.streamBindings(toNamedAddresses(blueprintId,
+                                                                                                       partition.accepted()),
+                                                                                      partition.rejected(),
+                                                                                      partition.warnings()));
+    }
+
+    private static KVCommand<AetherKey> streamBindingsPut(BlueprintId blueprintId, List<NamedAddress> bindings) {
+        return new Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprintId),
                          BlueprintStreamBindingsValue.blueprintStreamBindingsValue(bindings));
     }
 
-    private static List<NamedAddress> toNamedAddresses(BlueprintId blueprintId, ValidatedStreamResources validated) {
+    private static List<NamedAddress> toNamedAddresses(BlueprintId blueprintId, Map<String, StreamResource> resources) {
         var namespace = BlueprintNamespace.deriveNamespace(blueprintId).or("");
         var collected = new ArrayList<NamedAddress>();
 
-        validated.resources()
-                 .forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
+        resources.forEach((alias, resource) -> resolveBindingEntry(namespace, alias, resource).onPresent(collected::add));
 
         return List.copyOf(collected);
     }
@@ -409,9 +810,11 @@ class BlueprintServiceInstance implements BlueprintService {
         };
     }
 
-    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded, boolean registerOnly) {
+    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded,
+                                                                 boolean registerOnly,
+                                                                 String attemptId) {
         return new Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                         AppBlueprintValue.appBlueprintValue(expanded, registerOnly));
+                         AppBlueprintValue.appBlueprintValue(expanded, registerOnly, attemptId));
     }
 
     private Promise<ExpandedBlueprint> applyResourcesConfig(ExpandedBlueprint expanded,
@@ -457,15 +860,71 @@ class BlueprintServiceInstance implements BlueprintService {
         return new Put<>(key, value);
     }
 
-    private Promise<ExpandedBlueprint> validatePubSub(ExpandedBlueprint expanded) {
-        return loadAllTopologies(expanded.loadOrder()).flatMap(topologies -> {
-            noteConfigSectionPreflightSkipIfBlind(topologies);
+    private Promise<Preflighted> validatePubSub(ExpandedBlueprint expanded) {
+        return loadAllSliceJars(expanded.loadOrder()).flatMap(sliceJars -> validateSliceJars(expanded, sliceJars));
+    }
 
-            return PubSubValidator.validate(topologies)
-                                  .flatMap(_ -> ConfigSectionPreflightValidator.validate(topologies, nodeComposite))
-                                  .map(_ -> expanded)
-                                  .async();
-        });
+    private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded, List<SliceJar> sliceJars) {
+        return storedBlueprintSlices(expanded).flatMap(stored -> validateSliceJars(expanded, sliceJars, stored));
+    }
+
+    /// The slices of every OTHER stored blueprint, per blueprint: a route collision between the blueprint being published and
+    /// a blueprint stored earlier is only visible when both slice sets are read (#1206), and the refusal names the stored
+    /// blueprint. The blueprint's own previous version is excluded (a republish replaces it).
+    /// A newer VERSION of a blueprint replaces it, so the two are one blueprint: compared by artifact base (group and artifact
+    /// id), as datasource ownership already treats them (#1206).
+    private static boolean sameBlueprint(BlueprintId stored, BlueprintId published) {
+        return stored.artifact()
+                     .base()
+                     .equals(published.artifact().base());
+    }
+
+    private Promise<List<RoutePrefixCollisionValidator.StoredSlices>> storedBlueprintSlices(ExpandedBlueprint expanded) {
+        return Promise.allOf(list().stream()
+                                 .filter(other -> !sameBlueprint(other.id(),
+                                                                 expanded.id()))
+                                 .map(other -> loadAllSliceJars(other.loadOrder()).map(jars -> RoutePrefixCollisionValidator.StoredSlices.storedSlices(other.id()
+                                                                                                                                                            .asString(),
+                                                                                                                                                       topologiesOf(jars))))
+                                 .toList()).map(results -> results.stream()
+                                                                  .flatMap(result -> result.option()
+                                                                                           .stream())
+                                                                  .toList());
+    }
+
+    /// #1206: a collision among the blueprint's own slices is a malformed request (400); one with an already-stored blueprint is a
+    /// conflict with current state (409).
+    private static Cause routeRefusal(Cause cause) {
+        return cause instanceof ExpanderError.RoutePrefixConflictsWithStored
+               ? BlueprintConflict.FACTORY.apply(cause)
+               : BlueprintRejected.FACTORY.apply(cause);
+    }
+
+    private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded,
+                                                   List<SliceJar> sliceJars,
+                                                   List<RoutePrefixCollisionValidator.StoredSlices> stored) {
+        var topologies = topologiesOf(sliceJars);
+
+        noteConfigSectionPreflightSkipIfBlind(topologies);
+
+        return PubSubValidator.validate(topologies)
+                              .flatMap(_ -> RoutePrefixCollisionValidator.validate(topologies,
+                                                                                   stored,
+                                                                                   routeVersionInHeader).mapError(BlueprintServiceInstance::routeRefusal))
+                              .flatMap(_ -> ConfigSectionPreflightValidator.validate(sliceJars, nodeComposite))
+                              .flatMap(_ -> replicationContext())
+                              .flatMap(replication -> ReplicationPreflight.validate(sliceJars,
+                                                                                    nodeComposite,
+                                                                                    replication))
+                              .map(warnings -> new Preflighted(expanded, warnings))
+                              .async();
+    }
+
+    private static List<SliceTopology> topologiesOf(List<SliceJar> sliceJars) {
+        return sliceJars.stream()
+                        .flatMap(sliceJar -> sliceJar.topologies()
+                                                     .stream())
+                        .toList();
     }
 
     /// Fail-open is a quiet gate by construction (#547): with no [ConfigurationProvider] wired,
@@ -493,35 +952,253 @@ class BlueprintServiceInstance implements BlueprintService {
         }
     }
 
-    private Promise<List<SliceTopology>> loadAllTopologies(List<ResolvedSlice> slices) {
-        return Promise.allOf(slices.stream().map(this::loadTopology).toList()).map(BlueprintService::flattenTopologyResults);
+    /// FER, kept exactly as the topology-only load this replaces behaved before #1067: a slice whose jar
+    /// cannot be located here is left out of both validators instead of failing the publish. Guarantee
+    /// earned: none for that slice — it goes unchecked. Mechanism: `Promise.allOf` collects each locate as a
+    /// `Result`, and a failed one is dropped by [#locatedSliceJars]. Reachability: `BlueprintExpander.expand`
+    /// has already located every slice on the way to `expanded.loadOrder()` and refuses the publish when one
+    /// is absent, so this branch is only reachable if the artifact leaves the repository between expansion
+    /// and this second locate — a locate-then-evict race, not a normal publish. Since a quiet skip is the
+    /// failure mode of any gate (see [#noteConfigSectionPreflightSkipIfBlind]), [#loadSliceJar] logs the drop.
+    private Promise<List<SliceJar>> loadAllSliceJars(List<ResolvedSlice> slices) {
+        return Promise.allOf(slices.stream().map(this::loadSliceJar).toList()).map(BlueprintServiceInstance::locatedSliceJars);
     }
 
-    private Promise<List<SliceTopology>> loadTopology(ResolvedSlice slice) {
+    private static List<SliceJar> locatedSliceJars(List<Result<SliceJar>> results) {
+        return results.stream()
+                      .flatMap(result -> result.option()
+                                               .stream())
+                      .toList();
+    }
+
+    private Promise<SliceJar> loadSliceJar(ResolvedSlice slice) {
         return repository.locate(slice.artifact())
-                         .map(location -> TopologyParser.parseFromJar(location.url(),
-                                                                      slice.artifact().asString())
-                                                        .or(List.of()));
+                         .map(location -> sliceJar(slice.artifact(),
+                                                   location))
+                         .onFailure(cause -> log.warn("Pub/sub and config-section pre-flight SKIPPED for slice {}: its jar was "
+                                                     + "located at expansion but not now ({}). The publish proceeds with this "
+                                                     + "slice unchecked — 'not checked', not 'checked and passed'.",
+                                                      slice.artifact().asString(),
+                                                      cause.message()));
     }
 
-    private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
-        return storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                     expanded);
+    /// The jar's own `META-INF/resources.toml`, read by the loader's own function
+    /// ([SliceStore#readSliceResourcesToml(URL)]) over this jar alone — the same function the slice loader
+    /// reads a slice's intrinsic layer with at load, so the pre-flight and the loader agree on which file is the
+    /// slice's (#1067). A jar that cannot be opened reads as shipping no file, and the check then answers from
+    /// the node composite alone, which can only refuse more, never admit a section the loader would not see.
+    private static SliceJar sliceJar(Artifact artifact, Location location) {
+        return SliceJar.sliceJar(artifact,
+                                 TopologyParser.parseFromJar(location.url(), artifact.asString()).or(List.of()),
+                                 SliceStore.readSliceResourcesToml(location.url()));
+    }
+
+    private Promise<PublishedBlueprint> storeBlueprint(Preflighted preflighted) {
+        var expanded = preflighted.expanded();
+
+        return sliceStreamBindings(expanded).map(bindings -> bindings.withWarnings(preflighted.replicationWarnings()))
+                                  .flatMap(bindings -> storeBlueprintWithKey(AetherKey.AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                                                             expanded,
+                                                                             streamBindingsPut(expanded.id(),
+                                                                                               bindings.bound())).map(stored -> PublishedBlueprint.publishedBlueprint(stored,
+                                                                                                                                                                      bindings.rejected(),
+                                                                                                                                                                      bindings.warnings())));
+    }
+
+    /// #1066 — the TOML body publish's stream bindings, derived from its slice jars.
+    ///
+    /// `publish(String)` serves `POST /api/v1/blueprints`, and therefore `aether blueprint apply` and
+    /// Forge's deploy route. It used to write no `BlueprintStreamBindingsKey` at all. Since #1040 made
+    /// `BlueprintStreamAddresses` refuse an owning blueprint without bindings, every stream publisher or
+    /// stream-access slice deployed this way failed to load and every declarative consumer was never
+    /// subscribed. The fix is that the bindings exist; a missing binding stays a loud failure.
+    ///
+    /// WHERE THE DECLARATIONS COME FROM. A body blueprint is a bare slice list; the `[streams.*]`
+    /// declarations live only in each slice jar's `META-INF/resources.toml`. Those jars are resolvable
+    /// here by construction — `BlueprintExpander` has already located and read every one of them to build
+    /// the load order — so a jar that cannot be read now fails the publish instead of binding a subset.
+    ///
+    /// WHY THIS EQUALS THE ARTIFACT PATH. The jbct plugin packages one module file,
+    /// `src/main/resources/resources.toml`, as both the blueprint jar's and every slice jar's
+    /// `META-INF/resources.toml` (`GenerateBlueprintMojo`/`PackageBlueprintMojo` and `PackageSlicesMojo`).
+    /// So the distinct slice declarations of a packaged blueprint are exactly the one text
+    /// `publishFromArtifact` reads, and [#streamBindings] turns it into the same list. Role hints are
+    /// passed EMPTY for the same reason: `publishFromArtifact` aggregates them from `META-INF/slice/`
+    /// manifests inside the BLUEPRINT jar, where the plugin never puts any, so that path always derives
+    /// with no hints. Taking hints from the slice manifests here would diverge exactly where hints matter
+    /// — an unpinned access-only alias would default to `latest` on this path and `1.0.0` on the other —
+    /// so hints can only be fixed on both paths together.
+    ///
+    /// Slices from DIFFERENT modules can ship different texts, a case the artifact path never sees. Their
+    /// bindings are unioned, and an alias bound to two different addresses refuses the publish
+    /// ([#ensureUnambiguousAliases]): `BlueprintStreamBindingsValue.addressFor` would otherwise answer
+    /// with whichever came first and silently misbind the other slice.
+    private Promise<StreamBindings> sliceStreamBindings(ExpandedBlueprint expanded) {
+        return loadSliceDeclarations(expanded).flatMap(declarations -> replicationContext().flatMap(replication -> sliceBindings(expanded.id(),
+                                                                                                                                 declarations,
+                                                                                                                                 replication))
+                                                                                         .async());
+    }
+
+    private Promise<List<Option<String>>> loadSliceDeclarations(ExpandedBlueprint expanded) {
+        return Promise.allOf(expanded.loadOrder().stream().map(this::loadSliceResourcesToml).toList()).flatMap(BlueprintServiceInstance::requireAllRead);
+    }
+
+    /// Unlike `loadAllTopologies`, which drops an unresolvable jar, a declaration that cannot be read
+    /// fails the publish: binding the remaining slices would turn the lost ones into `UnboundStreamAlias`.
+    private static Promise<List<Option<String>>> requireAllRead(List<Result<Option<String>>> declarations) {
+        return Result.allOf(declarations).async();
+    }
+
+    private Promise<Option<String>> loadSliceResourcesToml(ResolvedSlice slice) {
+        return repository.locate(slice.artifact())
+                         .flatMap(BlueprintServiceInstance::readSliceResourcesToml);
+    }
+
+    /// #1262: every slice declaration passes the STRONG-consistency deploy gate before any binding is derived
+    /// — the same gate the artifact path runs — so a STRONG stream refuses the publish with its named cause.
+    /// #1336: each declaration is then derived on its own; the bound aliases are unioned as before and the
+    /// rejections are unioned with them, de-duplicated because slices packaged from one module ship the
+    /// same text. A gating failure in any declaration refuses the publish.
+    private static Result<StreamBindings> sliceBindings(BlueprintId blueprintId,
+                                                        List<Option<String>> declarations,
+                                                        ReplicationContext replication) {
+        return Result.allOf(declarations.stream().map(StreamResourceValidator::ensureHonourableConsistency).toList()).flatMap(_ -> derivedSliceBindings(blueprintId,
+                                                                                                                                                        declarations,
+                                                                                                                                                        replication));
+    }
+
+    /// A blueprint whose slices ship no `resources.toml` at all still runs the derivation once, with no
+    /// document: `partition` owns the blueprint-namespace guard, and skipping it here left the body path
+    /// silent about a reserved namespace the artifact path reports (#1336 review, NIT-5).
+    private static Result<StreamBindings> derivedSliceBindings(BlueprintId blueprintId,
+                                                               List<Option<String>> declarations,
+                                                               ReplicationContext replication) {
+        var present = declarations.stream().flatMap(Option::stream).toList();
+        var perSlice = present.isEmpty()
+                       ? List.of(streamBindings(blueprintId, Option.none(), Map.of(), replication))
+                       : present.stream()
+                                .map(toml -> streamBindings(blueprintId,
+                                                            Option.some(toml),
+                                                            Map.of(),
+                                                            replication))
+                                .toList();
+
+        return Result.allOf(perSlice).flatMap(BlueprintServiceInstance::unionSliceBindings);
+    }
+
+    private static Result<StreamBindings> unionSliceBindings(List<StreamBindings> perSlice) {
+        var rejected = perSlice.stream().flatMap(bindings -> bindings.rejected()
+                                                                     .stream()).distinct().toList();
+        var warnings = perSlice.stream().flatMap(bindings -> bindings.warnings()
+                                                                     .stream()).distinct().toList();
+
+        return ensureUnambiguousAliases(perSlice.stream()
+                                                .flatMap(bindings -> bindings.bound()
+                                                                             .stream())
+                                                .distinct()
+                                                .toList()).map(bound -> StreamBindings.streamBindings(bound,
+                                                                                                      rejected,
+                                                                                                      warnings));
+    }
+
+    private static Result<List<NamedAddress>> ensureUnambiguousAliases(List<NamedAddress> bindings) {
+        var conflicts = conflictingAliases(bindings);
+
+        return conflicts.isEmpty()
+               ? Result.success(bindings)
+               : StreamValidationFailures.streamValidationFailures(conflicts,
+                                                                   List.of())
+                                         .result();
+    }
+
+    private static List<StreamValidationFailure> conflictingAliases(List<NamedAddress> bindings) {
+        return bindings.stream()
+                       .collect(Collectors.groupingBy(NamedAddress::alias,
+                                                      LinkedHashMap::new,
+                                                      Collectors.toList()))
+                       .entrySet()
+                       .stream()
+                       .filter(BlueprintServiceInstance::hasSeveralAddresses)
+                       .map(BlueprintServiceInstance::aliasConflict)
+                       .toList();
+    }
+
+    private static boolean hasSeveralAddresses(Map.Entry<String, List<NamedAddress>> declared) {
+        return declared.getValue()
+                       .size() > 1;
+    }
+
+    private static StreamValidationFailure aliasConflict(Map.Entry<String, List<NamedAddress>> declared) {
+        var alias = declared.getKey();
+        var addresses = declared.getValue().stream().map(NamedAddress::address).map(ResourceAddress::asString).toList();
+
+        return StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
+                                                               RULE_CONFLICTING_STREAM_DECLARATION,
+                                                               "slices of this blueprint declare stream '" + alias
+                                                              + "' at different addresses " + addresses
+                                                              + "; an alias binds to exactly one address per blueprint, so the publish is"
+                                                              + " refused rather than binding one of them");
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Promise<Option<String>> readSliceResourcesToml(Location location) {
+        return Promise.lift(Causes::fromThrowable, () -> readResourcesToml(location));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<String> readResourcesToml(Location location) throws IOException {
+        try (var zip = new ZipInputStream(location.url().openStream())) {
+            return findEntryText(zip, SLICE_RESOURCES_TOML);
+        }
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<String> findEntryText(ZipInputStream zip, String entryName) throws IOException {
+        for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+            if (entryName.equals(entry.getName())) {
+                return Option.some(new String(zip.readAllBytes(), StandardCharsets.UTF_8));
+            }
+        }
+
+        return Option.none();
     }
 
     private Promise<ExpandedBlueprint> storeBlueprintWithKey(AetherKey.AppBlueprintKey key,
-                                                             ExpandedBlueprint expanded) {
-        var value = AppBlueprintValue.appBlueprintValue(expanded);
+                                                             ExpandedBlueprint expanded,
+                                                             KVCommand<AetherKey> streamBindings) {
+        var attemptId = newAttemptId();
+        var value = AppBlueprintValue.appBlueprintValue(expanded, false, attemptId);
         KVCommand<AetherKey> command = new Put<>(key, value);
-
-        return cluster.apply(List.of(command))
-                      .map(_ -> expanded);
+        // #759 review round 2, BLOCKING 1: `publish(String dsl)` is a live republish path
+        // (SliceRoutes.handleBlueprint) that bypasses buildAllCommands, so without this it kept the
+        // same stale-outcome gap buildAllCommands already closed for publishFromArtifact — a DSL
+        // republish of a previously FAILED/ROLLED_BACK id left that terminal record in place until
+        // the new attempt's own terminal write. Bundled into the SAME batch as the Put for the same
+        // reason as buildAllCommands's Remove: no FSM event is wired to DeploymentOutcomeKey, so
+        // position within the batch is not load-bearing.
+        // #963: same substitution as buildAllCommands — the stale terminal is replaced by a positive
+        // IN_PROGRESS marking this attempt's start, in the SAME batch as the blueprint Put.
+        KVCommand<AetherKey> outcomeStart = new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                      startedOutcome(expanded.id(), attemptId));
+        // #1066: the stream bindings ride the SAME batch as the blueprint Put, exactly as in
+        // buildAllCommands. The FSM writes each slice's `SliceTargetKey` only after applying this
+        // blueprint, so no node can see a slice target without its bindings — the ordering
+        // `StreamAddressError` rests on when it treats missing bindings as fatal rather than retryable.
+        return cluster.apply(List.of(command, outcomeStart, streamBindings))
+                      .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0));
     }
 
     private Promise<Unit> removeFromStore(AetherKey.AppBlueprintKey key) {
         KVCommand<AetherKey> command = new Remove<>(key);
+        // #759 review round 2, BLOCKING 2: without this, a deleted blueprint's outcome record
+        // survived forever — nothing ever clears DeploymentOutcomeKey for an id once its
+        // AppBlueprintKey is removed, so a deleted id's last terminal outcome orphans permanently
+        // and a later re-publish of the same id would (until BLOCKING 1/buildAllCommands) have
+        // inherited it. Same batch as the AppBlueprintKey Remove for the same atomicity reason.
+        var outcomeClear = new Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(key.blueprintId()));
 
-        return cluster.apply(List.of(command))
+        return cluster.apply(List.of(command, outcomeClear))
                       .mapToUnit();
     }
 

@@ -26,11 +26,17 @@ import org.pragmatica.messaging.Message;
 /// Emission is single-fire-per-transition (idempotent within a phase): `ConsensusActive`
 /// fires exactly once when the engine moves INTO `Idle` / `InPhase`; `ConsensusPassive` fires
 /// exactly once when the engine moves OUT OF `Active` to any other state (`Syncing`,
-/// `Paused`, `Stopped`, `Observing`).
+/// `Paused`, `Stopped`, `Observing`). The one exception is demotion: moving from `Active` into
+/// `Observing` because a voter reconfiguration removed this node while the cluster kept quorum
+/// emits `ConsensusDemoted` instead (#1790) — the node is still passive, but it did not lose quorum
+/// and keeps applying committed decisions. Leaving `Observing` for any other non-active state
+/// (`Paused`, `Syncing`, `Stopped`) emits `ConsensusPassive`.
 public sealed interface ConsensusEvent extends Message.Local {
     NodeId self();
 
     record ConsensusActive(NodeId self) implements ConsensusEvent {}
 
     record ConsensusPassive(NodeId self) implements ConsensusEvent {}
+
+    record ConsensusDemoted(NodeId self) implements ConsensusEvent {}
 }

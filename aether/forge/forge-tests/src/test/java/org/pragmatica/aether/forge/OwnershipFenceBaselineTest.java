@@ -106,19 +106,20 @@ class OwnershipFenceBaselineTest {
     @TerminalOperation
     void setUp() {
         cluster = emberCluster(SIZE, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, PREFIX);
-        cluster.start()
-               .await()
-               .onFailure(OwnershipFenceBaselineTest::failStart);
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesReady);
+        // #1529: epochs are read from the live incarnation; read it only once every node carries the genesis
+        // incarnation, or a read that races the genesis commit captures 0 and the fixture literal returns as a flake.
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::genesisIncarnationObserved);
         log.info("OWNERSHIP-FENCE-BASELINE: {}-node cluster formed, leader={}", SIZE, cluster.currentLeader().or("none"));
     }
 
     @AfterAll
     @TerminalOperation
     void tearDown() {
-        Option.option(cluster).onPresent(c -> c.stop().await());
+        Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
     /// 1d-ii fence: a deposed/stale owner's data-plane append, stamped with its now-stale owner epoch,
@@ -136,8 +137,10 @@ class OwnershipFenceBaselineTest {
         var rf = ReplicaPlacement.replicationFactor(REQUESTED_RF, members.size());
         var owner0 = ownerOf(FENCE_STREAM, members, rf);
 
-        var epoch0 = Epoch.epoch(7L, 0L);
-        var epoch1 = Epoch.epoch(8L, 0L);
+        // #1529: the live cluster incarnation leads every epoch it compares; a literal 0 would sit below it.
+        var incarnation = cluster.allNodes().getFirst().currentGenerationEpoch().incarnation();
+        var epoch0 = Epoch.epoch(incarnation, 7L, 0L);
+        var epoch1 = Epoch.epoch(incarnation, 8L, 0L);
         assertThat(epoch1.isStrictlyAfter(epoch0))
             .as("new owner's generation (term 8) must strictly dominate the deposed owner's (term 7)")
             .isTrue();
@@ -206,6 +209,8 @@ class OwnershipFenceBaselineTest {
         materialize(ownerNode, THROUGHPUT_STREAM);
 
         var spm = ownerNode.streamPartitionManager();
+        // #1555: the owner appends only once its promotion completes; the first check starts it.
+        await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> spm.mayServeAsOwner(THROUGHPUT_STREAM, PARTITION));
         var payload = new byte[THROUGHPUT_PAYLOAD_BYTES];
         var successes = new int[]{0};
 
@@ -249,13 +254,16 @@ class OwnershipFenceBaselineTest {
         return spm.publishLocal(stream, PARTITION, payload, System.currentTimeMillis());
     }
 
+    private boolean genesisIncarnationObserved() {
+        return cluster.allNodes()
+                      .stream()
+                      .allMatch(node -> node.currentGenerationEpoch().incarnation() >= 1L);
+    }
+
     private boolean allNodesReady() {
         return cluster.allNodes().stream().allMatch(AetherNode::isReady);
     }
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 
     private static void failScenario(Cause cause) {
         throw new AssertionError("Scenario setup failed: " + cause.message());

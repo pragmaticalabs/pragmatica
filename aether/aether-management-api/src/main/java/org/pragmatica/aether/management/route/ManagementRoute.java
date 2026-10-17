@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
 import java.util.ArrayList;
@@ -18,6 +17,7 @@ import static org.pragmatica.aether.management.route.PathToken.spacer;
 import static org.pragmatica.aether.management.route.RouteTarget.ANY;
 import static org.pragmatica.aether.management.route.RouteTarget.LEADER;
 import static org.pragmatica.aether.management.route.RouteTarget.LOCAL;
+import static org.pragmatica.aether.management.route.RouteTarget.partitionOwner;
 import static org.pragmatica.aether.management.route.RouteTarget.taskGroup;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.DEPLOYMENT;
 import static org.pragmatica.aether.slice.delegation.TaskGroup.SCALING;
@@ -54,6 +54,10 @@ public enum ManagementRoute {
     CLUSTER_GENERATION(GET, "/cluster/generation", List.of(), LEADER),
     CLUSTER_AWAIT_QUIESCED(POST, "/cluster/await-quiesced", List.of(), LEADER),
     CLUSTER_GOVERNORS(GET, "/cluster/governors", List.of(), LEADER),
+    // #1652: community state (committed CommunityValue + GovernorAnnouncementValue roster) plus the
+    // leader's instantaneous live-member count — LEADER, because only the leader holds that view.
+    CLUSTER_COMMUNITIES(GET, "/cluster/communities", List.of(), LEADER),
+    CLUSTER_COMMUNITY_GET(GET, "/cluster/communities", List.of("id"), LEADER),
     CLUSTER_JOURNAL(GET, "/cluster/journal", List.of(), LOCAL),
     CLUSTER_CONFIG_GET(GET, "/cluster/config", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_PROVISIONING_GET(GET, "/cluster/provisioning", List.of(), taskGroup(DEPLOYMENT)),
@@ -74,6 +78,8 @@ public enum ManagementRoute {
     CLUSTER_CIRCUIT_BREAKER_STATUS(GET, "/cluster/topology/circuit-breaker", List.of(), LEADER),
     CLUSTER_CIRCUIT_BREAKER_RESET(POST, "/cluster/topology/circuit-breaker/reset", List.of(), LEADER),
     CLUSTER_AUTO_HEAL_STATUS(GET, "/cluster/topology/auto-heal", List.of(), LEADER),
+    // #689: provisioned nodes whose advertised role label disagrees with their provisioning intent.
+    CLUSTER_ROLE_MISMATCHES(GET, "/cluster/topology/role-mismatches", List.of(), LEADER),
     CLUSTER_AUTO_HEAL_ENABLE(POST, "/cluster/topology/auto-heal/enable", List.of(), LEADER),
     CLUSTER_AUTO_HEAL_DISABLE(POST, "/cluster/topology/auto-heal/disable", List.of(), LEADER),
     CLUSTER_UPGRADE(POST, "/cluster/upgrade", List.of(), taskGroup(DEPLOYMENT)),
@@ -131,12 +137,27 @@ public enum ManagementRoute {
     CLUSTER_KEYS_LIST(GET, "/cluster/keys", List.of(), taskGroup(DEPLOYMENT)),
     CLUSTER_KEYS_REVOKE(POST, "/cluster/keys/revoke", List.of("id"), taskGroup(DEPLOYMENT)),
     CLUSTER_KEYS_AUDIT(GET, "/cluster/keys/audit", List.of(), taskGroup(DEPLOYMENT)),
+    // #683: emergency in-place gossip-key rotation — the producer for GossipKeyRotationKey.
+    CLUSTER_GOSSIP_KEY_ROTATE(POST, "/cluster/gossip-key/rotate", List.of(), LEADER),
+    // #1532: supersede a foreign-lineage KV backup head with this cluster's state.
+    BACKUP_DECLARE_GENESIS(POST, "/backup/declare-genesis", List.of(), LEADER),
     REPOSITORY_ARTIFACTS_LIST(GET, raw("/repository/artifacts"), List.of(), taskGroup(DEPLOYMENT)),
     MAVEN_METADATA(GET, raw("/repository"), List.of("groupPath", "artifactId", "file"), taskGroup(DEPLOYMENT)),
     NODE_LIFECYCLE_LIST(GET, "/nodes/lifecycle", List.of(), LEADER),
     NODE_LIFECYCLE_GET(GET, "/nodes/lifecycle", List.of("id"), LEADER),
     NODE_DRAIN(POST, "/nodes/drain", List.of("id"), taskGroup(DEPLOYMENT)),
     NODE_SHUTDOWN(POST, "/nodes/shutdown", List.of("id"), taskGroup(DEPLOYMENT)),
+    // #1543 E2: replacement-based upgrade. All three run on the leader (the leader drives the phases and commits the records).
+    NODE_REPLACE(POST, "/nodes/replace", List.of("id"), LEADER),
+    NODE_REPLACEMENTS(GET, "/nodes/replacements", List.of(), LEADER),
+    NODE_REPLACEMENT_SETTLE(POST, "/nodes/replacements/settle", List.of("id"), LEADER),
+    // #1543 F: the rolling-upgrade run (started by POST /cluster/upgrade). The leader drives it and commits it, so all four run there.
+    UPGRADE_STATUS(GET, "/upgrade/status", List.of(), LEADER),
+    UPGRADE_PAUSE(POST, "/upgrade/pause", List.of(), LEADER),
+    UPGRADE_RESUME(POST, "/upgrade/resume", List.of(), LEADER),
+    UPGRADE_ABORT(POST, "/upgrade/abort", List.of(), LEADER),
+    // #2062: an operator clears ONE unconfirmed-termination mark after terminating the instance by hand; the leader owns the marks.
+    NODE_UNCONFIRMED_CLEAR(POST, "/nodes/unconfirmed/clear", List.of("id"), LEADER),
     NODE_PROMOTE(POST, "/nodes/promote", List.of("id"), LEADER),
     NODE_INFLIGHT(GET, "/nodes/inflight", List.of(), LOCAL),
     NODE_INFLIGHT_GET(GET, "/nodes/inflight", List.of("id"), RouteTarget.nodeIdParam(0)),
@@ -157,7 +178,7 @@ public enum ManagementRoute {
     // the same body-carried-identity shape as CONSUMER_GROUP_JOIN/LEAVE. ManagementServer's
     // pre-auth write-gate (STREAM_IDENTITY_WRITE_ROUTES) resolves identity from route-match + path
     // params, so it structurally cannot see a body-carried name; CREATE is protected instead by a
-    // separate, post-auth, handler-level guard in StreamRoutes#createFreshStream (see
+    // separate, post-auth, handler-level guard in StreamApiRoutes#createStream(StreamCreateRequest) (see
     // ManagementServer's rejectSystemStreamWrite doc for the full argument).
     STREAM_CREATE(POST, "/streams", List.of(), taskGroup(STREAMING)),
     // Catalog-scoped read-only ports (management-api-versioning-spec.md §3.2): identity params
@@ -192,12 +213,19 @@ public enum ManagementRoute {
                         spacer("read"),
                         param("partition")),
                 taskGroup(STREAMING)),
-    // #260/#261/#333 replica-state observability. taskGroup(STREAMING) lands the request on a
-    // STREAMING-capable node; the handler then resolves the partition's deterministic HRW owner and
-    // assembles the replica-set view from the local `ReplicaRegistry` (authoritative only ON the
-    // owner — see `servedByOwner` in the response). Per-partition-owner management forwarding is not
-    // a `RouteTarget` variant (the owner is computed from name+partition, not a path param), so the
-    // response is owner-aware rather than owner-forwarded.
+    // #260/#261/#333 replica-state observability, owner-forwarded since #1039. The previous
+    // taskGroup(STREAMING) target landed the request on an ARBITRARY STREAMING-capable node and
+    // discarded whether that node was the partition's owner — and the `ReplicaRegistry` is
+    // authoritative only ON the owner (only the owner receives every replica's ack), so a non-owner
+    // answered `servedByOwner=false` with an empty ring indistinguishable from a genuinely empty
+    // partition. Measured on a live 5-node cluster: `servedByOwner=false` from 5 of 5 ports,
+    // including the owner's own, while `replicas-local` on that same port reported the real offsets
+    // at the same instant.
+    //
+    // partitionOwner(3) names the `partition` param; the engine key comes from params 0-2 through
+    // the SAME reduction the handler uses (`ManagementServerImpl.resolveEngineKey` ->
+    // `StreamManager.engineKey`), injected into the two dispatch points rather than re-derived in
+    // either — a second derivation of stream identity is the defect tracked by #1040.
     STREAM_REPLICAS(GET,
                     List.of(spacer("streams"),
                             param("namespace"),
@@ -205,7 +233,7 @@ public enum ManagementRoute {
                             param("version"),
                             spacer("replicas"),
                             param("partition")),
-                    taskGroup(STREAMING)),
+                    partitionOwner(3)),
     // #490 per-node LOCAL variant of STREAM_REPLICAS (the membership-endpoint pattern): the RECEIVING
     // node answers from its OWN ReplicaRegistry/owner resolver — never delegate-routed — so querying a
     // specific node's management port observes THAT node's view, and `servedByOwner=true` is actually
@@ -286,6 +314,27 @@ public enum ManagementRoute {
                                 param("version"),
                                 spacer("groups")),
                         taskGroup(STREAMING)),
+    // #1333 durable-topic groups (durable-pubsub-spec §9): every consumer group over the topic's backing
+    // stream — per partition the consumer and owner node, the committed cursor with its rewind epoch,
+    // and, where this node hosts the group's projection, its REBUILDING/LIVE state. LOCAL like
+    // STREAM_DECLARATIVE_CONSUMERS: the projection column is per-node truth, and the answer names the
+    // node to run the rebuild on. The identity is the TOPIC address (`namespace:topic:version`), not the
+    // `topic:`-prefixed stream name.
+    TOPICS_GROUPS(GET,
+                  List.of(spacer("topics"), param("namespace"), param("topic"), param("version"), spacer("groups")),
+                  LOCAL),
+    // #1333 rebuild the projection behind one group: capture the replay range, reset the store to a new
+    // generation, rewind the group's committed cursor under a fenced epoch (CTO ruling 5: LOCAL, 409 on a
+    // node that does not host the projection). The verb precedes the group rather than following it
+    // (`.../groups/{group}/rebuild`) because the route DSL binds at most five path tokens after the prefix.
+    TOPICS_GROUP_REBUILD(POST,
+                         List.of(spacer("topics"),
+                                 param("namespace"),
+                                 param("topic"),
+                                 param("version"),
+                                 spacer("rebuild"),
+                                 param("group")),
+                         LOCAL),
     STREAMS_PUBLISH(POST,
                     List.of(spacer("streams"), param("namespace"), param("stream"), param("version"), spacer("publish")),
                     taskGroup(STREAMING)),
@@ -311,12 +360,18 @@ public enum ManagementRoute {
                                  spacer("groups"),
                                  param("group")),
                          taskGroup(STREAMING)),
+    // #1224: catalog-addressed create, mirroring STREAMS_DELETE's shape exactly (bare 3-param path,
+    // no verb spacer — the HTTP method alone distinguishes it from STREAMS_METADATA's GET on the same
+    // path/token-count bucket). Body-carried `{partitions}`, registered AND materialized by the
+    // handler (StreamApiRoutes#createStream) — see #1224's closing comment for why the OLD
+    // STREAM_CREATE (body-carried name, no catalog registration) never surfaced in `streams list`.
+    STREAMS_CREATE(POST, "/streams", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
     STREAMS_DELETE(DELETE, "/streams", List.of("namespace", "stream", "version"), taskGroup(STREAMING)),
     // "namespaces" is a reserved first-segment literal here, same precedence pattern already accepted
     // above for "hydration"/"declarative-consumers": a real namespace literally named "namespaces" would
     // be shadowed by these two routes ahead of STREAMS_VERSIONS_LIST's `{namespace}` branch.
     STREAM_NAMESPACES_LIST(GET, "/streams/namespaces", List.of(), LOCAL),
-    STREAM_NAMESPACES_GET(GET, "/streams/namespaces", List.of("namespace"), LOCAL),
+    STREAM_NAMESPACES_GET(GET, "/streams/namespaces", List.of("address"), LOCAL),
     SCHEDULED_TASKS_LIST(GET, "/scheduled-tasks", List.of(), LEADER),
     SCHEDULED_TASKS_BY_SECTION(GET, "/scheduled-tasks", List.of("section"), LEADER),
     SCHEDULED_TASK_STATE(GET, "/scheduled-tasks/state", List.of("section", "artifact", "methodName"), LEADER),
@@ -337,15 +392,15 @@ public enum ManagementRoute {
     ARTIFACT_POST(POST, raw("/repository"), List.of("groupPath", "artifactId", "version", "file"), taskGroup(DEPLOYMENT)),
     ARTIFACT_INFO(GET, raw("/repository/info"), List.of("groupPath", "artifactId", "version"), taskGroup(DEPLOYMENT)),
     ARTIFACT_DELETE(DELETE, raw("/repository"), List.of("groupPath", "artifactId", "version"), taskGroup(DEPLOYMENT)),
-    METRICS(GET, "/metrics", List.of(), LOCAL),
+    METRICS(GET, "/metrics", List.of(), ANY),
     METRICS_COMPREHENSIVE(GET, "/metrics/comprehensive", List.of(), LOCAL),
     METRICS_DERIVED(GET, "/metrics/derived", List.of(), LOCAL),
     METRICS_PROMETHEUS(GET, "/metrics/prometheus", List.of(), LOCAL),
-    METRICS_HISTORY(GET, "/metrics/history", List.of(), LOCAL),
+    METRICS_HISTORY(GET, "/metrics/history", List.of(), ANY),
     METRICS_TRANSPORT(GET, "/metrics/transport", List.of(), LOCAL),
     METRICS_TIMEOUTS(GET, "/metrics/timeouts", List.of(), LOCAL),
     METRICS_BACKFILL(POST, "/metrics/backfill", List.of(), LOCAL),
-    NODE_METRICS(GET, "/nodes/metrics", List.of(), LOCAL),
+    NODE_METRICS(GET, "/nodes/metrics", List.of(), ANY),
     NODE_METRICS_GET(GET, "/nodes/metrics", List.of("id"), RouteTarget.nodeIdParam(0)),
     ARTIFACT_METRICS(GET, "/artifacts/metrics", List.of(), LOCAL),
     INVOCATION_METRICS(GET, "/invocations/metrics", List.of(), LOCAL),
@@ -358,11 +413,7 @@ public enum ManagementRoute {
     ALERTS(GET, "/alerts", List.of(), LOCAL),
     ALERTS_ACTIVE(GET, "/alerts/active", List.of(), LOCAL),
     ALERTS_HISTORY(GET, "/alerts/history", List.of(), LOCAL),
-    ALERTS_CLEAR(POST, "/alerts/clear", List.of(), LOCAL),
     ALERTS_INJECT(POST, "/alerts/inject", List.of(), LOCAL),
-    BACKUP_TRIGGER(POST, "/backups", List.of(), taskGroup(DEPLOYMENT)),
-    BACKUPS_LIST(GET, "/backups", List.of(), LOCAL),
-    BACKUP_RESTORE(POST, "/backups/restore", List.of(), taskGroup(DEPLOYMENT)),
     CONFIG_LIST(GET, "/config", List.of(), LEADER),
     CONFIG_OVERRIDES(GET, "/config/overrides", List.of(), LEADER),
     CONFIG_SET(POST, "/config", List.of(), taskGroup(DEPLOYMENT)),

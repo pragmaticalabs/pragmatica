@@ -22,6 +22,16 @@ public sealed interface MembershipEvent {
     /// SWIM reports the member ALIVE at `incarnation`.
     record SwimHealthy(long incarnation) implements MembershipEvent {}
 
+    /// Fresh direct pong plus trusted worker provisioning or local controller intent.
+    /// bootToken is the worker's per-process random boot token, not a SWIM incarnation.
+    record WorkerAdmissionHealthy(long bootToken) implements MembershipEvent {}
+
+    /// Fresh positive observation from a term-fenced committed governor, never a death signal.
+    record GovernorHealthy(long bootToken,
+                           String community,
+                           org.pragmatica.consensus.NodeId governor,
+                           long governorTerm) implements MembershipEvent {}
+
     /// SWIM reports the member SUSPECT at `incarnation` (transient doubt — debounced, not terminal).
     record SwimSuspect(long incarnation) implements MembershipEvent {}
 
@@ -56,6 +66,11 @@ public sealed interface MembershipEvent {
 
     /// This member stopped (confirmed terminal stop of the local process / explicit shutdown).
     record Stopped() implements MembershipEvent {}
+
+    /// The DEPARTING timeout expired on a drain-initiated departure that the target never
+    /// acknowledged and that no death evidence corroborates (#1054) — the DRAIN never reached a
+    /// live target, so the drain is withdrawn from the membership view instead of terminalized.
+    record DrainUnacknowledged() implements MembershipEvent {}
 
     /// The join-grace window expired without the member ever reaching healthy — never silently
     /// counted; goes terminal.

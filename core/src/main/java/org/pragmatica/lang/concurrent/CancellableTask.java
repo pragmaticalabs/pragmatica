@@ -6,6 +6,8 @@ import java.util.concurrent.ScheduledFuture;
 
 import org.pragmatica.lang.Contract;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// Thread-safe cancellable scheduled task holder.
 /// Replaces the nullable AtomicReference + getAndSet(null) pattern for ScheduledFuture fields.
@@ -58,9 +60,8 @@ public final class CancellableTask {
         return FUTURE.getVolatile(this) != null;
     }
 
+    @Contract
     private static void cancelIfPresent(ScheduledFuture<?> future) {
-        if (future != null) {
-            future.cancel(false);
-        }
+        option(future).onPresent(f -> f.cancel(false));
     }
 }

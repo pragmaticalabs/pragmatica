@@ -25,6 +25,7 @@ import org.pragmatica.serialization.SliceCodec;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -46,7 +47,7 @@ class DHTMessageEpochCodecTest {
     @Test
     void putRequest_roundTrip_preservesEpochPrimitives() {
         var codec = codec();
-        var original = new DHTMessage.PutRequest("req-1", new NodeId("n1"), bytes("k"), bytes("v"), 4242L, 7L, 3L);
+        var original = new DHTMessage.PutRequest("req-1", new NodeId("n1"), bytes("k"), bytes("v"), 4242L, 0L, 7L, 3L, 9L);
         var buf = Unpooled.buffer();
 
         try {
@@ -54,6 +55,7 @@ class DHTMessageEpochCodecTest {
             DHTMessage.PutRequest decoded = codec.read(buf);
 
             assertThat(decoded.version()).isEqualTo(4242L);
+            assertThat(decoded.replicationVersion()).as("#1777 R1c: the replication-change stamp survives the wire").isEqualTo(9L);
             assertThat(decoded.epochTerm()).isEqualTo(7L);
             assertThat(decoded.epochCounter()).isEqualTo(3L);
             assertThat(decoded.key()).isEqualTo(bytes("k"));
@@ -63,10 +65,82 @@ class DHTMessageEpochCodecTest {
         }
     }
 
+    /// #1777 R1c: the replication-change refusal crosses the wire, distinct from the owner-epoch fence.
+    @Test
+    void putResponse_roundTrip_preservesTheReplicationStaleRefusal() {
+        var codec = codec();
+        var buf = Unpooled.buffer();
+
+        try {
+            codec.write(buf, new DHTMessage.PutResponse("req-2", new NodeId("n2"), false, false, false, true, false));
+            codec.write(buf, new DHTMessage.PutResponse("req-3", new NodeId("n2"), false, false, true, false, false));
+            codec.write(buf, new DHTMessage.PutResponse("req-4", new NodeId("n2"), false, false, false, false, true));
+            DHTMessage.PutResponse stale = codec.read(buf);
+            DHTMessage.PutResponse fenced = codec.read(buf);
+            DHTMessage.PutResponse unknown = codec.read(buf);
+
+            assertThat(unknown.fenceUnknown()).as("v1882 r5: an unknown fence is its own refusal").isTrue();
+            assertThat(unknown.replicationStale()).isFalse();
+
+            assertThat(stale.replicationStale()).isTrue();
+            assertThat(stale.fenced()).isFalse();
+            assertThat(fenced.replicationStale()).isFalse();
+            assertThat(fenced.fenced()).isTrue();
+        } finally {
+            buf.release();
+        }
+    }
+
+    /// v1882 r12: the pending-write refusal crosses the wire on a put and a remove, distinct from every other refusal.
+    @Test
+    void putAndRemoveResponse_roundTrip_preserveTheWritePendingRefusal() {
+        var codec = codec();
+        var buf = Unpooled.buffer();
+
+        try {
+            codec.write(buf, new DHTMessage.PutResponse("req-5", new NodeId("n2"), false, false, false, false, false, true));
+            codec.write(buf, new DHTMessage.RemoveResponse("req-6", new NodeId("n2"), false, false, false, false, true));
+            DHTMessage.PutResponse put = codec.read(buf);
+            DHTMessage.RemoveResponse remove = codec.read(buf);
+
+            assertThat(put.writePending()).isTrue();
+            assertThat(put.superseded()).isFalse();
+            assertThat(put.success()).isFalse();
+            assertThat(remove.writePending()).isTrue();
+            assertThat(remove.fenceUnknown()).isFalse();
+        } finally {
+            buf.release();
+        }
+    }
+
+    /// #1818 L1: the departure view the receiver checks placement against crosses the wire. Every in-JVM
+    /// departure test hands the record over directly, so only this round trip reaches the codec.
+    @Test
+    void migrationDataResponse_roundTrip_preservesThePushersLeavingSet() {
+        var codec = codec();
+        var leaving = List.of(new NodeId("pusher"), new NodeId("co-drainer"));
+        var entry = new DHTMessage.KeyValue(bytes("mk"), bytes("mv"), 99L, 0L, 12L, 5L);
+        var view = List.of(new NodeId("pusher"), new NodeId("co-drainer"), new NodeId("newcomer"));
+        var original = new DHTMessage.MigrationDataResponse("push-1", new NodeId("pusher"), List.of(entry), true, leaving, view);
+        var buf = Unpooled.buffer();
+
+        try {
+            codec.write(buf, original);
+            DHTMessage.MigrationDataResponse decoded = codec.read(buf);
+
+            assertThat(decoded.leaving()).containsExactlyElementsOf(leaving);
+            assertThat(decoded.view()).containsExactlyElementsOf(view);
+            assertThat(decoded.ackRequested()).isTrue();
+            assertThat(decoded.entries()).hasSize(1);
+        } finally {
+            buf.release();
+        }
+    }
+
     @Test
     void keyValue_roundTrip_preservesEpochPrimitives() {
         var codec = codec();
-        var original = new DHTMessage.KeyValue(bytes("mk"), bytes("mv"), 99L, 12L, 5L);
+        var original = new DHTMessage.KeyValue(bytes("mk"), bytes("mv"), 99L, 0L, 12L, 5L);
         var buf = Unpooled.buffer();
 
         try {

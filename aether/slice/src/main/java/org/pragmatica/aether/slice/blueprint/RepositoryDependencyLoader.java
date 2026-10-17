@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
 import java.net.URL;
@@ -10,7 +9,6 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.dependency.ArtifactDependency;
 import org.pragmatica.aether.slice.dependency.ArtifactMapper;
@@ -50,10 +48,9 @@ public interface RepositoryDependencyLoader {
     }
 
     private static Result<Set<Artifact>> loadDependencies(SliceManifest.SliceManifestInfo manifest, URL jarUrl) {
-        var classLoader = new SliceClassLoader(new URL[]{jarUrl}, RepositoryDependencyLoader.class.getClassLoader());
-
-        return DependencyFile.load(manifest.sliceClassName(),
-                                   classLoader)
+        return DependencyFile.loadFromJar(manifest.sliceClassName(),
+                                          jarUrl,
+                                          RepositoryDependencyLoader.class.getClassLoader())
                              .flatMap(RepositoryDependencyLoader::convertToArtifacts);
     }
 

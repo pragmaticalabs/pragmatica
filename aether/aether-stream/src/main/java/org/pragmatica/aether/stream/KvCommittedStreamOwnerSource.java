@@ -4,11 +4,14 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.List;
+
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
 
@@ -23,7 +26,7 @@ import org.pragmatica.lang.Option;
 /// committed yet (cold start, or a legacy / unowned partition predating the 1d-iii reshuffle driver) it
 /// reports [Option#none] — the [LINEARIZABLE] arm then falls back to the replica-routed read so those
 /// partitions are never broken.
-public final class KvCommittedStreamOwnerSource implements CommittedStreamOwnerSource {
+public final class KvCommittedStreamOwnerSource implements CommittedStreamOwnerSource, CommittedStreamIsrSource {
     private final KVStore<AetherKey, AetherValue> kvStore;
 
     private KvCommittedStreamOwnerSource(KVStore<AetherKey, AetherValue> kvStore) {
@@ -39,6 +42,18 @@ public final class KvCommittedStreamOwnerSource implements CommittedStreamOwnerS
         return kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
                                 StreamPartitionOwnershipValue.class)
                       .map(KvCommittedStreamOwnerSource::toCommittedOwner);
+    }
+
+    /// The committed record's ISR, read directly from the store: no liveness filter sits between this and the log. A record with no
+    /// COMMITTED ISR (`isrVersion` 0, minted before #1730) carries only a synthesized `[owner]`, which is no evidence that the owner
+    /// holds every acknowledged record, so it reports none, as every other reader of the committed ISR does.
+    @Override
+    public List<NodeId> committedIsr(String stream, int partition) {
+        return kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                StreamPartitionOwnershipValue.class)
+                      .filter(record -> record.isrVersion() > 0)
+                      .map(StreamPartitionOwnershipValue::isr)
+                      .or(List.of());
     }
 
     private static CommittedOwner toCommittedOwner(StreamPartitionOwnershipValue value) {

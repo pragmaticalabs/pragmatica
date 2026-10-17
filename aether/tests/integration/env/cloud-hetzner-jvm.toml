@@ -24,6 +24,7 @@ provider = "hetzner"
 # longer aborts the whole cluster bootstrap. Different nodes may land in different zones
 # (cross-zone is desirable). A single `zone = "<loc>"` still works (treated as a 1-element
 # list); when neither `zone` nor `zones` is set the provider falls back to `region`.
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zones = ["fsn1", "nbg1", "hel1"]
 region = "fsn1"           # Default location used when no zone placement hint is set (single-attempt fallback).
 credentials = "${env:HCLOUD_TOKEN}"
@@ -32,6 +33,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cpx32"
 image = "ubuntu-22.04"
 
@@ -51,8 +53,8 @@ swim = 6100
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "30s"
-startup_cooldown = "15s"
+# #675: the tunables that used to sit here (retry_interval, startup_cooldown,
+# provision_stability_window, provisioning_timeout) never reached a node and are now refused.
 
 # @PgSql slices read the FLAT [database] datasource (config="database"). databases.X
 # produces nested [database.X] the connector ignores; inject flat [database] via node_config.
@@ -83,5 +85,5 @@ security_mode = "NONE"
 type = "jvm"
 # Cluster version is 1.0.0 (strict semver); the JVM-mode URL deriver would
 # produce v1.0.0/aether-node.jar, but the rc2 candidate JAR is published under
-# v1.0.0-rc3-candidate. Pin the candidate JAR explicitly.
-jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc3-candidate/aether-node.jar"
+# v1.0.0-rc4-candidate. Pin the candidate JAR explicitly.
+jar_url = "https://github.com/pragmaticalabs/pragmatica/releases/download/v1.0.0-rc4-candidate/aether-node.jar"

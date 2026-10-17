@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.Option;
@@ -15,10 +14,15 @@ public record EnvSecretsProvider() implements SecretsProvider {
         return new EnvSecretsProvider();
     }
 
+    /// The failure names the variable the operator has to set, not only the path it was derived
+    /// from (#904).
     @Override
     public Promise<String> resolveSecret(String secretPath) {
-        return Option.option(System.getenv(toEnvVarName(secretPath))).async(EnvironmentError.secretResolutionFailed(secretPath,
-                                                                                                                    new IllegalStateException("Environment variable not set")));
+        var envVarName = toEnvVarName(secretPath);
+
+        return Option.option(System.getenv(envVarName)).async(EnvironmentError.secretResolutionFailed(secretPath,
+                                                                                                      new IllegalStateException("environment variable " + envVarName
+                                                                                                                               + " is not set")));
     }
 
     static String toEnvVarName(String path) {

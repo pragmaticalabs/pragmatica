@@ -33,6 +33,38 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class DrainProcedureTest {
     private static final DrainReason TEST_REASON = DrainReason.OPERATOR_COMMAND;
 
+    /// #2014: only a COMMANDED drain counts as planned for `QuorumLost` suppression. A QUORUM_LOSS self-drain is the
+    /// node that really lost quorum and must stay loud. Returning `true` for every reason turns the second test red.
+    @Nested
+    class CommandedDrain {
+        private DrainProcedure procedure() {
+            return DrainProcedure.drainProcedure(InFlightRequestTracker.inFlightRequestTracker(), () -> {}, () -> {}, timeSpan(5).seconds());
+        }
+
+        @Test
+        void commanded_isCommandedOnlyAfterInitiate() {
+            var procedure = procedure();
+
+            assertThat(procedure.isCommandedDrain()).isFalse();
+            procedure.initiate(DrainReason.COMMANDED);
+            assertThat(procedure.isCommandedDrain()).isTrue();
+        }
+
+        @Test
+        void quorumLossAndOtherReasons_areNotCommanded() {
+            for (var reason : DrainReason.values()) {
+                if (reason == DrainReason.COMMANDED) {
+                    continue;
+                }
+
+                var procedure = procedure();
+
+                procedure.initiate(reason);
+                assertThat(procedure.isCommandedDrain()).as("reason %s", reason).isFalse();
+            }
+        }
+    }
+
     @Nested
     class SingleShot {
         @Test

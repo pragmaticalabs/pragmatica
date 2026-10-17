@@ -12,7 +12,6 @@ import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
-import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
 import java.net.URI;
@@ -53,7 +52,9 @@ abstract class AbstractMultiPartitionStream {
     static final int PARTITIONS = 4;
 
     static final String STREAM_SLICE = TestArtifacts.STREAM_MULTIPART_SLICE;
-    static final String STREAM_NAME = "multipart-events";
+    /// The `[streams.X]` section name; the engine key is [#streamName], qualified by each variant's
+    /// own blueprint — the two variants deploy different blueprints, so they address different rings.
+    static final String STREAM_ALIAS = "multipart-events";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
@@ -87,6 +88,12 @@ abstract class AbstractMultiPartitionStream {
 
     abstract String blueprintId();
 
+    /// The engine key this variant's `multipart-events` ring is materialized under
+    /// ([TestArtifacts#streamEngineKey]); the bare alias matches nothing in-JVM since #1041.
+    String streamName() {
+        return TestArtifacts.streamEngineKey(blueprintId(), STREAM_ALIAS);
+    }
+
     // --- lifecycle ----------------------------------------------------------
 
     @BeforeAll
@@ -104,12 +111,12 @@ abstract class AbstractMultiPartitionStream {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
             httpDelete(leaderPort, "/api/v1/blueprints/" + blueprintId());
-            cluster.stop().await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
     private void startAndAwaitReady() {
-        cluster.start().await().onFailure(AbstractMultiPartitionStream::failStart);
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);
@@ -174,12 +181,14 @@ abstract class AbstractMultiPartitionStream {
 
     // --- replica-set view (in-JVM, owner-authoritative) ---------------------
 
-    /// The owner-authoritative replica-set view for `(STREAM_NAME, partition)`: the registry is
+    /// The owner-authoritative replica-set view for `(streamName(), partition)`: the registry is
     /// authoritative only on the partition's HRW owner (`servedByOwner()` true), so scan every live
-    /// node's in-JVM `replicaSnapshot` and return the owner's.
+    /// node's in-JVM `replicaSnapshot` and return the owner's. The lookup MUST use the qualified key:
+    /// HRW answers `servedByOwner` for any string, so a bare alias still yields an "owner" view — one
+    /// whose replica set is empty forever, which reads as placement never completing.
     Option<ReplicaSetView> ownerView(int partition) {
         for (var node : cluster.allNodes()) {
-            var view = node.streamReadRouter().replicaSnapshot(STREAM_NAME, partition);
+            var view = node.streamReadRouter().replicaSnapshot(streamName(), partition);
 
             if (view.servedByOwner()) {
                 return Option.some(view);
@@ -443,7 +452,4 @@ abstract class AbstractMultiPartitionStream {
 
     // --- failure sinks ------------------------------------------------------
 
-    private static void failStart(Cause cause) {
-        throw new AssertionError("Cluster start failed: " + cause.message());
-    }
 }

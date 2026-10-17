@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.dht;
 
 import io.netty.buffer.ByteBuf;
@@ -113,7 +112,7 @@ class PartitionOwnerEpochFenceTest {
         void isStale_false_whenPartitionHighWaterUnset() {
             var key = arc.dhtKey("o-1");
 
-            assertThat(gate.isStale(key, 8L, 1L)).isFalse();
+            assertThat(gate.isStale(key, 0L, 8L, 1L)).isFalse();
         }
 
         @Test
@@ -122,12 +121,12 @@ class PartitionOwnerEpochFenceTest {
             var partition = arc.partitionOf("o-1");
 
             // Same generation (rabiaTerm 8), advanced ownershipTerm 1 -> 2: a same-generation reshuffle.
-            highWater.advance(OwnershipDomain.streamPartition(EntityPartitionArc.arcName(KEYSPACE), partition), Epoch.epoch(8, 2));
+            highWater.advance(OwnershipDomain.streamPartition(EntityPartitionArc.arcName(KEYSPACE), partition), Epoch.epoch(0L, 8, 2));
 
-            assertThat(gate.isStale(key, 8L, 1L))
+            assertThat(gate.isStale(key, 0L, 8L, 1L))
                 .as("a deposed partition owner's (8,1) write is stale against the reshuffled (8,2) high-water")
                 .isTrue();
-            assertThat(gate.isStale(key, 8L, 2L))
+            assertThat(gate.isStale(key, 0L, 8L, 2L))
                 .as("the current owner's (8,2) write is NOT stale")
                 .isFalse();
         }
@@ -138,11 +137,11 @@ class PartitionOwnerEpochFenceTest {
             var fencedPartition = arc.partitionOf("o-1");
             var otherPartition = (fencedPartition + 1) % PARTITION_COUNT;
 
-            highWater.advance(OwnershipDomain.streamPartition(EntityPartitionArc.arcName(KEYSPACE), fencedPartition), Epoch.epoch(8, 2));
+            highWater.advance(OwnershipDomain.streamPartition(EntityPartitionArc.arcName(KEYSPACE), fencedPartition), Epoch.epoch(0L, 8, 2));
 
-            assertThat(gate.isStale(fencedKey, 8L, 1L)).isTrue();
+            assertThat(gate.isStale(fencedKey, 0L, 8L, 1L)).isTrue();
             // A key whose partition we synthesize directly in the OTHER partition is unaffected.
-            assertThat(gate.isStale(keyInPartition(otherPartition), 8L, 1L))
+            assertThat(gate.isStale(keyInPartition(otherPartition), 0L, 8L, 1L))
                 .as("a different partition's high-water never moved, so its (8,1) write is not stale")
                 .isFalse();
         }
@@ -172,11 +171,11 @@ class PartitionOwnerEpochFenceTest {
 
         @Test
         void currentOwnerEpoch_readsCommittedRecord() {
-            commitOwnership(3, Epoch.epoch(8, 2), 2L);
+            commitOwnership(3, Epoch.epoch(0L, 8, 2), 2L);
 
             assertThat(source.currentOwnerEpoch(3))
                 .as("the source reads the committed StreamPartitionOwnershipValue.ownerEpoch for the arc")
-                .isEqualTo(Epoch.epoch(8, 2));
+                .isEqualTo(Epoch.epoch(0L, 8, 2));
         }
 
         private void commitOwnership(int partition, Epoch epoch, long ownershipTerm) {

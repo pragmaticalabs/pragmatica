@@ -21,17 +21,17 @@
 # the owner rather than hand-mapping nodeId→port (which breaks for CTM replacement ids).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0: identical for a direct run, and correct when
+# test/test-chaos-harness.sh sources this file to drive its functions.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
 source "${SCRIPT_DIR}/../../lib/generation.sh"
 
 # The stream under test is declared by the test-stream-repl blueprint with
-# min-sync-replicas=2 -> RF=2 (owner + 1 synchronously-in-sync replica). This is
-# the ONLY way to get RF>=2: POST /api/v1/streams hardcodes minSyncReplicas=0 -> RF=1
-# (owner-only), which structurally cannot have a CAUGHT_UP non-owner replica to fail
-# over to. The blueprint's stream name is fixed; the deploy step deletes+redeploys it
+# replicas=3 (owner + 2 replicas; 3 is the stream replication minimum, #1547) and
+# confirmation_factor=2. The blueprint's stream name is fixed; the deploy step deletes+redeploys it
 # so a re-run (or a prior run) cannot pollute the partition with stale offsets.
 STREAM_NAME="${STREAM_NAME:-repl-failover-events}"
 STREAM_BP="${STREAM_BP:-org.pragmatica.aether.test:test-stream-repl:1.0.0}"
@@ -44,25 +44,59 @@ K_EVENTS="${K_EVENTS:-5}"   # additional markers published after repair (livenes
 MARKER_PREFIX="FLVR-FAILOVER-MARKER"
 KILLED_OWNER=""             # set by the kill step; consumed by cleanup()
 
+# H4 (2026-09-13): bounded-wait budget for the pre-kill "a CAUGHT_UP non-owner
+# replica exists" check (test_identify_owner_and_caught_up_replica). The
+# previous form checked has_caught_up_replica_excluding exactly ONCE against
+# whatever replicas_snapshot_owner_view happened to return (test duration
+# ~1s) — sufficient once the owner view was reachable, but the non-owner
+# replica's OWN backfill/catch-up is a separate, asynchronous process that
+# can still be in flight at that instant. Observed on cloud
+# (#1051): the replica logged
+# "self CAUGHT_UP at offset 19" ~30s after this step ran, so the one-shot
+# check scored a hard FAIL on a replica that was correctly converging, not on
+# a broken one. Scaled by TIMEOUT_SCALE like every other cross-node
+# convergence wait in this suite; 60s (unscaled) covers the observed ~30s
+# with 2x headroom. The assertion itself is unchanged: it still requires a
+# genuine CAUGHT_UP non-owner replica within the budget, never a weaker one —
+# a replica that never reaches CAUGHT_UP still fails this step.
+CAUGHT_UP_REPLICA_WAIT_S=60
+
 # ---------------------------------------------------------------------------
 # Marker helpers
 # ---------------------------------------------------------------------------
-# A marker is a fixed-width, zero-padded, terminator-suffixed token so its Base64
-# form is distinct and never a substring of a sibling's (verified: no collisions
-# across indices). The publish path stores `data` RAW
-# (StreamRoutes.publishToPartition → request.data().getBytes(UTF_8)); the READ path
-# Base64-ENCODES it back (EventRecord.fromRawEvent). So we publish the raw marker
-# and, on read-back, grep for its Base64 — counting Base64 occurrences is the exact,
-# decode-correct completeness signal. (The CLI `streams publish` base64s its arg, so
-# we deliberately publish via the raw-HTTP stream_publish helper instead.)
+# A marker is a fixed-width, zero-padded, terminator-suffixed token so its wire form is
+# distinct and never a substring of a sibling's (verified: no collisions across indices).
+# The publish path stores `data` RAW (StreamRoutes.publishToPartition →
+# request.data().getBytes(UTF_8)) and the READ path returns it RAW — so we publish the raw
+# marker and grep for that same raw token on read-back. (The CLI `streams publish` base64s
+# its arg, so we deliberately publish via the raw-HTTP stream_publish helper instead.)
+#
+# CORRECTED 2026-09-13: this header previously asserted that "the READ path Base64-ENCODES it
+# back (EventRecord.fromRawEvent)" and that counting Base64 occurrences was "the exact,
+# decode-correct completeness signal". Measured against a live rc4 cluster, that is false at
+# both layers — see `marker_wire_for` for the evidence. The claim was load-bearing: every
+# completeness assertion in this file searched for a string that cannot appear.
 marker_for() {
     local idx="$1"
     printf '%s-%04d-Z' "$MARKER_PREFIX" "$idx"
 }
 
-marker_b64_for() {
-    # No newline in input; base64 of a ~26-byte string is one unwrapped line.
-    marker_for "$1" | base64
+# The READ path returns `data` RAW, not Base64 — measured against a live rc4 cluster
+# 2026-09-13 at BOTH layers:
+#   GET /api/v1/streams/{ns}/{stream}/{version}/read/0
+#     -> {"events":[{"offset":0,"data":"FLVR-FAILOVER-MARKER-0000-Z",...}]}
+#   aether streams read <identity> 0 --format json   -> same, raw.
+# Occurrences of the raw marker: 1; of its Base64 (`RkxWUi1GQUlMT1ZFUi1NQVJLRVItMDAwMC1a`): 0.
+#
+# This helper previously returned `marker_for "$1" | base64`, on the premise (stated in this
+# file's header) that "the READ path Base64-ENCODES it back (EventRecord.fromRawEvent)". That
+# premise does not hold, so every completeness assertion searched for a string that could not
+# appear and reported 0/N while all N markers were present, contiguous from offset 0, in publish
+# order. The defect was MASKED until 2026-09-13: before the engine-key qualification (#1040) the
+# read addressed a different ring entirely and returned no events at all, so the encoding
+# mismatch had nothing to be wrong about.
+marker_wire_for() {
+    marker_for "$1"
 }
 
 # Publish markers [start_idx .. start_idx+count-1] via the raw-HTTP publish helper.
@@ -81,16 +115,16 @@ publish_markers() {
     printf '%s' "$ok"
 }
 
-# Count how many of markers [start_idx .. start_idx+count-1] appear (by Base64) in
+# Count how many of markers [start_idx .. start_idx+count-1] appear (raw wire form) in
 # a read of the partition. Reads through the GOVERNOR read-preference (the CLI/HTTP
 # default), which routes to the partition's current HRW owner — exactly the path a
 # consumer uses, so it proves the PROMOTED owner serves the history. Echoes the hit
 # count on stdout; logs the raw body head on a short count for diagnosis.
 count_markers_present() {
     local start_idx="$1" count="$2"
-    local body i idx b64 found=0
+    local body i idx wire found=0
     # --limit must exceed the full tail (N + K) so a single read returns everything.
-    body=$(aether_failover streams read "$STREAM_NAME" "$PARTITION" \
+    body=$(aether_failover streams read "$(stream_identity "$STREAM_NAME")" "$PARTITION" \
                 --limit $(( (N_EVENTS + K_EVENTS) * 2 + 10 )) --format json 2>/dev/null) || {
         log_warn "count_markers_present: 'streams read' exited non-zero"
         printf '%s' 0
@@ -103,11 +137,11 @@ count_markers_present() {
     fi
     for ((i = 0; i < count; i++)); do
         idx=$((start_idx + i))
-        b64="$(marker_b64_for "$idx")"
+        wire="$(marker_wire_for "$idx")"
         # grep -c counts MATCHING LINES; the JSON is one line per read so a present
-        # marker contributes 1. -F = fixed string (base64 has no regex metachars but
+        # marker contributes 1. -F = fixed string (the marker has no regex metachars but
         # be explicit), so each unique token is counted independently.
-        if printf '%s' "$body" | grep -Fq -- "$b64"; then
+        if printf '%s' "$body" | grep -Fq -- "$wire"; then
             found=$((found + 1))
         fi
     done
@@ -118,14 +152,14 @@ count_markers_present() {
 }
 
 # Verify the partition is served IN ORDER: each offset O in [0 .. upto] must carry
-# marker_for(O)'s Base64 in its event object (i.e. publish order == read order, no
+# marker_for(O)'s raw wire form in its event object (i.e. publish order == read order, no
 # reordering/gap). Stronger than a presence count — proves the promoted owner's log
 # is contiguous and correctly sequenced, not just "the right set of bytes exists".
 # Echoes the number of in-order offsets matched on stdout.
 count_inorder_offsets() {
     local upto="$1"
-    local body i obj data_b64 expect matched=0
-    body=$(aether_failover streams read "$STREAM_NAME" "$PARTITION" \
+    local body i obj data_wire expect matched=0
+    body=$(aether_failover streams read "$(stream_identity "$STREAM_NAME")" "$PARTITION" \
                 --limit $(( (N_EVENTS + K_EVENTS) * 2 + 10 )) --format json 2>/dev/null) || {
         printf '%s' 0
         return 0
@@ -144,9 +178,9 @@ count_inorder_offsets() {
             | grep -oE "\\{[^{}]*\"offset\"[[:space:]]*:[[:space:]]*${i}[^0-9][^{}]*\\}" \
             | head -1)
         [ -n "$obj" ] || continue
-        data_b64=$(printf '%s' "$obj" | sed -E 's/.*"data"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
-        expect="$(marker_b64_for "$i")"
-        if [ "$data_b64" = "$expect" ]; then
+        data_wire=$(printf '%s' "$obj" | sed -E 's/.*"data"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        expect="$(marker_wire_for "$i")"
+        if [ "$data_wire" = "$expect" ]; then
             matched=$((matched + 1))
         fi
     done
@@ -166,7 +200,7 @@ replicas_snapshot_owner_view() {
     local attempts="${1:-8}"
     local body last_body="" i served
     for ((i = 0; i < attempts; i++)); do
-        body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
+        body=$(stream_replicas "${STREAM_NAME}" "${PARTITION}" 2>/dev/null) || body=""
         if [ -n "$body" ]; then
             last_body="$body"
             served=$(json_scalar "$body" servedByOwner)
@@ -194,7 +228,7 @@ json_scalar() {
 # Resolve the partition's HRW owner NodeId from any replicas view (header field).
 partition_hrw_owner() {
     local body
-    body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${PARTITION}" 2>/dev/null) || body=""
+    body=$(stream_replicas "${STREAM_NAME}" "${PARTITION}" 2>/dev/null) || body=""
     json_scalar "$body" hrwOwner
 }
 
@@ -233,10 +267,10 @@ has_caught_up_replica_excluding() {
     return 1
 }
 
-# Gate the FIRST publish on the owner AUTHORITATIVELY serving a placed RF=2 replica
+# Gate the FIRST publish on the owner AUTHORITATIVELY serving a placed RF=3 replica
 # set (owner + >=1 CAUGHT_UP non-owner) — proof the committed replicas=2/min-sync=2
 # config is in EFFECT, not merely committed. No management endpoint exposes the
-# minSyncReplicas scalar, so the owner-authoritative replicas view (servedByOwner=true)
+# confirmation_factor scalar, so the owner-authoritative replicas view (servedByOwner=true)
 # is the only authoritative surface; an RF=1 default has NO CAUGHT_UP non-owner replica.
 # Load-bearing because replica placement is EDGE-triggered (ReplicaSetController.reconcile
 # runs on boot/membership/quorum edges + the stream-config-committed edge) — without this
@@ -261,21 +295,21 @@ wait_for_stream_config_committed() {
         if [ "$served" = "true" ] && [ -n "$owner" ] && [ "$owner" != "none" ]; then
             nreplicas=$(printf '%s' "$body" | grep -oE '\{[^{}]*"nodeId"[^{}]*\}' | grep -c .)
             nonowner=$(printf '%s' "$body" | grep -oE '"isHrwOwner"[[:space:]]*:[[:space:]]*false' | grep -c .)
-            # Gate on the RF=2 replica set being PLACED (owner + >=1 non-owner), NOT on the
+            # Gate on the FULL RF=3 replica set being PLACED (owner + 2 non-owners), NOT on the
             # non-owner being CAUGHT_UP: on an EMPTY stream the replica stays SYNCING until
             # the first write, and the replication barrier is state-agnostic (a SYNCING
             # replica both receives writes and acks them — proven end-to-end), so placement
             # is the correct pre-publish proof that the reconcile-on-config-Put edge
-            # established RF=2. Requiring CAUGHT_UP here would deadlock the very publish
+            # established RF=3. Requiring CAUGHT_UP here would deadlock the very publish
             # that promotes the replica.
-            if [ "${nreplicas:-0}" -ge 2 ] && [ "${nonowner:-0}" -ge 1 ]; then
-                log_info "Stream config in effect: owner=${owner}, replicas=${nreplicas}, non-owner replica placed (RF=2/min-sync=2)"
+            if [ "${nreplicas:-0}" -ge 3 ] && [ "${nonowner:-0}" -ge 2 ]; then
+                log_info "Stream config in effect: owner=${owner}, replicas=${nreplicas}, non-owner replica placed (RF=3/min-sync=2)"
                 return 0
             fi
         fi
         sleep "$interval"
     done
-    log_fail "Stream ${STREAM_NAME}/${PARTITION} RF=2 replica set not placed within ${budget}s (last view: ${body:0:300})"
+    log_fail "Stream ${STREAM_NAME}/${PARTITION} RF=3 replica set not placed within ${budget}s (last view: ${body:0:300})"
     return 1
 }
 
@@ -342,12 +376,10 @@ test_initial_state() {
 }
 
 test_deploy_repl_stream_blueprint() {
-    # RF>=2 sync replication requires the stream be created via a blueprint that
-    # declares min-sync-replicas; POST /api/v1/streams can only mint RF=1 (owner-only).
     # Deploy the dedicated test-stream-repl blueprint whose 'repl-failover-events'
-    # stream is partitions=1 + min-sync-replicas=2 -> RF=2 (owner + 1 in-sync replica).
+    # stream is partitions=1, replication_factor=3 (owner + 2 replicas), confirmation_factor=2.
     #
-    # ORDERING is load-bearing: the slice must ACTIVATE (committing the RF=2
+    # ORDERING is load-bearing: the slice must ACTIVATE (committing the RF=3
     # StreamConfig via StreamPublisherFactory.createStream) BEFORE the first
     # management publish — otherwise StreamRoutes.ensureStreamExists mints the stream
     # at RF=0 and tolerateAlreadyExists (StreamCreateOutcome ALREADY_EXISTS==DONE)
@@ -355,25 +387,25 @@ test_deploy_repl_stream_blueprint() {
     #
     # Defensive: drop any stale same-named stream left by a prior crashed run so the
     # partition under test starts empty (offset 0).
-    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    stream_delete_if_present "$STREAM_NAME"
     if ! push_blueprint "$STREAM_BP" >/dev/null; then
         log_fail "Failed to push blueprint ${STREAM_BP}"
         return 1
     fi
     deploy_blueprint "$STREAM_BP" >/dev/null 2>&1 || true
-    if ! wait_for "test-stream-repl all instances ACTIVE (RF=2 stream config committed)" \
+    if ! wait_for "test-stream-repl all instances ACTIVE (RF=3 stream config committed)" \
         "[ \$(slices_active_instances_for '${STREAM_BP}') -ge \$(slices_target_total_for '${STREAM_BP}') ] && [ \$(slices_target_total_for '${STREAM_BP}') -gt 0 ]" \
         120; then
-        log_fail "test-stream-repl did not reach all-instances ACTIVE — RF=2 stream ${STREAM_NAME} not established"
+        log_fail "test-stream-repl did not reach all-instances ACTIVE — RF=3 stream ${STREAM_NAME} not established"
         return 1
     fi
-    # ACTIVE proves the RF=2 StreamConfig is COMMITTED; the stream-config-committed
+    # ACTIVE proves the RF=3 StreamConfig is COMMITTED; the stream-config-committed
     # reconcile edge then PLACES the replica set. Gate the first publish on that
     # placement being authoritatively in effect so pre-kill markers cannot race it.
     if ! wait_for_stream_config_committed 60; then
         return 1   # log_fail already emitted by the gate
     fi
-    log_pass "Deployed ${STREAM_BP}; RF=2 stream ${STREAM_NAME} committed (partitions=1, min-sync-replicas=2)"
+    log_pass "Deployed ${STREAM_BP}; RF=3 stream ${STREAM_NAME} committed (partitions=1, confirmation_factor=2)"
 }
 
 test_publish_initial_history() {
@@ -404,14 +436,61 @@ test_identify_owner_and_caught_up_replica() {
 
     owner=$(json_scalar "$body" hrwOwner)
     assert_ne "$owner" "" "HRW owner identified: ${owner}"
-    assert_ne "$owner" "none" "HRW owner is not 'none'"
+    # `assert_ne "$owner" "none"` was VACUOUS: '' != 'none' is true, so an empty owner
+    # scored a PASS immediately after the assert_ne above correctly FAILED on the same
+    # value (observed 2026-09-12). Assert the POSITIVE shape required instead of the
+    # negation of one bad value — an owner is a NodeId, never empty and never "none".
+    case "$owner" in
+        ""|none) log_fail "HRW owner is a real NodeId (got: '${owner}')" ;;
+        *)       log_pass "HRW owner is a real NodeId: ${owner}" ;;
+    esac
     OWNER_TO_KILL="$owner"
 
+    # H4 (#1051): the view above must already be owner-authoritative with a real
+    # owner. If it is not, this step has failed, and no wait can rescue it (on cloud
+    # a wait would only burn the budget).
+    if [ "$served" != "true" ] || [ -z "$owner" ] || [ "$owner" = "none" ]; then
+        return 1
+    fi
+
     # A promotable replica MUST exist, else killing the owner cannot preserve history.
-    if has_caught_up_replica_excluding "$body" "$owner"; then
+    # Bounded wait, not a single check (see CAUGHT_UP_REPLICA_WAIT_S). The assertion is
+    # not weakened by the wait: every view it judges is owner-authoritative
+    # (servedByOwner=true), a refreshed view that is not is never judged, and the owner
+    # it excludes — which the kill step then targets — is the hrwOwner of that same view.
+    # Each pause and each refresh's retry count are capped by the time left, so the wait
+    # overshoots its deadline by at most one replicas call.
+    local wait_s deadline left view view_served view_owner last_view="$body" caught_up="false"
+    wait_s=$((CAUGHT_UP_REPLICA_WAIT_S * ${TIMEOUT_SCALE:-1}))
+    deadline=$((SECONDS + wait_s))
+    view="$body"
+    while :; do
+        if [ -n "$view" ] && has_caught_up_replica_excluding "$view" "$owner"; then
+            caught_up="true"
+            break
+        fi
+        left=$((deadline - SECONDS))
+        [ "$left" -le 0 ] && break
+        sleep $((left < 3 ? left : 3))
+        left=$((deadline - SECONDS))
+        view=$(replicas_snapshot_owner_view $((left < 1 ? 1 : (left < 10 ? left : 10))))
+        [ -n "$view" ] && last_view="$view"
+        view_served=$(json_scalar "$view" servedByOwner)
+        view_owner=$(json_scalar "$view" hrwOwner)
+        if [ "$view_served" != "true" ] || [ -z "$view_owner" ] || [ "$view_owner" = "none" ]; then
+            view=""
+            continue
+        fi
+        if [ "$view_owner" != "$owner" ]; then
+            log_info "HRW owner moved ${owner} -> ${view_owner} during the CAUGHT_UP wait — excluding and targeting ${view_owner}"
+            owner="$view_owner"
+            OWNER_TO_KILL="$owner"
+        fi
+    done
+    if [ "$caught_up" = "true" ]; then
         log_pass "A CAUGHT_UP replica other than owner ${owner} exists (promotable)"
     else
-        log_fail "No CAUGHT_UP non-owner replica before kill — replication not established (body head: ${body:0:300})"
+        log_fail "No CAUGHT_UP non-owner replica in an owner-authoritative view before kill within ${wait_s}s — replication not established (last view head: ${last_view:0:300})"
         return 1
     fi
 }
@@ -532,16 +611,22 @@ test_replica_set_converged() {
 # ON_DUTY healthy cores). Best-effort stream delete first so a shared cluster does
 # not accumulate per-run streams. Runs on ANY exit path (incl. set -e abort).
 cleanup() {
-    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    stream_delete_if_present "$STREAM_NAME"
     # #628: failure is FLAGGED to run_suite (marker), which captures evidence and
     # quarantines the remaining test files — the old warn-and-continue let a broken
     # cluster fail every downstream scenario on its own subject.
     restore_cluster_baseline_or_flag
 }
+
+# Sourced (test/test-chaos-harness.sh drives the functions above against stubs):
+# stop before the trap and the scenario. A direct run (`bash "$test_file"`) goes on.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
 trap 'cleanup' EXIT
 
 run_test "Initial 5 nodes"                          test_initial_state
-run_test "Deploy RF=2 replicated stream blueprint"  test_deploy_repl_stream_blueprint
+run_test "Deploy RF=3 replicated stream blueprint"  test_deploy_repl_stream_blueprint
 run_test "Publish ${N_EVENTS}-event history"        test_publish_initial_history
 run_test "Full history readable before kill"        test_full_history_present_before_kill
 run_test "Identify HRW owner + CAUGHT_UP replica"   test_identify_owner_and_caught_up_replica

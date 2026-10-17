@@ -57,8 +57,8 @@ public sealed interface ManagementRoutePermissions {
     }
 
     /// Operational mutations — day-2 operations an OPERATOR performs: deploy strategies, scaling,
-    /// schema migrations, streams, scheduled-task actions, backups (create), config set/delete,
-    /// thresholds, alerts clear, controller tuning, cluster topology remediation, artifact publish,
+    /// schema migrations, streams, scheduled-task actions, config set/delete,
+    /// thresholds, alert injection, controller tuning, cluster topology remediation, artifact publish,
     /// cluster-config apply, key listing/audit (read-shaped POSTs are absent — those are GET).
     private static void assignOperatorMutations(Map<ManagementRoute, RoutePermission> table) {
         for (var route : operatorRoutes()) {
@@ -67,7 +67,7 @@ public sealed interface ManagementRoutePermissions {
     }
 
     /// Destructive / identity-affecting mutations — ADMIN only: raw blueprint publish + delete, node
-    /// shutdown/promote, backup restore, log-level and observability depth/config changes, config-node
+    /// shutdown/promote, log-level and observability depth/config changes, config-node
     /// delete, API-key create/revoke, dev-only inject endpoints.
     private static void assignAdminMutations(Map<ManagementRoute, RoutePermission> table) {
         for (var route : adminRoutes()) {
@@ -103,6 +103,7 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.STREAMS_PUBLISH_BATCH,
                        ManagementRoute.STREAMS_GROUP_CREATE,
                        ManagementRoute.STREAMS_GROUP_DELETE,
+                       ManagementRoute.STREAMS_CREATE,
                        ManagementRoute.STREAMS_DELETE,
                        ManagementRoute.CONSUMER_GROUP_JOIN,
                        ManagementRoute.CONSUMER_GROUP_LEAVE,
@@ -113,7 +114,6 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.CONTROLLER_EVALUATE,
                        ManagementRoute.THRESHOLD_SET,
                        ManagementRoute.THRESHOLD_DELETE,
-                       ManagementRoute.ALERTS_CLEAR,
                        ManagementRoute.CONFIG_SET,
                        ManagementRoute.CONFIG_DELETE,
                        ManagementRoute.INVOCATION_METRICS_STRATEGY_SET,
@@ -121,7 +121,12 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.ARTIFACT_POST,
                        ManagementRoute.ARTIFACT_DELETE,
                        ManagementRoute.NODE_DRAIN,
-                       ManagementRoute.BACKUP_TRIGGER);
+                       ManagementRoute.NODE_REPLACE,
+                       ManagementRoute.NODE_REPLACEMENT_SETTLE,
+                       ManagementRoute.UPGRADE_PAUSE,
+                       ManagementRoute.UPGRADE_RESUME,
+                       ManagementRoute.UPGRADE_ABORT,
+                       ManagementRoute.NODE_UNCONFIRMED_CLEAR);
     }
 
     private static List<ManagementRoute> adminRoutes() {
@@ -130,7 +135,6 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.BLUEPRINT_DELETE,
                        ManagementRoute.NODE_SHUTDOWN,
                        ManagementRoute.NODE_PROMOTE,
-                       ManagementRoute.BACKUP_RESTORE,
                        ManagementRoute.LOG_LEVEL_SET,
                        ManagementRoute.LOG_LEVEL_RESET,
                        ManagementRoute.OBSERVABILITY_DEPTH_SET,
@@ -140,6 +144,8 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.CONFIG_NODE_DELETE,
                        ManagementRoute.CLUSTER_KEYS_CREATE,
                        ManagementRoute.CLUSTER_KEYS_REVOKE,
+                       ManagementRoute.CLUSTER_GOSSIP_KEY_ROTATE,
+                       ManagementRoute.BACKUP_DECLARE_GENESIS,
                        ManagementRoute.CERT_CONFIGURE_SHORT_VALIDITY,
                        ManagementRoute.SCHEDULED_TASK_INJECT,
                        ManagementRoute.ALERTS_INJECT,

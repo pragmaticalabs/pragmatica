@@ -32,7 +32,11 @@ public record Server(long id,
                      Image image,
                      @JsonProperty("public_net") PublicNet publicNet,
                      @JsonProperty("private_net") List<PrivateNet> privateNet,
-                     Map<String, String> labels) {
+                     Map<String, String> labels,
+                     Location location) {
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record Location(String name) {}
+
     /// Server hardware type.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ServerType(long id, String name, String description, int cores, double memory, int disk) {}

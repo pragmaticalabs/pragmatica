@@ -11,6 +11,8 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -160,5 +162,54 @@ class MembershipFsmObservedMembersTest {
         fsm.onPeerConnected(PEER_C);
 
         assertThat(fsm.strictCoreObservedMemberCount(SELF)).isEqualTo(3);
+    }
+
+    /// #1853: the one-pass voter-narrowed numerator the detector derives its count from must equal the old
+    /// push's two-walk intersection (strict set ∩ voters ∩ observed set) for every electorate.
+    @Test
+    void strictCoreObservedVoterCount_equalsTheSetIntersectionItReplaced() {
+        var fsm = bootSeededCluster();
+
+        fsm.onSwimHealthy(PEER_B, 1L);
+        var voters = Set.of(SELF, PEER_B);
+
+        var intersection = fsm.strictCoreMembers()
+                              .stream()
+                              .filter(voters::contains)
+                              .filter(fsm.coreObservedMembers(SELF)::contains)
+                              .count();
+
+        assertThat(intersection).as("arming: self observed by definition, B observed, C seeded but unobserved").isEqualTo(2);
+        assertThat(fsm.strictCoreObservedVoterCount(SELF, voters::contains)).isEqualTo((int) intersection);
+        assertThat(fsm.strictCoreObservedVoterCount(SELF, _ -> false)).as("no electorate, no count").isZero();
+        assertThat(fsm.strictCoreObservedVoterCount(SELF, Set.of(SELF, PEER_B, PEER_C)::contains))
+                .as("a seeded-but-unobserved voter does not count").isEqualTo(2);
+    }
+
+    /// #1853: the reachability latch is an input of the quorum numerator that carries no transition record
+    /// (a seeded MEMBER stays MEMBER on `SwimHealthy`), so the FSM must announce the flip itself — once.
+    @Test
+    void onReachabilityLatched_firesOncePerMember_onTheFalseToTrueEdge() {
+        var fsm = bootSeededCluster();
+        var latched = new ArrayList<NodeId>();
+
+        fsm.onReachabilityLatched(latched::add);
+        fsm.onSwimHealthy(PEER_B, 1L);
+        fsm.onSwimHealthy(PEER_B, 2L);
+        fsm.onPeerConnected(PEER_B);
+        fsm.onPeerConnected(PEER_C);
+
+        assertThat(latched).containsExactly(PEER_B, PEER_C);
+    }
+
+    @Test
+    void onReachabilityLatched_listenerSeesTheLatchedState() {
+        var fsm = bootSeededCluster();
+        var seenCounts = new ArrayList<Integer>();
+
+        fsm.onReachabilityLatched(_ -> seenCounts.add(fsm.strictCoreObservedMemberCount(SELF)));
+        fsm.onSwimHealthy(PEER_B, 1L);
+
+        assertThat(seenCounts).as("self + the peer whose latch just flipped").isEqualTo(List.of(2));
     }
 }

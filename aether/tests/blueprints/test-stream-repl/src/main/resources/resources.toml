@@ -6,20 +6,20 @@
 # slice loader resolves @ResourceQualifier(config = "streams.repl-failover-events")
 # lookups (see @EventStreamPublisher / @EventStreamReader) against it.
 #
-# RF=2 / synchronously-replicated config for the 02-chaos replica-failover test:
+# RF=3 / synchronously-replicated config for the 02-chaos replica-failover test:
 #   - partitions        = 1  -> one clean, globally-ordered log (monotonic offsets).
-#   - replicas          = 2  -> replication factor (RF): copies incl owner (owner + 1 replica).
-#   - min-sync-replicas = 2  -> owner + 1 in-sync per write: each publish AWAITs a replica
-#     ack before it returns, so the log survives loss of the primary replica (synchronous
-#     replication) and the single replica is always caught up -> lossless owner-kill failover.
+#   - replication_factor  = 3  -> copies incl owner (owner + 2 replicas).
+#   - confirmation_factor = 2  -> owner + 1 peer per write. With 2 peers only ONE of them is
+#     guaranteed to hold an acked record; #1555's promotion gate catches the new owner up from the
+#     highest-head survivor, which is what makes CF < RF lossless (#411, #1564).
 #   - retention  = count     -> count-based eviction (never time-based) so a slow
 #     consumer is never evicted mid-test; retention-value is far larger than any
 #     test event count, so nothing is ever dropped (no spurious CursorExpired).
 
 [streams.repl-failover-events]
 partitions = 1
-replicas = 2
-min-sync-replicas = 2
+replication_factor = 3
+confirmation_factor = 2
 retention = "count"
 retention-value = "100000"
 max-event-size = "64KB"

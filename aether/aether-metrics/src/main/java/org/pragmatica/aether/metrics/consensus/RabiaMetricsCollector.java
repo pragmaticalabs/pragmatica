@@ -1,13 +1,13 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics.consensus;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.ConsensusMetrics;
@@ -31,6 +31,8 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
     private final AtomicLong syncFailureCount = new AtomicLong();
     private final AtomicInteger pendingBatches = new AtomicInteger();
     private final LongAdder totalDecisionLatencyNs = new LongAdder();
+    private final LongAdder applyTimeouts = new LongAdder();
+    private final AtomicReference<LongSupplier> oldestPendingBatchAgeProbe = new AtomicReference<>(() -> 0L);
     private final AtomicReference<String> role = new AtomicReference<>("FOLLOWER");
     private final AtomicReference<Option<String>> leaderId = new AtomicReference<>(Option.empty());
 
@@ -92,6 +94,18 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
         pendingBatches.set(count);
     }
 
+    @Override
+    @Contract
+    public void recordApplyTimeout(NodeId nodeId) {
+        applyTimeouts.increment();
+    }
+
+    @Override
+    @Contract
+    public void registerOldestPendingBatchAgeProbe(NodeId nodeId, LongSupplier ageMs) {
+        oldestPendingBatchAgeProbe.set(ageMs);
+    }
+
     public Result<Unit> updateRole(boolean isLeader, Option<String> currentLeaderId) {
         role.set(isLeader
                  ? "LEADER"
@@ -112,7 +126,9 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 fastPathCount.get(),
                                 syncSuccessCount.get(),
                                 syncFailureCount.get(),
-                                totalDecisionLatencyNs.sum());
+                                totalDecisionLatencyNs.sum(),
+                                oldestPendingBatchAgeProbe.get().getAsLong(),
+                                applyTimeouts.sum());
     }
 
     public RabiaMetrics snapshotAndReset() {
@@ -126,6 +142,8 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 fastPathCount.getAndSet(0),
                                 syncSuccessCount.getAndSet(0),
                                 syncFailureCount.getAndSet(0),
-                                totalDecisionLatencyNs.sumThenReset());
+                                totalDecisionLatencyNs.sumThenReset(),
+                                oldestPendingBatchAgeProbe.get().getAsLong(),
+                                applyTimeouts.sumThenReset());
     }
 }

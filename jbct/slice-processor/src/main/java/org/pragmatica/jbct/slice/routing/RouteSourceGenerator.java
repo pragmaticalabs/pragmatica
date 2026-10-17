@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.routing;
 
 import javax.annotation.processing.Filer;
@@ -81,6 +80,15 @@ import org.pragmatica.lang.utils.Causes;
 /// }
 /// }```
 public class RouteSourceGenerator {
+    /// #882 — the route-security contract THIS generator implements, emitted into every `*Routes`
+    /// class as a literal. It is deliberately not `SliceRouterFactory.ROUTE_SECURITY_CONTRACT`: a
+    /// symbolic reference would be resolved by javac against whatever adapter is on the SLICE's
+    /// classpath, so an old generator compiled against a newer adapter would stamp the adapter's
+    /// number and claim a contract it does not implement. This module cannot see the adapter;
+    /// `slice-processor-tests` pins the two constants equal. `1` is the #763 contract (no
+    /// `[security]` → `SecurityPolicy.unspecified()`); bump both sides together.
+    public static final int ROUTE_SECURITY_CONTRACT = 1;
+
     private static final Map<String, String> TYPE_TO_PATH_PARAMETER = Map.ofEntries(Map.entry("String", "aString"),
                                                                                     Map.entry("java.lang.String",
                                                                                               "aString"),
@@ -282,6 +290,15 @@ public class RouteSourceGenerator {
         out.println("    @Override");
         out.println("    public Class<" + sliceName + "> sliceType() {");
         out.println("        return " + sliceName + ".class;");
+        out.println("    }");
+        out.println();
+        // #882: stamp the route-security contract this generator implements, so a node can tell a
+        // JAR built before #763 (no stamp, unspecified security baked in as public) from a current one.
+        // Emitted as a LITERAL so the stamp is the generator's own number, frozen at generation time,
+        // never a symbol the slice's compile classpath would resolve to some other adapter's value.
+        out.println("    @Override");
+        out.println("    public int routeSecurityContract() {");
+        out.println("        return " + ROUTE_SECURITY_CONTRACT + ";");
         out.println("    }");
         out.println();
         // SliceRouterFactory: create(slice)
@@ -644,7 +661,7 @@ public class RouteSourceGenerator {
         var trailer = versionedTrailer(version) + outputCall(routeDsl) + comma;
         var hasPath = routeDsl.hasPathParams();
         var hasQuery = routeDsl.hasQueryParams();
-        var hasBody = isBodyMethod(routeDsl.method());
+        var hasBody = isBodyMethod(routeDsl.method()) && !boundEntirelyByPathAndQuery(method, routeDsl);
         // #397 §4.2: value-object path/query segments (a component whose type exposes
         // `valueMapping()`) compose the framework String->P parser with the VO's `lift`; keyed by
         // request-record component name so path/query arg emission can look each one up.
@@ -710,6 +727,26 @@ public class RouteSourceGenerator {
         } else {
             generateNoParamsRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
         }
+    }
+
+    /// #1214: a POST/PUT/PATCH route whose request record is bound ENTIRELY from the path and query has no
+    /// body parameter, so it must not demand a body. It used to bind `.withBody(...)` anyway, and a request
+    /// with no body frame (`curl -X POST .../open/<e>`) failed with `Type mismatch: expected Request, got
+    /// unknown` while `-d '{}'` passed. Such a route is now generated as a path/query route; a body the
+    /// client does send is ignored. Only a JSON-consuming route qualifies: a text, binary or multipart route
+    /// binds its body as the payload itself.
+    private boolean boundEntirelyByPathAndQuery(MethodModel method, RouteDsl routeDsl) {
+        if (!routeDsl.consumes().isJson() || !(routeDsl.hasPathParams() || routeDsl.hasQueryParams())) {
+            return false;
+        }
+
+        var components = MethodModel.recordComponents(method.hasSecurityParams()
+                                                      ? method.businessParameterType()
+                                                      : method.parameterType());
+
+        return !components.isEmpty() && pathQueryParamNames(routeDsl).containsAll(components.stream()
+                                                                                          .map(MethodModel.RecordComponent::name)
+                                                                                          .toList());
     }
 
     /// Resolve the value-object bindings for a route method's path/query parameters (#397 §4.2):
@@ -798,6 +835,7 @@ public class RouteSourceGenerator {
             case RouteSecurityLevel.Public _ -> "SecurityPolicy.publicRoute()";
             case RouteSecurityLevel.Authenticated _ -> "SecurityPolicy.authenticated()";
             case RouteSecurityLevel.Role(var name) -> "SecurityPolicy.roleRequired(\"" + escapeJavaString(name) + "\")";
+            case RouteSecurityLevel.Unspecified _ -> "SecurityPolicy.unspecified()";
         };
     }
 
@@ -1087,16 +1125,25 @@ public class RouteSourceGenerator {
 
     /// Emit the delegate call for a route that builds the request record from path/query arguments.
     /// With a validating factory the record is parsed, a failure becomes a typed 400 and the delegate
-    /// runs only on the validated value; without one the canonical constructor is used unchanged.
-    /// `delegateCallFor` maps the constructed-record expression to the full delegate call.
+    /// runs only on the validated value. Without one the canonical constructor is used, lifted: a
+    /// constructor that throws on client input is also a typed 400, and the delegate runs only on the
+    /// constructed value. `delegateCallFor` maps the constructed-record expression to the full delegate call.
+    ///
+    /// #1573 (v1608 R2-2): before the lift a throwing constructor escaped the handler, and the runtime
+    /// counted it as the slice METHOD throwing — a defect toward automatic rollback caused by a bad path
+    /// or query. Only the slice method's own throw is a defect; building the request is client input.
     private String constructAndDelegate(String parameterType, String args, Function<String, String> delegateCallFor) {
         return validatingFactory(parameterType).map(factory -> validatedChain(parameterType,
                                                                              factory.name(),
                                                                              args,
                                                                              delegateCallFor))
-                                               .or(() -> delegateCallFor.apply("new " + parameterType
-                                                                              + "(" + args
-                                                                              + ")"));
+                                               .or(() -> constructedChain(parameterType, args, delegateCallFor));
+    }
+
+    private static String constructedChain(String parameterType, String args, Function<String, String> delegateCallFor) {
+        return "org.pragmatica.lang.Result.lift(__thrown -> HttpStatus.BAD_REQUEST.with(__thrown), () -> new "
+              + parameterType + "(" + args
+              + ")).async().flatMap(__constructed -> " + delegateCallFor.apply("__constructed") + ")";
     }
 
     /// Emit the delegate call for a pure-body route. Jackson has already built the record, so a

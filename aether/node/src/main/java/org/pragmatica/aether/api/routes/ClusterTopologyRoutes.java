@@ -13,12 +13,15 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerResetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CircuitBreakerStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ClusterMembershipResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.RoleMismatchEntry;
+import org.pragmatica.aether.api.ManagementApiResponses.RoleMismatchesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.FsmMemberDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorInfo;
 import org.pragmatica.aether.api.ManagementApiResponses.GovernorsResponse;
@@ -33,7 +36,6 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -90,6 +92,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                          ManagementRoutes.<CircuitBreakerStatusResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS).toJson(_ -> buildCircuitBreakerStatus()),
                          ManagementRoutes.<CircuitBreakerResetResponse> route(ManagementRoute.CLUSTER_CIRCUIT_BREAKER_RESET).toJson(_ -> resetCircuitBreaker()),
                          ManagementRoutes.<AutoHealStatusResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_STATUS).toJson(_ -> buildAutoHealStatus()),
+                         ManagementRoutes.<RoleMismatchesResponse> route(ManagementRoute.CLUSTER_ROLE_MISMATCHES).toJson(_ -> buildRoleMismatches()),
                          ManagementRoutes.<AutoHealToggleResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_ENABLE).toJson(_ -> setAutoHeal(true)),
                          ManagementRoutes.<AutoHealToggleResponse> route(ManagementRoute.CLUSTER_AUTO_HEAL_DISABLE).toJson(_ -> setAutoHeal(false)));
     }
@@ -115,6 +118,20 @@ public final class ClusterTopologyRoutes implements RouteSource {
                      .async(CTM_UNAVAILABLE);
     }
 
+    /// #689: the operator-visible half of the role-mismatch detection — the same ledger the CTM's
+    /// WARN writes, so a suppressed community-tier fence on a mislabelled node is explainable
+    /// without log access.
+    private Promise<RoleMismatchesResponse> buildRoleMismatches() {
+        return ctmOpt().map(ctm -> new RoleMismatchesResponse(ctm.roleMismatches()
+                                                                 .stream()
+                                                                 .map(m -> new RoleMismatchEntry(m.nodeId().id(),
+                                                                                                 m.intendedRole(),
+                                                                                                 m.advertisedRole(),
+                                                                                                 m.classifiedAs()))
+                                                                 .toList()))
+                     .async(CTM_UNAVAILABLE);
+    }
+
     private Promise<AutoHealStatusResponse> buildAutoHealStatus() {
         return ctmOpt().map(ctm -> new AutoHealStatusResponse(ctm.isAutoHealEnabled()))
                      .async(CTM_UNAVAILABLE);
@@ -125,9 +142,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                                            ? "enable"
                                                            : "disable");
 
-        return ctmOpt().map(ctm -> new AutoHealToggleResponse(enabled,
-                                                              ctm.setAutoHealEnabled(enabled, reason)))
-                     .async(CTM_UNAVAILABLE);
+        return ctmOpt().async(CTM_UNAVAILABLE)
+                     .flatMap(ctm -> ctm.setAutoHealEnabled(enabled, reason)
+                                        .map(previousState -> new AutoHealToggleResponse(enabled, previousState)));
     }
 
     private Option<ClusterTopologyManager> ctmOpt() {
@@ -135,7 +152,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                            .clusterTopologyManager();
     }
 
-    private static final Cause CTM_UNAVAILABLE = Causes.cause("Cluster topology manager not available on this node (not the leader, or node not yet activated)");
+    private static final Cause CTM_UNAVAILABLE = new ManagementServerError.ServiceUnavailable("Cluster topology manager not available on this node (not the leader, or node not yet activated)");
 
     private GovernorsResponse buildGovernorsResponse() {
         var node = nodeSupplier.get();
@@ -188,7 +205,8 @@ public final class ClusterTopologyRoutes implements RouteSource {
                                              snapshot.belowThreshold(),
                                              snapshot.armed(),
                                              node.coreAbsenceSnapshot().or(CORE_ABSENCE_UNWIRED),
-                                             members);
+                                             members,
+                                             node.hasCompleteClusterView());
     }
 
     /// Per-peer membership detail off the node's authoritative `MembershipFsm`: lifecycle state,
@@ -223,9 +241,9 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var descriptor = descriptors.getOrDefault(id, MemberDescriptor.UNKNOWN);
         // Descriptor role is a blank ("unknown") label on an all-core cluster (no role labels);
         // surface the FSM's effective core/worker classification so the field is always present.
-        var role = descriptor.isCore()
-                   ? "core"
-                   : "worker";
+        var role = descriptor.role().isBlank()
+                   ? "unknown"
+                   : descriptor.role();
 
         return new MembershipNodeDetail(id.id(),
                                         fsmState,
@@ -257,9 +275,15 @@ public final class ClusterTopologyRoutes implements RouteSource {
         var highWater = highWaterSnapshot(node);
 
         return switch (domain) {
-            case DOMAIN_COMMUNITY -> Result.success(new OwnershipResponse(domain, communityOwnership(node, highWater)));
-            case DOMAIN_DHT -> Result.success(new OwnershipResponse(domain, dhtOwnership(node, highWater)));
-            case DOMAIN_STREAM -> Result.success(new OwnershipResponse(domain, streamOwnership(node, highWater)));
+            case DOMAIN_COMMUNITY -> Result.success(new OwnershipResponse(domain,
+                                                                          communityOwnership(node, highWater),
+                                                                          node.hasCompleteClusterView()));
+            case DOMAIN_DHT -> Result.success(new OwnershipResponse(domain,
+                                                                    dhtOwnership(node, highWater),
+                                                                    node.hasCompleteClusterView()));
+            case DOMAIN_STREAM -> Result.success(new OwnershipResponse(domain,
+                                                                       streamOwnership(node, highWater),
+                                                                       node.hasCompleteClusterView()));
             default -> new OwnershipError.UnknownDomain(domain).result();
         };
     }
@@ -337,7 +361,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
     }
 
     private static EpochInfo epochInfo(Epoch epoch) {
-        return new EpochInfo(epoch.rabiaTerm(), epoch.localCounter());
+        return new EpochInfo(epoch.incarnation(), epoch.rabiaTerm(), epoch.localCounter());
     }
 
     /// Typed failure for an unrecognized `domain` path segment — surfaced as a clean bad-request by the

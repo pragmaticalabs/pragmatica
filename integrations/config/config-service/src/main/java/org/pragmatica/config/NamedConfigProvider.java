@@ -60,6 +60,11 @@ public final class NamedConfigProvider implements ConfigurationProvider {
     }
 
     @Override
+    public Set<String> staticKeys() {
+        return delegate.staticKeys();
+    }
+
+    @Override
     public Map<String, String> asMap() {
         return delegate.asMap();
     }

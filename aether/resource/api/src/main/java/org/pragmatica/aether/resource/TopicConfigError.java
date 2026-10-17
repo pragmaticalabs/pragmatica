@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.parse.TimeSpan;
 
 
 /// Typed failures of topic-declaration parsing (durable-pubsub-spec §3).
@@ -27,15 +27,22 @@ public sealed interface TopicConfigError extends Cause {
         }
     }
 
-    /// The v1 durable-config constraint (durable-pubsub-spec §3): outside `min-sync == replicas >= 2`
-    /// nothing is proven lossless — `replicas = 1` has no failover durability, and
-    /// `min-sync < replicas` can drop acked records on single-survivor promotion until #411 lands.
-    record OutsideProvenDurableConfig(int replicas, int minSyncReplicas) implements TopicConfigError {
+    /// The topic's `replication_factor`/`confirmation_factor` refused (#1564); `cause` is the typed
+    /// [org.pragmatica.aether.slice.ReplicationFactorsError].
+    record ReplicationRefused(Cause cause) implements TopicConfigError {
         @Override
         public String message() {
-            return "durable topic requires replicas >= 2 and min_sync_replicas == replicas"
-                 + " (durable-pubsub-spec §3, v1 constraint until #411); got replicas=" + replicas
-                 + ", min_sync_replicas=" + minSyncReplicas;
+            return "durable topic replication refused: " + cause.message();
+        }
+    }
+
+    /// The node supplied no [org.pragmatica.aether.slice.ReplicationContext.Source], so a durable topic's factors
+    /// cannot be resolved against the committed cluster defaults. Refused rather than resolved against a guess (#1564).
+    record ReplicationContextUnavailable(String topicName) implements TopicConfigError {
+        @Override
+        public String message() {
+            return "durable topic '" + topicName
+                 + "' cannot resolve its replication factors: the node supplies no replication context";
         }
     }
 
@@ -50,6 +57,15 @@ public sealed interface TopicConfigError extends Cause {
         }
     }
 
+    /// The topic's stream holds retention in whole milliseconds and refuses a bound below 1 (#1549).
+    record RetentionBelowOneMillisecond(TimeSpan retention) implements TopicConfigError {
+        @Override
+        public String message() {
+            return "durable topic retention must be at least 1ms, got '" + retention
+                 + "'; declare a longer retention (durable-pubsub-spec §3)";
+        }
+    }
+
     static TopicConfigError missingTopicName() {
         return new MissingTopicName();
     }
@@ -58,8 +74,12 @@ public sealed interface TopicConfigError extends Cause {
         return new InvalidPartitions(partitions);
     }
 
-    static TopicConfigError outsideProvenDurableConfig(int replicas, int minSyncReplicas) {
-        return new OutsideProvenDurableConfig(replicas, minSyncReplicas);
+    static TopicConfigError replicationRefused(Cause cause) {
+        return new ReplicationRefused(cause);
+    }
+
+    static TopicConfigError retentionBelowOneMillisecond(TimeSpan retention) {
+        return new RetentionBelowOneMillisecond(retention);
     }
 
     static TopicConfigError inertEphemeralKeys(String declaredKeys) {

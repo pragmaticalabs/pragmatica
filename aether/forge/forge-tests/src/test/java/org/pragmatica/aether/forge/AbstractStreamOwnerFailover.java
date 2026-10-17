@@ -46,10 +46,10 @@ import org.pragmatica.aether.ember.EmberCluster;
 /// [#assertsConvergence] hooks.
 ///
 /// Topology: the `test-stream-repl` blueprint (`streams.repl-failover-events`, partitions=1,
-/// replicas=2, min-sync-replicas=2). RF=2 + synchronous replication is the only topology with a
-/// promotable CAUGHT_UP non-owner replica — `POST /api/v1/streams` mints RF=1 (owner-only), which
-/// structurally cannot fail over. Each publish AWAITs a replica ack (min-sync-2), so a successful
-/// pre-kill batch is itself proof the replica is in sync.
+/// replication_factor=3, confirmation_factor=2 — named `replicas`/`min-sync-replicas` before #1564; replicas=2
+/// before #1547). The declared confirmation factor makes each publish await a replica ack (it did not reach the
+/// runtime before #1549), so a successful pre-kill batch shows SOME peer acked, not which one; the CAUGHT_UP
+/// gate below identifies the in-sync replica.
 ///
 /// The flow mirrors the cloud script phase-for-phase: deploy the RF=2 blueprint → gate on the replica
 /// set being PLACED (owner + >=1 non-owner) → publish N and confirm the full history is readable →
@@ -85,8 +85,10 @@ abstract class AbstractStreamOwnerFailover {
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
     private static final String STREAM_SLICE = TestArtifacts.STREAM_REPL_SLICE;
-    private static final String STREAM_NAME = "repl-failover-events";
     private static final String BLUEPRINT_ID = "forge.test:stream-owner-failover:1.0.0";
+    /// The engine key of the blueprint's `[streams.repl-failover-events]` ring ([TestArtifacts#streamEngineKey]);
+    /// `replicaSnapshot` on the bare alias yields an HRW "owner" view with an empty replica set forever.
+    private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "repl-failover-events");
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
@@ -127,7 +129,7 @@ abstract class AbstractStreamOwnerFailover {
 
     /// Applied once, after the cluster is fully member-complete and before the slice is deployed. Default
     /// (unpinned) is a no-op — the DEFAULT membership variant leaves auto-heal on so phase 9 remains a
-    /// live SWIM sensor. The pinned variant disables auto-heal on every node's CTM here.
+    /// live SWIM sensor. The pinned variant pins the cluster-wide auto-heal switch off here ([AutoHealPin]).
     void pinMembership(EmberCluster cluster) {}
 
     /// True → phase 9 asserts RF-restoration convergence HARD (pinned variant). False → phase 9 is a
@@ -150,7 +152,7 @@ abstract class AbstractStreamOwnerFailover {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop().await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -183,7 +185,10 @@ abstract class AbstractStreamOwnerFailover {
         assertThat(owner).describedAs("HRW owner identified before kill").isNotBlank();
 
         // Kill the HRW owner (graceful SWIM leave -> deterministic membership shrink -> HRW re-resolves).
-        cluster.killNode(owner).await();
+        LifecycleAwait.nodeBestEffort("kill node " + owner
+                                  + " in ownerKill_promotedReplicaServesCompleteHistory_andRestoresRf()",
+                                   cluster,
+                                   cluster.killNode(owner));
 
         await().atMost(FAILOVER_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -454,11 +459,7 @@ abstract class AbstractStreamOwnerFailover {
     // --- deployment + readiness --------------------------------------------
 
     private void startAndAwaitReady() {
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in startAndAwaitReady()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(() -> cluster.currentLeader().isPresent());
         await().atMost(WAIT_TIMEOUT).pollInterval(POLL_INTERVAL).until(this::allNodesHealthy);

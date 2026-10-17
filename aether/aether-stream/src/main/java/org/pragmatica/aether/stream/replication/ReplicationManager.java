@@ -4,10 +4,15 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.util.List;
+import java.util.stream.IntStream;
+
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -29,6 +34,29 @@ public interface ReplicationManager extends AutoCloseable {
 
     EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> - 1L;
 
+    /// #1730: the partition's COMMITTED in-sync replica set (the owner included), read from the committed ownership
+    /// record. When present, a confirmation needs EVERY member other than the owner, and the pre-append floor is
+    /// the ISR's size (min-ISR = the confirmation factor). [Option#none] means the partition carries no committed
+    /// ISR (no record yet, or a record minted before #1730), and the any-`minAcks`-replicas rule applies.
+    @FunctionalInterface
+    interface InSyncReplicas {
+        Option<List<NodeId>> inSyncReplicas(String streamName, int partition);
+    }
+
+    InSyncReplicas UNMANAGED = (_, _) -> Option.none();
+
+    /// Owner-side observer of the replica-ack stream (#1235). It is told of each ack BEFORE the registry
+    /// records it (ruling after the #1279 review, N2): a waiter can be resolved from a registry read, so an
+    /// observer that ran after the update could run after that waiter. It therefore reads the ack through
+    /// [#replicatedThrough(ReplicationMessage.ReplicateAck, int)], which overlays the ack on the registry.
+    /// It is told a second time after the update. That call only moves visibility forward, and it closes
+    /// the race with a concurrent owner fsync that read the registry before this ack landed.
+    @FunctionalInterface
+    interface AckObserver {
+        @Contract
+        void acked(ReplicationMessage.ReplicateAck ack);
+    }
+
     /// Replicate one accepted owner-local append to the partition's replica set, carrying the owner's
     /// `ownerEpoch` fencing token (#345 item 1d-ii) so each replica fences a deposed owner's batch
     /// against its own partition high-water before landing it.
@@ -40,11 +68,71 @@ public interface ReplicationManager extends AutoCloseable {
                         long timestamp,
                         Epoch ownerEpoch);
 
+    /// Replicate a CONTIGUOUS run of accepted owner-local appends, `fromOffset` onward (#1245). The
+    /// default sends each event on its own; an implementation that can batch overrides it to send one
+    /// message.
+    @Contract
+    default void replicateEvents(String streamName,
+                                 int partition,
+                                 long fromOffset,
+                                 List<byte[]> payloads,
+                                 List<Long> timestamps,
+                                 Epoch ownerEpoch) {
+        IntStream.range(0,
+                        payloads.size())
+                 .forEach(i -> replicateEvent(streamName,
+                                              partition,
+                                              fromOffset + i,
+                                              payloads.get(i),
+                                              timestamps.get(i),
+                                              ownerEpoch));
+    }
+
+    /// Tell the partition's replicas how far this owner's VISIBLE position reaches (#2087): a replica serves a
+    /// consumer read only up to the minimum of this and what it holds. Idempotent and loss-tolerant: a replica keeps
+    /// the highest value it has seen under an owner epoch, so a repeat is harmless and a lost one only delays it.
+    /// The default announces nothing (no replicas).
+    @Contract
+    default void announceCommitted(String streamName, int partition, long committedThrough, Epoch ownerEpoch) {}
+
     @Contract
     void handleAck(ReplicationMessage.ReplicateAck ack);
 
     ReplicaRegistry registry();
     Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks);
+
+    /// Bind where the committed owner epoch is read (#1730 phase 2): a replica's confirmation counts only while it was made under
+    /// the epoch now in force. Set once at wiring; the default manager ignores it.
+    @Contract
+    default void ownerEpochs(org.pragmatica.aether.stream.StreamOwnerEpochSource source) {}
+
+    /// The highest offset at least `minAcks` DISTINCT non-self replicas have acknowledged for
+    /// `(stream, partition)` — the non-blocking reading of the same condition [#awaitReplication] waits
+    /// for (#1235). `-1` when fewer replicas than `minAcks` have acknowledged anything; [Long#MAX_VALUE]
+    /// when `minAcks <= 0`, since no ack is required.
+    long replicatedThrough(String streamName, int partition, int minAcks);
+    /// [#replicatedThrough(String, int, int)] as it will read once `pending` is recorded: the ack is
+    /// overlaid on the registry rows (never lowering a row), so an [AckObserver] running before the
+    /// registry update sees the ack it is being told about.
+    long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks);
+
+    /// Late-bind the committed ISR source (#1730). The default manages nothing.
+    @Contract
+    default void inSyncReplicaSource(InSyncReplicas source) {}
+
+    /// Install the single [AckObserver] (#1235). The partition manager installs itself at construction.
+    @Contract
+    void observeAcks(AckObserver observer);
+
+    /// Pre-append floor check (#1236): whether the partition's replica set can POSSIBLY deliver
+    /// `minAcks` distinct non-self acks, answered BEFORE anything is appended. A publish refused here
+    /// is genuinely not in the log, so `NOT_ENOUGH_REPLICAS` is a clean failure; the same verdict
+    /// reached inside [#awaitReplication] comes after the append and is not. The default admits every
+    /// publish — the no-op manager has no replica set to fall short of, matching its always-succeeding
+    /// [#awaitReplication].
+    default Result<Unit> ensureReplicaFloor(String streamName, int partition, int minAcks) {
+        return Result.unitResult();
+    }
 
     @Contract
     @Override
@@ -115,6 +203,22 @@ public interface ReplicationManager extends AutoCloseable {
             public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
                 return success(unit());
             }
+
+            /// Consistent with [#awaitReplication] above: with no replication every ack requirement is met.
+            @Override
+            public long replicatedThrough(String streamName, int partition, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            @Override
+            public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+                return Long.MAX_VALUE;
+            }
+
+            /// No replicas, so no acks to observe.
+            @Contract
+            @Override
+            public void observeAcks(AckObserver observer) {}
         };
     }
 }

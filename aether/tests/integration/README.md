@@ -173,7 +173,7 @@ The machine-readable JSON report is written to `aether/tests/integration/test-re
 |-------|------------|
 | Provisioning | `deploy_docker` start → all containers reported running |
 | Cluster formation | containers up → leader elected + quorum formed + first quiesced snapshot |
-| Blueprint deploy | `aether blueprint deploy` round-trip → post-deploy generation quiesces |
+| Blueprint deploy | `aether blueprints deploy` round-trip → post-deploy generation quiesces |
 | Quiesce barrier | `await_generation_quiesced` call duration (seconds) — after destructive suites or deploy steps |
 | Per-test | individual `test_*` function wall time |
 
@@ -205,7 +205,7 @@ The quiesce barriers replace the old `self_heal` 3-step recovery. See [`aether/d
 - If `mode: "unknown"` or `epoch: null`, pings haven't propagated yet — check that the leader node is actually up.
 
 **Slice never activates**
-- Blueprint was pushed but never deployed: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY blueprint list`.
+- Blueprint was pushed but never deployed: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY blueprints list`.
 - Check recent events: `aether -c $TARGET_HOST:5150 --api-key $AETHER_API_KEY events --limit 50`.
 
 **Grep logs on the target**
@@ -218,6 +218,22 @@ ssh $TARGET_HOST 'docker logs aether-b-node-1 2>&1 | grep -iE "ERROR|WARN" | tai
 ```bash
 ./aether/tests/integration/scripts/build-and-push.sh
 ./aether/tests/integration/run-tests.sh --env remote --skip-build --suites 00
+```
+
+## Harness stub suites
+
+`test/test-*.sh` are not cluster suites. They source the harness libraries and suites with `ssh`,
+`hcloud`, `curl` and the management transport stubbed, and assert harness decisions offline. CI's
+`stub-suites` job runs all of them through `test/run-stub-suites.sh` on every pull request and push.
+A new `test/test-<name>.sh` is picked up with no workflow edit, provided it ends with the same
+`  passed: N` / `  failed: M` summary and a non-zero exit on failure, because the runner fails a
+suite whose summary is missing. Each suite runs in its own process group. The runner kills the whole
+group, and fails the suite by name, once it has run for `STUB_SUITE_TIMEOUT_SECONDS` (default 300) or
+holds more than `STUB_SUITE_MAX_PROCS` processes (default 300). A stub that recurses cannot fork-bomb
+the machine it runs on. The runner needs `perl` and `pgrep`.
+
+```bash
+bash aether/tests/integration/test/run-stub-suites.sh
 ```
 
 ## Adding New Tests

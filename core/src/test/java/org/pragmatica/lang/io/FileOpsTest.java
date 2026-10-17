@@ -4,9 +4,19 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.List;
 
+import jdk.jfr.Recording;
+import jdk.jfr.consumer.RecordedEvent;
+import jdk.jfr.consumer.RecordingFile;
+
+import static java.util.Comparator.comparing;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import static org.pragmatica.lang.io.FileOps.*;
 
 class FileOpsTest {
@@ -58,6 +68,78 @@ class FileOpsTest {
             assertThat(readString(file).unwrap()).isEqualTo("replaced");
         }
 
+        /// #1190: durable means the JDK issued `force(true)` on the file AND THEN on its parent
+        /// directory before the call returned -- observed through JFR's `jdk.FileForce`, emitted
+        /// by `FileChannelImpl.force` itself. `writeBytes` is the control: same bytes, no force.
+        ///
+        /// Three properties, and the two beyond mere occurrence are the ones #1190 is about, so
+        /// each is asserted rather than implied:
+        /// - WHICH paths were forced -- the file and the directory that names it;
+        /// - the ORDER (`containsSubsequence`, not an unordered `contains`): forcing the directory
+        ///   BEFORE the write syncs an entry that does not name the file yet, which is the defect
+        ///   restored while every path-only assertion stays green;
+        /// - the METADATA flag (`force(true)`, not `force(false)`): `fdatasync` on a freshly
+        ///   created file need not make its inode -- size, link count -- durable.
+        @Test
+        void writeBytesDurable_forcesFileAndParentDirectory_beforeReturning() {
+            var file = tempDir.resolve("durable.bin");
+            var plain = tempDir.resolve("plain.bin");
+
+            var forced = forcedFilesDuring(() -> {
+                assertThat(writeBytesDurable(file, new byte[]{7, 8, 9}).isSuccess()).isTrue();
+                assertThat(writeBytes(plain, new byte[]{7, 8, 9}).isSuccess()).isTrue();
+            });
+
+            assertThat(readBytes(file).unwrap()).containsExactly(7, 8, 9);
+            assertThat(forced).as("the file forced with its metadata, THEN the directory naming it")
+                              .containsSubsequence(new ForcedFile(file.toAbsolutePath(), true),
+                                                   new ForcedFile(tempDir.toAbsolutePath(), true));
+            assertThat(forced.stream().map(ForcedFile::path).toList()).as("writeBytes forces nothing")
+                              .doesNotContain(plain.toAbsolutePath());
+        }
+
+        /// The first half of `writeBytesDurable`: the file is forced with its metadata and the
+        /// directory is NOT -- a caller renaming the file into place forces the directory after the
+        /// rename, and a force here would sync an entry the rename is about to replace.
+        @Test
+        void writeBytesForced_forcesFileWithMetadata_notItsDirectory() {
+            var file = tempDir.resolve("forced.bin");
+
+            var forced = forcedFilesDuring(() -> assertThat(writeBytesForced(file, new byte[]{4, 5}).isSuccess()).isTrue());
+
+            assertThat(readBytes(file).unwrap()).containsExactly(4, 5);
+            assertThat(forced).as("the file forced with its metadata")
+                              .contains(new ForcedFile(file.toAbsolutePath(), true));
+            assertThat(forced.stream().map(ForcedFile::path).toList()).as("the directory is left to the caller")
+                              .doesNotContain(tempDir.toAbsolutePath());
+        }
+
+        @Test
+        void forceDirectory_forcesTheDirectory() {
+            var forced = forcedFilesDuring(() -> assertThat(forceDirectory(tempDir).isSuccess()).isTrue());
+
+            assertThat(forced).contains(new ForcedFile(tempDir.toAbsolutePath(), true));
+        }
+
+        @Test
+        void forceDirectory_fails_forMissingDirectory() {
+            assertThat(forceDirectory(tempDir.resolve("absent")).isFailure()).isTrue();
+        }
+
+        @Test
+        void writeBytesDurable_truncatesExisting() {
+            var file = tempDir.resolve("durable-overwrite.bin");
+            writeBytes(file, new byte[]{1, 2, 3, 4, 5});
+            assertThat(writeBytesDurable(file, new byte[]{9}).isSuccess()).isTrue();
+            assertThat(readBytes(file).unwrap()).containsExactly(9);
+        }
+
+        @Test
+        void writeBytesDurable_fails_forMissingParentDirectory() {
+            var result = writeBytesDurable(tempDir.resolve("missing").resolve("durable.bin"), new byte[]{1});
+            assertThat(result.isFailure()).isTrue();
+        }
+
         @Test
         void appendString_appendsToExisting() {
             var file = tempDir.resolve("append.txt");
@@ -88,6 +170,34 @@ class FileOpsTest {
             var result = createDirectories(dir);
             assertThat(result.isSuccess()).isTrue();
             assertThat(isDirectory(dir)).isTrue();
+        }
+
+        /// Each directory this call creates is named by an entry in its parent, and that entry is
+        /// durable only once the PARENT is forced -- so the parents of `a`, `a/b` and `a/b/c` are
+        /// forced, the leaf itself is not (it holds nothing yet), and a directory that already
+        /// existed is never forced on its own account.
+        @Test
+        void createDirectoriesDurable_forcesTheParentOfEveryCreatedDirectory() {
+            var leaf = tempDir.resolve("a/b/c");
+
+            var forced = forcedFilesDuring(() -> assertThat(createDirectoriesDurable(leaf).isSuccess()).isTrue());
+            var forcedPaths = forced.stream().map(ForcedFile::path).toList();
+
+            assertThat(isDirectory(leaf)).isTrue();
+            assertThat(forcedPaths).contains(tempDir.toAbsolutePath(),
+                                             tempDir.resolve("a").toAbsolutePath(),
+                                             tempDir.resolve("a/b").toAbsolutePath())
+                                   .doesNotContain(leaf.toAbsolutePath());
+        }
+
+        @Test
+        void createDirectoriesDurable_forcesNothing_whenDirectoryExists() {
+            var dir = tempDir.resolve("present");
+            createDirectories(dir);
+
+            var forced = forcedFilesDuring(() -> assertThat(createDirectoriesDurable(dir).isSuccess()).isTrue());
+
+            assertThat(forced).isEmpty();
         }
 
         @Test
@@ -139,6 +249,41 @@ class FileOpsTest {
             move(source, target);
             assertThat(exists(source)).isFalse();
             assertThat(readString(target).unwrap()).isEqualTo("moving");
+        }
+
+        @Test
+        void moveAtomic_replacesTarget() {
+            var source = tempDir.resolve("atomic-src.txt");
+            var target = tempDir.resolve("atomic-dst.txt");
+            writeString(source, "new");
+            writeString(target, "old");
+            assertThat(moveAtomic(source, target).isSuccess()).isTrue();
+            assertThat(exists(source)).isFalse();
+            assertThat(readString(target).unwrap()).isEqualTo("new");
+        }
+
+        /// #676: the target must survive a rename that fails. Source and target sit in sibling
+        /// directories and the source's directory is made read-only, so `rename(2)` fails on the
+        /// source side while an `unlink(2)` of the target would still succeed — which is exactly
+        /// what a non-atomic move does first. Skipped where the chmod has no effect (root).
+        @Test
+        void moveAtomic_renameFails_targetSurvives() {
+            var sourceDir = tempDir.resolve("locked");
+            var source = sourceDir.resolve("src.txt");
+            var target = tempDir.resolve("dst.txt");
+            createDirectories(sourceDir);
+            writeString(source, "new");
+            writeString(target, "old");
+            setPosixPermissions(sourceDir, "r-xr-xr-x");
+
+            try {
+                assumeTrue(!Files.isWritable(sourceDir), "read-only directory has no effect here (root?)");
+                assertThat(moveAtomic(source, target).isFailure()).isTrue();
+                assertThat(exists(target)).as("the old target survives the failed rename").isTrue();
+                assertThat(readString(target).unwrap()).isEqualTo("old");
+            } finally {
+                setPosixPermissions(sourceDir, "rwxr-xr-x");
+            }
         }
 
         @Test
@@ -309,4 +454,43 @@ class FileOpsTest {
             });
         }
     }
+
+    /// Every `jdk.FileForce` the JVM emits while `action` runs, in the order the JDK issued them.
+    /// Threshold zero: the default profile drops forces shorter than 20 ms, which is every fsync on
+    /// a warm disk. Sorted by start time explicitly, so callers may assert ORDER without depending
+    /// on the order `RecordingFile` happens to replay a chunk in. `metaData` is the event's own
+    /// field: `true` for `force(true)`/fsync, `false` for `force(false)`/fdatasync.
+    static List<ForcedFile> forcedFilesDuring(Runnable action) {
+        try (var recording = new Recording()) {
+            recording.enable("jdk.FileForce").withThreshold(Duration.ZERO);
+            recording.start();
+            action.run();
+            recording.stop();
+
+            var dump = Files.createTempFile("file-force", ".jfr");
+
+            try {
+                recording.dump(dump);
+
+                return RecordingFile.readAllEvents(dump)
+                                    .stream()
+                                    .filter(event -> event.getEventType().getName().equals("jdk.FileForce"))
+                                    .sorted(comparing(RecordedEvent::getStartTime))
+                                    .map(FileOpsTest::forcedFile)
+                                    .toList();
+            } finally {
+                Files.deleteIfExists(dump);
+            }
+        } catch (IOException e) {
+            throw new AssertionError("JFR recording failed: " + e.getMessage(), e);
+        }
+    }
+
+    private static ForcedFile forcedFile(RecordedEvent event) {
+        return new ForcedFile(Path.of(event.getString("path")).toAbsolutePath(), event.getBoolean("metaData"));
+    }
+
+    /// One `jdk.FileForce`: what was forced, and whether the force carried the file's metadata
+    /// (`force(true)`) or only its contents (`force(false)`).
+    record ForcedFile(Path path, boolean metaData) {}
 }

@@ -5,12 +5,16 @@
 package org.pragmatica.aether.http;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.ServiceLoader;
+import java.util.function.Predicate;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -21,9 +25,12 @@ import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
 import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.ExecutionOutcome;
 import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceDefect;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -36,15 +43,20 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.http.routing.Handler;
+import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
+import org.pragmatica.http.routing.RouteShapeSelector;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.routing.SliceVersionRegistry;
 import org.pragmatica.http.routing.VersioningMetricsSink;
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.io.TimeSpan;
@@ -70,6 +82,37 @@ public interface HttpRoutePublisher {
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
     Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
 
+    /// #1678: the router that serves `(httpMethod, path)`, resolved together with [#findLocalRoute]'s route so that
+    /// authorization and dispatch name the same (artifact, route). The default composes the two lookups, as a
+    /// publisher holding one route per prefix may.
+    default Option<SliceRouter> findServingRouter(String httpMethod, String path) {
+        return findLocalRoute(httpMethod, path).flatMap(route -> findLocalRouter(route.httpMethod(), route.pathPrefix()));
+    }
+
+    /// #1678 (v1670 R2-N4): the route a request is authorized against AND the router that serves it, from ONE
+    /// resolution -- two separate lookups could straddle an undeploy and pair a parent's policy with a child's router.
+    record LocalResolution(LocalRouteInfo route, Option<SliceRouter> router) {}
+
+    /// #1678 (C1): the sibling shape keys this node serves under a base, or EMPTY when the publisher cannot tell --
+    /// then the whole base is treated as local, as a publisher holding one route per prefix does.
+    default Option<Set<String>> localShapeKeys(String httpMethod, String pathPrefix) {
+        return Option.none();
+    }
+
+    /// The default composes the two lookups, as a publisher holding one route per prefix may; the production
+    /// publisher answers both from a single resolution.
+    default Option<LocalResolution> resolveLocal(String httpMethod, String path) {
+        return findLocalRoute(httpMethod, path).map(route -> new LocalResolution(route,
+                                                                                 findServingRouter(httpMethod, path)));
+    }
+
+    /// #1659: the policy this node's committed security overrides assign to a route served elsewhere; empty when
+    /// no committed override matches it. The default holds no overrides, as a publisher without an override set
+    /// does; the production publisher answers from its committed overrides.
+    default Option<SecurityPolicy> committedOverride(String httpMethod, String pathPrefix, SecurityPolicy declared) {
+        return Option.none();
+    }
+
     Unit updateSecurityOverrides(SecurityOverrides overrides);
 
     /// Install the #198 §11.1 versioning metrics sink. The management server owns the metrics backend
@@ -79,6 +122,29 @@ public interface HttpRoutePublisher {
     /// @param sink the versioning metrics sink
     /// @return unit
     Unit setVersioningMetricsSink(VersioningMetricsSink sink);
+
+    /// #1573 B1: install the sink for HTTP route execution outcomes. See [RouteOutcomeRecorder]. The default
+    /// is for publishers that build no slice routers (test doubles), which have no executions to record.
+    default Unit setRouteOutcomeRecorder(RouteOutcomeRecorder recorder) {
+        return Unit.unit();
+    }
+
+    /// #1573 B1: receives one [ExecutionOutcome] per finished HTTP route execution, into the SAME per-node
+    /// counters the slice bridge feeds (`InvocationHandler.recordExecution`), so the leader's
+    /// all-instances-failed detector sees HTTP traffic.
+    ///
+    /// Two recording points, not one: every other ingress (inter-slice, topic, scheduled) reaches a slice
+    /// through its byte-level `SliceBridge`, where `AdmittedSliceBridge` records; an HTTP route calls the
+    /// TYPED slice instance directly (`SliceRouterFactory.create(sliceInstance, …)`), so the only call site
+    /// the two share is the slice object itself. Proxying the slice interface would be the single point,
+    /// at the cost of wrapping every generated slice type — the two recorders feed one collector and apply
+    /// the classification in [ExecutionOutcome] instead. A route built by the legacy
+    /// `HttpRequestHandlerFactory` invokes through the invoker, so the bridge already counts it.
+    @FunctionalInterface
+    interface RouteOutcomeRecorder {
+        RouteOutcomeRecorder NONE = (_, _, _) -> Unit.unit();
+        Unit record(Artifact artifact, String method, ExecutionOutcome outcome);
+    }
 
     /// Bind the write-side observability cell registrar (#277 increment 2) so each published route's
     /// handler is wrapped once with a per-injection-point cell that a KV config put can swap. Late-bound
@@ -133,6 +199,16 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final int CONSENSUS_MAX_RETRIES = 2;
 
+    /// #884: the total order every local route lookup resolves through. Longest matching prefix
+    /// first -- the more specific route owns its subtree -- then the lexically SMALLEST artifact
+    /// coordinate, reached by reversing the coordinate half under `max`. Both components are
+    /// String-derived, so the winner depends on nothing that varies between JVMs or between nodes.
+    /// Two distinct prefixes that both match one path and share a length are the same string, so a
+    /// length tie means identical prefixes and the coordinate decides.
+    private static final Comparator<HttpRouteDefinition> LONGEST_PREFIX_THEN_ARTIFACT = Comparator.comparingInt((HttpRouteDefinition route) -> route.pathPrefix()
+                                                                                                                                                    .length()).thenComparing(HttpRouteDefinition::artifactCoord,
+                                                                                                                                                                             Comparator.reverseOrder());
+
     private final NodeId selfNodeId;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final GenerationSnapshotSource snapshotSource;
@@ -145,11 +221,16 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     private final AtomicReference<SecurityOverrides> activeOverrides = new AtomicReference<>(SecurityOverrides.EMPTY);
 
+    /// Set when a republish fails, so an identical later resync retries instead of short-circuiting.
+    private final AtomicBoolean republishFailed = new AtomicBoolean(false);
+
     private final AtomicReference<ObservabilityCellRegistrar> cellRegistrar = new AtomicReference<>(ObservabilityCellRegistrar.NOOP);
 
     private final AtomicReference<VersioningMetricsSink> versioningMetricsSink = new AtomicReference<>(VersioningMetricsSink.noop());
 
     private final VersioningMetricsSink forwardingSink = VersioningMetricsSink.forwarding(versioningMetricsSink::get);
+
+    private final AtomicReference<RouteOutcomeRecorder> routeOutcomeRecorder = new AtomicReference<>(RouteOutcomeRecorder.NONE);
 
     HttpRoutePublisherImpl(NodeId selfNodeId,
                            ClusterNode<KVCommand<AetherKey>> cluster,
@@ -236,6 +317,25 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                   artifact,
                   factory.getClass().getName());
         var typedFactory = (SliceRouterFactory<Object>) factory;
+        // #198 §7: compose the routes ONCE for this node's detection mode and feed the SAME
+        // composed paths to the wire route-table extractor that the SliceRouter dispatches over,
+        // so both consumers agree on the exposed paths (path mode `/v{N}/` or header mode bare).
+        List<HttpRouteDefinition> routes = factory instanceof RouteSource routeSource
+                                           ? routeMetadataExtractor.extract(RouteMounting.compose(routeSource, mountMode),
+                                                                            artifact.asString())
+                                           : List.of();
+        // #882: a factory generated before the #763 contract has every no-[security] route
+        // baked in as PUBLIC; refuse it here, which fails the activation chain, rather than let
+        // the route table carry an exposure the runtime upgrade could never have closed. Decided
+        // BEFORE the router and its observability cells are registered, so a refused slice leaves
+        // nothing behind for the activation-failure cleanup to race against.
+        var stale = staleContractRefusal(artifact, factory, routes);
+
+        if (stale.isPresent()) {
+            return stale.unwrap()
+                        .promise();
+        }
+
         var baseRouter = typedFactory.create(sliceInstance, JsonMapper.defaultJsonMapper(), mountMode);
         // #198 §11.1: bind the slice identity + lazy metrics sink so the router emits the versioned /
         // deprecated / missing-header counters at dispatch. The sink forwards to the live backend the
@@ -250,13 +350,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
         routeCells.put(artifact, List.copyOf(cells));
         sliceRouters.put(artifact, router);
-        if (factory instanceof RouteSource routeSource) {
-            // #198 §7: compose the routes ONCE for this node's detection mode and feed the SAME
-            // composed paths to the wire route-table extractor that the SliceRouter dispatches over,
-            // so both consumers agree on the exposed paths (path mode `/v{N}/` or header mode bare).
-            var composed = RouteMounting.compose(routeSource, mountMode);
-            var routes = routeMetadataExtractor.extract(composed, artifact.asString());
-
+        if (factory instanceof RouteSource) {
             log.debug("Route extraction: {} routes found for slice {} via SliceRouterFactory", routes.size(), artifact);
             if (routes.isEmpty()) {
                 log.debug("No HTTP routes defined for slice {}, skipping publication", artifact);
@@ -273,6 +367,33 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                  factory.getClass().getName());
 
         return Promise.unitPromise();
+    }
+
+    private static Option<SliceLoadingFailure.Fatal.RouteSecurityContractStale> staleContractRefusal(Artifact artifact,
+                                                                                                     SliceRouterFactory<?> factory,
+                                                                                                     List<HttpRouteDefinition> routes) {
+        var contract = factory.routeSecurityContract();
+
+        if (contract >= SliceRouterFactory.ROUTE_SECURITY_CONTRACT) {
+            return Option.none();
+        }
+
+        var publicRoutes = routes.stream()
+                                 .filter(route -> route.security() instanceof SecurityPolicy.Public)
+                                 .map(route -> route.httpMethod() + " " + route.pathPrefix())
+                                 .toList();
+
+        if (publicRoutes.isEmpty()) {
+            return Option.none();
+        }
+
+        var refusal = new SliceLoadingFailure.Fatal.RouteSecurityContractStale(artifact.asString(),
+                                                                               contract,
+                                                                               publicRoutes);
+
+        log.error(refusal.message());
+
+        return Option.some(refusal);
     }
 
     @Override
@@ -292,23 +413,88 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                .hasNext();
     }
 
+    /// Overrides take effect on the LOCAL authorization decision immediately, because
+    /// `findLocalRoute` resolves them at request time against this reference -- no republication is
+    /// needed for enforcement (#887 acceptance 3).
+    ///
+    /// The republication below exists for the REPORTED state (#887 acceptance 4): `GET
+    /// /api/v1/routes` answers from the replicated KV entries, and those were written when the
+    /// routes were published. Without this, an override changed at runtime would leave every node's
+    /// entry -- and the management API's answer -- advertising the previous policy.
+    ///
+    /// Honest guarantee, per operation. ENFORCEMENT on this node changes atomically with the `set`
+    /// below. The REPORTED state converges after one consensus apply, which always settles:
+    /// `publishRoutesToCluster` -> `applyWithRetry` bounds it at CONSENSUS_OPERATION_TIMEOUT x
+    /// (1 + CONSENSUS_MAX_RETRIES) == 90s worst case, then fails loudly. During that window the two
+    /// can disagree, and the direction matters: STRENGTHENING an override enforces before it is
+    /// reported (the report understates protection -- safe), while WEAKENING or REMOVING one is
+    /// enforced before the report stops advertising the stronger policy. That second direction is
+    /// the one an operator can be misled by, and it is bounded by the same 90s, not eliminated.
     @Override
     public Unit updateSecurityOverrides(SecurityOverrides overrides) {
-        activeOverrides.set(overrides);
+        var previous = activeOverrides.getAndSet(overrides);
+
+        if (overrides.equals(previous) && !republishFailed.get()) {
+            return Unit.unit();
+        }
+
         log.info("Updated security overrides: {} entries, policy={}",
                  overrides.entries().size(),
                  overrides.policy());
+        republishAllRoutes();
 
         return Unit.unit();
+    }
+
+    /// Republish only when the overrides actually CHANGED, or when the previous attempt failed.
+    ///
+    /// `SecurityOverrides` is a record over a list and an enum, so value equality is exact and free.
+    /// Without this guard the call is unconditional, and `SecurityOverrideSynchronizer.resync` runs
+    /// once per notification on EVERY node: one `AppBlueprintKey` put anywhere would make every node
+    /// rewrite every local artifact's route entry through consensus, and `KVStore.reset()` — which
+    /// emits one `ValueRemove` per key — would multiply that by the number of keys, during a
+    /// state-machine reset. That is load, not divergence (`publishRoutesToCluster` writes
+    /// `NodeRoutesKey`, never `AppBlueprintKey`, so there is no feedback loop), but it is load
+    /// proportional to cluster size times blueprint count times artifact count.
+    ///
+    /// The `republishFailed` half is why this is not a bare equality check. A republish that failed
+    /// left the KV entry advertising the previous policy; short-circuiting a later identical resync
+    /// would strand it there until the next genuine change, quietly converting a transient consensus
+    /// failure into a permanent divergence between enforced and reported state. The flag makes the
+    /// next resync — a blueprint change or an ACTIVE edge, both of which recur — retry it instead.
+    /// The flag is racy under concurrent rounds by construction, and the race is benign in the safe
+    /// direction: the worst outcome is one redundant republish.
+    private void republishAllRoutes() {
+        republishFailed.set(false);
+        publishedRoutes.forEach(this::republishRoutes);
+    }
+
+    private void republishRoutes(Artifact artifact, List<HttpRouteDefinition> routes) {
+        publishRoutesToCluster(routes, artifact).onFailure(cause -> recordRepublishFailure(artifact, cause));
+    }
+
+    private void recordRepublishFailure(Artifact artifact, Cause cause) {
+        republishFailed.set(true);
+        log.error("Failed to republish routes for {} after a security-override update: {} -- this node ENFORCES the "
+                 + "new overrides, but its cluster route entry still advertises the previous policy. The next override "
+                 + "change or ACTIVE edge will retry.",
+                  artifact,
+                  cause.message());
     }
 
     private Promise<Unit> publishRoutesToCluster(List<HttpRouteDefinition> routes, Artifact artifact) {
         var effectiveRoutes = SecurityOverrideApplier.applyOverrides(routes, activeOverrides.get());
 
         log.debug("Publishing {} HTTP routes for slice {}", effectiveRoutes.size(), artifact);
-        var routeEntries = effectiveRoutes.stream().map(HttpRoutePublisherImpl::toRouteEntry).toList();
+        var routeEntries = IntStream.range(0,
+                                           routes.size())
+                                    .mapToObj(index -> toRouteEntry(effectiveRoutes.get(index),
+                                                                    routes.get(index)))
+                                    .toList();
         var key = NodeRoutesKey.nodeRoutesKey(selfNodeId, artifact);
-        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochRabiaTerm(), 0L);
+        var stampedEpoch = Epoch.epoch(snapshotSource.observedEpochIncarnation(),
+                                       snapshotSource.observedEpochRabiaTerm(),
+                                       0L);
         var value = NodeRoutesValue.nodeRoutesValue(routeEntries, stampedEpoch);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
 
@@ -318,11 +504,18 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                                                             stampedEpoch));
     }
 
-    private static RouteEntry toRouteEntry(HttpRouteDefinition route) {
-        return RouteEntry.activeRoute(route.httpMethod(),
-                                      route.pathPrefix(),
-                                      route.sliceMethod(),
-                                      route.security().asString());
+    /// #1659: the entry carries both the policy this node enforces and the declared one it was derived from, so
+    /// an ingress that does not host the route can re-apply its own committed overrides to the declared policy.
+    /// `applyOverrides` maps the list element-wise, so `effective` and `declared` are the same route.
+    private static RouteEntry toRouteEntry(HttpRouteDefinition effective, HttpRouteDefinition declared) {
+        return RouteEntry.activeRoute(effective.httpMethod(),
+                                      effective.pathPrefix(),
+                                      effective.sliceMethod(),
+                                      effective.security().asString(),
+                                      declared.security().asString(),
+                                      effective.pathArity(),
+                                      effective.spacers(),
+                                      effective.spacerSlots());
     }
 
     @Override
@@ -393,6 +586,13 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     @Override
+    public Unit setRouteOutcomeRecorder(RouteOutcomeRecorder recorder) {
+        routeOutcomeRecorder.set(recorder);
+
+        return Unit.unit();
+    }
+
+    @Override
     public Unit setObservabilityCellRegistrar(ObservabilityCellRegistrar registrar) {
         cellRegistrar.set(registrar);
 
@@ -409,7 +609,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         cellRegistrar.get().register(cell);
         collected.add(cell);
 
-        return wrapHandler(cell, route);
+        return wrapHandler(cell, route, artifact, routeCellKey(route));
     }
 
     private static String routeCellKey(Route<?> route) {
@@ -428,9 +628,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                : path;
     }
 
-    private static <T> Route<T> wrapHandler(ObservabilityStrategyCell cell, Route<T> route) {
+    private <T> Route<T> wrapHandler(ObservabilityStrategyCell cell, Route<T> route, Artifact artifact, String method) {
         var original = route.handler();
-        Handler<T> wrapped = ctx -> cell.around(() -> original.handle(ctx));
+        Handler<T> wrapped = ctx -> cell.around(() -> recordedHandle(original, ctx, artifact, method));
 
         return Route.route(route.method(),
                            route.path(),
@@ -440,7 +640,47 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                            route.name(),
                            route.security(),
                            route.version(),
-                           route.pathParamCount());
+                           route.pathParamCount(),
+                           route.spacerSlots());
+    }
+
+    /// #1573 B1: runs the route and records its outcome ([ExecutionOutcome] has the classification).
+    /// A handler that throws on the calling thread is the HTTP twin of the bridge's MethodThrew: it is
+    /// lifted into a [SliceDefect.MethodThrew] failure, recorded as a defect, and answered as before by
+    /// the router's error mapping instead of escaping the promise chain.
+    private <T> Promise<T> recordedHandle(Handler<T> handler, RequestContext ctx, Artifact artifact, String method) {
+        return Promise.lift(HttpRoutePublisherImpl::handlerThrew,
+                            () -> handler.handle(ctx))
+                      .flatMap(promise -> promise)
+                      .withResult(result -> recordRouteOutcome(artifact, method, result));
+    }
+
+    private static Cause handlerThrew(Throwable throwable) {
+        return SliceDefect.MethodThrew.FACTORY.apply(Causes.fromThrowable(throwable));
+    }
+
+    @Contract
+    private void recordRouteOutcome(Artifact artifact, String method, Result<?> result) {
+        routeOutcome(result).onPresent(outcome -> routeOutcomeRecorder.get()
+                                                                      .record(artifact, method, outcome));
+    }
+
+    private static Option<ExecutionOutcome> routeOutcome(Result<?> result) {
+        return result.fold(HttpRoutePublisherImpl::failedRouteOutcome, HttpRoutePublisherImpl::succeededRouteOutcome);
+    }
+
+    private static Option<ExecutionOutcome> failedRouteOutcome(Cause cause) {
+        return cause instanceof SliceDefect
+               ? Option.some(ExecutionOutcome.DEFECT)
+               : Option.none();
+    }
+
+    /// A handler may complete successfully with a `Result.Failure` value — a failure the method
+    /// RETURNED, which the router answers with its mapped status. Not counted, as on the bridge.
+    private static Option<ExecutionOutcome> succeededRouteOutcome(Object value) {
+        return value instanceof Result<?> returned && returned.isFailure()
+               ? Option.none()
+               : Option.some(ExecutionOutcome.SUCCESS);
     }
 
     private void deregisterRouteCells(Artifact artifact) {
@@ -485,35 +725,196 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         return Set.copyOf(localRoutes);
     }
 
+    /// #884: the ONE local-route selection. Every local lookup that has to name a route resolves
+    /// through this method over the same `publishedRoutes` snapshot and the same total order, so
+    /// the route that AUTHORIZES a request (`AppHttpServer.findRouteSecurityPolicy` ->
+    /// [#findLocalRoute]), the route that DISPATCHES it (`AppHttpServer.dispatchToRoute`, through
+    /// the same call) and the router that SERVES it ([#findLocalRouter]) cannot disagree.
+    ///
+    /// They could, and did. Dispatch ran its own scan over [#allLocalRoutes], whose `Set.copyOf`
+    /// result is an `ImmutableCollections.SetN` -- its iteration order is a function of a `SALT`
+    /// seeded once per JVM, so `findFirst` over a nested pair picked a different route on roughly
+    /// half of node starts, while the policy half picked by `ConcurrentHashMap` hash order. Making
+    /// only the policy half deterministic would have turned an intermittent disagreement into a
+    /// systematic one. There is now a single scan and nothing left to disagree with.
+    private Option<Map.Entry<Artifact, HttpRouteDefinition>> selectRoute(Predicate<HttpRouteDefinition> matches) {
+        return Option.from(publishedRoutes.entrySet()
+                                          .stream()
+                                          .flatMap(entry -> entry.getValue()
+                                                                 .stream()
+                                                                 .filter(matches)
+                                                                 .map(route -> Map.entry(entry.getKey(),
+                                                                                         route)))
+                                          .max(Map.Entry.comparingByValue(LONGEST_PREFIX_THEN_ARTIFACT)));
+    }
+
+    /// The router that serves `pathPrefix`. Keyed on an EXACT prefix, so the length half of the
+    /// order is always a tie here and the artifact coordinate decides -- which is what keeps this
+    /// answer equal to [#findLocalRoute]'s pick when two artifacts publish the same method and
+    /// prefix. A first match over the map would have picked by artifact hash instead, and the
+    /// request would have been authorized under one slice's policy and served by the other's.
     @Override
     public Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix) {
-        for (var entry : publishedRoutes.entrySet()) {
-            var artifact = entry.getKey();
-            var routes = entry.getValue();
+        return selectRoute(route -> route.httpMethod()
+                                         .equalsIgnoreCase(httpMethod) && route.pathPrefix()
+                                                                               .equals(pathPrefix)).flatMap(entry -> Option.option(sliceRouters.get(entry.getKey())));
+    }
 
-            for (var route : routes) {
-                if (route.httpMethod().equalsIgnoreCase(httpMethod) && route.pathPrefix().equals(pathPrefix)) {
-                    return Option.option(sliceRouters.get(artifact));
-                }
-            }
-        }
+    /// #1659: the policy THIS node's committed overrides assign to a route it does not host, known by its method,
+    /// prefix and declared policy. Empty when no committed override matches the route. Read from the same
+    /// `activeOverrides` and the same rule as [#findLocalRoute], so an ingress judges a remote route exactly as the
+    /// hosting node would once it has republished -- and a relaxed override relaxes here immediately.
+    @Override
+    public Option<SecurityPolicy> committedOverride(String httpMethod, String pathPrefix, SecurityPolicy declared) {
+        return SecurityOverrideApplier.overriddenPolicy(httpMethod, pathPrefix, declared, activeOverrides.get());
+    }
 
-        return Option.none();
+    /// #887: the matched route's security policy is resolved against the CURRENT overrides here,
+    /// at read time, because this is the value the hosting node's authorization decision uses
+    /// (`AppHttpServer.findRouteSecurityPolicy`). `publishedRoutes` deliberately keeps the RAW
+    /// routes: they are the input to the override rule, not its output, and storing a pre-resolved
+    /// copy alongside them would create a second collection that goes stale the moment
+    /// `updateSecurityOverrides` runs -- which is the defect this fixes, re-introduced one layer up.
+    ///
+    /// One `activeOverrides.get()` for the whole scan, so a concurrent `updateSecurityOverrides`
+    /// cannot make a single lookup resolve two different routes against two different override sets.
+    ///
+    /// #884: the LONGEST matching prefix wins, by [#selectRoute]. With two slices on one node
+    /// declaring nested prefixes (`/api/v1/pricing/` and `/api/v1/pricing/analytics/`) a request
+    /// under the inner one used to resolve to whichever artifact hashed first, and under #866 that
+    /// picked which security policy applied. Nested prefixes across slices are legal; the more
+    /// specific route owns its subtree. `startsWith` is a segment-boundary test because
+    /// `HttpRouteDefinition` normalizes every prefix to a trailing slash in its constructor.
+    @Override
+    public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
+        var overrides = activeOverrides.get();
+
+        return resolveServed(httpMethod, path).map(served -> LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(served.definition(),
+                                                                                                                                 overrides)));
+    }
+
+    /// #1678: the router that SERVES `(httpMethod, path)` -- from the same single resolution as [#findLocalRoute], so
+    /// the route a request is authorized against and the slice it is dispatched to are one (artifact, route) pair.
+    @Override
+    public Option<SliceRouter> findServingRouter(String httpMethod, String path) {
+        return resolveServed(httpMethod, path).flatMap(served -> Option.option(sliceRouters.get(served.artifact())));
     }
 
     @Override
-    public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
-        var normalizedPath = normalizePath(path);
+    public Option<LocalResolution> resolveLocal(String httpMethod, String path) {
+        var overrides = activeOverrides.get();
 
-        for (var routes : publishedRoutes.values()) {
-            for (var route : routes) {
-                if (route.httpMethod().equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix())) {
-                    return Option.some(LocalRouteInfo.localRouteInfo(route));
-                }
-            }
+        return resolveServed(httpMethod, path).map(served -> new LocalResolution(LocalRouteInfo.localRouteInfo(SecurityOverrideApplier.applyOverride(served.definition(),
+                                                                                                                                                     overrides)),
+                                                                                 Option.option(sliceRouters.get(served.artifact()))));
+    }
+
+    private record ServedRoute(Artifact artifact, HttpRouteDefinition definition) {}
+
+    /// #1678: ONE resolution to the (artifact, route) that serves a request. Sibling routes share a base path
+    /// (`GET /orders/{id}` and `GET /orders/{id}/admin` are both `/orders/`), and two slices may too, so the longest
+    /// matching prefix (#884) narrows to a base and the SHAPE decides among everything published under it -- through
+    /// [RouteShapeSelector], the rule each slice's own router dispatches by, over candidates ordered by artifact
+    /// coordinate (the #884 tie-break). Picking the artifact by prefix and the route by a separate router match could
+    /// authorize one slice's route and dispatch to another's; there is nothing here left to disagree.
+    ///
+    /// Header-mode versions publish the same shape once per version; the strictest of those governs, because the
+    /// version is chosen per request by a header this lookup does not see. When no local shape matches, there is NO
+    /// local route (CodeRabbit C1): the request falls through to the remote registry, where another node may serve the
+    /// sibling, and to 404 when nothing does -- never to a local sibling that would answer 404 in its place.
+    private Option<ServedRoute> resolveServed(String httpMethod, String path) {
+        var normalizedPath = normalizePath(path);
+        var candidates = publishedRoutes.entrySet()
+                                        .stream()
+                                        .flatMap(entry -> entry.getValue()
+                                                               .stream()
+                                                               .filter(route -> route.httpMethod()
+                                                                                     .equalsIgnoreCase(httpMethod) && normalizedPath.startsWith(route.pathPrefix()))
+                                                               .map(route -> new ServedRoute(entry.getKey(),
+                                                                                             route)))
+                                        .toList();
+        var longest = candidates.stream().mapToInt(served -> served.definition()
+                                                                   .pathPrefix()
+                                                                   .length()).max();
+
+        if (longest.isEmpty()) {
+            return Option.none();
         }
 
-        return Option.none();
+        var base = candidates.stream()
+                             .filter(served -> served.definition()
+                                                     .pathPrefix()
+                                                     .length() == longest.getAsInt())
+                             .sorted(Comparator.comparing(served -> served.definition()
+                                                                          .artifactCoord()))
+                             .toList();
+        var shapes = base.stream().map(ServedRoute::definition).toList();
+
+        return RouteShapeSelector.select(shapes,
+                                         routerPath(path))
+                                 .map(selected -> base.get(shapes.indexOf(selected)))
+                                 .map(served -> strictestOfItsShape(served, base));
+    }
+
+    /// #1678 (C1): the sibling shapes this node serves under `(httpMethod, pathPrefix)`, keyed as the registry keys
+    /// them, so the remote view drops only these and keeps a sibling served only elsewhere.
+    @Override
+    public Option<Set<String>> localShapeKeys(String httpMethod, String pathPrefix) {
+        return Option.some(publishedRoutes.values()
+                                          .stream()
+                                          .flatMap(List::stream)
+                                          .filter(route -> route.httpMethod()
+                                                                .equalsIgnoreCase(httpMethod) && route.pathPrefix()
+                                                                                                      .equals(pathPrefix))
+                                          .map(route -> HttpRouteRegistry.RouteInfo.shapeKeyOf(route.pathArity(),
+                                                                                               route.spacers()))
+                                          .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+    }
+
+    private static ServedRoute strictestOfItsShape(ServedRoute served, List<ServedRoute> base) {
+        var sameShape = base.stream()
+                            .filter(other -> other.artifact()
+                                                  .equals(served.artifact()) && sameShape(other.definition(),
+                                                                                          served.definition()))
+                            .map(other -> other.definition()
+                                               .security())
+                            .toList();
+
+        return new ServedRoute(served.artifact(),
+                               served.definition().withSecurity(strictest(sameShape).or(served.definition().security())));
+    }
+
+    private static boolean sameShape(HttpRouteDefinition left, HttpRouteDefinition right) {
+        return left.pathArity() == right.pathArity()
+               && left.spacers()
+                      .equals(right.spacers())
+               && left.spacerSlots()
+                      .equals(right.spacerSlots());
+    }
+
+    /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC`;
+    /// equal strengths are ordered by the canonical string so the answer is the same on every node.
+    private static Option<SecurityPolicy> strictest(List<SecurityPolicy> policies) {
+        return Option.from(policies.stream()
+                                   .max(Comparator.comparingInt(HttpRoutePublisherImpl::strictness).thenComparing(SecurityPolicy::asString)));
+    }
+
+    private static int strictness(SecurityPolicy policy) {
+        return switch (policy) {
+            case SecurityPolicy.Public _ -> 0;
+            case SecurityPolicy.Unspecified _ -> 1;
+            default -> policy.strength() + 2;
+        };
+    }
+
+    /// The router matches a request path as the client sent it; `findLocalRoute` callers pass the normalized
+    /// form, whose added trailing slash would read as an extra empty segment.
+    private static String routerPath(String path) {
+        var stripped = Option.option(path).map(String::strip).or("/");
+
+        return stripped.length() > 1 && stripped.endsWith("/")
+               ? stripped.substring(0, stripped.length() - 1)
+               : stripped;
     }
 
     private String normalizePath(String path) {

@@ -32,7 +32,7 @@
 # INDEPENDENTLY — a bug that loses one partition's WAL while others recover is caught
 # per-partition rather than hidden in an aggregate count.
 #
-# Durability contract under test (min-sync-replicas=2): a publish resolves only after
+# Durability contract under test (confirmation_factor=2): a publish resolves only after
 # `PartitionWal.append`'s `force()`, so an ACKED event is fsync-durable on >=2 nodes
 # BEFORE the caller is told "published". Therefore the assertion is exactly:
 #   every event whose publish returned success is present after the crash.
@@ -126,37 +126,105 @@ stream_post_any() {
 # current pin stops answering, which is what the old `app_post` pin could not do.
 STREAM_PUBLISH_ENDPOINT=""
 
+# Optional $1: an endpoint to skip — the one that just failed. A killed member stays in the
+# membership (and so in the endpoint list) until its departure commits, so a plain `head -1` re-pick
+# hands back the node that was just killed.
 pick_publish_endpoint() {
-    STREAM_PUBLISH_ENDPOINT="$(node_app_endpoints 2>/dev/null | head -1)"
-    [ -n "$STREAM_PUBLISH_ENDPOINT" ]
+    local exclude="${1:-}"
+    STREAM_PUBLISH_ENDPOINT="$(node_app_endpoints 2>/dev/null | grep -vxF "${exclude:-}" | head -1)"
+    if [ -z "$STREAM_PUBLISH_ENDPOINT" ]; then
+        # Say it once, loudly. A publish that is never attempted used to fail the durability
+        # assertions downstream in 0s, reading as a stream defect when nothing had been sent.
+        log_fail "could not resolve any per-node app endpoint — no publish can be attempted"
+        return 1
+    fi
 }
 
+# Retry policy (the shared stream_publish_status in lib/cluster.sh cannot be reused: it drives the
+# management route, this drives the app route on a sticky per-node endpoint):
+#   - an ANSWERED 503 whose body is a before-write refusal (the app route's producers: StreamError.OwnerNotActivated "is not yet
+#     promoted on this node", StreamForwardError "Remote publish retryable"; test-02y-publish-retry.sh
+#     reads both sources so a reworded producer reddens it. "refused before writing" is the MANAGEMENT
+#     route's wording (ManagementServerError) and is deliberately absent here) is retried on the SAME
+#     endpoint, PUBLISH_503_DELAY_S doubling up to PUBLISH_503_MAX_DELAY_S, for PUBLISH_503_BUDGET_S.
+#     Nothing was written, so a resend cannot duplicate. 30s because s29's 37/40 saw a >=18s refusal
+#     (a zombie link to a p0 holder, #1762) and the budget must cover one link TTL plus the 5s reconcile.
+#   - a 500 is NEVER retried: "Publish outcome unknown" may have landed and there is no message id, so a
+#     resend can duplicate the event. That yields an at-least-once WARN and hides whether the first
+#     write landed (#1750).
+#   - only 000 (nothing answered: a dead pin) re-picks an endpoint, once.
+# An outage the retry absorbs must stay visible: each retried publish appends "idx retries wait_s
+# outcome" to PUBLISH_503_LOG (a file, because the concurrent publisher runs in a background subshell)
+# and WARNs; print_503_summary emits one "02y max-503-wait=Ns retries=M" line at the end.
+PUBLISH_503_BUDGET_S="${PUBLISH_503_BUDGET_S:-30}"
+PUBLISH_503_DELAY_S="${PUBLISH_503_DELAY_S:-0.25}"
+PUBLISH_503_MAX_DELAY_S="${PUBLISH_503_MAX_DELAY_S:-2}"
+PUBLISH_503_LOG="${PUBLISH_503_LOG:-$(mktemp)}"
+
 publish_marker() {
-    local idx="$1" body payload
+    local idx="$1" payload out status body retries=0 repicked=0 first503=""
+    local delay="$PUBLISH_503_DELAY_S" deadline=$((SECONDS + PUBLISH_503_BUDGET_S)) wait_s
     payload="{\"payload\":\"$(marker_for "$idx")\"}"
 
     [ -n "$STREAM_PUBLISH_ENDPOINT" ] || pick_publish_endpoint || return 1
 
-    body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload" 2>/dev/null)
-    if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
-        return 0
-    fi
+    while :; do
+        # `_api_call` logs status + the first 300 bytes of any error body on stderr, the only account
+        # of WHY a publish failed; it is deliberately not suppressed.
+        out=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload" 1) || true
+        status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+        status="${status:-000}"
+        body=$(printf '%s' "$out" | sed '$d')
 
-    # The pin may have just been killed — re-pick ONCE and retry, so the sticky choice survives a
-    # crash without becoming a rotation.
-    #
-    # The retry does NOT suppress stderr: `_api_call` logs status + the first 300 bytes of any error
-    # body there, and that is the only account of WHY a publish failed. Suppressing both attempts
-    # (as the first version of this did) left "39 of 40 ACKED" with nothing to explain the missing
-    # one — the same silent-stderr trap this suite's siblings were fixed for.
-    pick_publish_endpoint || return 1
-    body=$(_api_call POST "${STREAM_PUBLISH_ENDPOINT}/api/stream-mp/publish" "$payload")
-    if printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
-        return 0
-    fi
+        if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] && printf '%s' "$body" | grep -q '"status"[[:space:]]*:[[:space:]]*"published"'; then
+            record_503_wait "$idx" "$retries" "$first503" acked
+            return 0
+        fi
 
-    log_warn "publish ${idx}: not ACKED after re-pick; last body: $(printf '%s' "$body" | head -c 200)" >&2
+        if [ "$status" = "503" ] && printf '%s' "$body" | grep -qiE 'is not yet promoted on this node|Remote publish retryable'; then
+            [ -n "$first503" ] || first503="$SECONDS"
+            if [ "$SECONDS" -lt "$deadline" ]; then
+                retries=$((retries + 1))
+                sleep "$delay"
+                delay=$(awk -v d="$delay" -v m="$PUBLISH_503_MAX_DELAY_S" 'BEGIN { d = d * 2; if (d > m) d = m; print d }')
+                continue
+            fi
+            record_503_wait "$idx" "$retries" "$first503" gave-up
+            log_warn "publish ${idx}: 503 before-write refusal persisted for ${PUBLISH_503_BUDGET_S}s (${retries} retries); last body: $(printf '%s' "$body" | head -c 200)" >&2
+            return 1
+        fi
+
+        if [ "$status" = "000" ] && [ "$repicked" -eq 0 ]; then
+            # Nothing answered: the pin may have just been killed. Re-pick ONCE, so the sticky choice
+            # survives a crash without becoming a rotation.
+            repicked=1
+            pick_publish_endpoint "$STREAM_PUBLISH_ENDPOINT" || return 1
+            continue
+        fi
+        break
+    done
+
+    record_503_wait "$idx" "$retries" "$first503" not-acked
+    log_warn "publish ${idx}: not ACKED (HTTP ${status}, not retried); last body: $(printf '%s' "$body" | head -c 200)" >&2
     return 1
+}
+
+# Log and record a publish that needed 503 retries. $3 is $SECONDS at its first 503, so the elapsed
+# wait is in whole seconds (a sub-second absorption reads 0s; the retry count still shows it).
+record_503_wait() {
+    local idx="$1" retries="$2" first503="$3" outcome="$4" wait_s
+    [ "$retries" -gt 0 ] || return 0
+    wait_s=$((SECONDS - first503))
+    printf '%s %s %s %s\n' "$idx" "$retries" "$wait_s" "$outcome" >> "$PUBLISH_503_LOG"
+    log_warn "publish ${idx}: absorbed ${retries} 503 before-write refusal(s) over ~${wait_s}s (${outcome})" >&2
+}
+
+# One summary line so an outage absorbed by the retry stays visible in run-container.log.
+print_503_summary() {
+    local max_wait total
+    max_wait=$(awk 'BEGIN { m = 0 } $3 > m { m = $3 } END { print m }' "$PUBLISH_503_LOG")
+    total=$(awk '{ t += $2 } END { print t + 0 }' "$PUBLISH_503_LOG")
+    printf '02y max-503-wait=%ss retries=%s\n' "$max_wait" "$total"
 }
 
 # Publish [start .. start+count-1], appending ACKED indices to $outfile.
@@ -183,13 +251,154 @@ read_partition_raw() {
         '"events"' || printf ''
 }
 
+# Emit "offset payload" per event of a read body on stdin, in response order.
+parse_events() {
+    grep -oE '\{[^{}]*"offset"[^{}]*\}' \
+        | sed -E 's/.*"offset"[[:space:]]*:[[:space:]]*([0-9]+).*"payload"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1 \2/'
+}
+
 # Emit "offset payload" per event of a partition, in response order.
 partition_events() {
     local partition="$1" body
     body=$(read_partition_raw "$partition")
-    printf '%s' "$body" \
-        | grep -oE '\{[^{}]*"offset"[^{}]*\}' \
-        | sed -E 's/.*"offset"[[:space:]]*:[[:space:]]*([0-9]+).*"payload"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1 \2/'
+    printf '%s' "$body" | parse_events
+}
+
+# ---------------------------------------------------------------------------
+# Settled read (#1502). The read route is the app `StreamAccess` at `ReadPreference.NEAREST`,
+# which is best-effort with no read-your-writes promise (#136): a node answering from a local ring
+# that is empty or behind returns a SUCCESSFUL, SHORT list. One such read cannot bear a durability
+# verdict. s27 cluster B (2026-09-25) scored "80 acked, 40 missing" from one read taken in the
+# post-kill leaderless window; the next step's read of the same partitions, 1-3s later, found 81.
+#
+# So a verdict is taken only on a SETTLED read, re-reading every partition until one of:
+#   COMPLETE — every partition answered and every acked marker is present;
+#   STABLE, HEAD-BACKED — every partition answered, two consecutive rounds agree on each
+#              partition's event count and last offset, the OWNER's head was obtained for EVERY
+#              partition, and no partition is short of it;
+#   STABLE, HEADLESS — the owner's head was missing for at least one partition, so agreement is
+#              not enough: the same signature must have held for SETTLED_HEADLESS_WINDOW_S.
+# A settled read that still lacks an acked marker is genuine loss, and is scored as loss.
+#
+# Why the headless rule exists (review of #1506): the head comes from the management replicas
+# view (`ownerHeadOffset`, the owner's next-expected offset, trusted only with
+# `servedByOwner=true`), and resolving the stream's coordinate goes through the STREAMING
+# task-group owner, i.e. the leader. In the leaderless window s27 was hit in, the head is therefore
+# likely unavailable — and one stale NEAREST node answers every round the same way, because
+# `stream_post_any` asks endpoints in a fixed order. Two agreeing reads 2s apart then reproduced
+# the s27 false loss exactly. The alternative, reporting UNMEASURABLE whenever no head was ever
+# obtained, was rejected: when the replicas view is structurally unavailable a real loss would
+# never be reported as loss. Waiting out a window keeps real loss detectable (it is scored once
+# the window has passed, well inside the deadline) at the cost of SETTLED_HEADLESS_WINDOW_S on
+# the loss path only.
+#
+# A partition read that FAILS (no endpoint answered) is unreadable, never an empty partition:
+# `read_partition_raw` turns that into '' and the pre-#1502 check then counted it as loss.
+# ---------------------------------------------------------------------------
+SETTLED_READ_DEADLINE_S="${SETTLED_READ_DEADLINE_S:-90}"
+SETTLED_READ_INTERVAL_S="${SETTLED_READ_INTERVAL_S:-2}"
+# A guess, not a measurement: longer than the ~2s s27 leaderless window and the ~21s re-election
+# cycle seen in 02w's churn the same day, and short enough to leave most of the deadline.
+SETTLED_HEADLESS_WINDOW_S="${SETTLED_HEADLESS_WINDOW_S:-30}"
+SETTLED_PAYLOADS=""
+SETTLED_STATE=""
+SETTLED_UNREADABLE=""
+SETTLED_COORD=""
+PARTITION_HEAD=""
+
+# partition_head <p>: sets PARTITION_HEAD to the owner's next-expected offset, or '' when the
+# answering node is not the owner or the view is unavailable. Called WITHOUT a subshell so the
+# coordinate, resolved through the leader-bound catalog, is looked up once and then cached in
+# SETTLED_COORD instead of once per partition per round.
+partition_head() {
+    local body head
+    PARTITION_HEAD=""
+    if [ -z "$SETTLED_COORD" ]; then
+        SETTLED_COORD=$(stream_coordinate "$STREAM_NAME" 2>/dev/null) || SETTLED_COORD=""
+        [ -n "$SETTLED_COORD" ] || return 0
+    fi
+    body=$(api_get "/api/v1/streams/${SETTLED_COORD}/replicas/$1" 2>/dev/null) || return 0
+    [ "$(json_scalar "$body" servedByOwner)" = "true" ] || return 0
+    head=$(json_scalar "$body" ownerHeadOffset)
+    case "$head" in ''|*[!0-9]*) return 0 ;; esac
+    PARTITION_HEAD="$head"
+}
+
+# settled_payloads <acked-index-file...>: read every partition until COMPLETE or STABLE (above),
+# within SETTLED_READ_DEADLINE_S. Sets SETTLED_PAYLOADS (one payload per distinct
+# (partition, offset), so a payload appended twice appears twice but a response repeating one
+# offset does not), SETTLED_STATE (how the read ended, with per-partition count:lastOffset and the
+# heads it had) and SETTLED_UNREADABLE (partitions whose LAST read failed). The payloads are those
+# of the FINAL round only: carrying anything over from an earlier round would let a marker seen
+# once in a short read hide its absence from the settled one. Returns 0 when settled, 1 at the
+# deadline.
+settled_payloads() {
+    local deadline=$((SECONDS + SETTLED_READ_DEADLINE_S)) round=0 p body events n last
+    local payloads sig prev_sig="" sig_since=0 unreadable short heads headless missing idx
+    local acked
+    acked=$(cat "$@" 2>/dev/null)
+    while :; do
+        round=$((round + 1))
+        payloads=""; sig=""; unreadable=""; short=""; heads=""; headless=0
+        for ((p = 0; p < PARTITIONS; p++)); do
+            if ! body=$(stream_post_any "/api/stream-mp/read" \
+                    "{\"partition\":${p},\"fromOffset\":0,\"maxEvents\":100000}" '"events"'); then
+                unreadable="${unreadable}${p} "
+                sig="${sig}p${p}=unreadable "
+                continue
+            fi
+            events=$(printf '%s' "$body" | parse_events | awk '!seen[$1]++')
+            n=$(printf '%s' "$events" | grep -c . || true)
+            last=$(printf '%s' "$events" | awk 'END {print (NR ? $1 : -1)}')
+            sig="${sig}p${p}=${n}:${last} "
+            [ -n "$events" ] && payloads="${payloads}$(printf '%s' "$events" | awk '{print $2}')"$'\n'
+        done
+        if [ "$sig" != "$prev_sig" ]; then
+            sig_since=$SECONDS
+        fi
+        SETTLED_PAYLOADS="$payloads"
+        SETTLED_UNREADABLE="$unreadable"
+        missing=0
+        while IFS= read -r idx; do
+            [ -n "$idx" ] || continue
+            printf '%s' "$payloads" | grep -qx "$(marker_for "$idx")" || missing=$((missing + 1))
+        done <<< "$acked"
+        if [ -z "$unreadable" ] && [ "$missing" -eq 0 ]; then
+            SETTLED_STATE="complete on read ${round} [${sig% }]"
+            return 0
+        fi
+        if [ -z "$unreadable" ]; then
+            for ((p = 0; p < PARTITIONS; p++)); do
+                partition_head "$p"
+                last=$(printf '%s' "$sig" | tr ' ' '\n' | sed -n "s/^p${p}=[0-9]*:\(-\{0,1\}[0-9]*\)$/\1/p")
+                if [ -z "$PARTITION_HEAD" ]; then
+                    headless=1
+                    heads="${heads}p${p}=none "
+                    continue
+                fi
+                heads="${heads}p${p}=${PARTITION_HEAD} "
+                if [ -n "$last" ] && [ $((last + 1)) -lt "$PARTITION_HEAD" ]; then
+                    short="${short}p${p}(last ${last} < owner head ${PARTITION_HEAD}) "
+                fi
+            done
+            if [ -z "$short" ] && [ "$sig" = "$prev_sig" ]; then
+                if [ "$headless" -eq 0 ]; then
+                    SETTLED_STATE="stable across reads $((round - 1))-${round} with every owner head, ${missing} acked marker(s) absent [${sig% }] heads [${heads% }]"
+                    return 0
+                fi
+                if [ $((SECONDS - sig_since)) -ge "$SETTLED_HEADLESS_WINDOW_S" ]; then
+                    SETTLED_STATE="stable for $((SECONDS - sig_since))s (>= ${SETTLED_HEADLESS_WINDOW_S}s headless window: an owner head was unavailable) by read ${round}, ${missing} acked marker(s) absent [${sig% }] heads [${heads% }]"
+                    return 0
+                fi
+            fi
+        fi
+        prev_sig="$sig"
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            SETTLED_STATE="NOT settled after ${round} read(s) in ${SETTLED_READ_DEADLINE_S}s: unreadable=[${unreadable% }] short=[${short% }] [${sig% }] heads [${heads% }]"
+            return 1
+        fi
+        sleep "$SETTLED_READ_INTERVAL_S"
+    done
 }
 
 # All payloads currently readable across every partition.
@@ -223,7 +432,7 @@ json_scalar() {
 replicas_snapshot_owner_view() {
     local attempts="${1:-8}" body last_body="" i served
     for ((i = 0; i < attempts; i++)); do
-        body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${KILL_PARTITION}" 2>/dev/null) || body=""
+        body=$(stream_replicas "${STREAM_NAME}" "${KILL_PARTITION}" 2>/dev/null) || body=""
         if [ -n "$body" ]; then
             last_body="$body"
             served=$(json_scalar "$body" servedByOwner)
@@ -238,7 +447,7 @@ replicas_snapshot_owner_view() {
 # `hrwOwner`, so no owner-authoritative view is needed (see the note in test_identify_partition_owner).
 owner_of_partition() {
     local partition="$1" body
-    body=$(api_get "/api/v1/streams/replicas/${STREAM_NAME}/${partition}" 2>/dev/null) || body=""
+    body=$(stream_replicas "${STREAM_NAME}" "${partition}" 2>/dev/null) || body=""
     if [ -z "$body" ]; then
         printf ''
         return 0
@@ -284,7 +493,7 @@ test_deploy_multipart_blueprint() {
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current" 60 \
         || log_warn "deploy: cluster did not quiesce before blueprint deploy — deploy may race a reshuffle"
 
-    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    stream_delete_if_present "$STREAM_NAME"
     if ! push_blueprint "$STREAM_BP" >/dev/null; then
         log_fail "Failed to push blueprint ${STREAM_BP}"
         return 1
@@ -296,7 +505,7 @@ test_deploy_multipart_blueprint() {
         log_fail "test-stream-multipart did not reach all-instances ACTIVE — stream ${STREAM_NAME} not established"
         return 1
     fi
-    log_pass "Deployed ${STREAM_BP} (stream ${STREAM_NAME}, partitions=${PARTITIONS}, min-sync-replicas=2)"
+    log_pass "Deployed ${STREAM_BP} (stream ${STREAM_NAME}, partitions=${PARTITIONS}, confirmation_factor=2)"
 }
 
 test_publish_pre_kill_history() {
@@ -318,7 +527,9 @@ test_events_spread_across_partitions() {
 test_pre_kill_history_readable() {
     local present=0 idx
     local payloads
-    payloads=$(all_payloads)
+    settled_payloads "$ACKED_PRE" || true
+    log_info "pre-kill read: ${SETTLED_STATE}"
+    payloads="$SETTLED_PAYLOADS"
     while IFS= read -r idx; do
         [ -n "$idx" ] || continue
         printf '%s' "$payloads" | grep -qx "$(marker_for "$idx")" && present=$((present + 1))
@@ -391,6 +602,12 @@ test_kill_owner_under_concurrent_publish() {
     local during
     during=$(grep -c . "$ACKED_DURING" || true)
     log_info "Concurrent window: ${during}/${N_DURING} publishes ACKED across the kill"
+    # Zero acks means the crash happened with nothing in flight: the survival checks that follow
+    # would then hold the system to nothing from the window this test exists to exercise (#508).
+    if [ "${during:-0}" -eq 0 ]; then
+        log_fail "0/${N_DURING} publishes ACKED across the kill — the concurrent-publish crash window was not exercised"
+        return 1
+    fi
     log_pass "Owner ${OWNER_TO_KILL} hard-killed with ${during} concurrent acks recorded"
 }
 
@@ -409,17 +626,44 @@ test_failover_completed() {
 # readable afterwards. A missing ACKED event is a durability violation: the caller was
 # told the write was durable.
 test_every_acked_event_survives_the_crash() {
-    local payloads missing=0 total=0 idx
-    payloads=$(all_payloads)
-
+    local payloads missing=0 total=0 idx n dup_markers=0 dup_events=0 dup_examples=""
+    # Scored on a SETTLED read, never on one best-effort NEAREST read (#1502, see settled_payloads).
+    settled_payloads "$ACKED_PRE" "$ACKED_DURING" || true
+    log_info "post-crash read: ${SETTLED_STATE}"
+    payloads="$SETTLED_PAYLOADS"
+    # An unreadable partition is UNMEASURABLE, never empty. The readable partitions are still
+    # scored, but a marker absent from them cannot be called LOST — a keyless publish is not
+    # attributed to a partition, so it may live in the unreadable one — so they are reported as
+    # NOT FOUND with their count, and the verdict fails as unmeasurable.
     while IFS= read -r idx; do
         [ -n "$idx" ] || continue
         total=$((total + 1))
-        if ! printf '%s' "$payloads" | grep -qx "$(marker_for "$idx")"; then
+        n=$(printf '%s' "$payloads" | grep -cx "$(marker_for "$idx")" || true)
+        if [ "${n:-0}" -eq 0 ]; then
             missing=$((missing + 1))
-            [ "$missing" -le 5 ] && log_warn "MISSING acked marker: $(marker_for "$idx")"
+            if [ -n "$SETTLED_UNREADABLE" ]; then
+                [ "$missing" -le 5 ] && log_warn "NOT FOUND in the readable partitions: $(marker_for "$idx") (may live in unreadable partition(s) ${SETTLED_UNREADABLE% })"
+            else
+                [ "$missing" -le 5 ] && log_warn "MISSING acked marker: $(marker_for "$idx")"
+            fi
+        elif [ "$n" -gt 1 ]; then
+            dup_markers=$((dup_markers + 1))
+            dup_events=$((dup_events + n - 1))
+            [ "$dup_markers" -le 5 ] && dup_examples="${dup_examples}$(marker_for "$idx")x${n} "
         fi
     done < <(cat "$ACKED_PRE" "$ACKED_DURING")
+
+    # Scoring is by distinct marker, so a double-append would pass silently. Say it out loud: an
+    # acked publish whose response was lost and retried can legitimately append twice (s27: 81
+    # events for 80 acked markers), and whether that is acceptable is a contract question, not
+    # something this check may hide.
+    if [ "$dup_events" -gt 0 ]; then
+        log_warn "DUPLICATES: ${dup_events} extra event(s) at distinct (partition, offset) across ${dup_markers} acked marker(s) (e.g. ${dup_examples% }) — at-least-once delivery observed"
+    fi
+    if [ -n "$SETTLED_UNREADABLE" ]; then
+        log_fail "partition(s) ${SETTLED_UNREADABLE% } unreadable at the read deadline — survival verdict UNMEASURABLE (${missing}/${total} acked marker(s) not found in the readable partitions; not counted as loss)"
+        return 1
+    fi
 
     # NON-VACUITY GATE. Measured 2026-08-12: on a run where the blueprint failed to activate,
     # nothing was published, and this assertion reported "Every ACKED event survived the crash
@@ -498,7 +742,7 @@ test_post_crash_liveness() {
 # verified to resolve it — that needs a full suite re-run with this file present.
 cleanup() {
     reap_publisher
-    rm -f "$ACKED_PRE" "$ACKED_DURING"
+    rm -f "$ACKED_PRE" "$ACKED_DURING" "$PUBLISH_503_LOG"
 
     # UNDEPLOY FIRST — this is the whole fix, and the order is load-bearing.
     #
@@ -517,7 +761,7 @@ cleanup() {
         || log_warn "cleanup: ${STREAM_BP} still has active instances — next test may contend for replica placement"
 
     # Now the stream delete can actually take effect, with nothing recreating it.
-    aether_failover streams delete "$STREAM_NAME" >/dev/null 2>&1 || true
+    stream_delete_if_present "$STREAM_NAME"
 
     # NOT waited on: "stream gone after delete". Measured 2026-08-12 — that wait can never
     # succeed here and timed out at 240s: the test-stream-multipart SLICE is still deployed,
@@ -562,4 +806,5 @@ run_test "Failover completed"                           test_failover_completed
 run_test "Every ACKED event survives the crash"         test_every_acked_event_survives_the_crash
 run_test "Per-partition offsets contiguous + ordered"   test_per_partition_offsets_contiguous_and_ordered
 run_test "Post-crash liveness"                          test_post_crash_liveness
+print_503_summary
 print_summary

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
 import java.util.List;
@@ -58,6 +57,21 @@ public sealed interface ManagementRouteError extends Cause {
 
     static TargetDisconnected targetDisconnected(String nodeId) {
         return new TargetDisconnected(nodeId);
+    }
+
+    static PartitionOwnerUnresolved partitionOwnerUnresolved(String routeName, String path) {
+        return new PartitionOwnerUnresolved(routeName, path);
+    }
+
+    static OwnerForwardLoop ownerForwardLoop(String routeName, String previousHop) {
+        return new OwnerForwardLoop(routeName, previousHop);
+    }
+
+    record IncompleteClusterView() implements ManagementRouteError {
+        @Override
+        public String message() {
+            return "This worker has a scoped metadata view; the requested cluster-wide read requires a core node";
+        }
     }
 
     record NoMatch(HttpMethod method, String path) implements ManagementRouteError {
@@ -143,6 +157,47 @@ public sealed interface ManagementRouteError extends Cause {
         @Override
         public String message() {
             return "Per-node forward target " + nodeId + " is not connected";
+        }
+    }
+
+    /// No HRW owner could be computed for a [RouteTarget.PartitionOwner] route (#1039).
+    ///
+    /// `ReplicaSetController.ownerFor` returns empty only when no placement can be computed at all —
+    /// an empty member view, or the bootstrap window before the first reconcile reports members. It
+    /// is NOT the "unknown stream" case: HRW placement hashes a name over the member set, so a stream
+    /// nobody ever created still has a deterministic owner.
+    ///
+    /// Answering locally instead would produce `servedByOwner=false` with an empty replica ring —
+    /// indistinguishable from a genuinely empty partition, which is the exact confusion #1039 exists
+    /// to remove. A clear failure is the honest outcome: the question has no authoritative answer yet.
+    record PartitionOwnerUnresolved(String routeName, String path) implements ManagementRouteError {
+        @Override
+        public String message() {
+            return "No partition owner resolvable for " + routeName
+                 + " " + path
+                 + " (empty member view or pre-reconcile bootstrap window)";
+        }
+    }
+
+    /// An owner-forwarded request arrived at a node that does not resolve ITSELF as the partition's
+    /// owner (#1039) — membership skew, where A forwards to B while B resolves A, or some third node.
+    ///
+    /// Raised by the RECEIVER, before dispatch, in `ManagementServerImpl.checkForwardedPartitionOwner`.
+    /// The receiver refuses rather than forwarding again: a second hop is what could cycle, and the
+    /// sender has already made an owner decision, so the disagreement itself is the answer. That
+    /// terminates skew on a named cause in one round instead of letting it decay into the
+    /// budget-exhaustion deadline, which is indistinguishable from a slow peer — and, more
+    /// importantly, instead of answering with `servedByOwner=false` and a partial ring, which is
+    /// indistinguishable from a genuinely empty partition.
+    ///
+    /// `previousHop` is the peer the cluster transport names (`HttpForwardRequest.sender`), never a
+    /// client-supplied header.
+    record OwnerForwardLoop(String routeName, String previousHop) implements ManagementRouteError {
+        @Override
+        public String message() {
+            return "Owner-forward loop on " + routeName
+                 + ": already forwarded by " + previousHop
+                 + " — membership views disagree on the partition owner";
         }
     }
 }

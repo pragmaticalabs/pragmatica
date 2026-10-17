@@ -7,6 +7,7 @@ package org.pragmatica.aether.invoke;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
@@ -15,6 +16,8 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -34,6 +37,18 @@ public interface ScheduledTaskRegistry {
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     void onScheduledTaskRemove(ValueRemove<ScheduledTaskKey, ScheduledTaskValue> valueRemove);
+
+    /// The operator's pause is its own cluster-state key ([ScheduledTaskPauseKey]), not a field of the
+    /// task registration: slice activation rewrites the registration, and a whole-cluster restore
+    /// brings back the pause without it. A pause that arrives before its task is remembered and applied
+    /// when the task registers.
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onScheduledTaskPausePut(ValuePut<ScheduledTaskPauseKey, ScheduledTaskPauseValue> valuePut);
+
+    @MessageReceiver
+    @SuppressWarnings("JBCT-RET-01")
+    void onScheduledTaskPauseRemove(ValueRemove<ScheduledTaskPauseKey, ScheduledTaskPauseValue> valueRemove);
 
     List<ScheduledTask> allTasks();
     List<ScheduledTask> singleModeTasks();
@@ -57,10 +72,22 @@ public interface ScheduledTaskRegistry {
         public boolean isCron() {
             return ! cron.isEmpty();
         }
+
+        public ScheduledTask withPaused(boolean paused) {
+            return new ScheduledTask(configSection,
+                                     artifact,
+                                     methodName,
+                                     registeredBy,
+                                     interval,
+                                     cron,
+                                     executionMode,
+                                     paused);
+        }
     }
 
     static ScheduledTaskRegistry scheduledTaskRegistry() {
         record scheduledTaskRegistry(Map<ScheduledTaskKey, ScheduledTask> tasks,
+                                     Set<ScheduledTaskKey> pausedTasks,
                                      AtomicReference<BiConsumer<ScheduledTaskKey, Option<ScheduledTask>>> changeListener) implements ScheduledTaskRegistry {
             private static final Logger log = LoggerFactory.getLogger(ScheduledTaskRegistry.class);
 
@@ -76,7 +103,7 @@ public interface ScheduledTaskRegistry {
                                              value.interval(),
                                              value.cron(),
                                              value.executionMode(),
-                                             value.paused());
+                                             pausedTasks.contains(key));
                 var previous = Option.option(tasks.put(key, task));
 
                 log.debug("Registered scheduled task: {}", task);
@@ -89,6 +116,33 @@ public interface ScheduledTaskRegistry {
                 var key = valueRemove.cause().key();
 
                 Option.option(tasks.remove(key)).onPresent(removed -> handleTaskRemoved(key, removed));
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onScheduledTaskPausePut(ValuePut<ScheduledTaskPauseKey, ScheduledTaskPauseValue> valuePut) {
+                var taskKey = valuePut.cause().key().task();
+
+                pausedTasks.add(taskKey);
+                applyPause(taskKey, true);
+            }
+
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void onScheduledTaskPauseRemove(ValueRemove<ScheduledTaskPauseKey, ScheduledTaskPauseValue> valueRemove) {
+                var taskKey = valueRemove.cause().key().task();
+
+                pausedTasks.remove(taskKey);
+                applyPause(taskKey, false);
+            }
+
+            private void applyPause(ScheduledTaskKey key, boolean paused) {
+                Option.option(tasks.get(key)).onPresent(task -> replaceTask(key, task, task.withPaused(paused)));
+            }
+
+            private void replaceTask(ScheduledTaskKey key, ScheduledTask previous, ScheduledTask current) {
+                tasks.put(key, current);
+                notifyIfChanged(key, Option.some(previous), current);
             }
 
             private void handleTaskRemoved(ScheduledTaskKey key, ScheduledTask removed) {
@@ -140,6 +194,8 @@ public interface ScheduledTaskRegistry {
             }
         }
 
-        return new scheduledTaskRegistry(new ConcurrentHashMap<>(), new AtomicReference<>());
+        return new scheduledTaskRegistry(new ConcurrentHashMap<>(),
+                                         ConcurrentHashMap.newKeySet(),
+                                         new AtomicReference<>());
     }
 }

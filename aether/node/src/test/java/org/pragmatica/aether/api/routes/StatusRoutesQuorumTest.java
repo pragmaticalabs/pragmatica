@@ -60,7 +60,11 @@ class StatusRoutesQuorumTest {
         var fsm = MembershipFsm.membershipFsm();
 
         for (int i = 0; i < count; i++) {
-            fsm.onSwimHealthy(new NodeId("counted-" + i), 1L);
+            var peer = new NodeId("counted-" + i);
+            fsm.onMemberDescriptor(org.pragmatica.consensus.net.NodeInfo.nodeInfo(peer,
+                new org.pragmatica.net.tcp.NodeAddress("localhost", 10000 + i),
+                java.util.Map.of(org.pragmatica.consensus.net.NodeInfo.LABEL_ROLE, "core")));
+            fsm.onSwimHealthy(peer, 1L);
         }
 
         return fsm;

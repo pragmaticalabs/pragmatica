@@ -30,7 +30,7 @@ test_blue_green_start() {
     publish_blueprint_or_fail "$BLUEPRINT_V2" >/dev/null || return 1
     await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30 || log_warn "v2 publish did not quiesce"
     local result
-    result=$(deploy_start "$BLUEPRINT_V2" blue-green --instances 2)
+    result=$(deploy_start "$BLUEPRINT_V2" blue-green --instances 3)
     assert_contains "$result" "deploymentId" "Blue-green started with deployment ID"
 }
 
@@ -38,7 +38,7 @@ test_blue_green_promote() {
     local deployments did
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
-    assert_ne "$did" "" "Got deployment ID"
+    assert_ne "$did" "" "Got deployment ID" || return 1
     deploy_promote "$did"
     if ! await_generation_quiesced "$CLUSTER_ENDPOINT" "current+1" 30; then
         log_fail "Blue-green promote of ${did} did not quiesce within 30s"
@@ -90,9 +90,9 @@ test_blue_green_rollback() {
         return 1
     fi
     local start_result did
-    start_result=$(deploy_start "$BLUEPRINT_V2" blue-green --instances 2)
+    start_result=$(deploy_start "$BLUEPRINT_V2" blue-green --instances 3)
     did=$(deploy_extract_id "$start_result")
-    assert_ne "$did" "" "Captured deployment ID for rollback scenario"
+    assert_ne "$did" "" "Captured deployment ID for rollback scenario" || return 1
     # Capture pre-rollback state: deployment should be in DEPLOYING/DEPLOYED before
     # promote. Rollback from a non-terminal pre-promote state.
     local pre_state pre_status
@@ -137,7 +137,7 @@ test_blue_green_complete() {
     local deployments did
     deployments=$(deploy_list)
     did=$(deploy_extract_id "$deployments")
-    assert_ne "$did" "" "Got deployment ID"
+    assert_ne "$did" "" "Got deployment ID" || return 1
     local result
     result=$(deploy_complete "$did")
     assert_contains "$result" "COMPLETED" "Blue-green completed"

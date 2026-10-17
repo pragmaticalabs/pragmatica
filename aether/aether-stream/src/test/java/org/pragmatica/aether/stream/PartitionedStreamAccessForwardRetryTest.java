@@ -66,8 +66,7 @@ class PartitionedStreamAccessForwardRetryTest {
                                                              Option.some(forwardClient),
                                                              SELF,
                                                              Option.<Fn0<Option<NodeId>>> none(),
-                                                             Option.some(ownerResolver),
-                                                             0);
+                                                             Option.some(ownerResolver));
     }
 
     @Test

@@ -1,14 +1,15 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.cli.ExitCode;
@@ -24,13 +25,19 @@ import org.pragmatica.aether.cli.cluster.init.ClusterConfigGenerator;
 import org.pragmatica.aether.cli.cluster.init.ClusterConfigWizard;
 import org.pragmatica.aether.cli.cluster.init.ClusterInitError;
 import org.pragmatica.aether.cli.cluster.init.FirewallPreset;
+import org.pragmatica.aether.cli.cluster.init.FirewallPresets;
+import org.pragmatica.aether.cli.cluster.init.InPlaceTomlMerge;
 import org.pragmatica.aether.cli.cluster.init.InputValidators;
-import org.pragmatica.aether.cli.cluster.init.IpDetector;
-import org.pragmatica.aether.cli.cluster.init.TopologyDeriver;
+import org.pragmatica.aether.cli.cluster.init.CoreWorkerSplit;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -45,8 +52,15 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--output", description = "Output path", defaultValue = DEFAULT_OUTPUT)
     private Path output;
 
-    @Option(names = "--force", description = "Overwrite existing output file")
+    @Option(names = "--force", description = "Overwrite an existing output file wholesale")
     private boolean force;
+
+    /// #311 — consent, given up front, to rewrite init-generated keys whose value in an existing
+    /// output differs from the new answers. Without it batch mode refuses with the diff and
+    /// interactive mode asks; with it the answers are applied and nothing else in the file moves.
+    @Option(names = "--merge", description = "Apply the new answers to init-generated keys whose value differs in an "
+                                           + "existing output file (batch mode refuses without it; interactive mode asks)")
+    private boolean merge;
 
     /// P-NEW-G (2026-05-21): Forces non-interactive (batch) mode and disables all prompts.
     /// When set, `--target` defaults to `docker` if not provided, and any missing required
@@ -68,11 +82,15 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--region", description = "Cloud region (cloud target only)")
     private String region;
 
+    @Option(names = "--zone", description = "Cloud zone (gcp only; required, no default)")
+    private String zone;
+
     @Option(names = "--instance-type", description = "Cloud instance type (cloud target only)")
     private String instanceType;
 
-    @Option(names = "--credential-env", description = "Env var name carrying provider credentials")
-    private String credentialEnv;
+    @Option(names = "--credential-env", description = "Env var carrying provider credentials. hetzner: the token's env var name. aws, gcp, azure: repeat "
+                                                    + "as <key>=<ENV_VAR> (e.g. secret_access_key=MY_SECRET); keys not named use <PROVIDER>_<KEY>", split = ",")
+    private List<String> credentialEnv;
 
     @Option(names = "--hosts", description = "SSH hosts (ssh target only), comma-separated", split = ",")
     private List<String> hosts;
@@ -83,11 +101,23 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--ssh-key", description = "SSH private key path (ssh target only)")
     private String sshKey;
 
+    @Option(names = "--ssh-public-key", description = "SSH public key path (cloud target only) — injected into provisioned VMs "
+                                                    + "and written to [infrastructure.ssh] public_key_file. Required for cloud; "
+                                                    + "bootstrap refuses a cloud cluster without one.")
+    private String sshPublicKey;
+
     @Option(names = "--ssh-port", description = "SSH port (ssh target only)", defaultValue = "22")
     private Integer sshPort;
 
-    @Option(names = "--nodes", description = "Total node count (>= 3 required for non-SSH targets)")
-    private Integer nodes;
+    /// #1019 — the config models the two tiers as independent quantities (`[cluster.core]`,
+    /// `[source.X.core]`, `[source.X.worker]`); a single `--nodes` collapsed them into a total and the
+    /// round trip lost information. They are now stated, never inferred.
+    @Option(names = "--core-nodes", description = "Consensus tier size: 5 (minimum), 7 (recommended) or 9 (maximum). Must be odd.")
+    private Integer coreNodes;
+
+    @Option(names = "--worker-nodes", description = "Worker tier size (default 0). Not bounded by the consensus-tier maximum. "
+                                                  + "For an ssh target this is the remainder of --hosts after --core-nodes and must not be given.")
+    private Integer workerNodes;
 
     @Option(names = "--db-host", description = "Database host (optional)")
     private String dbHost;
@@ -107,7 +137,9 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--firewall", description = "Firewall preset: standard | restrictive | open | custom")
     private String firewall;
 
-    @Option(names = "--admin-cidr", description = "Admin source CIDR (RESTRICTIVE preset)")
+    @Option(names = "--admin-cidr", description = "Admin source CIDR — the network allowed to reach bootstrap SSH (22) and "
+                                                + "the management API. Required for a cloud target on the STANDARD or "
+                                                + "RESTRICTIVE preset; never auto-detected.")
     private String adminCidr;
 
     @Option(names = "--internal-cidr", description = "Internal cluster CIDR (RESTRICTIVE preset)")
@@ -131,6 +163,11 @@ class ClusterInitCommand implements Callable<Integer> {
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
+    /// One reader over stdin for the whole run. The wizard and the merge question used to each
+    /// wrap `System.in` in their own buffered reader, and the first one drained a piped stdin into
+    /// its buffer, so the second always read EOF and took its default.
+    private final Prompt prompt = new Prompt();
+
     @Override
     public Integer call() {
         return collectAnswers().flatMap(this::writeOutput)
@@ -140,7 +177,7 @@ class ClusterInitCommand implements Callable<Integer> {
     private Result<ClusterConfigAnswers> collectAnswers() {
         return isBatchMode()
                ? buildFromFlags()
-               : new ClusterConfigWizard().run();
+               : new ClusterConfigWizard(prompt).run();
     }
 
     private boolean isBatchMode() {
@@ -169,22 +206,77 @@ class ClusterInitCommand implements Callable<Integer> {
     private Result<ClusterConfigAnswers> buildCloudAnswers(String clusterName) {
         if (provider == null) return new ClusterInitError.MissingField("--provider").result();
 
-        if (region == null) return new ClusterInitError.MissingField("--region").result();
+        if (!Verify.Is.present(region)) return new ClusterInitError.RegionRequired(provider).result();
 
-        if (instanceType == null) return new ClusterInitError.MissingField("--instance-type").result();
+        if (!Verify.Is.present(instanceType)) return new ClusterInitError.InstanceTypeRequired(provider).result();
 
-        if (credentialEnv == null) return new ClusterInitError.MissingField("--credential-env").result();
+        if (!Verify.Is.present(sshPublicKey)) return new ClusterInitError.SshPublicKeyRequired().result();
+        // A flag that cannot affect a cloud target is refused, not silently swallowed: --ssh-key is
+        // the PRIVATE key for reaching existing hosts and was accepted-and-ignored here.
+        if (Verify.Is.present(sshKey)) {
+            return new ClusterInitError.FlagNotApplicable("--ssh-key",
+                                                          "cloud",
+                                                          "cloud VMs are provisioned with a PUBLIC key — use --ssh-public-key").result();
+        }
 
-        if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
+        return parseCloudProvider(provider).flatMap(p -> cloudAnswersFor(p).flatMap(cloud -> requestedSplit().flatMap(split -> assembleAnswers(clusterName,
+                                                                                                                                               SourceType.CLOUD,
+                                                                                                                                               org.pragmatica.lang.Option.some(cloud),
+                                                                                                                                               org.pragmatica.lang.Option.none(),
+                                                                                                                                               split))));
+    }
 
-        return parseCloudProvider(provider).flatMap(p -> InputValidators.validateEnvVarName(credentialEnv).flatMap(envOk -> TopologyDeriver.derive(nodes).flatMap(split -> assembleAnswers(clusterName,
-                                                                                                                                                                                           SourceType.CLOUD,
-                                                                                                                                                                                           org.pragmatica.lang.Option.some(new CloudAnswers(p,
-                                                                                                                                                                                                                                            region,
-                                                                                                                                                                                                                                            instanceType,
-                                                                                                                                                                                                                                            envOk)),
-                                                                                                                                                                                           org.pragmatica.lang.Option.none(),
-                                                                                                                                                                                           split))));
+    private Result<CloudAnswers> cloudAnswersFor(CloudProviderName p) {
+        if (p == CloudProviderName.GCP && !Verify.Is.present(zone)) return new ClusterInitError.ZoneRequired(provider).result();
+
+        if (p != CloudProviderName.GCP && Verify.Is.present(zone)) {
+            return new ClusterInitError.FlagNotApplicable("--zone", p.value() + " cloud", "only gcp takes a zone").result();
+        }
+
+        return credentialEnvVarsFor(p).map(envVars -> new CloudAnswers(p,
+                                                                       region,
+                                                                       Verify.Is.present(zone)
+                                                                       ? zone.trim()
+                                                                       : "",
+                                                                       instanceType,
+                                                                       envVars,
+                                                                       sshPublicKey.trim()));
+    }
+
+    /// hetzner: the single `--credential-env` value is the token's env var (required). Others: `<key>=<ENV_VAR>` entries override the
+    /// conventional `<PROVIDER>_<KEY>` default of the named key; a key the provider does not take, or a bare value, is refused.
+    private Result<Map<String, String>> credentialEnvVarsFor(CloudProviderName p) {
+        var envVars = new LinkedHashMap<>(CloudAnswers.defaultEnvVars(p));
+        var given = credentialEnv == null
+                    ? List.<String> of()
+                    : credentialEnv;
+
+        if (p == CloudProviderName.HETZNER) {
+            return given.size() == 1
+                   ? InputValidators.validateEnvVarName(given.getFirst()).map(name -> Map.of("api_token", name))
+                   : new ClusterInitError.MissingField("--credential-env").result();
+        }
+
+        for (var entry : given) {
+            var eq = entry.indexOf('=');
+            var key = eq < 0
+                      ? ""
+                      : entry.substring(0, eq).trim();
+
+            if (!envVars.containsKey(key)) {
+                return new ClusterInitError.FlagNotApplicable("--credential-env " + entry,
+                                                              p.value() + " cloud",
+                                                              "use <key>=<ENV_VAR> with a key from " + envVars.keySet()).result();
+            }
+
+            var validated = InputValidators.validateEnvVarName(entry.substring(eq + 1).trim());
+
+            if (validated.isFailure()) return validated.map(_ -> envVars);
+
+            envVars.put(key, validated.unwrap());
+        }
+
+        return Result.success(envVars);
     }
 
     private Result<ClusterConfigAnswers> buildSshAnswers(String clusterName) {
@@ -204,24 +296,59 @@ class ClusterInitCommand implements Callable<Integer> {
             }
         }
 
-        return TopologyDeriver.derive(hosts.size()).flatMap(split -> assembleAnswers(clusterName,
-                                                                                     SourceType.SSH,
-                                                                                     org.pragmatica.lang.Option.none(),
-                                                                                     org.pragmatica.lang.Option.some(new SshAnswers(hosts,
-                                                                                                                                    sshUser,
-                                                                                                                                    Path.of(sshKey),
-                                                                                                                                    sshPort)),
-                                                                                     split));
+        return sshSplit().flatMap(split -> assembleAnswers(clusterName,
+                                                           SourceType.SSH,
+                                                           org.pragmatica.lang.Option.none(),
+                                                           org.pragmatica.lang.Option.some(new SshAnswers(hosts,
+                                                                                                          sshUser,
+                                                                                                          Path.of(sshKey),
+                                                                                                          sshPort)),
+                                                           split));
     }
 
     private Result<ClusterConfigAnswers> buildLocalAnswers(String clusterName, SourceType t) {
-        if (nodes == null) return new ClusterInitError.MissingField("--nodes").result();
+        return requestedSplit().flatMap(split -> assembleAnswers(clusterName,
+                                                                 t,
+                                                                 org.pragmatica.lang.Option.none(),
+                                                                 org.pragmatica.lang.Option.none(),
+                                                                 split));
+    }
 
-        return TopologyDeriver.derive(nodes).flatMap(split -> assembleAnswers(clusterName,
-                                                                              t,
-                                                                              org.pragmatica.lang.Option.none(),
-                                                                              org.pragmatica.lang.Option.none(),
-                                                                              split));
+    /// Both tiers as given. An absent `--worker-nodes` means zero workers — the honest default for an
+    /// unstated tier, and the reason nothing needs to derive a split any more.
+    private Result<CoreWorkerSplit> requestedSplit() {
+        if (coreNodes == null) {
+            return new ClusterInitError.MissingField("--core-nodes").result();
+        }
+
+        return CoreWorkerSplit.coreWorkerSplit(coreNodes,
+                                               workerNodes == null
+                                               ? 0
+                                               : workerNodes);
+    }
+
+    /// An ssh target's fleet size is the host list, so the worker tier is its remainder rather than a
+    /// separate answer. `--worker-nodes` is refused rather than silently ignored — the same treatment
+    /// `--ssh-key` gets on a cloud target — because accepting a value that cannot take effect only
+    /// looks like it worked.
+    private Result<CoreWorkerSplit> sshSplit() {
+        if (coreNodes == null) {
+            return new ClusterInitError.MissingField("--core-nodes").result();
+        }
+
+        if (workerNodes != null) {
+            return new ClusterInitError.FlagNotApplicable("--worker-nodes",
+                                                          "ssh",
+                                                          "the worker tier is whatever --hosts holds beyond --core-nodes").result();
+        }
+
+        if (hosts.size() < coreNodes) {
+            return new ClusterInitError.InvalidTopology("--core-nodes " + coreNodes
+                                                       + " exceeds the " + hosts.size()
+                                                       + " host(s) given in --hosts").result();
+        }
+
+        return CoreWorkerSplit.coreWorkerSplit(coreNodes, hosts.size() - coreNodes);
     }
 
     private Result<ClusterConfigAnswers> assembleAnswers(String clusterName,
@@ -271,30 +398,58 @@ class ClusterInitCommand implements Callable<Integer> {
                                                      org.pragmatica.lang.Option.none()));
         }
 
-        var preset = parseFirewallPreset(firewall == null
-                                         ? "standard"
-                                         : firewall);
+        return parseFirewallPreset(firewall == null
+                                   ? "standard"
+                                   : firewall).flatMap(p -> firewallChoiceFor(p, t));
+    }
 
-        return preset.flatMap(p -> {
-            if (p == FirewallPreset.RESTRICTIVE) {
-                var admin = adminCidr != null
-                            ? adminCidr
-                            : IpDetector.suggestAdminCidr();
-                var internal = internalCidr != null
-                               ? internalCidr
-                               : "10.0.0.0/8";
+    /// STANDARD and RESTRICTIVE both route through `FirewallPresets.addAdminScoped`, so both need
+    /// the operator CIDR; OPEN and CUSTOM emit no admin-scoped rules and need none. Only
+    /// RESTRICTIVE used to receive it — see [ClusterInitError.AdminCidrRequired] for what that cost.
+    private Result<FirewallChoice> firewallChoiceFor(FirewallPreset preset, SourceType t) {
+        return switch (preset) {
+            case OPEN, CUSTOM -> Result.success(new FirewallChoice(preset,
+                                                                   org.pragmatica.lang.Option.none(),
+                                                                   org.pragmatica.lang.Option.none()));
+            case STANDARD, RESTRICTIVE -> adminScopedChoice(preset, t);
+        };
+    }
 
-                return InputValidators.validateCidr(admin)
-                                      .flatMap(_ -> InputValidators.validateCidr(internal))
-                                      .map(_ -> new FirewallChoice(p,
-                                                                   org.pragmatica.lang.Option.some(admin),
-                                                                   org.pragmatica.lang.Option.some(internal)));
-            }
+    private Result<FirewallChoice> adminScopedChoice(FirewallPreset preset, SourceType t) {
+        return Verify.Is.present(adminCidr)
+               ? validatedAdminScopedChoice(preset)
+               : missingAdminCidr(preset, t);
+    }
 
-            return Result.success(new FirewallChoice(p,
-                                                     org.pragmatica.lang.Option.none(),
-                                                     org.pragmatica.lang.Option.none()));
-        });
+    /// A CLOUD target refuses, because a provider firewall really is applied and bootstrap really
+    /// does fail against it. Other targets are still PERMITTED to omit the CIDR — there is no
+    /// provider firewall to misconfigure — so they keep generating rather than newly failing.
+    ///
+    /// Their OUTPUT does change on one preset, and an earlier version of this comment wrongly denied
+    /// it: a non-cloud `--firewall restrictive` with no `--admin-cidr` used to fall back to
+    /// `IpDetector.suggestAdminCidr()` and emit admin-scoped rules from the detected address; it now
+    /// emits none. The direction is FAIL-CLOSED — `FirewallPresets.addAdminScoped` omits those rules
+    /// rather than widening them to `0.0.0.0/0` — and removing the auto-detection is precisely the
+    /// point of [ClusterInitError.AdminCidrRequired], so the change is intended. Only the denial was
+    /// wrong.
+    private Result<FirewallChoice> missingAdminCidr(FirewallPreset preset, SourceType t) {
+        return t == SourceType.CLOUD
+               ? new ClusterInitError.AdminCidrRequired(preset.name()).result()
+               : Result.success(new FirewallChoice(preset,
+                                                   org.pragmatica.lang.Option.none(),
+                                                   org.pragmatica.lang.Option.none()));
+    }
+
+    /// The internal CIDR is only consulted by `restrictiveRules`; STANDARD carries it harmlessly so
+    /// both arms validate the same pair rather than branching twice.
+    private Result<FirewallChoice> validatedAdminScopedChoice(FirewallPreset preset) {
+        var internal = Verify.Is.present(internalCidr)
+                       ? internalCidr
+                       : FirewallPresets.DEFAULT_INTERNAL_CIDR;
+
+        return InputValidators.validateCidr(adminCidr).flatMap(admin -> InputValidators.validateCidr(internal).map(ok -> new FirewallChoice(preset,
+                                                                                                                                            org.pragmatica.lang.Option.some(admin),
+                                                                                                                                            org.pragmatica.lang.Option.some(ok))));
     }
 
     private Result<TlsAnswers> buildTls(SourceType t) {
@@ -381,20 +536,142 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     private Result<Path> writeOutput(ClusterConfigAnswers answers) {
-        if (Files.exists(output) && !force) {
-            if (!isBatchMode()) {
-                var prompt = new Prompt();
+        return selfValidated(ClusterConfigGenerator.generate(answers)).flatMap(this::writeGenerated);
+    }
 
-                if (!prompt.confirm("Output file " + output + " exists. Overwrite?", false)) {
-                    return new ClusterInitError.OutputExists(output.toString()).result();
-                }
-            } else {
-                return new ClusterInitError.OutputExists(output.toString()).result();
-            }
+    /// #1199 — `init` parses back what it is about to write with the SAME parser and validator
+    /// `aether cluster bootstrap` runs, and refuses to write a file bootstrap would reject. `init` and
+    /// `bootstrap` were each self-consistent and disagreed only at the seam between them, which no
+    /// per-component test reaches; this check sits on that seam.
+    private static Result<String> selfValidated(String generated) {
+        return ClusterBootstrapConfigParser.parse(generated)
+                                           .flatMap(ClusterBootstrapConfigValidator::validate)
+                                           .map(_ -> generated)
+                                           .mapError(cause -> new ClusterInitError.GeneratedConfigInvalid(cause.message()));
+    }
+
+    private Result<Path> writeGenerated(String generated) {
+        if (!Files.exists(output) || force) {
+            return write(generated).onSuccess(path -> System.out.println("Wrote " + path));
         }
 
+        return readExisting().flatMap(existing -> InPlaceTomlMerge.plan(existing.text(),
+                                                                        existing.document(),
+                                                                        generated)
+                                                                  .flatMap(plan -> consented(plan,
+                                                                                             existing.text())))
+                           .flatMap(this::writeIfChanged);
+    }
+
+    private record Existing(String text, TomlDocument document) {}
+
+    /// #311 — an existing file the merge cannot read is refused, never clobbered: the operator's
+    /// edits are what the merge exists to keep. `--force` remains the explicit overwrite.
+    private Result<Existing> readExisting() {
         try {
-            var toml = ClusterConfigGenerator.generate(answers);
+            var text = Files.readString(output);
+
+            return TomlParser.parse(text)
+                             .map(document -> new Existing(text, document))
+                             .mapError(cause -> new ClusterInitError.OutputUnreadable(output.toString(),
+                                                                                      cause.message()));
+        } catch (IOException e) {
+            return new ClusterInitError.OutputUnreadable(output.toString(), e.getMessage()).result();
+        }
+    }
+
+    /// #311 — the merge rewrites only the lines of init-generated keys, and EVERY edit — a value
+    /// the operator changed, or a generated key, section or `[[…]]` rule the file lacks — is
+    /// applied only with consent: `--merge`, or a yes at the prompt (default keep). Batch mode with
+    /// neither refuses, naming every `section.key: old → new` and every `+ key`, and writes nothing.
+    /// An appended rule is not harmless: one the operator narrowed from `0.0.0.0/0` is, to the
+    /// merge, a missing generated rule, and appending it re-opens the port. An empty plan is the
+    /// only consent-free case, and it writes nothing. Kept keys init does not generate are listed,
+    /// because a merge cannot tell a hand-added key from one init used to generate and no longer does.
+    private Result<String> consented(InPlaceTomlMerge.Plan plan, String existing) {
+        var diffs = plan.changes().stream().map(InPlaceTomlMerge.Change::toString).toList();
+        var additions = plan.added().stream().map(path -> "+ " + path).toList();
+
+        if (plan.isEmpty()) {
+            report(plan, true);
+
+            return Result.success(existing);
+        }
+
+        if (!merge && isBatchMode()) {
+            return new ClusterInitError.OutputDiffers(output.toString(), diffs, additions).result();
+        }
+
+        var apply = merge || confirmEdits(diffs, additions);
+
+        report(plan, apply);
+
+        return Result.success(apply
+                              ? plan.render()
+                              : existing);
+    }
+
+    private boolean confirmEdits(List<String> diffs, List<String> additions) {
+        System.out.println("Output file " + output
+                          + " exists: " + diffs.size()
+                          + " init-generated key(s) differ from the new answers and " + additions.size()
+                          + " would be added:");
+        diffs.forEach(diff -> System.out.println("  " + diff));
+        additions.forEach(addition -> System.out.println("  " + addition));
+
+        return prompt.confirm("Apply these edits? (No leaves the file untouched)", false);
+    }
+
+    private void report(InPlaceTomlMerge.Plan plan, boolean applied) {
+        var parts = new java.util.ArrayList<String>();
+
+        if (!applied) {
+            parts.add("left untouched — " + plan.changes().size()
+                     + " differing and " + plan.added().size()
+                     + " missing key(s) not applied");
+        }
+
+        if (applied && !plan.changes().isEmpty()) {
+            parts.add("updated " + plan.changes().size()
+                     + " key(s) — " + String.join(", ",
+                                                  plan.changes()
+                                                      .stream()
+                                                      .map(InPlaceTomlMerge.Change::toString)
+                                                      .toList()));
+        }
+
+        if (applied && !plan.added().isEmpty()) {
+            parts.add("added " + plan.added().size() + " key(s) — " + String.join(", ", plan.added()));
+        }
+
+        if (!plan.kept().isEmpty()) {
+            parts.add("kept " + plan.kept().size()
+                     + " key(s) init does not generate — " + String.join(", ", plan.kept()));
+        }
+
+        System.out.println("Merged into " + output + (parts.isEmpty()
+                                                      ? ": already matches the answers, nothing changed"
+                                                      : ": " + String.join("; ", parts)));
+    }
+
+    /// A text identical to the file is not written: no mtime move, no mode change, on a re-run
+    /// that changed nothing — and no "Wrote" for a write that did not happen.
+    private Result<Path> writeIfChanged(String toml) {
+        try {
+            if (Files.readString(output).equals(toml)) {
+                System.out.println("Unchanged " + output);
+
+                return Result.success(output);
+            }
+
+            return write(toml).onSuccess(path -> System.out.println("Wrote " + path));
+        } catch (IOException e) {
+            return new ClusterInitError.IoFailure(output.toString(), e.getMessage()).result();
+        }
+    }
+
+    private Result<Path> write(String toml) {
+        try {
             // #287: aether.toml carries cluster_secret — write it owner-only (0600), not 0644.
             Files.writeString(output, toml);
 
@@ -408,7 +685,6 @@ class ClusterInitCommand implements Callable<Integer> {
     }
 
     private int onSuccess(Path written) {
-        System.out.println("Wrote " + written);
         System.out.println("Next: review the file, then run `aether cluster bootstrap " + written + "`.");
 
         return ExitCode.SUCCESS;

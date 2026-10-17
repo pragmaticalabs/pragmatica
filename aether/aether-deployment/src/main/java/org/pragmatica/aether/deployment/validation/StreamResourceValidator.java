@@ -11,21 +11,37 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
+import org.pragmatica.aether.slice.ReplicationWarning;
 import org.pragmatica.aether.slice.StreamCompression;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
 import org.pragmatica.aether.slice.blueprint.StreamConfigParser;
+import org.pragmatica.aether.slice.blueprint.StreamConfigParser.PartitionedStreamResources;
+import org.pragmatica.aether.slice.blueprint.StreamConfigParser.RefusedSection;
+import org.pragmatica.aether.slice.blueprint.StreamDeclarationError;
+import org.pragmatica.aether.slice.blueprint.StreamSourceError;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError;
+import org.pragmatica.aether.slice.resource.ResourceVersion.ResourceVersionError;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
+import org.pragmatica.aether.slice.stream.StreamVersionSpec.StreamVersionSpecError;
+import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes.CompositeCause;
+
+import static org.pragmatica.aether.slice.resource.ResourceAddress.ResourceAddressError.General.*;
 
 
 /// Deploy-time validator that enforces spec §15.1 runtime gates over a blueprint's stream
@@ -46,11 +62,41 @@ import org.pragmatica.lang.utils.Causes.CompositeCause;
 @SuppressWarnings("JBCT-SEQ-01")
 public sealed interface StreamResourceValidator {
     String RULE_NAMESPACE_RESERVED = "namespace-reserved";
+    /// #1282: a blueprint `External` source naming a stream kind only the runtime provisions.
+    String RULE_SOURCE_RESERVED_KIND = "source-reserved-kind";
+    /// #1338: a `system` External source declared with a role that writes; system streams are read-only to blueprints.
+    String RULE_SOURCE_SYSTEM_NOT_CONSUMER = "source-system-not-consumer";
     String RULE_RESOURCES_PARSE = "resources-toml-parse";
+    /// Per-section rule ids, one per parser cause TYPE ([#ruleFor]).
+    String RULE_VERSION_AND_SOURCE_EXCLUSIVE = "version-and-source-mutually-exclusive";
+    String RULE_PRODUCER_VERSION_EXACT = "producer-version-must-be-exact";
+    String RULE_PARTITIONS_OVER_CEILING = "partitions-over-ceiling";
+    /// #1564: a `replication_factor`/`confirmation_factor` the declaration resolution refuses.
+    String RULE_REPLICATION_POLICY_INVALID = "replication-policy-invalid";
+    /// #1564: a `replication_factor` above the cluster's desired core count (R7).
+    String RULE_REPLICATION_EXCEEDS_CORE_COUNT = "replication-exceeds-core-count";
+    String RULE_UNKNOWN_STREAM_KEY = "unknown-stream-key";
+    String RULE_STREAM_KEY_INVALID = "stream-key-invalid";
+    String RULE_SOURCE_ADDRESS_INVALID = "source-address-invalid";
+    String RULE_NAMESPACE_INVALID = "namespace-invalid";
+    String RULE_STREAM_NAME_INVALID = "stream-name-invalid";
+    String RULE_VERSION_FORMAT_INVALID = "version-format-invalid";
+    String RULE_STREAM_RESOURCE_INVALID = "stream-resource-invalid";
     String RULE_BLUEPRINT_NAMESPACE = "blueprint-namespace-invalid";
     String RULE_VERSION_PIN_RECOMMENDED = "version-pin-recommended";
     String RULE_INERT_STREAM_CONFIG = "inert-stream-config-key";
     String RULE_INERT_CONSUMER_CONFIG = "inert-consumer-config-key";
+    /// #1262: a STRONG declaration fails the deploy through [#ensureHonourableConsistency], which runs
+    /// before the bindings are derived. Its own id, so a runbook, a UI or a test keying on the rule can
+    /// tell the refusal from the per-section class (#1336: see [#partition] for which other rules gate).
+    String RULE_UNSUPPORTED_CONSISTENCY = "unsupported-stream-consistency";
+    String STREAMS_SECTION_PREFIX = "streams.";
+    String STRONG = "strong";
+    List<String> CONSISTENCY_KEYS = List.of("consistency_mode", "consistency");
+    /// #1336: per-section rules whose violation refuses the deploy instead of dropping the one alias —
+    /// see [#partition]. Data, so a ruling flips one line. [#RULE_UNSUPPORTED_CONSISTENCY] is not listed
+    /// because [#ensureHonourableConsistency] refuses it before any partition runs.
+    Set<String> GATING_SECTION_RULES = Set.of(RULE_SOURCE_RESERVED_KIND, RULE_SOURCE_SYSTEM_NOT_CONSUMER);
 
     /// Run the full validation pass for a deploy attempt.
     ///
@@ -60,19 +106,22 @@ public sealed interface StreamResourceValidator {
     /// per spec §11.1.2 — empty when no slice manifests are available (e.g., legacy DSL path).
     static Result<ValidatedStreamResources> validate(Option<String> resourcesConfig,
                                                      Artifact blueprintArtifact,
-                                                     Map<String, String> roleHints) {
+                                                     Map<String, String> roleHints,
+                                                     ReplicationContext replication) {
         var failures = new ArrayList<StreamValidationFailure>();
         var warnings = new ArrayList<StreamValidationWarning>();
 
         guardBlueprintNamespace(blueprintArtifact, failures);
-        var resources = parseResourcesOrCollect(resourcesConfig, roleHints, failures);
+        var resources = parseResourcesOrCollect(resourcesConfig, roleHints, replication, failures);
 
         if (failures.isEmpty()) {
             guardInertConfig(resources, resourcesConfig, failures);
+            resourcesConfig.onPresent(toml -> failures.addAll(consistencyFailures(toml)));
         }
 
         if (failures.isEmpty()) {
             collectMultiVersionWarnings(resources, resourcesConfig, roleHints, warnings);
+            collectReplicationWarnings(resources, resourcesConfig, replication, warnings);
         }
 
         if (failures.isEmpty()) {
@@ -82,6 +131,181 @@ public sealed interface StreamResourceValidator {
         return StreamValidationFailures.streamValidationFailures(List.copyOf(failures),
                                                                  List.copyOf(warnings))
                                        .result();
+    }
+
+    /// #1336 — the deploy path's pass. [#validate] answers all-or-nothing, which is right for a refusal
+    /// and wrong for a fold: `BlueprintService` took its failure as "no bindings", so one invalid
+    /// `[streams.X]` section cost every valid declaration beside it. This pass keeps the two apart.
+    ///
+    ///  - A section that fails a rule is REJECTED: its alias gets no binding, the failure names it by
+    ///    field and rule in [StreamValidationPartition#rejected], and every other section still binds.
+    ///    A slice using a rejected alias fails at load naming that alias (`UnboundStreamAlias`); the
+    ///    other slices are unaffected.
+    ///  - A [Result#failure] is GATING: the deploy is refused with every failure found. Gating rules,
+    ///    and why each leaves nothing to bind: [#RULE_RESOURCES_PARSE] — the document does not parse,
+    ///    so no section has an outcome to keep; [#RULE_BLUEPRINT_NAMESPACE]/[#RULE_NAMESPACE_RESERVED]
+    ///    raised on the blueprint artifact while at least one stream is declared — the namespace
+    ///    prefixes every owned address, so there is no per-alias subset that survives it. With no
+    ///    stream declared the namespace failure is reported and gates nothing.
+    ///    [#RULE_SOURCE_RESERVED_KIND] (#1282), ruled gating for #1336: the management API refuses a
+    ///    reserved stream kind with a typed 4xx on every mint path, and a deploy must refuse the same
+    ///    declaration the same way — a deliberate reach into a reserved namespace, not a config slip —
+    ///    rather than drop the alias and let the slice fail at load. Listed in [#GATING_SECTION_RULES].
+    ///
+    /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
+    /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
+    /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
+    /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
+    /// type not named here — and #576's inert config keys ([#RULE_INERT_STREAM_CONFIG],
+    /// [#RULE_INERT_CONSUMER_CONFIG]). Each names the alias it sits under, taken from the section the parser
+    /// refused, never from message text. [#RULE_NAMESPACE_RESERVED] on an External source has no producer at
+    /// this head: `ResourceAddress.resourceAddress(String)` accepts `system:` (spec §11.2 allows it).
+    ///
+    /// #1564: every owned section's `replication_factor`/`confirmation_factor` resolve against `replication` — the
+    /// committed cluster defaults and desired core count — and the warnings the declarations raise ride out in
+    /// [StreamValidationPartition#warnings].
+    static Result<StreamValidationPartition> partition(Option<String> resourcesConfig,
+                                                       Artifact blueprintArtifact,
+                                                       Map<String, String> roleHints,
+                                                       ReplicationContext replication) {
+        var namespaceFailures = new ArrayList<StreamValidationFailure>();
+
+        guardBlueprintNamespace(blueprintArtifact, namespaceFailures);
+
+        return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesPartitioned(toml,
+                                                                                        roleHints,
+                                                                                        replication.defaults()))
+                              .or(Result.success(PartitionedStreamResources.partitionedStreamResources(Map.of(),
+                                                                                                       List.of())))
+                              .mapError(cause -> gating(namespaceFailures,
+                                                        List.of(documentFailure(cause))))
+                              .flatMap(parsed -> partition(parsed,
+                                                           resourcesConfig,
+                                                           roleHints,
+                                                           replication,
+                                                           namespaceFailures));
+    }
+
+    private static Result<StreamValidationPartition> partition(PartitionedStreamResources parsed,
+                                                               Option<String> resourcesConfig,
+                                                               Map<String, String> roleHints,
+                                                               ReplicationContext replication,
+                                                               List<StreamValidationFailure> namespaceFailures) {
+        var accepted = new LinkedHashMap<String, StreamResource>();
+        var rejected = new ArrayList<StreamValidationFailure>();
+        var warnings = new ArrayList<StreamValidationWarning>();
+
+        parsed.rejected().forEach(cause -> rejected.add(toFailure(cause)));
+        parsed.accepted()
+              .forEach((alias, resource) -> acceptOrReject(alias,
+                                                           resource,
+                                                           resourcesConfig,
+                                                           replication,
+                                                           accepted,
+                                                           rejected));
+        var declaresStreams = !parsed.accepted().isEmpty() || !parsed.rejected().isEmpty();
+        var gatesBySection = rejected.stream().anyMatch(failure -> GATING_SECTION_RULES.contains(failure.rule()));
+
+        if ((!namespaceFailures.isEmpty() && declaresStreams) || gatesBySection) {
+            return gating(namespaceFailures, rejected).result();
+        }
+
+        rejected.addAll(namespaceFailures);
+        collectMultiVersionWarnings(accepted, resourcesConfig, roleHints, warnings);
+        collectReplicationWarnings(accepted, resourcesConfig, replication, warnings);
+
+        return Result.success(StreamValidationPartition.streamValidationPartition(accepted, rejected, warnings));
+    }
+
+    private static void acceptOrReject(String alias,
+                                       StreamResource resource,
+                                       Option<String> resourcesConfig,
+                                       ReplicationContext replication,
+                                       Map<String, StreamResource> accepted,
+                                       List<StreamValidationFailure> rejected) {
+        var inert = new ArrayList<StreamValidationFailure>();
+
+        if (resource instanceof StreamResource.Owned owned) {
+            guardCoreCount(alias, owned.config(), replication, inert);
+            guardStreamConfig(alias, owned.config(), inert);
+            resourcesConfig.onPresent(toml -> guardConsumerConfigs(alias, toml, inert));
+        }
+
+        if (inert.isEmpty()) {
+            accepted.put(alias, resource);
+        } else {
+            rejected.addAll(inert);
+        }
+    }
+
+    private static StreamValidationFailures gating(List<StreamValidationFailure> first,
+                                                   List<StreamValidationFailure> rest) {
+        var failures = new ArrayList<>(first);
+
+        failures.addAll(rest);
+
+        return StreamValidationFailures.streamValidationFailures(failures, List.of());
+    }
+
+    /// #1262 deploy gate, run BEFORE [#partition] derives any binding: a stream declaring `STRONG`
+    /// consistency fails the deploy. No write path can honour it (the consensus
+    /// publish path has no production caller), so deploying it would produce a stream every write refuses.
+    /// `BlueprintService` runs this on every `resources.toml` it deploys, on both the artifact and the body
+    /// publish path, before any command is applied — and regardless of `registerOnly`, so a STRONG blueprint
+    /// cannot even be registered. Reported under [#RULE_UNSUPPORTED_CONSISTENCY], not the non-gating
+    /// [#RULE_INERT_STREAM_CONFIG].
+    static Result<Unit> ensureHonourableConsistency(Option<String> resourcesConfig) {
+        var failures = resourcesConfig.map(StreamResourceValidator::consistencyFailures).or(List.of());
+
+        return failures.isEmpty()
+               ? Result.unitResult()
+               : StreamValidationFailures.streamValidationFailures(failures,
+                                                                   List.of())
+                                         .result();
+    }
+
+    /// A STRONG declaration under either key. `consistency` is the key `StreamConfigParser` reads, and since
+    /// #1549 the parse slice activation runs too, so it is the one that reaches the write path.
+    /// `consistency_mode` is the record-binder spelling that reached the runtime before #1549; the parser
+    /// now refuses it as an unknown key, and a STRONG under it is still refused here as a gating failure so
+    /// the deploy names the guarantee it cannot honour rather than only the misspelling.
+    /// Read from the raw TOML so the check sees exactly the text the binder sees.
+    private static List<StreamValidationFailure> consistencyFailures(String toml) {
+        return TomlParser.parse(toml)
+                         .map(StreamResourceValidator::consistencyFailures)
+                         .or(List.of());
+    }
+
+    private static List<StreamValidationFailure> consistencyFailures(TomlDocument doc) {
+        return doc.sectionNames()
+                  .stream()
+                  .filter(StreamResourceValidator::isStreamDeclarationSection)
+                  .flatMap(section -> strongDeclarations(doc, section))
+                  .toList();
+    }
+
+    private static Stream<StreamValidationFailure> strongDeclarations(TomlDocument doc, String section) {
+        return CONSISTENCY_KEYS.stream().flatMap(key -> strongDeclaration(doc, section, key).stream());
+    }
+
+    private static Option<StreamValidationFailure> strongDeclaration(TomlDocument doc, String section, String key) {
+        return doc.getString(section, key)
+                  .filter(STRONG::equalsIgnoreCase)
+                  .map(_ -> unsupportedConsistency(section, key));
+    }
+
+    private static boolean isStreamDeclarationSection(String section) {
+        return section.startsWith(STREAMS_SECTION_PREFIX) && !section.substring(STREAMS_SECTION_PREFIX.length())
+                                                                     .contains(".");
+    }
+
+    private static StreamValidationFailure unsupportedConsistency(String section, String key) {
+        return StreamValidationFailure.streamValidationFailure("[" + section + "]",
+                                                               RULE_UNSUPPORTED_CONSISTENCY,
+                                                               key
+                                                              + " 'strong' cannot be honoured — the consensus publish path is not wired in "
+                                                              + "this release, so every write to the stream would be refused (#1262). Remove the "
+                                                              + "key or set it to 'eventual'.");
     }
 
     private static void guardBlueprintNamespace(Artifact blueprintArtifact, List<StreamValidationFailure> failures) {
@@ -100,8 +324,11 @@ public sealed interface StreamResourceValidator {
 
     private static Map<String, StreamResource> parseResourcesOrCollect(Option<String> resourcesConfig,
                                                                        Map<String, String> roleHints,
+                                                                       ReplicationContext replication,
                                                                        List<StreamValidationFailure> failures) {
-        return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesAggregating(toml, roleHints))
+        return resourcesConfig.map(toml -> StreamConfigParser.parseResourcesAggregating(toml,
+                                                                                        roleHints,
+                                                                                        replication.defaults()))
                               .or(Result.success(Map.<String, StreamResource> of()))
                               .fold(cause -> collectParseFailures(cause, failures),
                                     map -> map);
@@ -118,10 +345,104 @@ public sealed interface StreamResourceValidator {
         return Map.of();
     }
 
+    /// #1336 review B1/B2: the field is the alias the parser refused, the rule is the cause's TYPE. Nothing
+    /// is read from message text — the text quotes keys and lines (`Duplicate key … 'version'`), and a
+    /// keyword guess mislabelled a document-level parse failure as `version-format-invalid` at
+    /// `[streams.version]`, and an unparseable `source` as `namespace-invalid` at `[streams]`.
     private static StreamValidationFailure toFailure(Cause cause) {
-        var message = cause.message();
+        return switch (cause) {
+            case RefusedSection refused -> StreamValidationFailure.streamValidationFailure("[streams." + refused.alias() + "]",
+                                                                                           ruleFor(refused.cause()),
+                                                                                           refused.message());
+            default -> documentFailure(cause);
+        };
+    }
 
-        return StreamValidationFailure.streamValidationFailure(extractField(message), inferRule(message), message);
+    /// A cause with no section: the document itself did not parse.
+    private static StreamValidationFailure documentFailure(Cause cause) {
+        return StreamValidationFailure.streamValidationFailure("[streams]", RULE_RESOURCES_PARSE, cause.message());
+    }
+
+    /// Every per-section cause the parser can raise at this head, by type. An unknown type is
+    /// [#RULE_STREAM_RESOURCE_INVALID] — a new parser refusal is reported honestly as "this section is
+    /// invalid" until a rule is named for it here.
+    private static String ruleFor(Cause cause) {
+        return switch (cause) {
+            case StreamSourceError.ReservedKindSource _ -> RULE_SOURCE_RESERVED_KIND;
+            case StreamSourceError.SystemSourceNotConsumer _ -> RULE_SOURCE_SYSTEM_NOT_CONSUMER;
+            case StreamDeclarationError.VersionAndSourceBothSet _ -> RULE_VERSION_AND_SOURCE_EXCLUSIVE;
+            case StreamDeclarationError.ProducerVersionLatest _ -> RULE_PRODUCER_VERSION_EXACT;
+            case StreamDeclarationError.PartitionsOverCeiling _ -> RULE_PARTITIONS_OVER_CEILING;
+            case StreamDeclarationError.ReplicationRefused refused -> replicationRule(refused.cause());
+            case StreamDeclarationError.UnknownStreamKeys _ -> RULE_UNKNOWN_STREAM_KEY;
+            case StreamDeclarationError.NotAnInteger _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.MalformedValue _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.ValueOverflows _ -> RULE_STREAM_KEY_INVALID;
+            case StreamDeclarationError.ValueOutOfRange _ -> RULE_STREAM_KEY_INVALID;
+            case ResourceAddressError.General address -> addressRule(address);
+            case ResourceVersionError _ -> RULE_VERSION_FORMAT_INVALID;
+            case StreamVersionSpecError _ -> RULE_VERSION_FORMAT_INVALID;
+            default -> RULE_STREAM_RESOURCE_INVALID;
+        };
+    }
+
+    private static String replicationRule(Cause cause) {
+        return cause instanceof ReplicationFactorsError.ExceedsCoreCount
+               ? RULE_REPLICATION_EXCEEDS_CORE_COUNT
+               : RULE_REPLICATION_POLICY_INVALID;
+    }
+
+    /// #1564 R7: an owned stream whose `replication_factor` exceeds the cluster's DESIRED core count could never
+    /// hold its copies; the section is rejected, named by rule, like any other per-section refusal.
+    private static void guardCoreCount(String alias,
+                                       StreamConfig config,
+                                       ReplicationContext replication,
+                                       List<StreamValidationFailure> failures) {
+        config.replication()
+              .withinCoreCount(replication.desiredCoreCount())
+              .onFailure(cause -> failures.add(StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
+                                                                                               RULE_REPLICATION_EXCEEDS_CORE_COUNT,
+                                                                                               "Stream resource '" + alias
+                                                                                              + "': " + cause.message())));
+    }
+
+    /// #1564: the replication warnings of every ACCEPTED owned section, one [StreamValidationWarning] each, keyed by
+    /// the warning's code — the deploy response reports them to the operator (owner ruling: LOUD warnings).
+    private static void collectReplicationWarnings(Map<String, StreamResource> accepted,
+                                                   Option<String> resourcesConfig,
+                                                   ReplicationContext replication,
+                                                   List<StreamValidationWarning> warnings) {
+        resourcesConfig.onPresent(toml -> StreamConfigParser.replicationWarnings(toml,
+                                                                                 replication.defaults())
+                                                            .forEach((alias, raised) -> reportIfAccepted(alias,
+                                                                                                         raised,
+                                                                                                         accepted,
+                                                                                                         warnings)));
+    }
+
+    private static void reportIfAccepted(String alias,
+                                         List<ReplicationWarning> raised,
+                                         Map<String, StreamResource> accepted,
+                                         List<StreamValidationWarning> warnings) {
+        Option.option(accepted.get(alias))
+              .filter(StreamResource.Owned.class::isInstance)
+              .map(StreamResource.Owned.class::cast)
+              .onPresent(owned -> raised.forEach(warning -> warnings.add(StreamValidationWarning.streamValidationWarning("[streams." + alias
+                                                                                                                        + "]",
+                                                                                                                         warning.code(),
+                                                                                                                         warning.message("stream '" + alias
+                                                                                                                                        + "'",
+                                                                                                                                         owned.config()
+                                                                                                                                              .replication())))));
+    }
+
+    private static String addressRule(ResourceAddressError.General address) {
+        return switch (address) {
+            case NULL_VALUE, BLANK_VALUE, WRONG_FORMAT -> RULE_SOURCE_ADDRESS_INVALID;
+            case NAMESPACE_INVALID -> RULE_NAMESPACE_INVALID;
+            case NAMESPACE_RESERVED_FOR_APPS -> RULE_NAMESPACE_RESERVED;
+            case NAME_INVALID, NAME_RESERVED -> RULE_STREAM_NAME_INVALID;
+        };
     }
 
     /// #576: a blueprint's `[streams.X]`/`[streams.X.consumers.Y]` config parses and diffs cleanly,
@@ -132,7 +453,8 @@ public sealed interface StreamResourceValidator {
     /// — mirroring [org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator]'s `PF-25`
     /// (#575) treatment of `[operations.auto_heal] enabled`. Only non-default values are rejected: a
     /// key that happens to equal the hardcoded default does not assert anything false, even though it
-    /// is equally inert.
+    /// is equally inert. #1262 adds `consistency = strong`: `ConsensusPublishPath` has no production
+    /// caller, so the declared guarantee cannot be honoured on any write path.
     private static void guardInertConfig(Map<String, StreamResource> resources,
                                          Option<String> resourcesConfig,
                                          List<StreamValidationFailure> failures) {
@@ -160,7 +482,8 @@ public sealed interface StreamResourceValidator {
                                                                          RULE_INERT_STREAM_CONFIG,
                                                                          "compression '" + config.compression()
                                                                         + "' has no runtime effect — segments are always written uncompressed "
-                                                                        + "regardless of this setting. Remove the key or set it to 'none'."));
+                                                                        + "regardless of this setting. Remove the key or set it to 'none'; stream "
+                                                                        + "compression is not supported in 1.0 (descoped in #677)."));
         }
 
         if (!"earliest".equalsIgnoreCase(config.autoOffsetReset())) {
@@ -173,11 +496,21 @@ public sealed interface StreamResourceValidator {
         }
     }
 
+    /// A consumer key the parser refuses (#1549: `checkpoint-interval` that is not a duration of at least 1 ms)
+    /// rejects the section under the same per-cause rule as a stream key, instead of throwing out of validation.
     private static void guardConsumerConfigs(String alias, String toml, List<StreamValidationFailure> failures) {
-        StreamConfigParser.parseConsumers(toml, alias).onSuccess(consumers -> consumers.forEach((group, config) -> guardConsumerConfig(alias,
-                                                                                                                                       group,
-                                                                                                                                       config,
-                                                                                                                                       failures)));
+        StreamConfigParser.parseConsumers(toml, alias)
+                          .onFailure(cause -> failures.add(consumerFailure(alias, cause)))
+                          .onSuccess(consumers -> consumers.forEach((group, config) -> guardConsumerConfig(alias,
+                                                                                                           group,
+                                                                                                           config,
+                                                                                                           failures)));
+    }
+
+    private static StreamValidationFailure consumerFailure(String alias, Cause cause) {
+        return StreamValidationFailure.streamValidationFailure("[streams." + alias + "]",
+                                                               ruleFor(cause),
+                                                               cause.message());
     }
 
     private static void guardConsumerConfig(String alias,
@@ -236,61 +569,8 @@ public sealed interface StreamResourceValidator {
                                                               + "' has no runtime effect — per-consumer TOML config (`[streams.X.consumers.Y]`) is "
                                                               + "parsed but never reaches the runtime consumer (StreamConfigParser#parseConsumers has "
                                                               + "no production caller, per #576); every declarative consumer runs with hardcoded "
-                                                              + "defaults regardless of this key. Remove it until #576's runtime wiring lands.");
-    }
-
-    private static String extractField(String message) {
-        var openQuote = message.indexOf('\'');
-
-        if (openQuote < 0) {
-            return "[streams]";
-        }
-
-        var closeQuote = message.indexOf('\'', openQuote + 1);
-
-        if (closeQuote < 0) {
-            return "[streams]";
-        }
-
-        return "[streams." + message.substring(openQuote + 1, closeQuote) + "]";
-    }
-
-    private static String inferRule(String message) {
-        var lower = message.toLowerCase();
-
-        if (lower.contains("must not set both")) {
-            return "version-and-source-mutually-exclusive";
-        }
-
-        if (lower.contains("producer") && lower.contains("latest")) {
-            return "producer-version-must-be-exact";
-        }
-
-        if (lower.contains("must specify either")) {
-            return "version-or-source-required";
-        }
-
-        if (lower.contains("namespace") && lower.contains("reserved")) {
-            return RULE_NAMESPACE_RESERVED;
-        }
-
-        if (lower.contains("namespace")) {
-            return "namespace-invalid";
-        }
-
-        if (lower.contains("stream name")) {
-            return "stream-name-invalid";
-        }
-
-        if (lower.contains("version")) {
-            return "version-format-invalid";
-        }
-
-        if (lower.contains("parse error")) {
-            return RULE_RESOURCES_PARSE;
-        }
-
-        return "stream-resource-invalid";
+                                                              + "defaults regardless of this key. Remove it: per-consumer tuning is not supported "
+                                                              + "in 1.0 (descoped in #677; post-GA wiring is its own epic).");
     }
 
     /// Spec §11.1.3 multi-version warning: when a blueprint declares two or more
@@ -411,9 +691,10 @@ public sealed interface StreamResourceValidator {
 
     record unused() implements StreamResourceValidator {}
 
-    /// Convenience constructor for the no-role-hints case (legacy DSL path / tests).
+    /// Convenience constructor for the no-role-hints case (legacy DSL path / tests). Resolves replication against
+    /// the BUILT-IN defaults: production deploys go through [#partition] with the committed cluster context.
     static Result<ValidatedStreamResources> validate(Option<String> resourcesConfig, Artifact blueprintArtifact) {
-        return validate(resourcesConfig, blueprintArtifact, Map.of());
+        return validate(resourcesConfig, blueprintArtifact, Map.of(), ReplicationContext.BUILT_IN);
     }
 
     /// Convenience: project resources only when the validator is being used purely for the parsed
@@ -421,7 +702,7 @@ public sealed interface StreamResourceValidator {
     static Result<Map<String, StreamResource>> validateResources(Option<String> resourcesConfig,
                                                                  Artifact blueprintArtifact,
                                                                  Map<String, String> roleHints) {
-        return validate(resourcesConfig, blueprintArtifact, roleHints).map(ValidatedStreamResources::resources);
+        return validate(resourcesConfig, blueprintArtifact, roleHints, ReplicationContext.BUILT_IN).map(ValidatedStreamResources::resources);
     }
 
     /// Mutating helper retained for the per-warning-aggregation contract used by the orchestrator.

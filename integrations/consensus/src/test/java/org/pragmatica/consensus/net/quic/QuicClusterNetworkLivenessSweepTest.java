@@ -70,11 +70,16 @@ import static org.mockito.Mockito.when;
 ///   - FIX C: the event-driven close listener evicts a peer the instant its QUIC channel closes,
 ///     but only when the closed connection is STILL the bound one (adopt-newer supersede must not
 ///     evict the live replacement).
-@Timeout(10)
+/// #807: the class timeout must exceed [#CONNECT_BOUND], or it re-imposes the fixed wall-clock bound the waits removed.
+@Timeout(60)
 class QuicClusterNetworkLivenessSweepTest {
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(1).seconds();
     private static final TimeSpan HELLO_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    /// #807: waits on a REAL connect use the product's own bound plus margin, not a fixed few seconds. A dial is
+    /// bounded by the connect timeout (3 × helloTimeout = 15 s here); an 8 s wait scored a legitimately slow
+    /// handshake under reactor load as a failure. These are ceilings, reached only when something is wrong.
+    private static final TimeSpan CONNECT_BOUND = TimeSpan.timeSpan(HELLO_TIMEOUT.nanos() * 3 + TimeSpan.timeSpan(5).seconds().nanos()).nanos();
 
     private SliceCodec codec;
     private QuicSslContext serverSsl;
@@ -304,11 +309,13 @@ class QuicClusterNetworkLivenessSweepTest {
 
         nodeA.connect(NodeInfo.nodeInfo(peerBId, bAddress));
 
-        awaitTrue(() -> nodeA.connectedPeers().contains(peerBId), AWAIT_TIMEOUT, "A connects to B");
+        awaitTrue(() -> nodeA.connectedPeers().contains(peerBId), CONNECT_BOUND, "A connects to B");
+        // #807: a keepalive arrives every pingInterval (1 s); any sample younger than 2 s proves one landed. The
+        // ceiling is generous because a loaded box delays the timer, not because the property needs the time.
         awaitTrue(() -> nodeA.peerInboundAgeForTests(peerBId)
                              .map(age -> age < TimeSpan.timeSpan(2).seconds().nanos())
                              .or(false),
-                  AWAIT_TIMEOUT,
+                  CONNECT_BOUND,
                   "B's periodic keepalive refreshes A's receipt clock on an otherwise-idle link");
 
         nodeA.reconcileMissingPeersTick();
@@ -336,15 +343,17 @@ class QuicClusterNetworkLivenessSweepTest {
 
             network.connect(NodeInfo.nodeInfo(peerId, address));
 
-            // 2s budget: far below the 5s reconciler tick, so only the per-attempt timer can clear it.
-            awaitTrue(() -> network.peerPhaseForTests(peerId)
-                                   .map(phase -> phase == PeerState.Phase.EVICTED)
-                                   .or(false),
-                      TimeSpan.timeSpan(2).seconds(),
-                      "per-attempt dial timeout evicts the hung CONNECTING dial for re-dial");
-            assertThat(failures)
-                .as("the per-attempt timeout routes the typed dial-failure event")
-                .isNotEmpty();
+            // #807: attributed by WHAT evicted, not by a 2 s race against the 5 s reconciler tick. Only the
+            // per-attempt timer routes a ConnectionFailed naming "per-attempt dial timeout", so waiting for that event
+            // proves this timer cleared the hung dial whatever the load; the ceiling is only a failure bound.
+            awaitTrue(() -> failures.stream()
+                                    .anyMatch(failure -> failure.nodeId().equals(peerId)
+                                                         && failure.cause().message().contains("per-attempt dial timeout")),
+                      CONNECT_BOUND,
+                      "the per-attempt dial timeout evicts the hung CONNECTING dial and routes its typed failure");
+            assertThat(network.peerPhaseForTests(peerId).map(phase -> phase != PeerState.Phase.CONNECTED).or(false))
+                .as("the hung dial never connected")
+                .isTrue();
         }
     }
 
@@ -402,6 +411,26 @@ class QuicClusterNetworkLivenessSweepTest {
             .contains(peerId);
     }
 
+    @Test
+    void canonicalDirectionSupersessionIgnoresDelayedLoserClose() {
+        var self = new NodeId("aaa-self");
+        var peer = new NodeId("zzz-peer");
+        var network = createNetwork(self);
+        var losingChannel = activeChannel();
+        var closed = new DefaultChannelPromise(losingChannel, ImmediateEventExecutor.INSTANCE);
+        when(losingChannel.closeFuture()).thenReturn(closed);
+        var loser = QuicPeerConnection.quicPeerConnection(peer, peer, losingChannel);
+        var winner = QuicPeerConnection.quicPeerConnection(peer, self, activeChannel());
+        var state = PeerState.peerState(peer, 0);
+        state.attach(loser, 1);
+        network.seedPeerForTests(peer, state);
+        network.registerCloseListenerForTests(peer, loser);
+        assertThat(state.attach(winner, 2).superseded().unwrap()).isSameAs(loser);
+        closed.setSuccess();
+        assertThat(network.connectedPeers()).contains(peer);
+        assertThat(state.activeConnection().unwrap()).isSameAs(winner);
+    }
+
     // --- Wave 9 Fix B: death-path provenance on the connectivity reporter ---
 
     @Test
@@ -411,7 +440,7 @@ class QuicClusterNetworkLivenessSweepTest {
         // co-confirmation tap — a verdict must not co-confirm the death it caused.
         var reported = new CopyOnWriteArrayList<Boolean>();
         var network = createNetwork(NodeId.randomNodeId());
-        network.setFollowerObservationWiring(() -> false, recordingReporter(reported), zeroEpoch());
+        network.setFollowerObservationWiring(recordingReporter(reported), zeroEpoch());
         var peerId = new NodeId("verdict-victim");
         network.seedPeerForTests(peerId, connectedPeerState(peerId, activeChannel()));
 
@@ -428,7 +457,7 @@ class QuicClusterNetworkLivenessSweepTest {
         // death evidence and must report deathPathInitiated=false so the liveness-gone tap fires.
         var reported = new CopyOnWriteArrayList<Boolean>();
         var network = createNetwork(NodeId.randomNodeId());
-        network.setFollowerObservationWiring(() -> false, recordingReporter(reported), zeroEpoch());
+        network.setFollowerObservationWiring(recordingReporter(reported), zeroEpoch());
         var peerId = new NodeId("organic-drop");
         network.seedPeerForTests(peerId, connectedPeerState(peerId, activeChannel()));
 
@@ -520,7 +549,7 @@ class QuicClusterNetworkLivenessSweepTest {
         var selfInfo = NodeInfo.nodeInfo(nodeId, address);
         var topology = stubTopologyManager(selfInfo, helloTimeout);
         var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl,
-                                              ClusterFormationConfig.defaults(), QuicDisconnectListener.noop());
+                                              ClusterFormationConfig.defaults());
         networks.add(network);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;
@@ -528,6 +557,9 @@ class QuicClusterNetworkLivenessSweepTest {
 
     private TopologyObserver stubTopologyManager(NodeInfo self, TimeSpan helloTimeout) {
         return new TopologyObserver() {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
             @Override public NodeInfo self() {return self;}
             @Override public Option<NodeInfo> get(NodeId id) {
                 return id.equals(self.id()) ? Option.some(self) : Option.empty();

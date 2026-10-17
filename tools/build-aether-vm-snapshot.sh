@@ -114,7 +114,10 @@ readonly VM_NAME_PREFIX="aether-snapshot-build"
 readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
+# This script provisions a REAL, billable Hetzner server.
 VM_TYPE="cx23"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 VM_LOCATION="fsn1"
 VM_IMAGE="ubuntu-22.04"
 RUNTIME="container"
@@ -503,7 +506,7 @@ package_update: true
 package_upgrade: false
 runcmd:
   - apt-get update -qq
-  - apt-get install -y -qq wget gnupg ca-certificates apt-transport-https curl
+  - apt-get install -y -qq wget gnupg ca-certificates apt-transport-https curl git
   - mkdir -p /etc/apt/keyrings
   - wget -qO /etc/apt/keyrings/adoptium.asc https://packages.adoptium.net/artifactory/api/gpg/key/public
   - bash -c 'CODENAME=\$(. /etc/os-release && echo "\${VERSION_CODENAME}"); echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb \${CODENAME} main" > /etc/apt/sources.list.d/adoptium.list'

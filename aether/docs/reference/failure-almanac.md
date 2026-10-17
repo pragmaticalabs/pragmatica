@@ -24,9 +24,9 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 | Surface | Exposes | CLI |
 |---------|---------|-----|
-| `GET /api/events` | The `ClusterEvent` stream — `NODE_FAILED` (CRITICAL), `NODE_LEFT` (WARNING), `LEADER_LOST` / `LEADER_ELECTED`, `QUORUM_LOST` (CRITICAL) / `QUORUM_ESTABLISHED`, `SELF_DRAIN_INITIATED` (WARNING), `DEPARTURE_PUSH_INCOMPLETE`, `SCALE_CAPPED`, `STREAM_MEMORY_EXCEEDED` (`ClusterEvent.java`, 33 variants) | `aether events` |
-| `GET /api/health` | `status` (healthy / degraded / unhealthy), `quorum` (true/false), `nodeCount`, `sliceCount` | `aether health`, `aether nodes health` |
-| `GET /api/nodes/lifecycle/<id>` | Per-node lifecycle state (ON_DUTY, DRAINING, DECOMMISSIONED, …) | `aether nodes lifecycle` |
+| `GET /api/v1/events` | The `ClusterEvent` stream — `NODE_FAILED` (CRITICAL), `NODE_LEFT` (WARNING), `LEADER_LOST` / `LEADER_ELECTED`, `QUORUM_LOST` (CRITICAL) / `QUORUM_ESTABLISHED`, `SELF_DRAIN_INITIATED` (WARNING), `DEPARTURE_PUSH_INCOMPLETE`, `SCALE_CAPPED`, `STREAM_MEMORY_EXCEEDED`, `OPERATOR_WARNING` (identified by `details.code`) (`ClusterEvent.java`, 35 sealed variants) | `aether events` |
+| `GET /api/v1/health` | `status` (healthy / degraded / unhealthy), `quorum` (true/false), `nodeCount`, `sliceCount` | `aether health`, `aether nodes health` |
+| `GET /api/v1/nodes/lifecycle/<id>` | Per-node lifecycle state (ON_DUTY, DRAINING, DECOMMISSIONED, …) | `aether nodes lifecycle` |
 | `aether cluster membership` | Per-peer SWIM FSM state + the quorum-loss self-drain signal | (CLI) |
 | `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` | `hrwOwner`, `servedByOwner`, `replicas[].state`, `confirmedOffset` | (stream failover diagnosis) |
 | Metrics (Micrometer) | `aether.streams.memory.used.bytes` / `.used.ratio` — the only dedicated failure-adjacent gauges today | scrape endpoint |
@@ -39,15 +39,18 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 |--------------|-----------------|-------|
 | Non-leader node failure | detect ~8 s quiescent / ≤60 s under load; auto-heal to N ≤180 s | 02-chaos C3/C6 |
 | Leader failure | re-election ≤150 s (transient zero-leader ≈19 s) | 02-chaos C4 |
-| Quorum loss / minority partition | minority self-drain ≤45 s; recovery ≤60 s | 02-chaos C12–C16 |
+| Quorum loss / minority partition | minority self-drain ≤45 s in the harness (kill of three of five); harness restart of the same five containers ≤60 s | 02-chaos C12–C16 |
+| No-majority network cut (no group holds a majority) | measured: cuts of 20, 25 and 30 s halted every core (five cores, every core isolated, Ember in-process; longer cuts were not run); the drain begins 18-19 s after the cut); no automatic recovery; declared state returns only from a pushed `[backup]` | five-node Ember probe `[measured]`; [runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted) |
 | Slow detection under sustained load | ~11 s nominal → up to ~80 s under load | guarantees.md §3 · **pending tighter bound (#94)** |
 | Provisioning stall under churn | fix landed; budget cloud-pending | **pending validation (#362)** |
 | Per-node deployment failure (`ALL_OR_NOTHING` rollback) | n/a — permanent until cause is fixed | `DurableEntityForgeTest` |
-| Stream owner failover (RF ≥ 2) | owner view ≤180 s; complete history ≤120 s | 02-chaos C17–C20 |
-| Stream owner failover (RF = 1, default) | none until owner returns | guarantees.md §4 |
+| `BEST_EFFORT` slice failure (durable `PARTIAL`) | n/a — durable until redeployed | `BlueprintStatusAggregationTest` |
+| Stream owner failover (`confirmation_factor ≥ 2`) | not measured since #1555 fixed ownership moving (#1550); ≤180 s / ≤120 s measured at RF=2 before #1547 | Forge `StreamOwnerFailoverTest`, `StreamDefaultRfOwnerReplacementTest`; 02-chaos C17–C20 (RF=2) |
+| Stream owner loss (RF = 3, default `confirmation_factor` 2) | none today — ownership stays on the dead owner; replicated history held on survivors | `StreamDefaultRfOwnerReplacementTest` |
 | Core network partition | eviction ~3 s; heal to N ≤30 s | 12-network C9/C10 |
 | QUIC connection churn | missing-peer reconcile 5–60 s | 12-network connectedPeerCount |
-| Full-cluster restart | derived state rebuilds; snapshot-only KV | guarantees.md §1–§2 · **partial (#349)** |
+| SWIM member address change refused | none — replace the node under a fresh NodeId | `SwimAnnounceSourcePinTest` (unit; no multi-node proof yet) |
+| Full-cluster restart | derived state rebuilds; consensus state is memory-only, declared state restores from a pushed `[backup]` | guarantees.md §1–§2 · **partial (#349)** |
 | DHT / artifact loss under churn | mitigation only | **pending full fix (#420 / #349)** |
 | Pub/sub message loss | none (at-most-once) | guarantees.md §5 |
 
@@ -55,8 +58,8 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Non-leader node failure
 
-- **Symptom:** a node stops responding; `nodeCount` on `/api/health` drops by one; slices it hosted re-route to peers.
-- **Detection surface:** `/api/events` emits `NODE_FAILED` (CRITICAL, from the SWIM FSM DEAD edge) or `NODE_LEFT` (WARNING, graceful); `/api/nodes/lifecycle/<id>` transitions the node to DECOMMISSIONED; `aether cluster membership` shows the peer FAULTY.
+- **Symptom:** a node stops responding; `nodeCount` on `/api/v1/health` drops by one; slices it hosted re-route to peers.
+- **Detection surface:** `/api/v1/events` emits `NODE_FAILED` (CRITICAL, from the SWIM FSM DEAD edge) or `NODE_LEFT` (WARNING, graceful); `/api/v1/nodes/lifecycle/<id>` transitions the node to DECOMMISSIONED; `aether cluster membership` shows the peer FAULTY.
 - **Automatic response:** SWIM detects the death → the leader writes DECOMMISSIONED to the KV → CTM auto-heal provisions a replacement to restore the configured member count N.
 - **Budget:** detection ~8 s when the cluster is quiescent, ≤60 s under sustained load (02-chaos C3); auto-heal back to exactly N ≤180 s (C6).
 - **Degraded / at risk:** reduced capacity until the replacement is ACTIVE. **No data loss** — KV state is quorum-durable on the surviving majority.
@@ -66,7 +69,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Leader failure
 
 - **Symptom:** a brief control-plane pause — deploys, scaling, and auto-heal stall for a few seconds; application traffic on the majority is unaffected.
-- **Detection surface:** `/api/events` emits `LEADER_LOST` then `LEADER_ELECTED`; `aether status` shows the new leader id.
+- **Detection surface:** `/api/v1/events` emits `LEADER_LOST` then `LEADER_ELECTED`; `aether status` shows the new leader id.
 - **Automatic response:** deterministic re-election (leader = first node in sorted topology, `viewSequence`-fenced so two committing leaders are structurally impossible). Leaderless Rabia consensus keeps committing; only leader-pinned coordination pauses.
 - **Budget:** new leader elected ≤150 s worst case (02-chaos C4); a transient zero-leader gap self-heals in ≈19 s (guarantees.md §3). **The 150 s figure is a `[CONTRACT-GAP]`** — asserted by the test, not pinned by a canonical election spec.
 - **Degraded / at risk:** deploy/scale/auto-heal paused during re-election; no data at risk.
@@ -75,18 +78,18 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Quorum loss / minority partition (self-drain)
 
-- **Symptom:** nodes on the minority side reject writes and then exit; `/api/health` reports `quorum:false` on that side.
-- **Detection surface:** `/api/events` emits `QUORUM_LOST` (CRITICAL) and `SELF_DRAIN_INITIATED` (WARNING, `reason` ∈ `sustained-below-quorum` | `quorum-disappeared` | `rabia-paused`); the minority JVMs exit with **code 2** (distinguishes self-drain from clean=0 / SIGKILL=137); `aether cluster membership` carries the self-drain signal.
-- **Automatic response:** a node that cannot reach `core/2 + 1` peers self-terminates via `Runtime.halt(2)` after the split timeout; the majority continues serving. Drained nodes require external restart / CTM reprovision.
-- **Budget:** self-drain exit ≤45 s (8 s threshold + 30 s grace + 7 s headroom; wall-clock ~38 s cloud-proven) (C12); post-restart recovery to N healthy cores ≤60 s (C16). The self-drain state machine is a `[CONTRACT-GAP]` (code-only; guarded by `SelfDrainCoordinatorTest`).
+- **Symptom:** nodes on the minority side reject writes and then exit; `/api/v1/health` reports `quorum:false` on that side.
+- **Detection surface:** `/api/v1/events` emits `QUORUM_LOST` (CRITICAL) and `SELF_DRAIN_INITIATED` (WARNING, `reason` ∈ `sustained-below-quorum` | `quorum-disappeared` | `rabia-paused`); the minority JVMs exit with **code 2** (distinguishes self-drain from clean=0 / SIGKILL=137); `aether cluster membership` carries the self-drain signal.
+- **Automatic response:** a node that cannot reach `core/2 + 1` peers self-terminates via `Runtime.halt(2)` once the split timeout has elapsed below the threshold; a majority, if one exists, continues serving. A drained node never returns under its NodeId; replacing it needs a committed quorum. If no group holds a majority, every core halts: see the [no-majority runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted).
+- **Budget:** self-drain exit ≤45 s with the harness's configured 8 s window (8 s threshold + 30 s grace + 7 s headroom; wall-clock ~38 s cloud-proven) (C12); with the default 15 s split timeout the drain begins 18-19 s after a total cut `[measured: five-node Ember probe]`. The harness (C16) restarts the same five containers and expects N healthy cores within 60 s (Docker; cloud after a full drain: reap plus fresh bootstrap, ~10 min budget, #1051); that is not the supported operator recovery. The self-drain state machine is a `[CONTRACT-GAP]` (code-only; the drain procedure's single-shot and grace behaviour is unit-tested in `DrainProcedureTest`).
 - **Degraded / at risk:** the minority is unavailable **by design** (consistency over availability). Acked data on the majority is safe; the minority's in-flight uncommitted writes are rejected, not lost-then-served.
-- **Operator action:** restart or reprovision the drained minority nodes once the partition cause is fixed. See the partition contract in [14-consistency-and-partitions.md](../architecture/14-consistency-and-partitions.md).
-- **Proof anchor:** `02-chaos/test-self-drain-quorum-loss.sh` (C12–C16); `SelfDrainCoordinatorTest`.
+- **Operator action:** replace the drained minority nodes under fresh NodeIds once the partition cause is fixed (a restart under the old NodeId is refused while any old-cluster process is running); with no majority, follow the [no-majority runbook](../operators/runbooks/incident-response.md#no-majority-partition--every-core-halted). See the partition contract in [14-consistency-and-partitions.md](../architecture/14-consistency-and-partitions.md).
+- **Proof anchor:** `02-chaos/test-self-drain-quorum-loss.sh` (C12–C16); `DrainProcedureTest`.
 
 ### Slow failure detection under sustained load
 
 - **Symptom:** a genuinely dead node's `NODE_FAILED` event lags the death — up to ~80 s under sustained local trouble, versus ~11 s nominal.
-- **Detection surface:** `/api/events` `NODE_FAILED` (delayed).
+- **Detection surface:** `/api/v1/events` `NODE_FAILED` (delayed).
 - **Automatic response:** SWIM's local-health multiplier stretches the suspect timeout under load (×8) to avoid false positives; a 15 s co-confirmation backstop bounds full eviction.
 - **Budget:** ~11 s nominal (probe 0.8 s + suspect 10 s), up to ~80 s under load. **This is detection *latency*, not a correctness gap** — routing intersects targets with the live set so traffic is not forwarded to an undetected-dead node indefinitely.
 - **Operator action:** none. Persistent long detection under load is a known timing sensitivity.
@@ -97,7 +100,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Provisioning stall under heavy reconciler load
 
 - **Symptom:** after churn under load, auto-heal does not restore the member count promptly; `nodeCount` stays below target.
-- **Detection surface:** `/api/health` `nodeCount`; `aether status`.
+- **Detection surface:** `/api/v1/health` `nodeCount`; `aether status`.
 - **Automatic response:** a periodic reconcile re-evaluation (armed at the quorum threshold) retries provisioning; the historical permanent-paused wedge is closed.
 - **Budget:** **not yet pinned** — this is a cloud-gate-class scenario.
 - **Operator action:** manually reprovision if the cluster stays under target well beyond the ~180 s auto-heal budget.
@@ -107,34 +110,105 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Per-node deployment failure under `ALL_OR_NOTHING` rollback
 
-- **Symptom:** `POST /api/blueprints` returned `"status": "applied"`, but the blueprint never reaches `DEPLOYED`. `GET /api/blueprints/status/{id}` and `GET /api/slices/status` show **nothing** for the failing artifact — not a FAILED entry — because the deploy was rolled back, not partially applied.
-- **Detection surface:** `GET /api/events` — one `DEPLOYMENT_FAILED` event per node that attempted and failed the slice load (`details.nodeId`, `details.reason`); a blueprint targeting N nodes that fails deterministically on all of them produces N events, not one. The deploy response and both status endpoints never carry this information — the event feed is the only surface that does.
-- **Automatic response:** under the default `ALL_OR_NOTHING` atomicity (`02-deployment.md` §Deployment Atomicity), a deterministic slice-load failure on any allocated node rolls back the entire blueprint and removes the deployment-map entry for that artifact — the same map `GET /api/slices/status` and `GET /api/blueprints/status/{id}` read from, so both go back to empty/PENDING rather than ever showing FAILED. The cluster-event stream is append-only and is not retracted by the rollback, so the `DEPLOYMENT_FAILED` record survives.
+- **Symptom:** `POST /api/v1/blueprints` returned `"status": "applied"`, but the blueprint never reaches `DEPLOYED`. `GET /api/v1/slices/status` shows **nothing** for the failing artifact — not a FAILED entry — because the deploy was rolled back, not partially applied; `GET /api/v1/blueprints/status/{id}` instead reports the durable terminal outcome (`overallStatus: FAILED` or `ROLLED_BACK`, `cause`, `failingSlices`) rather than agreeing with that empty live snapshot (#759).
+- **Detection surface:** `GET /api/v1/events` — one `DEPLOYMENT_FAILED` event per node that attempted and failed the slice load (`details.nodeId`, `details.reason`); a blueprint targeting N nodes that fails deterministically on all of them produces N events, not one. `GET /api/v1/blueprints/status/{id}` now carries this too — `cause` and `failingSlices` (full artifact coordinates) on the same request that used to 404 (#759) — but `GET /api/v1/slices/status` still shows nothing for the rolled-back artifact, so the event feed remains the only surface with per-node detail.
+- **Automatic response:** under the default `ALL_OR_NOTHING` atomicity (`02-deployment.md` §Deployment Atomicity), a deterministic slice-load failure on any allocated node rolls back the entire blueprint and removes the deployment-map entry for that artifact — the same map `GET /api/v1/slices/status` reads from, so it goes back to empty/PENDING rather than ever showing FAILED. `GET /api/v1/blueprints/status/{id}` instead answers from the durable outcome key written at that same rollback, so it does not revert to empty (#759). The cluster-event stream is append-only and is not retracted by the rollback, so the `DEPLOYMENT_FAILED` record survives.
 - **Degraded / at risk:** the blueprint's slices are not running anywhere; no partial deployment is left behind (that is the point of `ALL_OR_NOTHING`). No data at risk.
-- **Operator action:** if a deploy stays PENDING past its expected time, check `GET /api/events` for `DEPLOYMENT_FAILED` before assuming the status endpoints would show a failure — they will not. Fix the cause named in `details.reason` and redeploy.
+- **Operator action:** if a deploy stays PENDING past its expected time, poll `GET /api/v1/blueprints/status/{id}` for the terminal outcome (`cause`, `failingSlices`) before falling back to `GET /api/v1/events` for the per-node `DEPLOYMENT_FAILED` detail (#759); `GET /api/v1/slices/status` will not show a failure, only an empty/PENDING map. Fix the cause named in `details.reason` (or the status endpoint's `cause`) and redeploy.
 - **Proof anchor:** `DurableEntityForgeTest` (forge-tests) — `failIfSliceFailed` fails fast on the `DEPLOYMENT_FAILED` event for a deliberately un-bundled `DurableEntity` resource provider, reproducing the "no resource provider registered for resource type" case end to end; fast-red in ~35 s (vs. the 240 s Awaitility timeout it replaced) when the provider is absent, unchanged green when present.
+
+### `BEST_EFFORT` slice failure (durable `PARTIAL`)
+
+- **Symptom:** under `BEST_EFFORT` atomicity, one slice's instances fail to reach `ACTIVE` while sibling slices keep serving; `GET /api/v1/blueprints/status/{id}` reports `overallStatus: PARTIAL` — not `FAILED`, not `DEPLOYED` — and this can be the durable state the blueprint settles into rather than a transient step toward `ROLLED_BACK` (that only applies under `ALL_OR_NOTHING`, above).
+- **Detection surface:** `GET /api/v1/blueprints/status/{id}` — `overallStatus: PARTIAL`, `slices[]` carrying the real per-slice `target`/`active`/`failed` counts and a `"FAILED"` per-slice status on the failing artifact; once `ClusterDeploymentState.recordBestEffortFailureOutcome` writes its terminal outcome record, `cause` and `failingSlices` populate too. `overallStatus` reports `PARTIAL` for this same slice mix in both the pre-outcome live-aggregation window and the post-outcome window, so a poller sees no status change across that transition (#759 review round 4).
+- **Automatic response:** none — `BEST_EFFORT` deliberately does not roll back siblings for one slice's failure; the failed slice's instances stay `FAILED` until redeployed.
+- **Degraded / at risk:** the failed slice is unavailable; every sibling slice keeps serving normally. No data at risk.
+- **Operator action:** redeploy the failed slice (a scoped republish of just that artifact, or a full blueprint republish) once the underlying cause (`cause` / `failingSlices` on the status response, or the per-node `DEPLOYMENT_FAILED` event) is fixed.
+- **Proof anchor:** `BlueprintStatusAggregationTest#statusRoute_blueprintLiveWithTerminalFailure_bestEffort_reportsPartialWithSliceCounts` (post-outcome window) and `#statusRoute_reportsPartial_whenOneSliceFailedAndSiblingFullyDeployed` (pre-outcome live-aggregation window, same `PARTIAL` value) — both `aether/node`.
 
 ## Streams
 
-### Stream owner failover — RF ≥ 2 (`min-sync-replicas ≥ 2`)
+### Stream owner failover — `confirmation_factor ≥ 2`
 
-- **Symptom:** a partition's owner dies; a brief read unavailability, then a caught-up replica serves the complete history.
+- **Symptom (intended):** a partition's owner dies; a brief read unavailability, then a caught-up replica serves the complete history. Until #1555 ownership did not leave a killed owner (#1550); since #1555 stream placement reads the live members, so it moves to a surviving replica `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamOwnerFailoverTest.java — RF 3 / CF 2, graceful kill]`. The budget below is the RF=2 behaviour 02-chaos measured before #1547; none has been measured since #1555.
 - **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes, `servedByOwner` returns true on the new owner, `replicas[].state` shows a CAUGHT_UP replica.
-- **Automatic response:** HRW ownership reseats to a CAUGHT_UP replica; the epoch fence rejects the deposed owner's late appends; the new owner serves **every** pre-kill event in order.
-- **Budget:** new owner-authoritative view ≤180 s; complete history (all N events) settled ≤120 s (02-chaos C18/C19/C20).
-- **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `min-sync-replicas ≥ 2` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events).
-- **Operator action:** none.
+- **Automatic response (intended, `[design intent — unverified]` at RF=3):** HRW ownership reseats to a CAUGHT_UP replica; the epoch fence rejects the deposed owner's late appends; the new owner serves **every** pre-kill event in order.
+- **Budget:** measured at RF=2 before #1547 — new owner-authoritative view ≤180 s; complete history settled ≤120 s (02-chaos C18/C19/C20). Not re-measured since #1555.
+- **Degraded / at risk:** brief read unavailability during reseat. **No acked data at risk** at `confirmation_factor = replication_factor` (the #445 fix closed the live-vs-reconciled divergence that previously dropped acked events). At `2 ≤ CF < RF` an acked event is on the owner and `CF − 1` peers; #1555's promotion gate catches the new owner up from the highest-head live member before it serves, so every acked event held by a live replica is recovered `[design intent — unverified]`. The 02-chaos proof below ran at RF=2 with the write-ack floor equal to RF (then named `min-sync-replicas`, renamed `confirmation_factor` by #1564); its fixture is RF=3 with CF 2 since #1547, and a blueprint's declared factor reaches the runtime since #1549.
+- **Operator action:** none for the ownership move (automatic since #1555). A lost core's replica slot is refilled by a replacement joining under a fresh identity once the voter install adds it (#1732) `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamConfirmationEqualsFactorAvailabilityTest.java — Ember, 3 nodes, graceful stop of a NON-owner core; green at 44367f625, RED at its base b55a359e1; not run on the cloud or under SIGKILL]` `[unverified: when the lost core was the partition's OWNER — StreamDefaultRfOwnerReplacementTest kills the owner and joins a replacement but does not assert the replacement's placement]`; until then the partition runs one replica short.
 - **Proof anchor:** `02-chaos/test-stream-replica-failover.sh` (C17–C20); `PartitionBackfillTest`.
 
-### Stream owner failover — RF = 1 (default)
+### Stream owner loss — RF = 3, default `confirmation_factor` 2 (the default stream)
 
-- **Symptom:** after the owner dies, consumers read **empty** until the original owner restarts.
-- **Detection surface:** `/api/streams/replicas/...` shows no CAUGHT_UP non-owner replica.
-- **Automatic response:** none — no other replica holds the data; HRW may move ownership to a peer with no copy.
-- **Budget:** n/a — data is unavailable until the owner returns.
-- **Degraded / at risk:** un-replicated appends are **crash-durable on the dead owner's disk** (WAL fsync) but **not served** during the outage. Not lost, but unavailable.
-- **Operator action:** configure `min-sync-replicas ≥ 2` for failover safety; restart the owner to recover its partitions. See [known-limitations.md](known-limitations.md) (RF=1 one-disk-deep).
-- **Proof anchor:** guarantees.md §4 (RF=1 empty-after-failover); Forge `StreamCrashDurabilityTest` (per-owner WAL survives restart).
+- **Symptom (before #1555; #1550):** a partition's owner is terminally removed and the partition stops being served: every survivor keeps resolving the dead node as owner, and forwarded reads fail with "Stream partition is not owned by this node". Fixed by #1555: ownership moves to a surviving replica.
+- **Detection surface:** `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` — `hrwOwner` changes and the new owner's view shows the replicas' `confirmedOffset`.
+- **Automatic response:** HRW hands ownership to the next-ranked survivor, which is already a replica, and it serves every replicated event `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java — 2/2 on cloudbb-d1 at 53b168eb0, 2026-09-30, 4 <testcase> 0 red; logs and XML archived in oss s29/s6-1735-recite-forge-53b168eb0.tgz]`. The replacement core is placed into the partition's replica set once the voter install adds it (#1732) `[mechanism: placement members are the installed voters narrowed to the FSM's counted core, and the voter install triggers the reconcile, whichever core was lost]` `[unverified: when the lost core was the partition's OWNER — StreamDefaultRfOwnerReplacementTest kills the owner and joins a replacement but does not assert the replacement's placement]`; the non-owner case is `[verified: aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamConfirmationEqualsFactorAvailabilityTest.java — Ember, 3 nodes, graceful stop of a NON-owner core; green at 44367f625, RED at its base b55a359e1; not run on the cloud or under SIGKILL]`.
+- **Budget:** not measured.
+- **Degraded / at risk:** since #1564 the default `confirmation_factor` is 2, so an acked event is on the owner and one peer before the ack and the owner's death alone does not lose it `[design intent — unverified]`. Before #1564 the default acked on the owner's WAL fsync alone; that is still the case for a stream declaring `confirmation_factor = 1` (warned at declaration), and because a terminally removed owner's WAL is never read again, events acked but not yet replicated when such an owner dies are **lost**, not merely unavailable. Everything that reached the replicas is held on the survivors and served by the new owner `[verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamDefaultRfOwnerReplacementTest.java`]`.
+- **Operator action:** none for the ownership move. Replacing the lost core refills the partition's replica set once the voter install adds it (#1732) `[unverified: when the lost core was the partition's OWNER — StreamDefaultRfOwnerReplacementTest kills the owner and joins a replacement but does not assert the replacement's placement]`. To make every acked event reach every replica before the ack, declare `confirmation_factor = replication_factor` — at the cost that losing any one replica refuses writes (see [known-limitations.md](known-limitations.md)).
+- **Proof anchor:** Forge `StreamDefaultRfOwnerReplacementTest` (owner killed, replacement joins under a fresh id: two survivors hold all events, RF=1 control holds none; the new owner serves them — enabled by #1555).
+
+### Stream replica with a divergent tail — cut back and refetched (#1730 phase 2)
+
+- **Symptom:** after an owner change, a replica holds records the committed owner never had, or different ones at the same offsets (an ex-owner that returned with an unacknowledged tail, or an in-sync member that lagged an election). Before this, the replica was quarantined for good (never CAUGHT_UP, never acking at or past the divergence), and an elected owner refused to activate while such a peer was live.
+- **Detection surface:** the node log (`QUARANTINED` at ERROR once, then `cut its tail back to offset N` at INFO). Every cut that removes records first writes them to a recovery segment (below) and raises the WARNING **`stream-divergent-tail-preserved`**, naming the stream, partition, offset range and segment file (#2080). At `confirmation_factor` 1 only, the operator warning **`stream-divergent-tail-truncated`** (`OPERATOR_WARNING` with `details.code`, WARNING; the message names the discarded offsets `[from, to]`), because there the writer's own fsync was the acknowledgement and the discarded records may have been acknowledged. With `confirmation_factor` >= 2 the discarded records were never acknowledged (an acknowledgement needs every in-sync member, and the committed owner is one), so the cut is routine and raises no loss warning (it still preserves and reports the segment).
+- **Automatic response:** a replica whose committed owner is known, and which is not the owner, cuts its WAL, epoch history and ring back to the last offset it shares with the owner (one ordered section: WAL first, then epochs, then ring), lifts the quarantine and refetches from the owner. An owner elected from the committed ISR leaves a divergent peer out of its catch-up instead of refusing activation. A replica that backfills compares the owner's last 1,024 records before it is CAUGHT_UP and is promoted at the OWNER's head, not its own (an ack for records the replica never received was previously possible). A restarted replica shows its recovered tail to readers only once that tail is verified.
+- **Budget:** one backfill round after the divergence is seen.
+- **Degraded / at risk:** at `confirmation_factor` 1, acknowledged records of the old owner are lost (the stated acks=1 window). Not repaired by truncation, and left quarantined: a copy whose own owner-epoch history cannot vouch for its records (it holds records and no history, the `HISTORY_MISSING` shape: it compares unequal with every owner at offset 0, which is no evidence of a lineage split), a divergence below the ring's retained range (those offsets were evicted and possibly sealed), a divergence on the owner's own copy, and two peers that disagree with each other above the candidate's head (activation refuses, `DivergentPeers`).
+- **Operator action:** none for a repaired replica. For a copy that stays quarantined, rebuild the replica from the owner.
+- **A cut that keeps being refused (#2084).** When the recovery segment (`RepairPreserveFailed`) or the truncation witness (`RepairWitnessFailed`) cannot be written, typically a full or read-only volume, the copy stays quarantined with its records untouched and the repair is retried. The WARNING **`stream-divergent-tail-cut-refused`** names the partition and the cause, once per distinct failure episode however often the repair is retried; the cut that finally goes through raises its paired INFO **`stream-divergent-tail-cut-resumed`** `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionManagerDivergentTailTest.java]`. The warning is closed with the same paired INFO when its subject goes away (the replica is released, the stream destroyed or reaped). Operator action: free or repair the volume holding the WAL.
+- **Preserve before cut (#2080).** Before a copy with a WAL removes anything, it writes the records it is about to remove (offset, timestamp, payload and the owner-epoch key each was written under) to a recovery segment beside the WAL, `<wal file>.recovery-<first>-<last>-<millis>.seg`, fsynced with its directory entry. A segment that cannot be written REFUSES the cut: the copy stays quarantined and untouched and the repair is retried (`RepairPreserveFailed`, retriable). Segments are never deleted automatically. An ephemeral copy (no WAL) has nothing to retain. Re-injecting a segment (inspect-and-re-inject tooling is a follow-up) assigns new offsets, so consumers may see duplicates or reordering `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/StreamPartitionManagerDivergentTailTest.java]`.
+
+### Stream promotion past a member that never answers — bounded ISR escape (#2080)
+
+- **Symptom:** a stream partition cannot be written: the owner's activation gate (`OwnerActivation`) and a replica's promotion contest (`PartitionBackfill`) both wait for every live member, and a member that keeps its transport handshaking while answering nothing (#1563: a wedged JVM) never reaches DEAD. Publishes fail with the retriable "not yet promoted"; the operator event `stream-owner-promotion-holders-unreachable` (CRITICAL) names the silent members once the wait passes the alarm window.
+- **Detection surface:** the operator event **`stream-promotion-past-unreachable-peers`** (CRITICAL, one per escape): the partition, the candidate and the members it went ahead without, for either gate. The owner gate reports it when the activation completes, the contest when the replica is promoted, so an event never describes a promotion that did not happen.
+- **Automatic response:** after `[streaming] promotion_escape_after` (default 120 s) of continuous unreachability of EACH silent member (the bound is per member, an answer resets only that member's clock, and a gap between two probe rounds longer than the alarm bound is not counted as silence: the clock restarts at the later observation; THAT GAP THRESHOLD IS A GUESS, the alarm bound being the nearest existing measure of "too long to be one continuous look" `[unverified: not measured against real redrive cadence]`), a candidate named in the partition's COMMITTED in-sync set (`isrVersion > 0`, read from the raw committed record, never from the routing view) goes ahead without the silent members. The alarm stays at its own, earlier bound (owner gate: two SWIM suspect windows, 20 s; contest: the 20 s source wait), and the configuration refuses an escape bound below them. **The 120 s default is a guess** (the owner's, 2026-10-09): after a full-cluster cold restart the in-sync set is minted from placement, so a node whose disk is ahead and which merely boots slowly (JVM start plus WAL replay) must not be escaped past; what would settle the value is the measured boot spread of a cold restart `[unverified]`. A candidate outside the set, a record with no committed set and a first owner with no record stay blocked.
+- **Budget:** the bound plus one re-drive (at most 2 s) and the activation's consensus rounds `[verified: aether/ember/src/test/java/org/pragmatica/aether/ember/EmberMutePeerPromotionEscapeTest.java]`.
+- **Degraded / at risk:** an acknowledged write at `confirmation_factor` >= 2 is on every member of the in-sync set, so an in-sync candidate holds it `[mechanism: the acknowledgement waits for every in-sync member]`. After a full-cluster cold restart the in-sync set is minted from placement, not from disks: a silent node whose disk is ahead may hold acknowledged records the new lineage lacks. They leave the live stream when the node returns and its divergent tail is cut back, but the cut preserves them first (above) and reports it. With ephemeral storage nothing is retained and the escape changes only availability.
+- **Operator action:** the escape needs none. After a `stream-promotion-past-unreachable-peers` event, find why the named members stopped answering; when one returns, expect `stream-divergent-tail-preserved` if its tail differed, and keep the segment until the follow-up recovery tooling exists.
+- **Proof anchor:** `ReplicaDivergentTailRepairTest`, `StreamPartitionManagerDivergentTailTest`, `OwnerActivationTest` (the `isrElected` cases and the legacy-record control), `ReplicaRestartVisibilityTest`, `AppendLogTruncateSuffixTest`, `OffHeapRingBufferTruncateSuffixTest`.
+- **Limits:** a replica without a WAL has no provenance, so a divergent prefix below the offsets the owner re-offers is not detected (payload comparison only where offsets are re-offered). A replica that acknowledges a live batch contiguous to an unverified recovered tail is counted before its tail is compared, because the provenance comparison runs at backfill.
+
+### Stream replica's catch-up answered as a consumer read — nothing applied (#1730 phase 2)
+
+- **Symptom:** a replica stays SYNCING and out of the partition's in-sync set; the node log shows `Catch-up page was answered as a consumer read ... not applied` on every backfill pull.
+- **Detection surface:** after one minute of it, the operator warning **`stream-catchup-source-not-answering`** (`OPERATOR_WARNING`, WARNING; subject `stream[partition]@source`), once per episode, and **`stream-catchup-source-answering-restored`** when it ends (only if the first was raised). An episode is a run of refusals no more than a minute apart; any answer the source gives as a replica ends it.
+- **Automatic response:** the source answers a catch-up as a replica only when its own replica view lists the puller; otherwise it answers as a consumer read, which carries no owner-epoch history. The replica applies nothing (the records would have no provenance and the next live append would flag `HISTORY_MISSING`) and asks again on the next live-batch gap or the 5 s backfill redrive. Seconds after a failover this heals by itself.
+- **Degraded / at risk:** a source whose view never lists the replica leaves it out of the in-sync set; a stream at or below its `confirmation_factor` of in-sync members then refuses publishes (`STREAM_ISR_BELOW_MINIMUM`).
+- **Operator action:** none while it heals. If the warning stands, the source's placement view disagrees with this node's: check cluster membership (`aether status`) and restart the source node's membership view, or the replica.
+- **Proof anchor:** `ForwardCatchupTransportTest`, `StreamForwardHandlerTest` (`historyVouched`), `ReadForwardCodecTest`, `EmberOrdinaryFailoverNoFalseAlertTest`.
+
+### Stream partition below its confirmation factor — acknowledged publishes refused (#1883)
+
+- **Symptom:** publishes to one stream partition fail with `NOT_ENOUGH_REPLICAS` before anything is appended, while reads of acknowledged data still work: the partition's committed in-sync set (ISR) holds fewer members than the stream's `confirmation_factor` (min-ISR = CF).
+- **Detection surface:** the cluster event **`STREAM_ISR_BELOW_MINIMUM`** (severity WARNING; `details`: `stream`, `partition`, `owner`, `isr`, `fenced`, `confirmationFactor`) on `GET /api/v1/events` / `aether events`, raised ONCE when the ISR crosses below the factor (every node derives it from the committed ownership record; the cluster-events owner publishes it, at most once if that partition has no owner at the moment); **`STREAM_ISR_RESTORED`** (INFO) once when it reaches the factor again. The same pair is raised when a committed config change moves the factor the node enforces across the ISR size with no ISR commit (a raise above `|ISR|` is BELOW once; a move back to it is RESTORED once). Only a stronger config is adopted by a running stream, so a plain lowering announces nothing, because acks keep being refused at the old factor. A commit or config change that leaves the ISR on the same side of the factor announces nothing, so ISR churn is not an event stream. Every event carries a deterministic `details.eventId` (partition, ownership epoch and term, ISR version, refusal count; the config path adds the config's `createdAt` and the factor pair), so the copies two nodes publish when both pass the events-owner gate during a membership change read as one event.
+- **Automatic response:** a member the leader's liveness view does not list leaves the ISR and is recorded as `fenced`; it is never expanded back while fenced, and the leader unfences it when it lists it live again; the owner then expands it once it has caught up to the high-water mark. A member that only lags is proposed out by the owner after `[streaming] isr_lag_max` and back in when caught up.
+- **Budget:** bounded by when a replica rejoins and catches up.
+- **Degraded / at risk:** no acknowledged publish is accepted (CF >= 2); nothing acknowledged is lost, and reads and the owner are unaffected. A rolling restart of the replicas of an RF = CF stream passes through this state by design (the event pair brackets it).
+- **Operator action:** bring the missing replica back (`details.fenced` lists members the leader keeps out for liveness; `details.isr` the members still in sync). To keep writes available through the loss of one replica, declare `confirmation_factor` below `replication_factor` (see the stream replication policy).
+- **Related operator event:** a committed config for a running stream that does not take effect over what the node enforces: a lowering of `confirmation_factor` or `replication_factor` (durability only increases online, `adoptIfMoreDurable`, so acks keep being refused at the enforced factor) or a different partition count (never re-shaped onto the existing rings, up or down). The cluster event **`STREAM_CONFIG_CHANGE_NOT_APPLIED`** (WARNING; `details`: `stream`, `requestedConfirmationFactor`, `effectiveConfirmationFactor`, `reason`, which names the actual cause) is raised once per such committed config, compared with the enforced one (so 3 enforced, then a commit to 1 and a later commit to 2 raise two events), never for an adopted change, an unchanged config, a new life or a replayed Put, and it is a point event: a later raise does not resolve it. To relieve a stall caused by a factor raise, restore replicas or re-create the stream; lowering the factor does not help.
+- **Proof anchor:** `StreamIsrAnnouncerTest` (one event per crossing; the not-applied lowering and its adopted-change controls; the deterministic `eventId`; a factor raise, a move back and a no-op config change;  ordinary commits, CF 1 and a fence change announce nothing), `ClusterEventAggregatorTest.streamIsrBelowMinimumAndRestored_reachTheEventStream_withTheirDetails`, `StreamFailoverAnnouncerWiringTest`, `IsrWriterMonitorFixedPointTest`.
+
+### Stream consumer re-reads after the partition's ring was rebuilt (#1873)
+
+- **Symptom:** a consumer group of a stream partition delivers records it already delivered (at-least-once), at offsets that now hold DIFFERENT records. The partition's owner rebuilt its ring and began a new epoch: a restart of a stream without a WAL (only sealed segments survive), a failover to a replica that held less than the old owner, or a re-created stream. Before #1873 such a consumer skipped the new records at the re-assigned offsets without any signal.
+- **Detection surface:** the cluster event **`STREAM_LINEAGE_RESTARTED`** (severity INFO; `details`: `stream`, `partition`, `owner`, `oldEpoch`, `newEpoch`, `startOffset`) when an owner begins a new epoch under an unchanged owner; the node-local `OPERATOR_WARNING` **`stream-consumer-rewound`** (WARNING; `details.code`) on the node whose consumer re-seeked with a proven loss, naming the group, the partition and the proven offsets. A change of owner is `STREAM_FAILOVER_*`.
+- **Automatic response:** every consumer read is checked on the node that serves it against the partition's committed epoch starts; a cursor past the start of the epoch that followed its own is refused with a typed divergence naming where the new epoch began, and the consumer re-reads from there, adopting the new epoch. A resume from a checkpoint is checked the same way (the checkpoint records the owner epoch it was read under). A consumer of an earlier life of a re-created stream is refused from the new life's first offset.
+- **Budget:** one extra read round trip per divergence.
+- **Degraded / at risk:** records the group processed in the replaced lineage are gone from the log at `confirmation_factor` 1 or with no WAL; the new records at those offsets are delivered, never skipped. A consumer older than the 16 epoch starts the record keeps (the record folds the dropped starts into the oldest it keeps) is admitted only at or below that offset and otherwise resumes AT it: it may re-read records, never skips one, and that rewind is an INFO log line, not the `stream-consumer-rewound` warning, when no exact start of a later epoch below its cursor survives in the record (a folded start proves nothing for a consumer newer than the epoch it folded from). A no-WAL restart that began at offset 0, or any restart that superseded the consumer's own epoch start, IS a proven loss and raises the warning. A checkpoint written by a build before #1873 records no epoch and is not checked; an unfenced consumer (no committed assignment) carries no claim.
+- **Operator action:** none for the re-read. If `stream-consumer-rewound` appears for a `confirmation_factor` >= 2 stream, treat it as a defect report: the design argument is that an acknowledged record is held by the new lineage, so no processed record can be missing there `[unverified: argued from the code, not exercised on a multi-node run]`.
+- **Proof anchor:** `NoWalRestartConsumerRedeliveryTest` (a real no-WAL owner restart, a running consumer re-reads the new records), `EpochValidationTest`, `StreamPartitionManagerEpochReadTest`, `StreamReadRouterEpochTest` (forwarded read), `ConsumerEpochRewindTest` (resume validated like a read, no head query), `StreamLineageAnnouncerTest`.
+
+### Stream partition with no in-sync owner — failover refused (#1730)
+
+- **Symptom:** a partition stops being served: its owner is dead and no member of its in-sync replica set (ISR) is live, so failover elects nobody — unclean failover is off, because a live replica outside the ISR may lack acknowledged records.
+- **Detection surface:** the cluster event **`STREAM_FAILOVER_REFUSED`** (severity CRITICAL; `details`: `stream`, `partition`, `owner`, `isr`, `live`, `reason`) on `GET /api/v1/events` / `aether events`, raised ONCE when the refusal commits (every node derives it from the committed ownership record; the cluster-events owner publishes it — at most once if that partition has no owner at the moment, when the `NoInSyncReplica` status is the record); **`STREAM_FAILOVER_RESOLVED`** (INFO) once when an owner is elected or the owner returns. The partition status also carries the `NoInSyncReplica` block. Every event carries a deterministic `details.eventId` derived from the committed record (partition, ownership epoch and term, ISR version, refusal count), so the copies two nodes publish when both pass the events-owner gate during a membership change read as one event. The record carries a refusal count committed with the flag (`failoverRefusalSeq`, incremented on every transition into refused within an ownership term; a move restarts it and the raised term keeps ids distinct) and the id includes it, so a refusal that resolves by the owner returning and recurs is a new event that a de-duplicating reader keeps.
+- **Automatic response:** none until an ISR member is live again; then the leader elects it (or the returning owner keeps ownership) and the partition serves again.
+- **Budget:** n/a — bounded by when an ISR member returns.
+- **Degraded / at risk:** the partition is unavailable (no reads, no writes); nothing acknowledged is lost while an ISR member's disk survives.
+- **Operator action:** bring an ISR member (listed in `details.isr`) back. There is no operator override to promote a non-ISR replica yet (#1569, open). If every ISR member was terminally removed, the partition's acknowledged data is gone: destroy and recreate the stream.
+- **Proof anchor:** `StreamFailoverAnnouncementTest` (one event per committed transition; repeated reconciles announce nothing; recovery announces resolved), `ClusterEventAggregatorTest.streamFailoverRefused_derivedOnEveryNode_publishedOnceByTheEventsOwner_notTheLeader` (leader not the events owner: still exactly one copy), `StreamFailoverAnnouncerWiringTest`, `IsrOwnershipWriterTest$Failover`, `ClusterEventAggregatorTest.streamFailoverRefusedAndResolved_reachTheEventStream_withTheirDetails`.
 
 ### Fresh-stream first-publish race
 
@@ -148,12 +222,12 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 ### Full-cluster restart (in-memory state)
 
-- **Symptom:** after a **simultaneous** full-cluster restart, KV + DHT + un-sealed stream state since the last snapshot is gone.
-- **Automatic response:** KV restores from its most recent lifecycle snapshot (`GitBackedPersistence`, default in-memory); DHT system maps rebuild as nodes re-register their slices/routes/endpoints on activation.
+- **Symptom:** after a **simultaneous** full-cluster restart, consensus state is memory-only and is gone; only declared state in a pushed `[backup]` returns.
+- **Automatic response:** a whole-cluster restart is a regular start of fresh cores; with `[backup]` enabled the leader restores the cluster state from the change-triggered KV backup before any cluster-state write is admitted (#1533), and placement is rebuilt on the fresh nodes. DHT system maps rebuild as nodes re-register their slices/routes/endpoints on activation.
 - **Budget:** n/a (bounded by restart + re-registration).
-- **Degraded / at risk:** everything since the last lifecycle snapshot (KV); all DHT system-map state (self-heals by rebuild); un-sealed stream data. A **rolling** restart is safe — this applies only to losing the whole cluster at once.
+- **Degraded / at risk:** cluster-state changes after the last backup push (KV); entity state (checkpoints are not restored); stream records held only by the old nodes; all DHT system-map state (self-heals by rebuild). Without `[backup]`, all cluster state. A **rolling** restart is safe — this applies only to losing the whole cluster at once.
 - **Operator action:** treat the rc-series as non-durable across a full-cluster crash; durable tiers are tracked under [#349](https://github.com/pragmaticalabs/pragmatica/issues/349) / #383.
-- **Proof anchor:** guarantees.md §1–§2; [known-limitations.md](known-limitations.md). Forge `StreamCrashDurabilityTest` proves a **single owner's** WAL survives restart. **Partial** — full durable persistence pending #349.
+- **Proof anchor:** guarantees.md §1–§2; [known-limitations.md](known-limitations.md). Forge `StreamCrashDurabilityTest` proves that acked events are recovered from the WAL after a whole-cluster restart **only with `[backup]` configured and restored on the same node ids and volumes** (the stream keeps its incarnation, so its WAL directory is found); its tripwire pins that without `[backup]` it recovers none and the old WAL stays on disk, unread (see backup-recovery.md). Neither covers fresh NodeIds (#1569). **Partial** — full durable persistence pending #349.
 
 ### DHT / artifact loss under churn
 
@@ -179,7 +253,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Core network partition
 
 - **Symptom:** the minority side loses quorum and self-drains; the majority continues.
-- **Detection surface:** `/api/events` `QUORUM_LOST`; `aether cluster membership`.
+- **Detection surface:** `/api/v1/events` `QUORUM_LOST`; `aether cluster membership`.
 - **Automatic response:** identical to quorum-loss self-drain; on heal, CTM re-provisions to N.
 - **Budget:** prompt eviction ~3 s on a dual-signal partition; heal to N ON_DUTY ≤30 s (12-network C10); post-event convergence window 180 s. **SWIM's 15 s faulty-detection budget is a `[CONTRACT-GAP]`** — demoted to a warning, accepted in the [16 s, 60 s] band.
 - **Degraded / at risk:** minority unavailable (by design); majority serves.
@@ -196,6 +270,16 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Operator action:** usually self-heals; if `connectedPeerCount` stays low past ~60 s, restart the isolated node.
 - **Proof anchor:** 12-network `connectedPeerCount` contracts; incident ledger #131.
 
+### SWIM member address change refused
+
+- **Symptom:** a live member's SWIM address differs from the one its identity is pinned to on a peer, for example after its IP changed (a container reconnected to a network with a new address). The peer refuses its ANNOUNCE and keeps probing the pinned address, so the member goes SUSPECT and is declared dead on that peer.
+- **Detection surface:** the `OPERATOR_WARNING` event with `details.code` = `swim-member-address-conflict` (subject: the member id; the message names the pinned and the refused address), and the same text in the node log, which is not throttled. A process token that the live process does not confirm raises `swim-member-identity-conflict` the same way and retires nothing.
+- **Automatic response:** none. The ANNOUNCE is refused whole: no reply, no address change, no tombstone clear. A replacement process carries a new NodeId and is pinned afresh, so a replacement raises no warning. Gossip that carries another address for a pinned member is ignored for the address and raises the same warning.
+- **Budget:** the event is throttled to one per member per 60 s.
+- **Degraded / at risk:** the member whose address changed is unreachable for SWIM on the refusing peers until it is replaced under a fresh NodeId or its address is restored. No data is at risk beyond what losing that node costs.
+- **Operator action:** replace the node under a fresh NodeId, or restore its address. Check for a firewall or NAT rule that changes a node's source address, and for a container runtime that reassigns addresses on reconnect.
+- **Proof anchor:** `SwimAnnounceSourcePinTest` (unit level through the real protocol with a fake transport) `[unverified: multi-node run]`.
+
 ## Pub/sub, scaling, and resource pressure
 
 ### Pub/sub message loss
@@ -210,7 +294,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Stream memory pressure
 
 - **Symptom:** a stream approaches or exceeds its memory budget.
-- **Detection surface:** `/api/events` `STREAM_MEMORY_EXCEEDED`; metric `aether.streams.memory.used.ratio`.
+- **Detection surface:** `/api/v1/events` `STREAM_MEMORY_EXCEEDED`; metric `aether.streams.memory.used.ratio`.
 - **Automatic response:** the off-heap budget accounting applies back-pressure per policy.
 - **Operator action:** raise `STREAM_MAX_MEMORY_BYTES` (default 128 MB) or scale out.
 - **Proof anchor:** feature-catalog row 181; `ManagementServer` memory gauges.
@@ -218,7 +302,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 ### Scale capped
 
 - **Symptom:** a slice wants more instances but is held at its configured maximum.
-- **Detection surface:** `/api/events` `SCALE_CAPPED`; the per-slice scaling snapshot (#425).
+- **Detection surface:** `/api/v1/events` `SCALE_CAPPED`; the per-slice scaling snapshot (#425).
 - **Automatic response:** none — the `maxInstances` bound is respected by design.
 - **Operator action:** raise the slice's `max` if capacity allows (see [08-scaling.md](../architecture/08-scaling.md)).
 - **Proof anchor:** `ScalingEvent` (#425).
@@ -227,7 +311,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 
 Per `resilience-operability-principles.md` P6, the gaps are documentation too. These failure modes are real or designed, but their operator observability and/or recovery budget is **not yet proven by a test** — do not rely on them until the marker clears.
 
-- **Near-miss telemetry — `PROMOTION_GAP`, `CURSOR_GAP`, `DLQ_STALL`.** These "degraded-but-recovered" signals are **spec-only** (durable-pubsub-spec, streaming-spec, principles P4). **No code emits them today**, and the proposed surfaces (`GET /api/topics/{topic}/groups`, `.../dlq`) are unimplemented. Until wired, a rising cursor gap or a DLQ stall is **not operator-visible**. *Scheduled, not orphaned:* [#436](https://github.com/pragmaticalabs/pragmatica/issues/436) (consumer-cursor lag metric + backlog triggers) delivers the `CURSOR_GAP`/DLQ-adjacent signals, and [#416](https://github.com/pragmaticalabs/pragmatica/issues/416) (SLI catalog + black-box probe) productizes the operator surface.
+- **Near-miss telemetry — `PROMOTION_GAP`, `CURSOR_GAP`, `DLQ_STALL`.** These "degraded-but-recovered" signals are **spec-only** (durable-pubsub-spec, streaming-spec, principles P4). **No code emits them today**, and the proposed telemetry surfaces (cursor-gap and DLQ-stall fields on `GET /api/v1/topics/{namespace}/{topic}/{version}/groups`, and a `.../dlq` route that does not exist) are unimplemented. Until wired, a rising cursor gap or a DLQ stall is **not operator-visible**. *Scheduled, not orphaned:* [#436](https://github.com/pragmaticalabs/pragmatica/issues/436) (consumer-cursor lag metric + backlog triggers) delivers the `CURSOR_GAP`/DLQ-adjacent signals, and [#416](https://github.com/pragmaticalabs/pragmatica/issues/416) (SLI catalog + black-box probe) productizes the operator surface.
 - **Multi-community / hierarchical failure modes** — a worker community partitioned from the core dissolves and drains (the contract in [14-consistency-and-partitions.md](../architecture/14-consistency-and-partitions.md)). Proven today only at the single-tier core. *Pending validation ([#367](https://github.com/pragmaticalabs/pragmatica/issues/367)).*
 - **Provisioning stall under load** — the fix landed (**#336 closed**: OBSERVED birth-state + missed-pong). The recovery budget is not yet asserted; remote/cloud validation is tracked by [#362](https://github.com/pragmaticalabs/pragmatica/issues/362) (open). *Pending cloud validation.*
 - **Failure-detection latency under sustained load (#94)** — no tight bound is asserted; the ~80 s figure is observed, not a contract. *Pending tighter bound.*

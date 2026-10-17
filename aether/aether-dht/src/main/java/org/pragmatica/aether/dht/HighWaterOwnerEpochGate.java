@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.dht;
 
 import org.pragmatica.aether.slice.fence.OwnershipDomain;
@@ -43,13 +42,13 @@ public final class HighWaterOwnerEpochGate implements OwnerEpochGate {
     }
 
     @Override
-    public boolean isStale(byte[] key, long epochTerm, long epochCounter) {
-        return highWater.isStale(domain, Epoch.epoch(epochTerm, epochCounter));
+    public boolean isStale(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
+        return highWater.isStale(domain, Epoch.epoch(epochIncarnation, epochTerm, epochCounter));
     }
 
     @Contract
     @Override
-    public void advance(byte[] key, long epochTerm, long epochCounter) {
-        highWater.advance(domain, Epoch.epoch(epochTerm, epochCounter));
+    public void advance(byte[] key, long epochIncarnation, long epochTerm, long epochCounter) {
+        highWater.advance(domain, Epoch.epoch(epochIncarnation, epochTerm, epochCounter));
     }
 }

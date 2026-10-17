@@ -17,6 +17,8 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
@@ -46,6 +48,40 @@ import org.pragmatica.statemachine.FsmObserver;
 ///    back via [`onLeaderCommitted`](#onLeaderCommitted(NodeId)).
 public interface LeaderManager {
     Option<NodeId> leader();
+
+    default org.pragmatica.lang.Unit installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration configuration) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Leader discovery eligibility for a passive client; caller must not treat this as voting authority.
+    default org.pragmatica.lang.Unit installPassiveCoreDirectory(List<NodeId> members) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Wires the signal that this node's KV state still trails the committed frontier (#1803), so a joiner
+    /// waits for a committed leader to arrive through KV sync instead of electing on a wall-clock grace.
+    /// Default no-op for implementations without an election gate.
+    default Unit installKvSyncProgress(Supplier<Boolean> pending) {
+        return Unit.unit();
+    }
+
+    /// Turns the leader pre-vote on (#1748): a follower that loses its leader asks the electorate before it
+    /// elects, so one follower's broken link cannot depose a leader the rest still reaches. Wired by the
+    /// consensus node only — it needs a network to ask over. Default no-op for implementations without one.
+    default Unit enableLeaderPreVote() {
+        return Unit.unit();
+    }
+
+    /// A peer asks whether this node still sees `leader` healthy (#1748). Default no-op.
+    @Contract
+    @MessageReceiver
+    default void leaderPreVoteRequest(LeaderPreVoteRequest request) {}
+
+    /// A peer's answer to this node's pre-vote question (#1748). Default no-op.
+    @Contract
+    @MessageReceiver
+    default void leaderPreVoteResponse(LeaderPreVoteResponse response) {}
+
     boolean isLeader();
     /// Returns the current leader's epoch (the cluster-side rabia term) iff this node is the
     /// elected leader; otherwise [`Option#none`]. Source: the [`Supplier<Long>`] injected at
@@ -323,6 +359,60 @@ public interface LeaderManager {
                                   LeaderElectionContext context,
                                   boolean localMode) implements LeaderManager {
         @Override
+        public org.pragmatica.lang.Unit installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration configuration) {
+            if (configuration.contains(context.self())) {
+                installLeaderEligibility(configuration.members());
+                fsm.dispatch(new LeaderElectionEvents.VoterReadmitted());
+            } else {
+                fsm.dispatch(new LeaderElectionEvents.PassiveDirectory(configuration.members()));
+            }
+
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        @Override
+        public org.pragmatica.lang.Unit installPassiveCoreDirectory(List<NodeId> members) {
+            fsm.dispatch(new LeaderElectionEvents.PassiveDirectory(members));
+
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        private void installLeaderEligibility(List<NodeId> members) {
+            var previous = context.currentLeader();
+
+            context.installVoters(members);
+            previous.filter(node -> !context.isEligible(node))
+                    .onPresent(node -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
+                                                                                 context.currentTopology())));
+        }
+
+        @Override
+        public Unit installKvSyncProgress(Supplier<Boolean> pending) {
+            context.installKvSyncPending(pending);
+
+            return Unit.unit();
+        }
+
+        @Override
+        public Unit enableLeaderPreVote() {
+            context.enablePreVote();
+
+            return Unit.unit();
+        }
+
+        @Contract
+        @Override
+        public void leaderPreVoteRequest(LeaderPreVoteRequest request) {
+            context.preVote().onPresent(preVote -> preVote.onRequest(request));
+        }
+
+        @Contract
+        @Override
+        public void leaderPreVoteResponse(LeaderPreVoteResponse response) {
+            context.preVote().onPresent(preVote -> preVote.onResponse(response));
+        }
+
+        @Override
         public Option<NodeId> leader() {
             return context.currentLeader();
         }
@@ -342,12 +432,20 @@ public interface LeaderManager {
         @Contract
         @Override
         public void onLeaderCommitted(NodeId leader) {
+            if (!context.isEligible(leader)) {
+                return;
+            }
+
             fsm.dispatch(new LeaderElectionEvents.LeaderCommitted(leader));
         }
 
         @Contract
         @Override
         public void onLeaderCommitted(NodeId leader, long viewSequence) {
+            if (!context.isEligible(leader)) {
+                return;
+            }
+
             context.observeViewSequence(viewSequence);
             // Carry the committed sequence on the event so the `Led` swap fence (FIX 2) can reject
             // a later-arriving lower-sequence commit. The sequence-less `onLeaderCommitted(leader)`
@@ -371,7 +469,11 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerJoined(PeerJoined peerJoined) {
-            fsm.dispatch(new ClusterFsmEvent.NodeAdded(peerJoined.nodeId(), peerJoined.topology()));
+            fsm.dispatch(new ClusterFsmEvent.NodeAdded(peerJoined.nodeId(),
+                                                       peerJoined.topology()
+                                                                 .stream()
+                                                                 .filter(context::isEligible)
+                                                                 .toList()));
             if (localMode) {
                 electLocallyIfPossible();
             }
@@ -384,10 +486,14 @@ public interface LeaderManager {
             // stays in Led (different leader) rather than going Led → ReElecting → Led, which
             // would emit an intermediate "no leader" notification unexpected for legacy consumers.
             if (localMode) {
-                dispatchLocalModeAdoption(peerDisconnected.topology());
+                dispatchLocalModeAdoption(peerDisconnected.topology().stream().filter(context::isEligible).toList());
             }
 
-            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerDisconnected.nodeId(), peerDisconnected.topology()));
+            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerDisconnected.nodeId(),
+                                                      peerDisconnected.topology()
+                                                                      .stream()
+                                                                      .filter(context::isEligible)
+                                                                      .toList()));
         }
 
         @Contract
@@ -395,10 +501,14 @@ public interface LeaderManager {
         public void peerObservedFaulty(PeerObservedFaulty peerObservedFaulty) {
             // SWIM-FAULTY treated as departure for FSM purposes.
             if (localMode) {
-                dispatchLocalModeAdoption(peerObservedFaulty.topology());
+                dispatchLocalModeAdoption(peerObservedFaulty.topology().stream().filter(context::isEligible).toList());
             }
 
-            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerObservedFaulty.nodeId(), peerObservedFaulty.topology()));
+            fsm.dispatch(new ClusterFsmEvent.NodeGone(peerObservedFaulty.nodeId(),
+                                                      peerObservedFaulty.topology()
+                                                                        .stream()
+                                                                        .filter(context::isEligible)
+                                                                        .toList()));
         }
 
         @Contract

@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.stream.Collectors;
 
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
@@ -12,6 +13,7 @@ import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.layer.LayerCoverage;
+import org.pragmatica.jbct.shared.AnalysisCoverage;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
@@ -52,33 +54,44 @@ public class LintCommand implements Callable<Integer> {
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = FileCollector.collectJavaFiles(paths, config.files(), System.err::println);
 
+        // #1100: a run that examined nothing is a coverage gap, never a pass, so it exits 2 like any other gap.
         if (filesToProcess.isEmpty()) {
-            System.out.println("No Java files found.");
+            operatorOut().println("No Java files found: nothing was examined. This is a COVERAGE GAP, not a pass.");
+            printResults(List.of(), 0, List.of());
 
-            return 0;
+            return 2;
         }
 
         if (verbose) {
-            System.out.println("Found " + filesToProcess.size() + " Java file(s) to lint.");
+            operatorOut().println("Found " + filesToProcess.size() + " Java file(s) to lint.");
         }
 
         var allDiagnostics = new ArrayList<Diagnostic>();
+        var unanalysed = new ArrayList<Unanalysed>();
         var counters = new int[4];
-        // 0=errors, 1=warnings, 2=infos, 3=parseErrors
+        // 0=errors, 1=warnings, 2=infos, 3=unanalysed (unreadable or unparseable)
         for (var file : filesToProcess) {
-            processFile(file, linter, allDiagnostics, counters);
+            processFile(file, linter, allDiagnostics, counters, unanalysed);
         }
 
         LayerCoverage.coverage(filesToProcess, context)
                      .map(LayerCoverage::render)
                      .onPresent(System.err::println);
+        var coverage = AnalysisCoverage.analysisCoverage(filesToProcess.size(), counters[3]);
         // Output results
-        printResults(allDiagnostics);
+        printResults(allDiagnostics, filesToProcess.size(), unanalysed);
         // Print summary
-        printSummary(filesToProcess.size(), counters[0], counters[1], counters[2], counters[3]);
-        // Return appropriate exit code
-        if (counters[3]> 0 || counters[0]> 0) {
+        printSummary(coverage, counters[0], counters[1], counters[2]);
+        // Exit code. 2 is reserved for "the tool could not do its job" — a coverage gap — and 1 for
+        // rule violations, which the tool CAN speak to. Both used to be 2, which conflated a silent
+        // coverage gap with a complete run that found real errors, so a job could not tell "your code
+        // is wrong" from "I never read your code" (#977). This is the split `jbct check` already uses.
+        if (coverage.isPartial()) {
             return 2;
+        }
+
+        if (counters[0]> 0) {
+            return 1;
         }
 
         if (failOnWarning && counters[1]> 0) {
@@ -101,7 +114,18 @@ public class LintCommand implements Callable<Integer> {
                           .withLayers(jbctConfig.layers());
     }
 
-    private void processFile(Path file, JbctLinter linter, List<Diagnostic> allDiagnostics, int[] counters) {
+    /// A collected file the linter could not read or parse, with the reason.
+    private record Unanalysed(Path file, String reason) {
+        static Unanalysed unanalysed(Path file, String reason) {
+            return new Unanalysed(file, reason);
+        }
+    }
+
+    private void processFile(Path file,
+                             JbctLinter linter,
+                             List<Diagnostic> allDiagnostics,
+                             int[] counters,
+                             List<Unanalysed> unanalysed) {
         SourceFile.sourceFile(file)
                   .flatMap(linter::lint)
                   .onSuccess(diagnostics -> {
@@ -115,25 +139,43 @@ public class LintCommand implements Callable<Integer> {
                              }
 
                                  if (verbose && diagnostics.isEmpty()) {
-                                 System.out.println("  ✓ " + file);
+                                 operatorOut().println("  ✓ " + file);
                              }
                              })
                   .onFailure(cause -> {
                       counters[3]++;
+                      unanalysed.add(Unanalysed.unanalysed(file, cause.message()));
                       System.err.println("  ✗ " + file + ": " + cause.message());
                   });
     }
 
-    private void printResults(List<Diagnostic> diagnostics) {
-        if (diagnostics.isEmpty()) {
-            return;
-        }
-
+    /// #633 — stdout is the document channel for the machine formats: `json`/`sarif` always emit
+    /// exactly one document there (an empty one for a clean run — a parser fails on empty input the
+    /// same way it fails on trailing text), and everything operator-facing goes through
+    /// [#operatorOut]. Text keeps stdout for both, as its readers expect.
+    ///
+    /// #1100 — the document states its own coverage, because most SARIF uploaders never read the exit
+    /// status: a run that examined nothing, or skipped files it could not parse, must not read as a
+    /// clean scan to a consumer that sees only the document.
+    private void printResults(List<Diagnostic> diagnostics, int collected, List<Unanalysed> unanalysed) {
         switch (outputFormat) {
-            case text -> printTextResults(diagnostics);
-            case json -> printJsonResults(diagnostics);
-            case sarif -> printSarifResults(diagnostics);
+            case text -> {
+                if (!diagnostics.isEmpty()) {
+                    printTextResults(diagnostics);
+                }
+            }
+            case json -> printJsonResults(diagnostics, collected, unanalysed);
+            case sarif -> printSarifResults(diagnostics, collected, unanalysed);
         }
+    }
+
+    /// Where the summary, progress and "nothing to do" lines go: stdout for `text`, stderr for the
+    /// machine formats — the same split `FileCollector`'s diagnostics and `score --format json`
+    /// already make, so a consumer can hand stdout straight to a parser.
+    private java.io.PrintStream operatorOut() {
+        return outputFormat == OutputFormat.text
+               ? System.out
+               : System.err;
     }
 
     private void printTextResults(List<Diagnostic> diagnostics) {
@@ -143,21 +185,30 @@ public class LintCommand implements Callable<Integer> {
         }
     }
 
-    private void printJsonResults(List<Diagnostic> diagnostics) {
+    /// One object: `collected` files found, `examined` of them analysed, `skipped` the rest with the reason,
+    /// and `diagnostics`. A clean scan is `examined > 0 and skipped == [] and diagnostics == []`.
+    private void printJsonResults(List<Diagnostic> diagnostics, int collected, List<Unanalysed> unanalysed) {
         var sb = new StringBuilder();
 
-        sb.append("[\n");
+        sb.append("{\n");
+        sb.append("  \"collected\": %d,\n".formatted(collected));
+        sb.append("  \"examined\": %d,\n".formatted(collected - unanalysed.size()));
+        sb.append("  \"skipped\": [");
+        sb.append(unanalysed.isEmpty()
+                  ? "],\n"
+                  : "\n" + unanalysed.stream().map(this::skippedJson).collect(Collectors.joining(",\n")) + "\n  ],\n");
+        sb.append("  \"diagnostics\": [\n");
         for (int i = 0; i < diagnostics.size(); i++) {
             var d = diagnostics.get(i);
 
-            sb.append("  {\n");
-            sb.append("    \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
-            sb.append("    \"severity\": \"%s\",\n".formatted(d.severity().name().toLowerCase()));
-            sb.append("    \"file\": \"%s\",\n".formatted(escapeJson(d.file())));
-            sb.append("    \"line\": %d,\n".formatted(d.line()));
-            sb.append("    \"column\": %d,\n".formatted(d.column()));
-            sb.append("    \"message\": \"%s\"\n".formatted(escapeJson(d.message())));
-            sb.append("  }");
+            sb.append("    {\n");
+            sb.append("      \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
+            sb.append("      \"severity\": \"%s\",\n".formatted(d.severity().name().toLowerCase()));
+            sb.append("      \"file\": \"%s\",\n".formatted(escapeJson(d.file())));
+            sb.append("      \"line\": %d,\n".formatted(d.line()));
+            sb.append("      \"column\": %d,\n".formatted(d.column()));
+            sb.append("      \"message\": \"%s\"\n".formatted(escapeJson(d.message())));
+            sb.append("    }");
             if (i < diagnostics.size() - 1) {
                 sb.append(",");
             }
@@ -165,11 +216,17 @@ public class LintCommand implements Callable<Integer> {
             sb.append("\n");
         }
 
-        sb.append("]\n");
+        sb.append("  ]\n");
+        sb.append("}\n");
         System.out.print(sb);
     }
 
-    private void printSarifResults(List<Diagnostic> diagnostics) {
+    private String skippedJson(Unanalysed skipped) {
+        return "    { \"file\": \"%s\", \"reason\": \"%s\" }".formatted(escapeJson(skipped.file().toString()),
+                                                                     escapeJson(skipped.reason()));
+    }
+
+    private void printSarifResults(List<Diagnostic> diagnostics, int collected, List<Unanalysed> unanalysed) {
         // Simplified SARIF output
         var sb = new StringBuilder();
 
@@ -206,10 +263,34 @@ public class LintCommand implements Callable<Integer> {
             sb.append("\n");
         }
 
-        sb.append("    ]\n");
+        sb.append("    ],\n");
+        appendSarifInvocation(sb, collected, unanalysed);
         sb.append("  }]\n");
         sb.append("}\n");
         System.out.print(sb);
+    }
+
+    /// The run's coverage in SARIF's own terms. A file the linter could not analyse, and a run that collected
+    /// no files at all, are both coverage gaps (exit 2): each is an `error` notification and makes
+    /// `executionSuccessful` false. A clean scan is `executionSuccessful`, no notifications and no results.
+    private void appendSarifInvocation(StringBuilder sb, int collected, List<Unanalysed> unanalysed) {
+        sb.append("    \"invocations\": [{\n");
+        sb.append("      \"executionSuccessful\": %s,\n".formatted(collected > 0 && unanalysed.isEmpty()));
+        sb.append("      \"toolExecutionNotifications\": [");
+        var notifications = new ArrayList<String>();
+
+        if (collected == 0) {
+            notifications.add("        { \"level\": \"error\", \"message\": { \"text\": \"No Java files found: nothing was examined.\" } }");
+        }
+
+        for (var skipped : unanalysed) {
+            notifications.add(("        { \"level\": \"error\", \"message\": { \"text\": \"Not analysed: %s\" }, "
+                               + "\"locations\": [{ \"physicalLocation\": { \"artifactLocation\": { \"uri\": \"%s\" } } }] }")
+                              .formatted(escapeJson(skipped.reason()), escapeJson(skipped.file().toString())));
+        }
+
+        sb.append(notifications.isEmpty() ? "]\n" : "\n" + String.join(",\n", notifications) + "\n      ]\n");
+        sb.append("    }]\n");
     }
 
     private String sarifLevel(DiagnosticSeverity severity) {
@@ -228,20 +309,37 @@ public class LintCommand implements Callable<Integer> {
                 .replace("\t", "\\t");
     }
 
-    private void printSummary(int filesChecked, int errors, int warnings, int infos, int parseErrors) {
-        System.out.println();
-        if (parseErrors > 0) {
-            System.out.println("Parse errors: " + parseErrors);
+    /// The run's verdict, in one line that can never claim more coverage than the run has.
+    ///
+    /// A partial run is never rendered as a pass, however clean the files it managed to read were:
+    /// zero findings over a set the linter never analysed is silence, not compliance. The ✓ branch is
+    /// therefore reachable only when [AnalysisCoverage#isPartial()] is false, and the counts on the
+    /// partial line are prefixed by the coverage clause that says which denominator they belong to.
+    private void printSummary(AnalysisCoverage coverage, int errors, int warnings, int infos) {
+        var out = operatorOut();
+
+        out.println();
+        coverage.gapReport("lint").onPresent(out::println);
+        if (coverage.isPartial()) {
+            out.println("✗ Checked " + coverage.render()
+                       + ": " + errors
+                       + " error(s), " + warnings
+                       + " warning(s), " + infos
+                       + " info(s)");
+
+            return;
         }
 
         if (errors == 0 && warnings == 0 && infos == 0) {
-            System.out.println("✓ All " + filesChecked + " file(s) passed JBCT compliance check.");
-        } else {
-            System.out.println("Checked " + filesChecked
-                              + " file(s): " + errors
-                              + " error(s), " + warnings
-                              + " warning(s), " + infos
-                              + " info(s)");
+            out.println("✓ All " + coverage.collected() + " file(s) passed JBCT compliance check.");
+
+            return;
         }
+
+        out.println("Checked " + coverage.render()
+                   + ": " + errors
+                   + " error(s), " + warnings
+                   + " warning(s), " + infos
+                   + " info(s)");
     }
 }

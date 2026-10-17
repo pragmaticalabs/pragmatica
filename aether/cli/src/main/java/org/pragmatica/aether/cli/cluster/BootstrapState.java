@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.ArrayList;
@@ -23,8 +22,10 @@ public record BootstrapState(ClusterName clusterName,
                              List<String> provisionedNodeIds,
                              List<String> collectedAddresses,
                              String clusterSecret,
-                             Map<String, SourceCleanupHandle> sources) {
+                             Map<String, SourceCleanupHandle> sources,
+                             List<String> startedNodeIds) {
     public BootstrapState {
+        startedNodeIds = List.copyOf(startedNodeIds);
         phases = Map.copyOf(phases);
         createdResources = List.copyOf(createdResources);
         provisionedNodeIds = List.copyOf(provisionedNodeIds);
@@ -50,7 +51,8 @@ public record BootstrapState(ClusterName clusterName,
                                   provisionedNodeIds,
                                   collectedAddresses,
                                   clusterSecret,
-                                  sources);
+                                  sources,
+                                  List.of());
     }
 
     @SuppressWarnings("JBCT-VO-02")
@@ -107,15 +109,16 @@ public record BootstrapState(ClusterName clusterName,
 
         updated.put(phase, status);
 
-        return bootstrapState(clusterName,
-                              configHash,
-                              startedAt,
-                              updated,
-                              createdResources,
-                              provisionedNodeIds,
-                              collectedAddresses,
-                              clusterSecret,
-                              sources);
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  updated,
+                                  createdResources,
+                                  provisionedNodeIds,
+                                  collectedAddresses,
+                                  clusterSecret,
+                                  sources,
+                                  startedNodeIds);
     }
 
     public BootstrapState withResource(CreatedResource resource) {
@@ -123,63 +126,91 @@ public record BootstrapState(ClusterName clusterName,
 
         updated.add(resource);
 
-        return bootstrapState(clusterName,
-                              configHash,
-                              startedAt,
-                              phases,
-                              updated,
-                              provisionedNodeIds,
-                              collectedAddresses,
-                              clusterSecret,
-                              sources);
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  phases,
+                                  updated,
+                                  provisionedNodeIds,
+                                  collectedAddresses,
+                                  clusterSecret,
+                                  sources,
+                                  startedNodeIds);
     }
 
     public BootstrapState withProvisionedNodeIds(List<String> ids) {
-        return bootstrapState(clusterName,
-                              configHash,
-                              startedAt,
-                              phases,
-                              createdResources,
-                              ids,
-                              collectedAddresses,
-                              clusterSecret,
-                              sources);
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  phases,
+                                  createdResources,
+                                  ids,
+                                  collectedAddresses,
+                                  clusterSecret,
+                                  sources,
+                                  startedNodeIds);
     }
 
     public BootstrapState withCollectedAddresses(List<String> addrs) {
-        return bootstrapState(clusterName,
-                              configHash,
-                              startedAt,
-                              phases,
-                              createdResources,
-                              provisionedNodeIds,
-                              addrs,
-                              clusterSecret,
-                              sources);
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  phases,
+                                  createdResources,
+                                  provisionedNodeIds,
+                                  addrs,
+                                  clusterSecret,
+                                  sources,
+                                  startedNodeIds);
     }
 
     public BootstrapState withClusterSecret(String secret) {
-        return bootstrapState(clusterName,
-                              configHash,
-                              startedAt,
-                              phases,
-                              createdResources,
-                              provisionedNodeIds,
-                              collectedAddresses,
-                              secret,
-                              sources);
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  phases,
+                                  createdResources,
+                                  provisionedNodeIds,
+                                  collectedAddresses,
+                                  secret,
+                                  sources,
+                                  startedNodeIds);
+    }
+
+    /// #1543 — the per-node "started" ledger: ids whose node process this CLI has launched. `--resume`
+    /// consults it so a node is never launched twice under one id.
+    public BootstrapState withStartedNodeId(String nodeId) {
+        var updated = new ArrayList<>(startedNodeIds);
+
+        updated.add(nodeId);
+
+        return withStartedNodeIds(updated);
+    }
+
+    public BootstrapState withStartedNodeIds(List<String> ids) {
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  phases,
+                                  createdResources,
+                                  provisionedNodeIds,
+                                  collectedAddresses,
+                                  clusterSecret,
+                                  sources,
+                                  ids);
     }
 
     public BootstrapState withSources(Map<String, SourceCleanupHandle> newSources) {
-        return bootstrapState(clusterName,
-                              configHash,
-                              startedAt,
-                              phases,
-                              createdResources,
-                              provisionedNodeIds,
-                              collectedAddresses,
-                              clusterSecret,
-                              newSources);
+        return new BootstrapState(clusterName,
+                                  configHash,
+                                  startedAt,
+                                  phases,
+                                  createdResources,
+                                  provisionedNodeIds,
+                                  collectedAddresses,
+                                  clusterSecret,
+                                  newSources,
+                                  startedNodeIds);
     }
 
     public BootstrapState withSource(String sourceName, SourceCleanupHandle handle) {

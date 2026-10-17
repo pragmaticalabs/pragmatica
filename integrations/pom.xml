@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -35,4 +35,17 @@
         <module>xml</module>
         <module>storage</module>
     </modules>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <inherited>false</inherited>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

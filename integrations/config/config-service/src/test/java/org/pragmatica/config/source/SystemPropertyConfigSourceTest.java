@@ -49,8 +49,8 @@ class SystemPropertyConfigSourceTest {
 
         var result = source.getInt("database.port");
 
-        assertThat(result.isPresent()).isTrue();
-        assertThat(result.unwrap()).isEqualTo(5432);
+        assertThat(result.unwrap().isPresent()).isTrue();
+        assertThat(result.unwrap().unwrap()).isEqualTo(5432);
     }
 
     @Test
@@ -59,8 +59,8 @@ class SystemPropertyConfigSourceTest {
 
         var result = source.getBoolean("enabled");
 
-        assertThat(result.isPresent()).isTrue();
-        assertThat(result.unwrap()).isTrue();
+        assertThat(result.unwrap().isPresent()).isTrue();
+        assertThat(result.unwrap().unwrap()).isTrue();
     }
 
     @Test

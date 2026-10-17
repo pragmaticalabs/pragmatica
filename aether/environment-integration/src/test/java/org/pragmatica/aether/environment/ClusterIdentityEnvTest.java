@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import org.junit.jupiter.api.Test;
@@ -14,6 +13,15 @@ class ClusterIdentityEnvTest {
     void identityVars_includeSourceAndRole_forSelfDescribedMembership() {
         assertThat(ClusterIdentityEnv.IDENTITY_VARS).contains("AETHER_SOURCE");
         assertThat(ClusterIdentityEnv.IDENTITY_VARS).contains("AETHER_ROLE");
+    }
+
+    @Test
+    void backupVars_areTheFourBackupKeys_andNotIdentity() {
+        assertThat(ClusterIdentityEnv.BACKUP_VARS).containsExactly("AETHER_BACKUP_ENABLED",
+                                                                   "AETHER_BACKUP_PATH",
+                                                                   "AETHER_BACKUP_REMOTE",
+                                                                   "AETHER_BACKUP_RESTORE");
+        assertThat(ClusterIdentityEnv.IDENTITY_VARS).doesNotContainAnyElementsOf(ClusterIdentityEnv.BACKUP_VARS);
     }
 
     @Test

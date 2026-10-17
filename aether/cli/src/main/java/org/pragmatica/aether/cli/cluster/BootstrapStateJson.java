@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.ArrayList;
@@ -55,6 +54,8 @@ sealed interface BootstrapStateJson {
         appendStringField(sb, "clusterSecret", state.clusterSecret());
         sb.append(",\n");
         appendSources(sb, state.sources());
+        sb.append(",\n");
+        appendStringList(sb, "startedNodeIds", state.startedNodeIds());
         sb.append("\n}");
 
         return sb.toString();
@@ -95,7 +96,7 @@ sealed interface BootstrapStateJson {
                                              nodeIds,
                                              addresses,
                                              clusterSecret,
-                                             sources);
+                                             sources).withStartedNodeIds(parseStringList(root.path("startedNodeIds")));
     }
 
     private static Map<String, SourceCleanupHandle> parseSources(JsonNode node) {
@@ -206,6 +207,7 @@ sealed interface BootstrapStateJson {
             case "FloatingIpAssignment" -> CreatedResource.FloatingIpAssignment.floatingIpAssignment(node.path("provider").asText(),
                                                                                                      node.path("floatingIp").asText(),
                                                                                                      node.path("targetNodeId").asText());
+            case "DockerNetwork" -> CreatedResource.DockerNetwork.dockerNetwork(node.path("networkName").asText());
             case "DockerContainer" -> CreatedResource.DockerContainer.dockerContainer(node.path("containerId").asText(),
                                                                                       node.path("sourceName").asText());
             case "SshDeployedConfig" -> CreatedResource.SshDeployedConfig.sshDeployedConfig(node.path("host").asText(),
@@ -316,6 +318,7 @@ sealed interface BootstrapStateJson {
             case CreatedResource.CloudFirewall firewall -> appendCloudFirewall(sb, firewall);
             case CreatedResource.FloatingIpAssignment ip -> appendFloatingIp(sb, ip);
             case CreatedResource.DockerContainer container -> appendDockerContainer(sb, container);
+            case CreatedResource.DockerNetwork network -> appendDockerNetwork(sb, network);
             case CreatedResource.SshDeployedConfig config -> appendSshConfig(sb, config);
             case CreatedResource.SshKeyResource key -> appendSshKey(sb, key);
         }
@@ -362,6 +365,12 @@ sealed interface BootstrapStateJson {
           .append(escapeJson(ip.floatingIp()))
           .append("\", \"targetNodeId\": \"")
           .append(escapeJson(ip.targetNodeId()))
+          .append("\"}");
+    }
+
+    private static void appendDockerNetwork(StringBuilder sb, CreatedResource.DockerNetwork network) {
+        sb.append("{\"type\": \"DockerNetwork\", \"networkName\": \"")
+          .append(escapeJson(network.networkName()))
           .append("\"}");
     }
 

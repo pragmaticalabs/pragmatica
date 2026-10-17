@@ -30,6 +30,15 @@ import io.netty.buffer.ByteBufUtil;
 
 
 public interface SliceCodec extends Serializer, Deserializer {
+    default boolean canonicalCollections() {
+        return false;
+    }
+
+    @Override
+    default SliceCodec canonical() {
+        return new CanonicalSliceCodec(this);
+    }
+
     // --- Wire format tag constants ---
     int TAG_UNIT = 0;
     int TAG_NONE = 1;
@@ -81,7 +90,7 @@ public interface SliceCodec extends Serializer, Deserializer {
     int SYSTEM_TAG_MAX = 16383;
     int TAG_SPACE_SIZE = 16384;
     int USER_TAG_BASE = 16384;
-    int USER_TAG_LIMIT = 1 << 21;
+    int USER_TAG_LIMIT = 1<< 21;
     int USER_TAG_SPACE_SIZE = USER_TAG_LIMIT - USER_TAG_BASE;
     // --- Stream header ---
     int MAGIC = 0xAE01;
@@ -207,6 +216,59 @@ public interface SliceCodec extends Serializer, Deserializer {
         return value;
     }
 
+    // --- Enum body helpers for generated code ---
+    ///
+    /// Enums cross the wire as their `ordinal()`. The read this replaced was
+    /// `Type.values()[readCompact(buf)]` — an UNCHECKED array index — so an ordinal from a peer whose
+    /// copy of the enum has more constants threw `ArrayIndexOutOfBoundsException`. Both boundaries that
+    /// see that throw CONTAIN it (`QuicLaneDataHandler.channelRead0` catches `Exception` and drops the
+    /// message; `RabiaEngine.safeExecute` catches `RuntimeException` and abandons the round), so the
+    /// node stayed up and discarded every message carrying the constant, permanently and with no signal
+    /// naming the type. That is #964, and silence was the whole of it.
+    ///
+    /// Two forms, because the sentinel cannot be conjured. A Java enum can only represent "a value I
+    /// cannot name" if it HAS a constant for it, so the answer differs by who owns the enum:
+    ///
+    /// - [#readEnum] — the enum declares a last constant `UNKNOWN`. An unrecognised ordinal decodes to
+    ///   it, the rest of the message survives, and the handler decides what it means. Framework
+    ///   `@Codec` enums are REQUIRED to be in this form by `CodecProcessor`, because they are the
+    ///   cluster's own protocol and a node must keep parsing a message whose enum field it cannot read.
+    /// - [#readEnumOrFail] — no sentinel. The ordinal is still bounds-checked, but the only honest
+    ///   outcome is a typed failure naming the enum, the ordinal and the known count. The message is
+    ///   dropped, as before — the difference is that it is now ATTRIBUTABLE.
+    ///
+    /// Neither form ever substitutes an existing constant. A default that reads as a legitimate value
+    /// is worse than the crash it replaces: the crash is diagnosable, a substitution is not.
+    static <E extends Enum<E>> E readEnum(ByteBuf buf, E[] values, E unknown) {
+        var ordinal = readCompact(buf);
+
+        return ordinal >= 0 && ordinal < values.length
+               ? values[ordinal]
+               : UnknownEnumOrdinals.reportAndFallBack(ordinal, values, unknown);
+    }
+
+    /// Bounds-checked ordinal read for an enum with no `UNKNOWN` sentinel — see [#readEnum].
+    static <E extends Enum<E>> E readEnumOrFail(ByteBuf buf, E[] values, Class<E> enumType) {
+        var ordinal = readCompact(buf);
+
+        if (ordinal >= 0 && ordinal < values.length) {
+            return values[ordinal];
+        }
+
+        throw new UnknownEnumOrdinalException(enumType.getName(), ordinal, values.length);
+    }
+
+    /// Unknown-ordinal decodes since JVM start, across every enum — the operator's "how much of our
+    /// traffic is version-skewed" number. Unthrottled, unlike the log line.
+    static long unknownEnumOrdinalCount() {
+        return UnknownEnumOrdinals.occurrenceCount();
+    }
+
+    /// Distinct (enum, ordinal) pairs seen, capped — see `UnknownEnumOrdinals`.
+    static int unknownEnumOrdinalDistinctCount() {
+        return UnknownEnumOrdinals.distinctKeyCount();
+    }
+
     // --- Body helpers for generated code ---
     @SuppressWarnings("unchecked")
     default <T> void writeBodyFor(ByteBuf buf, T value, Class<T> type) {
@@ -225,7 +287,17 @@ public interface SliceCodec extends Serializer, Deserializer {
 
     // --- Internal lookup (package-private contract) ---
     TypeCodec<?> lookupByClass(Class<?> type);
+
     TypeCodec<?> lookupByTag(int tag);
+
+    /// Every type registered in this registry, with the codec that claims it.
+    ///
+    /// The registry is the only authority on what a system type is — `SystemCodecPinningTest` already
+    /// says so, having found that grepping `@Codec` gives a list both too long and, where it matters,
+    /// too short. Until now nothing could ASK it. `WireAssignmentTripwireTest` (#964) needs the answer
+    /// to derive the pinned set rather than hand-maintain one, because a hand-maintained list is
+    /// silent about exactly the case a tripwire exists to catch: a type nobody remembered to add.
+    Map<Class<?>, TypeCodec<?>> registeredTypes();
 
     // --- Factory methods ---
     static SliceCodec sliceCodec(List<TypeCodec<?>> codecs) {
@@ -278,17 +350,20 @@ public interface SliceCodec extends Serializer, Deserializer {
     static SliceCodec systemCodec(SliceCodec parent, List<TypeCodec<?>> codecs, Set<Class<?>> requiredTypes) {
         var unpinned = codecs.stream()
                              .filter(codec -> codec.tag() > SYSTEM_TAG_MAX)
-                             .map(codec -> codec.type().getName().replace('$', '.'))
+                             .map(codec -> codec.type()
+                                                .getName()
+                                                .replace('$', '.'))
                              .distinct()
                              .sorted()
                              .toList();
 
         if (!unpinned.isEmpty()) {
             throw new IllegalStateException("System types with no hand-assigned tag: " + String.join(", ", unpinned)
-                                            + ". Every type in the system registry needs a pin in SystemTags"
-                                            + " (system range is [0, " + SYSTEM_TAG_MAX + "]); these fell through to the hash"
-                                            + " and landed in the user range. Add each to the block for its subsystem taking"
-                                            + " the next free tag — never renumber or reuse an existing one.");
+                                           + ". Every type in the system registry needs a pin in SystemTags"
+                                           + " (system range is [0, " + SYSTEM_TAG_MAX
+                                           + "]); these fell through to the hash"
+                                           + " and landed in the user range. Add each to the block for its subsystem taking"
+                                           + " the next free tag — never renumber or reuse an existing one.");
         }
 
         return sliceCodec(parent, codecs, requiredTypes);
@@ -299,7 +374,7 @@ public interface SliceCodec extends Serializer, Deserializer {
     ///
     /// The checklist has two sources, so the message names neither: `@CodecFor` declarations, and
     /// type arguments the slice-processor derives from resource-qualified parameters (e.g. the state
-    /// type of a `DurableEntity<K, S>`). An author who never wrote `@CodecFor` can still land here,
+    /// type of a `DurableEntity<K, S, C>`). An author who never wrote `@CodecFor` can still land here,
     /// so pointing them at that annotation would send them looking for something they do not have.
     static void validateRequiredTypes(SliceCodec codec, Set<Class<?>> requiredTypes) {
         var missing = requiredTypes.stream().filter(type -> !hasCodecFor(codec, type)).toList();
@@ -386,6 +461,11 @@ final class CodecHolder implements SliceCodec {
         return byClass;
     }
 
+    @Override
+    public Map<Class<?>, SliceCodec.TypeCodec<?>> registeredTypes() {
+        return byClass;
+    }
+
     SliceCodec.TypeCodec<?>[] tagArray() {
         return tagArray;
     }
@@ -455,28 +535,35 @@ final class CodecHolder implements SliceCodec {
     private List<SliceCodec.TypeCodec<?>> assignableCandidates(Class<?> type) {
         return byClass.values()
                       .stream()
-                      .filter(codec -> codec.type().isAssignableFrom(type))
-                      .sorted(Comparator.comparing(codec -> codec.type().getName()))
+                      .filter(codec -> codec.type()
+                                            .isAssignableFrom(type))
+                      .sorted(Comparator.comparing(codec -> codec.type()
+                                                                 .getName()))
                       .toList();
     }
 
     private static List<SliceCodec.TypeCodec<?>> mostSpecific(List<SliceCodec.TypeCodec<?>> candidates) {
-        return candidates.stream().filter(candidate -> isMinimal(candidate, candidates)).toList();
+        return candidates.stream()
+                         .filter(candidate -> isMinimal(candidate, candidates))
+                         .toList();
     }
 
     private static boolean isMinimal(SliceCodec.TypeCodec<?> candidate, List<SliceCodec.TypeCodec<?>> candidates) {
-        return candidates.stream().noneMatch(other -> isStrictSubtype(other.type(), candidate.type()));
+        return candidates.stream()
+                         .noneMatch(other -> isStrictSubtype(other.type(),
+                                                             candidate.type()));
     }
 
     private static boolean isStrictSubtype(Class<?> subtype, Class<?> supertype) {
-        return !subtype.equals(supertype) && supertype.isAssignableFrom(subtype);
+        return ! subtype.equals(supertype) && supertype.isAssignableFrom(subtype);
     }
 
     /// Documented tie-break for equally specific candidates: prefer the class over unrelated
     /// interfaces. Java's single-inheritance class chain is totally ordered, so at most one class
     /// candidate can be minimal; when none is, the candidates stay ambiguous.
     private static List<SliceCodec.TypeCodec<?>> preferClassCandidate(List<SliceCodec.TypeCodec<?>> minimal) {
-        var classes = minimal.stream().filter(codec -> !codec.type().isInterface()).toList();
+        var classes = minimal.stream().filter(codec -> !codec.type()
+                                                             .isInterface()).toList();
 
         return classes.size() == 1
                ? classes
@@ -484,9 +571,8 @@ final class CodecHolder implements SliceCodec {
     }
 
     private static String ambiguousCandidates(Class<?> type, List<SliceCodec.TypeCodec<?>> candidates) {
-        var names = candidates.stream()
-                              .map(codec -> codec.type().getName())
-                              .collect(Collectors.joining(", "));
+        var names = candidates.stream().map(codec -> codec.type()
+                                                          .getName()).collect(Collectors.joining(", "));
 
         return "Ambiguous codec resolution for class %s: equally specific registered supertypes [%s]. Register an explicit codec for %s.".formatted(type.getName(),
                                                                                                                                                     names,
@@ -502,7 +588,12 @@ final class CodecHolder implements SliceCodec {
                     : userTags.get(tag);
 
         if (codec == null) {
-            throw new IllegalArgumentException("No codec registered for tag: " + tag);
+            // A DISTINCT type, not a bare IllegalArgumentException (#964): an unknown tag means the peer
+            // sent a message type this node does not have — expected during a rolling upgrade — while a
+            // failure on a tag this node DOES know means a corrupt frame or a codec bug. The lane
+            // boundary previously merged the two into one generic "failed to deserialize" line, and the
+            // two call for opposite operator actions.
+            throw new UnknownTypeTagException(tag);
         }
 
         return codec;
@@ -556,5 +647,56 @@ final class CodecHolder implements SliceCodec {
     @Override
     public String toString() {
         return "CodecHolder[byClass=%s, tagCount=%d]".formatted(byClass.keySet(), classCache.size());
+    }
+}
+
+/// Stateless view: generated writers recurse through this view, including collection fields.
+record CanonicalSliceCodec(SliceCodec delegate) implements SliceCodec {
+    @Override
+    public Map<Class<?>, TypeCodec<?>> registeredTypes() {
+        return delegate.registeredTypes();
+    }
+
+    @Override
+    public boolean canonicalCollections() {
+        return true;
+    }
+
+    @Override
+    public SliceCodec canonical() {
+        return this;
+    }
+
+    @Override
+    public TypeCodec<?> lookupByClass(Class<?> type) {
+        return delegate.lookupByClass(type);
+    }
+
+    @Override
+    public TypeCodec<?> lookupByTag(int tag) {
+        return delegate.lookupByTag(tag);
+    }
+
+    /// Serializer boundary: Java null has a dedicated wire tag and cannot be replaced by Option.
+    @Override
+    @org.pragmatica.lang.Contract
+    @SuppressWarnings({"unchecked", "JBCT-RET-06"})
+    public <T> void write(ByteBuf buffer, T value) {
+        if (value == null) {
+            SliceCodec.writeCompact(buffer, SliceCodec.TAG_NULL);
+
+            return;
+        }
+
+        var codec = (TypeCodec<T>) lookupByClass(value.getClass());
+
+        SliceCodec.writeCompact(buffer,
+                                codec.tagMapper().tagFor(value));
+        codec.writer().writeBody(this, buffer, value);
+    }
+
+    @Override
+    public <T> T read(ByteBuf buffer) {
+        return delegate.read(buffer);
     }
 }

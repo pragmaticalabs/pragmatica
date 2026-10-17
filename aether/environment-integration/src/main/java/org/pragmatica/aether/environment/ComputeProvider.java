@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import java.util.List;
@@ -26,10 +25,6 @@ public interface ComputeProvider {
     Promise<Unit> terminate(InstanceId instanceId);
     Promise<List<InstanceInfo>> listInstances();
     Promise<InstanceInfo> instanceStatus(InstanceId instanceId);
-
-    default Promise<Unit> restart(InstanceId id) {
-        return EnvironmentError.operationNotSupported("restart").promise();
-    }
 
     default Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return EnvironmentError.operationNotSupported("applyTags").promise();
@@ -161,10 +156,22 @@ public interface ComputeProvider {
 
     private Promise<InstanceInfo> routeByStatus(InstanceInfo created, InstanceInfo observed, ReadinessPolicy policy) {
         return switch (observed.status()) {
-            case InstanceStatus.Running ignored -> Promise.success(created.withStatus(InstanceStatus.RUNNING));
+            case InstanceStatus.Running ignored -> Promise.success(observedRunning(created, observed));
             case InstanceStatus.Provisioning ignored -> retryPoll(created, policy);
+            // #1049 — a status the provider could not state is not a crash; keep polling until the timeout.
+            case InstanceStatus.Unknown ignored -> retryPoll(created, policy);
             default -> ComputeProviderLog.bootCrashed(created.id(), observed.status()).promise();
         };
+    }
+
+    private InstanceInfo observedRunning(InstanceInfo created, InstanceInfo observed) {
+        return new InstanceInfo(observed.id(),
+                                InstanceStatus.RUNNING,
+                                observed.addresses(),
+                                created.type(),
+                                observed.tags(),
+                                observed.nodeId().orElse(created.nodeId()),
+                                observed.observedZone().orElse(created.observedZone()));
     }
 
     private Promise<InstanceInfo> retryPoll(InstanceInfo created, ReadinessPolicy policy) {

@@ -36,4 +36,7 @@ if [ ! -f "$JAR_FILE" ]; then
     mvn -f "$PROJECT_DIR/pom.xml" package -pl cli -am -DskipTests -q
 fi
 
-exec java -jar "$JAR_FILE" "$@"
+# Mirrors the installed launcher (~/.aether/bin/aether) so a dev run can carry the
+# same JVM options - notably -Dmaven.repo.local, which decides which Maven local
+# repository `artifacts push` reads fixtures from.
+exec java ${AETHER_JAVA_OPTS:-} -jar "$JAR_FILE" "$@"

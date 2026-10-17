@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics.observability;
 
 import java.util.function.Supplier;
@@ -124,9 +123,23 @@ public interface ObservabilityRegistry {
         public Result<Unit> registerTransportMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
             registerTransportGauge("quic_active_connections", "Active QUIC peer connections", metricsSupplier);
             registerTransportGauge("quic_handshake_total", "Total QUIC handshakes completed", metricsSupplier);
-            registerTransportGauge("quic_handshake_failures_total", "Failed QUIC handshakes", metricsSupplier);
+            registerTransportGauge("quic_handshake_failures_total",
+                                   "QUIC connects that failed in their TLS handshake (not other dial failures)",
+                                   metricsSupplier);
+            registerTransportGauge("quic_dial_failures_total",
+                                   "Every failed QUIC dial, whatever the stage (unreachable, refused, timed out, rejected, TLS)",
+                                   metricsSupplier);
+            registerTransportGauge("quic_dial_abandoned_total",
+                                   "#1578: dials abandoned before their QUIC handshake because the peer connected over another link",
+                                   metricsSupplier);
             registerTransportGauge("quic_messages_sent_total", "Messages sent over QUIC", metricsSupplier);
             registerTransportGauge("quic_messages_received_total", "Messages received over QUIC", metricsSupplier);
+            registerTransportGauge("quic_bytes_sent_total",
+                                   "#726: QUIC payload bytes sent at the lane boundary — not a wire-byte or bandwidth figure",
+                                   metricsSupplier);
+            registerTransportGauge("quic_bytes_received_total",
+                                   "#726: QUIC payload bytes received at the lane boundary — not a wire-byte or bandwidth figure",
+                                   metricsSupplier);
             registerTransportGauge("quic_write_failures_total", "QUIC write failures", metricsSupplier);
             registerTransportGauge("quic_backpressure_drops_total", "QUIC backpressure drops", metricsSupplier);
 
@@ -136,7 +149,7 @@ public interface ObservabilityRegistry {
         /// #674: the consensus-load counters, served from the same supplier-map shape — and the same
         /// key vocabulary (`RabiaMetrics.counterMap()`) — as the HTTP consensus block, so Prometheus
         /// and the management API can never disagree about a counter's name or meaning. All are
-        /// monotonic totals except `consensus_pending_batches`, a level.
+        /// monotonic totals except `consensus_pending_batches` and `consensus_oldest_pending_batch_age_ms`, which are levels.
         @Override
         @SuppressWarnings("JBCT-PAT-01")
         public Result<Unit> registerConsensusMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
@@ -149,6 +162,12 @@ public interface ObservabilityRegistry {
             registerTransportGauge("consensus_sync_failure_total", "Rabia sync rounds failed", metricsSupplier);
             registerTransportGauge("consensus_pending_batches",
                                    "Rabia batches awaiting decision (level)",
+                                   metricsSupplier);
+            registerTransportGauge("consensus_oldest_pending_batch_age_ms",
+                                   "#1117: age of the oldest Rabia batch still awaiting a decision, 0 when none (level)",
+                                   metricsSupplier);
+            registerTransportGauge("consensus_apply_timeouts_total",
+                                   "#1117: Rabia applies never answered within the apply timeout",
                                    metricsSupplier);
 
             return unitResult();

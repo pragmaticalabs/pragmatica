@@ -30,7 +30,7 @@ import static org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector
 
 /// Integration test for the concurrent-loss self-drain wiring: a real [`MembershipFsm`] is wired to
 /// a real [`QuorumLossDetector`] EXACTLY as `AetherNode` does — `fsm.onTransition` → on a transition
-/// crossing the exact-`Member` boundary → `detector.onMemberCountChanged(fsm.strictCoreMemberCount())`.
+/// crossing the exact-`Member` boundary → `detector.reevaluate()` (the count is derived from `fsm.strictCoreMemberCount()`).
 ///
 /// It proves the fix for the 3-of-5 concurrent-loss wedge: when three core members enter SUSPECT at
 /// once, the strict core count drops to 2 immediately, the Member→Suspect transition edges re-feed
@@ -66,7 +66,11 @@ class ConcurrentLossSelfDrainTest {
         scheduler = new ManualScheduler();
         listener = new RecordingListener();
         fsm = MembershipFsm.membershipFsm();
-        detector = quorumLossDetector(membershipConfig(), () -> CONFIGURED_CORE_COUNT, timeSource, scheduler);
+        detector = quorumLossDetector(membershipConfig(),
+                                      () -> CONFIGURED_CORE_COUNT,
+                                      () -> fsm.strictCoreMemberCount(),
+                                      timeSource,
+                                      scheduler);
         detector.setQuorumLossListener(listener);
 
         // Bring the FSM to the steady five-MEMBER state BEFORE wiring the detector — the seed promotes
@@ -82,7 +86,7 @@ class ConcurrentLossSelfDrainTest {
         // Prime the detector to ARMED with the settled quorate strict count (5 >= threshold 3) — the
         // cold-start latch the production count path crosses before any loss. No window is open and no
         // firing task is scheduled in this steady state.
-        detector.onMemberCountChanged(fsm.strictCoreMemberCount());
+        detector.reevaluate();
         assertThat(detector.isArmed()).isTrue();
         assertThat(detector.isBelowThreshold()).isFalse();
         assertThat(scheduler.pendingTasks()).isEmpty();
@@ -93,7 +97,7 @@ class ConcurrentLossSelfDrainTest {
     @Contract
     private void onFsmTransition(MembershipTransitionRecord record) {
         if (crossesMemberBoundary(record)) {
-            detector.onMemberCountChanged(fsm.strictCoreMemberCount());
+            detector.reevaluate();
         }
     }
 

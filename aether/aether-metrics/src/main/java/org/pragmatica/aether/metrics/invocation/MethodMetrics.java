@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics.invocation;
 
 import java.util.Arrays;
@@ -42,7 +41,9 @@ public final class MethodMetrics {
                                   .toArray(AtomicInteger[]::new);
     }
 
-    public Result<Unit> record(long durationNs, boolean success) {
+    /// Completion counters and latency samples form one coherent observation. The same monitor
+    /// protects capture/reset so a failure cannot be attributed to a different count interval.
+    public synchronized Result<Unit> record(long durationNs, boolean success) {
         count.incrementAndGet();
         recordOutcome(success);
         totalDurationNs.addAndGet(durationNs);
@@ -54,7 +55,7 @@ public final class MethodMetrics {
         return unitResult();
     }
 
-    public Snapshot snapshotAndReset() {
+    public synchronized Snapshot snapshotAndReset() {
         var snapshotCount = count.getAndSet(0);
         var snapshotSuccess = successCount.getAndSet(0);
         var snapshotFailure = failureCount.getAndSet(0);
@@ -71,7 +72,7 @@ public final class MethodMetrics {
                                  snapshotSamples);
     }
 
-    public Snapshot snapshot() {
+    public synchronized Snapshot snapshot() {
         var currentCount = count.get();
         var snapshotHistogram = captureHistogram();
         var snapshotSamples = captureSamples(currentCount);

@@ -1,14 +1,16 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.config;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import org.pragmatica.lang.io.TimeSpan;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class ConfigValidatorTest {
 
@@ -40,7 +42,8 @@ class ConfigValidatorTest {
         ConfigValidator.validate(config)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Minimum 3 nodes required"));
+                .contains("below the structural minimum of 3")
+                .contains("no majority quorum at all"));
     }
 
     @Test
@@ -53,25 +56,28 @@ class ConfigValidatorTest {
         ConfigValidator.validate(config)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Node count must be odd"));
+                .contains("which is even"));
     }
 
     @Test
     void validate_fails_whenNodeCountTooHigh() {
+        // 11, not 9: the 2026-09-12 ruling makes 9 legal. The message must also say the bound is on
+        // the CONSENSUS tier rather than the fleet, since the remedy is to add workers.
         var config = AetherConfig.builder()
             .withEnvironment(Environment.DOCKER)
-            .nodes(9)
+            .nodes(11)
             .build();
 
         ConfigValidator.validate(config)
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> assertThat(cause.message())
-                .contains("Maximum recommended node count is 7"));
+                .contains("above the maximum consensus tier of 9")
+                .contains("add further capacity as workers"));
     }
 
     @Test
     void validate_succeeds_withValidNodeCounts() {
-        for (int nodes : new int[]{3, 5, 7}) {
+        for (int nodes : new int[]{3, 5, 7, 9}) {
             var config = AetherConfig.builder()
                 .withEnvironment(Environment.DOCKER)
                 .nodes(nodes)
@@ -188,7 +194,7 @@ class ConfigValidatorTest {
             .onSuccessRun(Assertions::fail)
             .onFailure(cause -> {
                 var message = cause.message();
-                assertThat(message).contains("Minimum 3 nodes");
+                assertThat(message).contains("below the structural minimum of 3");
                 assertThat(message).contains("Invalid heap format");
                 assertThat(message).contains("Invalid GC");
             });
@@ -221,5 +227,47 @@ class ConfigValidatorTest {
 
         ConfigValidator.validate(config)
             .onFailureRun(Assertions::fail);
+    }
+
+    /// #250 review: `StorageMaintenanceDriver` schedules on this interval unconditionally; a
+    /// non-positive value must be rejected at validation time, not discovered at scheduler wiring.
+    @Test
+    void validate_fails_whenStorageMaintenanceIntervalNotPositive() {
+        var config = AetherConfig.builder()
+            .withEnvironment(Environment.DOCKER)
+            .timeouts(timeoutsWithStorageMaintenanceInterval(timeSpan(0).millis()))
+            .build();
+
+        ConfigValidator.validate(config)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("Storage maintenance interval must be positive"));
+    }
+
+    /// #250 review (round 2): positivity alone let 1ms through — a value technically legal but far
+    /// below any interval a lifecycle-iterating pass could safely repeat on. A positive-but-below-floor
+    /// interval must also be rejected, with a message distinct from the positivity check above.
+    @Test
+    void validate_fails_whenStorageMaintenanceIntervalBelowMinimum() {
+        var config = AetherConfig.builder()
+            .withEnvironment(Environment.DOCKER)
+            .timeouts(timeoutsWithStorageMaintenanceInterval(timeSpan(1).millis()))
+            .build();
+
+        ConfigValidator.validate(config)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("Storage maintenance interval must be at least"));
+    }
+
+    private static TimeoutsConfig timeoutsWithStorageMaintenanceInterval(TimeSpan interval) {
+        var defaults = TimeoutsConfig.timeoutsConfig();
+
+        return new TimeoutsConfig(defaults.invocation(), defaults.forwarding(), defaults.deployment(),
+                                  defaults.rollingUpdate(), defaults.cluster(), defaults.consensus(),
+                                  defaults.election(), defaults.swim(), defaults.observability(),
+                                  defaults.dht(), defaults.worker(), defaults.security(),
+                                  defaults.repository(), defaults.scaling(),
+                                  new TimeoutsConfig.StorageMaintenanceTimeouts(interval));
     }
 }

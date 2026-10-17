@@ -15,6 +15,16 @@
  */
 package org.pragmatica.consensus.net.quic;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
@@ -25,9 +35,14 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.WriteBufferWaterMark;
+import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -60,18 +75,73 @@ public final class QuicPeerConnection {
         }
     }
 
+    /// #718 — admission decision for a lazy lane (re)open: does THIS caller own the single in-flight
+    /// open for the lane, or did it join one already running?
+    ///
+    /// Three outcomes were needed, not two, and that is the whole point of the type. The pre-#718 code
+    /// expressed the open's result as `Option<QuicStreamChannel>`, where empty means "unhealable —
+    /// evict the connection" (the BACKSTOP). A suppressed duplicate is NOT that: it is a healthy
+    /// coalesce onto a healing lane, and reporting it as empty would fire the BACKSTOP eviction on
+    /// every deduplicated message — converting a volume defect into a connection-churn defect.
+    public sealed interface LaneOpenAdmission {
+        /// No open was in flight for this lane: the caller owns it and must drive
+        /// [QuicPeerConnection#openLane], then hand the opened stream every message that
+        /// [QuicPeerConnection#completeLaneOpen] returns.
+        record Started() implements LaneOpenAdmission {}
+
+        /// An open for this lane was already in flight; the offered message joined its pending queue
+        /// and will be written when that open completes. `oldestDropped` is true when the queue was at
+        /// [QuicPeerConnection#PENDING_LANE_WRITES_MAX] and the oldest pending message was dropped to
+        /// make room — the same drop-oldest policy, and the same reporting shape, as
+        /// `PeerState.OfferOutcome.Queued`.
+        record Coalesced(boolean oldestDropped) implements LaneOpenAdmission {}
+    }
+
+    /// #718 — bound on messages retained per (peer, lane) while one lane open is in flight.
+    ///
+    /// The coalescing window is a single lane-open round trip on an ALREADY-LIVE QUIC connection
+    /// (create stream, write preamble) — sub-millisecond locally, one RTT at worst — so this bound is
+    /// only ever reached by a genuine burst. 64 is chosen to mirror
+    /// `initialMaxStreamsBidirectional(64)`, the very credit this dedup exists to stop exhausting:
+    /// the connection retains at most as many queued messages per lane as it has streams in total.
+    /// That tie is a deliberate aesthetic choice, not a derived figure.
+    ///
+    /// Worst-case retention is 64 x the largest framed message (a ~64KB DHT block response) per
+    /// (peer, lane) — and only for a lane that is mid-open, which is the only way into this path.
+    /// Overflow drops the OLDEST, which is strictly better than the behaviour it replaces: before
+    /// #718 every one of these messages opened its own stream, and past the 64-stream credit they
+    /// failed with `STREAM_LIMIT_ERROR` — losing the message AND burning the credit.
+    static final int PENDING_LANE_WRITES_MAX = 64;
+
     private final NodeId peerId;
+    private final Option<NodeId> initiator;
     private final QuicChannel connection;
     private final QuicStreamChannel[] longLivedStreams;
     private final int consensusWatermarkLowBytes;
     private final int consensusWatermarkHighBytes;
     private volatile LaneOpener laneOpener = LaneOpener.noop();
+    private volatile QuicActivityKick activityKick;
+    /// #1727 — per lane: writes handed to the stream and not yet accepted by quiche, and when the lane was
+    /// last written. Read at supersede time to count what the immediate close would discard.
+    private final AtomicIntegerArray pendingLaneWrites = new AtomicIntegerArray(StreamType.values().length);
+    private final AtomicLongArray lastLaneWriteNanos = new AtomicLongArray(StreamType.values().length);
+    /// #718 — lanes with a lazy open IN FLIGHT, each mapped to the messages waiting on it. A present
+    /// key IS the in-flight marker; [#completeLaneOpen] removing it IS the release. Guarded by this
+    /// instance's monitor.
+    ///
+    /// The marker lives on the CONNECTION, not in a `(peerId, lane)` map on the transport, and the
+    /// lifetime is the reason: an eviction and re-dial builds a FRESH `QuicPeerConnection`, so a
+    /// marker leaked by a callback that never fires dies with the connection that owned it. Keyed by
+    /// peer id instead, the same leak would suppress lane healing for that peer permanently.
+    private final Map<StreamType, Deque<byte[]>> inFlightLaneOpens = new EnumMap<>(StreamType.class);
 
     private QuicPeerConnection(NodeId peerId,
+                               Option<NodeId> initiator,
                                QuicChannel connection,
                                int consensusWatermarkLowBytes,
                                int consensusWatermarkHighBytes) {
         this.peerId = peerId;
+        this.initiator = initiator;
         this.connection = connection;
         this.longLivedStreams = new QuicStreamChannel[StreamType.values().length];
         this.consensusWatermarkLowBytes = consensusWatermarkLowBytes;
@@ -82,6 +152,7 @@ public final class QuicPeerConnection {
     /// stream write-buffer watermarks ([QuicTransportTuning] defaults).
     public static QuicPeerConnection quicPeerConnection(NodeId peerId, QuicChannel connection) {
         return new QuicPeerConnection(peerId,
+                                      Option.none(),
                                       connection,
                                       QuicTransportTuning.DEFAULT_WATERMARK_LOW_BYTES,
                                       QuicTransportTuning.DEFAULT_WATERMARK_HIGH_BYTES);
@@ -93,7 +164,24 @@ public final class QuicPeerConnection {
                                                         QuicChannel connection,
                                                         int consensusWatermarkLowBytes,
                                                         int consensusWatermarkHighBytes) {
-        return new QuicPeerConnection(peerId, connection, consensusWatermarkLowBytes, consensusWatermarkHighBytes);
+        return new QuicPeerConnection(peerId,
+                                      Option.none(),
+                                      connection,
+                                      consensusWatermarkLowBytes,
+                                      consensusWatermarkHighBytes);
+    }
+
+    /// The verified Hello endpoint identifies the dialer at both ends of the same connection.
+    public static QuicPeerConnection quicPeerConnection(NodeId peerId, NodeId initiator, QuicChannel connection) {
+        return new QuicPeerConnection(peerId,
+                                      Option.some(initiator),
+                                      connection,
+                                      QuicTransportTuning.DEFAULT_WATERMARK_LOW_BYTES,
+                                      QuicTransportTuning.DEFAULT_WATERMARK_HIGH_BYTES);
+    }
+
+    public Option<NodeId> initiator() {
+        return initiator;
     }
 
     public NodeId peerId() {
@@ -114,12 +202,184 @@ public final class QuicPeerConnection {
                           : opener;
     }
 
+    /// #1727 (M2) — install the activity kick: after a lane data write ([#noteLaneWrite]) a CONTROL-lane
+    /// frame is written every 100 ms until 5 s pass with no data write. `frame` is the already-encoded
+    /// KeepAlive; `suppressed` silences it (fault-injection blackhole). A connection whose channel has no
+    /// event loop (unit fixtures) gets no kick.
+    @Contract
+    public void activityKick(byte[] frame, BooleanSupplier suppressed) {
+        activityKick(frame, suppressed, QuicActivityKick.DEFAULT_INTERVAL_MS, QuicActivityKick.DEFAULT_WINDOW_MS);
+    }
+
+    @Contract
+    void activityKick(byte[] frame, BooleanSupplier suppressed, long intervalMs, long windowMs) {
+        if (activityKick != null) {
+            return;
+        }
+
+        Option.option(connection.eventLoop()).onPresent(loop -> activityKick = new QuicActivityKick(() -> stream(StreamType.CONTROL),
+                                                                                                    loop,
+                                                                                                    connection::isActive,
+                                                                                                    suppressed,
+                                                                                                    frame,
+                                                                                                    intervalMs,
+                                                                                                    windowMs));
+    }
+
+    /// #1727 — a write on `lane` was handed to its stream: it is unflushed until [#laneWriteCompleted], and
+    /// opens or extends the activity kick window.
+    ///
+    /// CONTROL is not accounted: the transport's own 1 s KeepAlive rides it, so counting it would put one lane
+    /// "at risk" on every idle link (found by v-2023). CONTROL traffic is not part of the risk figure.
+    @Contract
+    void laneWriteStarted(StreamType lane) {
+        if (lane == StreamType.CONTROL) {
+            return;
+        }
+
+        pendingLaneWrites.incrementAndGet(lane.streamIndex());
+        lastLaneWriteNanos.set(lane.streamIndex(), System.nanoTime());
+        noteLaneWrite();
+    }
+
+    /// #1727 — the write on `lane` completed (accepted by quiche, or failed).
+    @Contract
+    void laneWriteCompleted(StreamType lane) {
+        if (lane == StreamType.CONTROL) {
+            return;
+        }
+
+        pendingLaneWrites.decrementAndGet(lane.streamIndex());
+    }
+
+    /// #1727 — lanes whose writes an immediate close of this connection would discard, as far as it is
+    /// observable: lanes with unflushed writes, and lanes written within [#SUPERSEDE_RISK_WINDOW_NANOS].
+    LaneWriteRisk laneWritesAtRisk(long nowNanos) {
+        var unflushed = 0;
+        var recent = 0;
+        var atRisk = 0;
+
+        for (var lane : StreamType.values()) {
+            var index = lane.streamIndex();
+            var isUnflushed = pendingLaneWrites.get(index) > 0;
+            var written = lastLaneWriteNanos.get(index);
+            var isRecent = written != 0 && nowNanos - written <= SUPERSEDE_RISK_WINDOW_NANOS;
+
+            unflushed += isUnflushed
+                         ? 1
+                         : 0;
+            recent += isRecent
+                      ? 1
+                      : 0;
+            atRisk += isUnflushed || isRecent
+                      ? 1
+                      : 0;
+        }
+
+        return new LaneWriteRisk(unflushed, recent, atRisk);
+    }
+
+    /// Lanes at risk at close time: `lanesAtRisk` counts a lane once even if it is both unflushed and recent.
+    record LaneWriteRisk(int unflushedLanes, int recentLanes, int lanesAtRisk) {}
+
+    /// A guess, not a derived figure: long enough to cover a LAN round trip plus a PTO or two for a write that
+    /// is still unacked, short enough that a lane idle for a while does not count. Tune from the campaign data.
+    static final long SUPERSEDE_RISK_WINDOW_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+    /// #1727 (M2) — a lane data write was accepted on one of this connection's streams.
+    @Contract
+    public void noteLaneWrite() {
+        Option.option(activityKick).onPresent(QuicActivityKick::noteDataWrite);
+    }
+
+    /// Visible for tests: the kick was stopped (the connection closed).
+    boolean activityKickStopped() {
+        return Option.option(activityKick)
+                     .map(QuicActivityKick::isStopped)
+                     .or(false);
+    }
+
+    /// Visible for tests: kick frames sent so far.
+    long activityKicksSent() {
+        return Option.option(activityKick)
+                     .map(QuicActivityKick::kicksSent)
+                     .or(0L);
+    }
+
     /// Lazily (re)open a missing long-lived `lane` stream on this live connection, invoking
     /// `onResult` with the registered stream (some) or empty on failure. Delegates to the installed
     /// [LaneOpener]; the default no-op opener reports empty (no live channel to open against).
     @Contract
     public void openLane(StreamType lane, Consumer<Option<QuicStreamChannel>> onResult) {
         laneOpener.open(lane, onResult);
+    }
+
+    /// #718 — admit `bytes` to the single in-flight lazy open for `lane`, starting one if none is
+    /// running. Returns [LaneOpenAdmission.Started] to exactly one caller per open cycle; that caller
+    /// drives [#openLane] and must pair this with [#completeLaneOpen].
+    ///
+    /// Without this gate the lazy re-open fired once PER OUTBOUND MESSAGE whose lane was missing, and
+    /// each one created a stream: 1,570 attempted opens in one measured 72-second run, of which the
+    /// 857 that failed were *exactly* the 857 `STREAM_LIMIT_ERROR`s — equal counts, in every arm. One
+    /// transiently missing lane was being converted into exhaustion of the 64-stream credit for the
+    /// whole connection.
+    public synchronized LaneOpenAdmission beginLaneOpen(StreamType lane, byte[] bytes) {
+        var pending = inFlightLaneOpens.get(lane);
+
+        if (pending == null) {
+            inFlightLaneOpens.put(lane, freshPendingQueue(bytes));
+
+            return new LaneOpenAdmission.Started();
+        }
+
+        var wasFull = pending.size() >= PENDING_LANE_WRITES_MAX;
+
+        if (wasFull) {
+            pending.pollFirst();
+        }
+
+        pending.offerLast(bytes);
+
+        return new LaneOpenAdmission.Coalesced(wasFull);
+    }
+
+    /// #718 — release the in-flight marker for `lane` and hand back every message that was waiting on
+    /// it, oldest first, including the one offered by the caller that got
+    /// [LaneOpenAdmission.Started]. Must be called on BOTH outcomes of the open — success and failure
+    /// — or the marker leaks and the lane can never be healed again on this connection. Returns an
+    /// empty list when no open was in flight, so a duplicate call is inert rather than harmful.
+    public synchronized List<byte[]> completeLaneOpen(StreamType lane) {
+        var pending = inFlightLaneOpens.remove(lane);
+
+        return pending == null
+               ? List.of()
+               : List.copyOf(pending);
+    }
+
+    /// Visible for tests: lanes currently holding an in-flight lazy open.
+    synchronized int inFlightLaneOpenCount() {
+        return inFlightLaneOpens.size();
+    }
+
+    private static Deque<byte[]> freshPendingQueue(byte[] bytes) {
+        var queue = new ArrayDeque<byte[]>();
+
+        queue.offerLast(bytes);
+
+        return queue;
+    }
+
+    /// The lane `stream` is registered under on this connection, if any. Accounting is keyed by the stream
+    /// actually written, not by the message's lane: a message falls back to the CONSENSUS stream when its own
+    /// lane has none.
+    Option<StreamType> laneOf(QuicStreamChannel stream) {
+        for (var lane : StreamType.values()) {
+            if (longLivedStreams[lane.streamIndex()] == stream) {
+                return Option.some(lane);
+            }
+        }
+
+        return Option.none();
     }
 
     /// Get a long-lived stream, if already opened.
@@ -136,15 +396,151 @@ public final class QuicPeerConnection {
     /// async retry wrap in `QuicClusterNetwork.writeIfWritable` is the safety net for the
     /// pathological case. `WriteBufferWaterMark` is a Netty `ChannelConfig` facility and is
     /// supported by the incubator `QuicStreamChannel`'s config.
-    @Contract
-    public void registerStream(StreamType type, QuicStreamChannel channel) {
+    /// #718 — a re-registration that REPLACES a live stream retires the one it displaced. The
+    /// overwrite was silent before: nothing can look the old stream up again, so it stayed open,
+    /// unreachable, holding one of the connection's 64 bidirectional stream credits for the lifetime
+    /// of the connection. That is a credit leak on the exact resource the lazy-open storm exhausts.
+    ///
+    /// #1578 — which stream a lane keeps is decided by [#outranks], not by arrival order. Both ends
+    /// of a connection see the same streams under the same ids, so ranking by id makes both ends keep
+    /// the SAME stream without negotiating; arrival order differs between the ends, and choosing by it
+    /// left each end writing into a stream the other had displaced. A candidate that does not outrank
+    /// the live incumbent is not installed and is retired instead.
+    ///
+    /// A retired stream is finished, not closed: see [#retire]. Returns the stream the lane resolves
+    /// to after the call — the candidate, or the incumbent that kept the lane — so a caller holding
+    /// messages for the lane writes them to the stream that will carry the lane from now on.
+    public QuicStreamChannel registerStream(StreamType type, QuicStreamChannel channel) {
         if (type == StreamType.CONSENSUS) {
             channel.config()
                    .setWriteBufferWaterMark(new WriteBufferWaterMark(consensusWatermarkLowBytes,
                                                                      consensusWatermarkHighBytes));
         }
 
+        var incumbent = longLivedStreams[type.streamIndex()];
+
+        if (keepsLane(option(incumbent), channel)) {
+            retire(type, channel, incumbent);
+
+            return incumbent;
+        }
+
         longLivedStreams[type.streamIndex()] = channel;
+        retire(type, incumbent, channel);
+
+        return channel;
+    }
+
+    private static boolean keepsLane(Option<QuicStreamChannel> incumbent, QuicStreamChannel candidate) {
+        return incumbent.filter(current -> current != candidate
+                                           && current.isActive()
+                                           && !outranks(candidate, current))
+                        .isPresent();
+    }
+
+    /// #1578 — the lane-ownership rule, identical at both ends. A stream opened by the DIALER (the
+    /// QUIC client: stream-id bit 0 clear, RFC 9000 §2.1) outranks one opened by the acceptor, and
+    /// between two streams opened by the same side the newer (higher id) wins. The acceptor's lazily
+    /// opened lane is therefore a stand-in, kept only until a dialer-opened stream for the lane
+    /// exists. Equal ids never occur for two distinct live streams of one connection; the candidate
+    /// wins a tie so a re-registration keeps its pre-#1578 replace semantics.
+    static boolean outranks(QuicStreamChannel candidate, QuicStreamChannel incumbent) {
+        var candidateByDialer = openedByDialer(candidate);
+
+        return candidateByDialer == openedByDialer(incumbent)
+               ? candidate.streamId() >= incumbent.streamId()
+               : candidateByDialer;
+    }
+
+    private static boolean openedByDialer(QuicStreamChannel stream) {
+        return (stream.streamId() & 0x1L) == 0;
+    }
+
+    /// Retires a stream that no longer carries `type`. Only the side that OPENED the stream finishes
+    /// it, and it finishes gracefully: a FIN queued behind every write already on the stream, so
+    /// those writes are delivered before the stream ends — `close()` would discard them. The other
+    /// side keeps reading until that FIN arrives and the stream closes on its own, returning the
+    /// credit. A side never finishes a stream the other side opened, because under [#outranks] the
+    /// other side may still be writing into it until it learns of the winner. An already-dead stream,
+    /// or re-registering the lane's own stream, is a no-op.
+    @Contract
+    private void retire(StreamType type, QuicStreamChannel retired, QuicStreamChannel kept) {
+        if (retired == null || retired == kept || !retired.isActive() || !retired.isLocalCreated()) {
+            return;
+        }
+
+        log.debug("Finishing superseded {} stream {} for peer {} — {} carries the lane",
+                  type,
+                  retired.streamId(),
+                  peerId,
+                  kept.streamId());
+        var _ = retired.writeAndFlush(laneEndFrame());
+    }
+
+    /// #1727 (M1) — the frame that ends a lane: a zero-length frame (the 4-byte length prefix, zero
+    /// payload) carrying the FIN. A bare FIN is not safe: quiche drops a FIN that first arrives on a
+    /// retransmission of data the receiver has already read, so the FIN is never surfaced and the
+    /// handover stalls. Here the FIN rides on bytes that are new to every copy of the stream, and the
+    /// receiver ends the lane on the frame itself ([QuicLaneDataHandler]) without depending on the FIN.
+    /// The prefix is written raw: a [DefaultQuicStreamFrame] bypasses the pipeline's length prepender.
+    /// No other writer produces a zero-length frame — every message encodes to at least its type tag.
+    static DefaultQuicStreamFrame laneEndFrame() {
+        return new DefaultQuicStreamFrame(Unpooled.wrappedBuffer(new byte[LENGTH_PREFIX_BYTES]), true);
+    }
+
+    /// #1727 (M1) — the error-path finish: end the lane with the marker, THEN close. A bare close() sends a
+    /// bare FIN, which the peer may never see (see [#laneEndFrame]), so it would not release its lane.
+    ///
+    /// An error path must never be able to hang. A stream that is dead or not writable (flow-control
+    /// blocked: the marker would queue behind the blocked writes and its future would wait for credit the
+    /// peer may never grant) is closed at once; otherwise the close is also scheduled as a bounded backstop,
+    /// so it happens whether or not the marker write completes.
+    @Contract
+    static void endLaneThenClose(ChannelHandlerContext ctx) {
+        endLaneThenClose(ctx, CLOSE_BACKSTOP_MS);
+    }
+
+    @Contract
+    static void endLaneThenClose(ChannelHandlerContext ctx, long backstopMs) {
+        var channel = ctx.channel();
+
+        if (!channel.isActive() || !channel.isWritable()) {
+            ctx.close();
+
+            return;
+        }
+
+        var closed = new AtomicBoolean();
+        Runnable closeOnce = () -> closeOnce(ctx, closed);
+
+        ctx.writeAndFlush(laneEndFrame()).addListener(_ -> closeOnce.run());
+        ctx.executor().schedule(closeOnce, backstopMs, TimeUnit.MILLISECONDS);
+    }
+
+    private static void closeOnce(ChannelHandlerContext ctx, AtomicBoolean closed) {
+        if (closed.compareAndSet(false, true)) {
+            ctx.close();
+        }
+    }
+
+    /// #1578 — `stream` ended from the other side: its FIN arrived (the other side retired it under
+    /// [#outranks] or closed it) or the stream is gone. If `type` still resolves to it, the lane is
+    /// released, so the next write re-opens it or the other side's winning stream takes it instead of
+    /// writes going into a stream nobody reads. This side then finishes its own half, so a stream
+    /// both sides have stopped using ends and returns its credit.
+    @Contract
+    public void streamEnded(StreamType type, QuicStreamChannel stream) {
+        if (longLivedStreams[type.streamIndex()] == stream) {
+            longLivedStreams[type.streamIndex()] = null;
+            log.debug("{} stream {} for peer {} ended from the other side — lane released",
+                      type,
+                      stream.streamId(),
+                      peerId);
+        }
+
+        if (stream.isActive()) {
+            var _ = stream.writeAndFlush(laneEndFrame());
+        }
     }
 
     /// Check if the underlying QUIC connection is active.
@@ -161,9 +557,14 @@ public final class QuicPeerConnection {
     @Contract
     @SuppressWarnings("JBCT-UTIL-01")
     private void closeSync() throws Exception {
+        Option.option(activityKick).onPresent(QuicActivityKick::stop);
         closeLongLivedStreams();
         connection.close().sync();
     }
+
+    private static final int LENGTH_PREFIX_BYTES = 4;
+    static final long CLOSE_BACKSTOP_MS = 1_000;
+    private static final Logger log = LoggerFactory.getLogger(QuicPeerConnection.class);
 
     private void closeLongLivedStreams() {
         for (int i = 0; i < longLivedStreams.length; i++) {

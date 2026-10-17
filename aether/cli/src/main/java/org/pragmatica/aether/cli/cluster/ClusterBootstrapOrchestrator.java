@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.nio.charset.StandardCharsets;
@@ -14,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.environment.ClusterName;
@@ -103,6 +103,21 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                           List<SshPublicKey> sshPublicKeys,
                                                           boolean keepOnFailure,
                                                           String rawTomlContent) {
+        return BootstrapExistingClusterGuard.refuseExisting(config).flatMap(guarded -> runFreshPhases(guarded,
+                                                                                                      fullCheck,
+                                                                                                      sshPublicKeys,
+                                                                                                      keepOnFailure,
+                                                                                                      rawTomlContent));
+    }
+
+    /// The guard above is deliberately OUTSIDE this method: its `fold` runs `decorateAfterCleanup`, which reaps
+    /// the ledger recorded under this cluster NAME, and for a run the guard refused that ledger is the live
+    /// cluster's.
+    private static Result<BootstrapResult> runFreshPhases(ClusterBootstrapConfig config,
+                                                          boolean fullCheck,
+                                                          List<SshPublicKey> sshPublicKeys,
+                                                          boolean keepOnFailure,
+                                                          String rawTomlContent) {
         return BootstrapPhaseValidate.execute(config, fullCheck)
                                      .map(ctx -> ctx.withSshPublicKeys(sshPublicKeys))
                                      .map(ctx -> ctx.withRawTomlContent(rawTomlContent))
@@ -121,9 +136,9 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                            String rawTomlContent) {
         var clusterName = config.cluster().name();
 
-        return BootstrapStatePersistence.load(clusterName)
-                                        .toResult(new BootstrapError.ProvisionFailed(clusterName.value(),
-                                                                                     "No bootstrap state found for resume"))
+        return BootstrapStatePersistence.read(clusterName)
+                                        .flatMap(state -> state.toResult(new BootstrapError.ProvisionFailed(clusterName.value(),
+                                                                                                            "No bootstrap state found for resume")))
                                         .flatMap(state -> validateResumeState(state, config))
                                         .flatMap(state -> resumeFromState(config, state, sshPublicKeys, rawTomlContent))
                                         .fold(cause -> Result.<BootstrapResult> failure(decorateAfterCleanup(clusterName,
@@ -147,7 +162,25 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                            BootstrapState state,
                                                            List<SshPublicKey> sshPublicKeys,
                                                            String rawTomlContent) {
+        return resumeFromState(config, state, sshPublicKeys, rawTomlContent, ClusterBootstrapOrchestrator::runPhaseChain);
+    }
+
+    /// `chain` is the phase runner the resumed context is handed to — production passes [#runPhaseChain];
+    /// a test passes a capturing one, so what the DEPLOY phase would SEE on resume is observable.
+    static Result<BootstrapResult> resumeFromState(ClusterBootstrapConfig config,
+                                                   BootstrapState state,
+                                                   List<SshPublicKey> sshPublicKeys,
+                                                   String rawTomlContent,
+                                                   Function<BootstrapContext, Result<BootstrapResult>> chain) {
         System.out.println("Resuming bootstrap for cluster '" + state.clusterName() + "' from persisted state");
+
+        return chain.apply(resumeContext(config, state, sshPublicKeys, rawTomlContent));
+    }
+
+    static BootstrapContext resumeContext(ClusterBootstrapConfig config,
+                                          BootstrapState state,
+                                          List<SshPublicKey> sshPublicKeys,
+                                          String rawTomlContent) {
         var resumedSecret = state.clusterSecret().isEmpty()
                             ? generateClusterSecret()
                             : state.clusterSecret();
@@ -162,7 +195,65 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                   .withClusterSecret(resumedSecret)
                                   .withRawTomlContent(rawTomlContent);
 
-        return runPhaseChain(ctx);
+        return rehydrateNodes(ctx);
+    }
+
+    /// #1543 — a resumed run starts with an EMPTY node list: PROVISION and COLLECT_ADDRESSES are skipped
+    /// when COMPLETED, so DEPLOY_RUNTIME used to iterate zero nodes and report success having started
+    /// nothing. The state file already holds the ids and addresses in provisioning order, so they are
+    /// rebuilt from it; without them the per-node started ledger would have nothing to be consulted for.
+    /// `serverId` is the provider handle, which only the SSH/FORGE launch paths read (as a type tag);
+    /// a cloud node's real server id stays in the ledger's `ProvisionedVm` records.
+    static BootstrapContext rehydrateNodes(BootstrapContext ctx) {
+        var state = ctx.state();
+        var ids = state.provisionedNodeIds();
+        var ips = state.collectedAddresses();
+        var provisioned = state.phases().get(BootstrapPhase.PROVISION) == PhaseStatus.COMPLETED && state.phases()
+                                                                                                        .get(BootstrapPhase.COLLECT_ADDRESSES) == PhaseStatus.COMPLETED;
+
+        if (!provisioned || ids.isEmpty() || ids.size() != ips.size()) {
+            return ctx;
+        }
+
+        var nodes = IntStream.range(0,
+                                    ids.size())
+                             .mapToObj(i -> provisionedFromPersisted(ctx,
+                                                                     ids.get(i),
+                                                                     ips.get(i)))
+                             .toList();
+        var addresses = IntStream.range(0,
+                                        ids.size())
+                                 .mapToObj(i -> NodeAddress.fromPersisted(ids.get(i),
+                                                                          ips.get(i)))
+                                 .toList();
+
+        return ctx.withNodes(nodes)
+                  .withAddresses(addresses);
+    }
+
+    private static ProvisionedNode provisionedFromPersisted(BootstrapContext ctx, String nodeId, String persisted) {
+        var address = NodeAddress.fromPersisted(nodeId, persisted);
+
+        return ProvisionedNode.provisionedNode(nodeId,
+                                               serverTag(ctx.config(), nodeId),
+                                               address.publicIp(),
+                                               address.managementPort());
+    }
+
+    private static String serverTag(ClusterBootstrapConfig config, String nodeId) {
+        return config.sources()
+                     .entrySet()
+                     .stream()
+                     .filter(entry -> BootstrapPhaseProvision.belongsTo(nodeId,
+                                                                        SourceName.sourceNameOrDefault(entry.getKey())))
+                     .findFirst()
+                     .map(entry -> switch (entry.getValue()
+                                                .type()) {
+            case SSH -> "ssh";
+            case FORGE -> "forge";
+            case CLOUD, DOCKER -> "";
+        })
+                     .orElse("");
     }
 
     private static Result<BootstrapResult> runPhaseChain(BootstrapContext ctx) {
@@ -199,26 +290,96 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                                 Function<BootstrapContext, Result<BootstrapContext>> phaseFunc) {
         var inProgress = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.IN_PROGRESS));
 
-        BootstrapStatePersistence.save(inProgress.state());
+        saveState(inProgress.state(), phase);
 
         return phaseFunc.apply(inProgress)
                         .map(result -> markPhaseCompleted(result, phase))
-                        .onFailure(cause -> markPhaseFailed(inProgress, phase));
+                        .onFailure(cause -> markPhaseFailed(inProgress.state(),
+                                                            phase));
     }
 
     private static BootstrapContext markPhaseCompleted(BootstrapContext result, BootstrapPhase phase) {
         var completed = result.withState(result.state().withPhaseStatus(phase, PhaseStatus.COMPLETED));
 
-        BootstrapStatePersistence.save(completed.state());
+        saveState(completed.state(), phase);
 
         return completed;
     }
 
+    /// #994 verification finding SF-1 — **the whole ledger mechanism rests on this write, and its `Result`
+    /// used to be discarded.** `BootstrapPhaseProvision.recordProvisionedVm` loads the state FILE, appends
+    /// the VM and saves; when the file is absent the load is empty and the append is a silent no-op. What
+    /// guarantees it is not absent is exactly this pre-phase save. If it fails and nobody says so, every
+    /// paid VM of the PROVISION phase is dropped from the ledger and #994 recurs with no diagnostic at all.
+    ///
+    /// It WARNS rather than aborting, deliberately. Aborting would fail closed at the wrong moment: a
+    /// bootstrap that could have succeeded is turned into a hard failure by a full disk in `~/.aether`,
+    /// and the phase has created nothing yet, so there is no money at stake to protect. What the operator
+    /// needs instead is to learn now, and `recordProvisionedVm` additionally prints every server id it
+    /// could not record — so the ids reach the transcript even when the ledger cannot hold them.
     @Contract
-    private static void markPhaseFailed(BootstrapContext ctx, BootstrapPhase phase) {
-        var failed = ctx.withState(ctx.state().withPhaseStatus(phase, PhaseStatus.FAILED));
+    private static void saveState(BootstrapState state, BootstrapPhase phase) {
+        var _ = BootstrapStatePersistence.save(state).onFailure(cause -> warnStateNotPersisted(state.clusterName(),
+                                                                                               phase,
+                                                                                               cause));
+    }
 
-        BootstrapStatePersistence.save(failed.state());
+    @Contract
+    private static void warnStateNotPersisted(ClusterName clusterName, BootstrapPhase phase, Cause cause) {
+        System.err.printf("  WARN: could not persist bootstrap state for cluster '%s' at phase %s: %s%n",
+                          clusterName,
+                          phase,
+                          cause.message());
+        System.err.printf("  The state file (%s) is teardown's ONLY record of created cloud resources. While it"
+                         + " cannot be written, resources this run creates will not be reapable by"
+                         + " 'aether cluster destroy' — every server id is printed as it is created so it can be"
+                         + " removed with tools/cloud-reaper.sh.%n",
+                          BootstrapStatePersistence.statePath(clusterName));
+    }
+
+    /// #994 — the FAILED marker must not ERASE what the failing phase already recorded. `preSnapshot` is
+    /// the state as it was BEFORE the phase ran, and PROVISION now appends each paid VM to the persisted
+    /// ledger as the provider reports it created (see `BootstrapPhaseProvision.recordProvisionedVm`), so
+    /// saving the snapshot would discard exactly the records teardown needs — which is how a
+    /// mid-PROVISION quota refusal stranded two running `ccx23` servers on 2026-09-11.
+    ///
+    /// The state FILE is the authority for created resources, so re-load it and mark the phase FAILED on
+    /// THAT, falling back to the snapshot only when nothing is persisted. Takes a `BootstrapState` rather
+    /// than a `BootstrapContext` so the preservation property is testable without a full config fixture.
+    ///
+    /// #994 verification finding SF-1 — **the fallback reads through
+    /// [BootstrapStatePersistence#read], not `load`, because "nothing persisted" and "unreadable" are
+    /// different facts and only one of them is safe to overwrite.** `load` collapses both to empty, and
+    /// over a TORN file the snapshot save then replaces the only record of paid VMs with a VM-less one
+    /// that is valid JSON — undetectable afterwards, and #994's outcome by another route. On an unreadable
+    /// ledger this now refuses to write at all: the bytes stay on disk for recovery and the operator is
+    /// told. There is no trade to weigh on this path — it runs only after the bootstrap has ALREADY
+    /// failed, so failing closed here cannot cost a run that would otherwise have succeeded.
+    @Contract
+    static void markPhaseFailed(BootstrapState preSnapshot, BootstrapPhase phase) {
+        var _ = BootstrapStatePersistence.read(preSnapshot.clusterName())
+                                         .onFailure(cause -> refuseToOverwriteUnreadableLedger(preSnapshot.clusterName(),
+                                                                                               phase,
+                                                                                               cause))
+                                         .onSuccess(persisted -> saveState(persisted.or(preSnapshot)
+                                                                                    .withPhaseStatus(phase,
+                                                                                                     PhaseStatus.FAILED),
+                                                                           phase));
+    }
+
+    @Contract
+    private static void refuseToOverwriteUnreadableLedger(ClusterName clusterName, BootstrapPhase phase, Cause cause) {
+        System.err.printf("  WARN: the bootstrap state file for cluster '%s' exists but cannot be read: %s%n",
+                          clusterName,
+                          cause.message());
+        System.err.printf("  REFUSING to mark %s as FAILED, because writing would replace the only record of this"
+                         + " run's created resources with a pre-phase snapshot that has none — and the result would"
+                         + " be valid JSON, so nothing afterwards could tell. The unreadable file is left at %s for"
+                         + " recovery.%n",
+                          phase,
+                          BootstrapStatePersistence.statePath(clusterName));
+        System.err.printf("  Reap whatever this run created with: tools/cloud-reaper.sh --cluster %s --destroy%n",
+                          clusterName);
     }
 
     static Cause decorateAfterCleanup(ClusterName clusterName, Cause cause, boolean keepOnFailure) {
@@ -235,17 +396,32 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         return new BootstrapError.BootstrapFailedWithOrphans(originalCause, cleanupCause.message());
     }
 
+    /// #994 verification finding SF-1 — reads through [BootstrapStatePersistence#read] so an UNPARSEABLE
+    /// ledger fails the cleanup instead of reading as "no resources were created". Under `load` the two
+    /// were the same empty `Option`, and a torn file therefore produced a silent, successful, zero-delete
+    /// teardown over resources that are still billing.
     private static Result<Unit> cleanupOnFailure(ClusterName clusterName) {
-        return BootstrapStatePersistence.load(clusterName)
-                                        .filter(state -> !state.createdResources()
-                                                               .isEmpty())
-                                        .map(state -> cleanupHook().apply(state))
-                                        .or(Result.unitResult());
+        return BootstrapStatePersistence.read(clusterName)
+                                        .mapError(cause -> new BootstrapError.LedgerUnreadable(clusterName, cause))
+                                        .flatMap(ClusterBootstrapOrchestrator::cleanupRecordedResources);
     }
 
+    private static Result<Unit> cleanupRecordedResources(Option<BootstrapState> state) {
+        return state.filter(persisted -> !persisted.createdResources()
+                                                   .isEmpty())
+                    .map(persisted -> cleanupHook().apply(persisted))
+                    .or(Result.unitResult());
+    }
+
+    /// `--keep-on-failure` reports from the ledger, so an unreadable ledger must be reported AS unreadable:
+    /// the counts it would otherwise print are zeros nobody measured, and this text is the operator's whole
+    /// basis for deciding what is still running (#994 verification finding SF-1, the same
+    /// absent-vs-unreadable conflation).
     @Contract
     private static void warnKeepOnFailure(ClusterName clusterName, Cause cause) {
-        var state = BootstrapStatePersistence.load(clusterName);
+        var read = BootstrapStatePersistence.read(clusterName).onFailure(parseCause -> warnLedgerUnreadableOnKeep(clusterName,
+                                                                                                                  parseCause));
+        var state = read.or(none());
         var resources = state.map(BootstrapState::createdResources).or(List.of());
         var vmCount = resources.stream().filter(r -> r instanceof CreatedResource.ProvisionedVm).count();
         var keyCount = resources.stream().filter(r -> r instanceof CreatedResource.SshKeyResource).count();
@@ -262,6 +438,16 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
         System.err.println("[--keep-on-failure] To inspect: ssh aether@<vm-ip> (or root@). "
                           + "To clean up later: aether cluster destroy --cluster " + clusterName
                           + " --yes.");
+    }
+
+    @Contract
+    private static void warnLedgerUnreadableOnKeep(ClusterName clusterName, Cause cause) {
+        System.err.printf("[--keep-on-failure] WARNING: the state file is present but unreadable (%s), so the"
+                         + " counts below are NOT measured — they are what an empty ledger reports. Resources may"
+                         + " exist that nothing here can name; finish teardown with 'tools/cloud-reaper.sh"
+                         + " --cluster %s --destroy'.%n",
+                          cause.message(),
+                          clusterName);
     }
 
     private static String resolveFailedPhase(BootstrapState state) {
@@ -394,7 +580,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                             List<NodeAddress> addresses,
                             Option<String> apiKey,
                             List<SshPublicKey> sshPublicKeys,
-                            Map<String, List<Long>> sshKeyIdsByProvider,
+                            Map<String, List<Long>> sshKeyIdsBySource,
                             Map<SourceName, List<FirewallId>> firewallIdsBySource,
                             String clusterSecret,
                             String rawTomlContent) {
@@ -421,7 +607,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
@@ -434,7 +620,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         List.copyOf(newAddresses),
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
@@ -447,7 +633,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         Option.some(key),
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
@@ -460,7 +646,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
@@ -473,16 +659,16 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         List.copyOf(keys),
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         rawTomlContent);
         }
 
-        BootstrapContext withSshKeyIds(String provider, List<Long> ids) {
-            var merged = new HashMap<String, List<Long>>(sshKeyIdsByProvider);
+        BootstrapContext withSshKeyIds(String source, List<Long> ids) {
+            var merged = new HashMap<String, List<Long>>(sshKeyIdsBySource);
 
-            merged.put(provider, List.copyOf(ids));
+            merged.put(source, List.copyOf(ids));
 
             return new BootstrapContext(config,
                                         state,
@@ -503,7 +689,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         secret,
                                         rawTomlContent);
@@ -516,14 +702,14 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         firewallIdsBySource,
                                         clusterSecret,
                                         toml);
         }
 
-        List<Long> sshKeyIdsFor(String provider) {
-            return sshKeyIdsByProvider.getOrDefault(provider, List.of());
+        List<Long> sshKeyIdsFor(String source) {
+            return sshKeyIdsBySource.getOrDefault(source, List.of());
         }
 
         BootstrapContext withFirewallIds(SourceName sourceName, List<FirewallId> ids) {
@@ -537,7 +723,7 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                         addresses,
                                         apiKey,
                                         sshPublicKeys,
-                                        sshKeyIdsByProvider,
+                                        sshKeyIdsBySource,
                                         Map.copyOf(merged),
                                         clusterSecret,
                                         rawTomlContent);
@@ -559,6 +745,46 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
+        /// A DOCKER source with management TLS declared (`[operations.tls] auto_generate = true`, the default) (#2089).
+        /// A docker node is created by `docker run` from the image's baked configuration, which serves the management API over plain
+        /// HTTP (`[cluster] tls = false`) and has no channel to receive TLS material, so the declared setting could not be honoured. Bootstrap
+        /// refuses before any container exists instead of quietly speaking HTTP to a cluster the config says is TLS.
+        record DockerSourceDeclaresTls(String sourceName) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Source '" + sourceName
+                     + "' is a docker source, but the config declares management TLS ([operations.tls] auto_generate"
+                     + " is true, the default). Docker nodes serve the management API over plain HTTP and cannot honour it. Set"
+                     + " `[operations.tls] auto_generate = false` explicitly to bootstrap a docker cluster over HTTP.";
+            }
+        }
+
+        /// A docker source beside a non-docker source of any role (#2089). Docker nodes name each other by container
+        /// name on the docker network; cloud and ssh cores by address. The two kinds cannot share one reachable peer list, a list per
+        /// kind would silently form two clusters, and docker workers would boot with an empty core list, so bootstrap refuses the config.
+        record DockerCoresMixedWithOtherCores(String dockerSource, String otherSource) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Docker source '" + dockerSource
+                     + "' cannot be combined with source '" + otherSource
+                     + "'. Docker nodes reach each other by"
+                     + " container name and the others by address, so they cannot share one cluster peer list. Put the whole cluster in"
+                     + " docker sources, or use no docker source.";
+            }
+        }
+
+        /// Owner Q5 — the existing-cluster guard could not make one of its three checks (registry unreadable,
+        /// cloud provider unreachable or refusing the listing). Bootstrap refuses rather than proceed on a guess.
+        record ExistingClusterCheckFailed(String clusterName, String check, Cause origin) implements BootstrapError, Cause.Wrapped {
+            @Override
+            public String message() {
+                return "Cannot confirm cluster '" + clusterName
+                     + "' does not already exist: the " + check
+                     + " check could not be made (" + origin.message()
+                     + "). Bootstrap was not started and nothing was written. Fix the cause and re-run.";
+            }
+        }
+
         record AddressCollectionFailed(String sourceName, String detail) implements BootstrapError {
             @Override
             public String message() {
@@ -573,10 +799,40 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
-        record QuorumNotEstablished(int healthy, int required) implements BootstrapError {
+        /// #1543 — a node id is launched ONCE. Raised when a start would be a second launch under the same
+        /// id: the host already holds an `aether-node`, or `--resume` found a node an earlier run started
+        /// that is not healthy. Membership refuses a same-NodeId restart (terminal removal), so there is
+        /// nothing to retry — the only ways forward are to destroy the cluster or replace the node.
+        record NodeAlreadyStarted(String nodeId, String detail) implements BootstrapError {
             @Override
             public String message() {
-                return "Quorum not established: " + healthy + "/" + required + " nodes healthy";
+                return "Node '" + nodeId
+                     + "' was already started and will not be started again: " + detail
+                     + ". A node id is launched once and a same-id restart is refused by membership;"
+                     + " destroy the cluster ('aether cluster destroy') or replace the node under a fresh id.";
+            }
+        }
+
+        /// `observed` is the member count last READ from the cluster's own `/api/v1/health` view, or
+        /// [#UNOBSERVED] when that view was never readable at all — a 401, an unreachable endpoint, or
+        /// an unparseable body.
+        ///
+        /// The distinction is the point. This error used to be constructed with a hardcoded `0`, so a
+        /// cluster that had formed perfectly and merely could not be QUERIED reported
+        /// "0/2 nodes healthy" — a count nobody had measured, indistinguishable from genuine total
+        /// failure. Measured 2026-09-10 on a live 3-node cluster whose own log read
+        /// `Quorum established — consensus available` at the moment this error was raised.
+        record QuorumNotEstablished(int observed, int required) implements BootstrapError {
+            /// The cluster view was never successfully read, so no count exists to report.
+            public static final int UNOBSERVED = -1;
+
+            @Override
+            public String message() {
+                return observed == UNOBSERVED
+                       ? "Quorum not established: the cluster health view at /api/v1/health was never"
+                        + " readable (unreachable, unauthorized, or unparseable), so the number of"
+                        + " healthy nodes is UNKNOWN — not zero. Required: " + required
+                       : "Quorum not established: " + observed + "/" + required + " nodes healthy";
             }
         }
 
@@ -590,10 +846,29 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
+        /// #994 — `cleanupDetail` now carries `BootstrapCleanup.CleanupError`'s enumeration (type + id per
+        /// resource), so this message names what was left behind rather than saying "orphan resources may
+        /// remain" and leaving the operator to reconstruct the list from `hcloud server list`.
         record BootstrapFailedWithOrphans(Cause originalCause, String cleanupDetail) implements BootstrapError {
             @Override
             public String message() {
-                return originalCause.message() + " — cleanup failed, orphan resources may remain: " + cleanupDetail;
+                return originalCause.message() + " — cleanup failed, resources were left behind: " + cleanupDetail;
+            }
+        }
+
+        /// #994 verification finding SF-1 — the failure-path cleanup could not run because the state file
+        /// is present but unparseable. Distinct from "no state file", which is a success: there, nothing
+        /// was created that needs reaping. Here, resources may exist and their ids are in bytes nothing can
+        /// read, so this must surface as a cleanup FAILURE and reach the operator through
+        /// [BootstrapFailedWithOrphans] rather than letting a torn file read as a clean teardown.
+        record LedgerUnreadable(ClusterName clusterName, Cause origin) implements BootstrapError, Cause.Wrapped {
+            @Override
+            public String message() {
+                return "the bootstrap state file for cluster '" + clusterName
+                     + "' could not be read (" + origin.message()
+                     + "), so cleanup could not name a single resource to reap — run"
+                     + " 'tools/cloud-reaper.sh --cluster " + clusterName
+                     + " --destroy' to finish teardown";
             }
         }
     }

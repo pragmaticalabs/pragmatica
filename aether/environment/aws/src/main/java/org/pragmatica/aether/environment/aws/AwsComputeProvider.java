@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.aws;
 
 import java.util.LinkedHashMap;
@@ -87,7 +86,9 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                       .flatMap(response -> tagAndMapFirstInstance(response, tags))
                                       .flatMap(info -> confirmRunning(info,
                                                                       ReadinessPolicy.cloudDefault()))
-                                      .mapError(AwsComputeProvider::toProvisionError);
+                                      .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                                          request.zone(),
+                                                                          cause));
     }
 
     @Override
@@ -105,12 +106,32 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
 
     @Override
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return tagFilter.entrySet()
-                        .stream()
-                        .findFirst()
-                        .map(entry -> describeByTag(entry.getKey(),
-                                                    entry.getValue()))
-                        .orElseGet(this::listInstances);
+        return translateKeys(tagFilter).entrySet()
+                            .stream()
+                            .findFirst()
+                            .map(entry -> describeByTag(entry.getKey(),
+                                                        entry.getValue()))
+                            .orElseGet(this::listInstances);
+    }
+
+    /// Provider-agnostic node-id key upper layers select by (`NodeLifecycleManager.NODE_ID_TAG`). This
+    /// provider STAMPS the hyphenated [#NODE_ID_TAG], so a lookup written as `Map.of("aether.node-id", id)`
+    /// must be rewritten here or it matches nothing and an existing instance reads as ABSENT — which the
+    /// auto-heal in-flight tracker would take as a deletion (#1049). Mirrors
+    /// `HetznerComputeProvider.translateKeys`.
+    static final String UPPER_LAYER_NODE_ID_TAG = "aether.node-id";
+
+    static Map<String, String> translateKeys(Map<String, String> tagFilter) {
+        if (!tagFilter.containsKey(UPPER_LAYER_NODE_ID_TAG)) {
+            return tagFilter;
+        }
+
+        var translated = new LinkedHashMap<>(tagFilter);
+        var value = translated.remove(UPPER_LAYER_NODE_ID_TAG);
+
+        translated.put(NODE_ID_TAG, value);
+
+        return translated;
     }
 
     @Override
@@ -118,11 +139,6 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         return client.describeInstancesById(instanceId.value())
                      .flatMap(response -> firstInstance(response, instanceId))
                      .mapError(AwsComputeProvider::toProvisionError);
-    }
-
-    @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.rebootInstances(List.of(id.value()));
     }
 
     @Override
@@ -568,7 +584,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                                 collectAddresses(instance),
                                 InstanceType.ON_DEMAND,
                                 tags,
-                                Option.option(tags.get(NODE_ID_TAG)));
+                                Option.option(tags.get(NODE_ID_TAG)),
+                                Option.option(instance.placement()).flatMap(placement -> Option.option(placement.availabilityZone())));
     }
 
     private static Promise<InstanceInfo> firstInstance(DescribeInstancesResponse response, InstanceId instanceId) {
@@ -587,13 +604,16 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
                        .toList();
     }
 
+    /// EC2's documented `InstanceStateName` values. Any value not listed here maps to
+    /// [InstanceStatus#UNKNOWN] (#1049): reading it as terminated drops an auto-heal replacement that may
+    /// still exist.
     static InstanceStatus mapStatus(String ec2Status) {
         return switch (ec2Status) {
             case "pending" -> InstanceStatus.PROVISIONING;
             case "running" -> InstanceStatus.RUNNING;
             case "stopping", "stopped" -> InstanceStatus.STOPPING;
             case "shutting-down", "terminated" -> InstanceStatus.TERMINATED;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 
@@ -625,12 +645,26 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     /// so the bootstrap/CTM zone rotation can advance (mirrors Hetzner's `resource_unavailable`
     /// handling); `SpotMaxPriceTooLow` is an operator config error → non-retryable
     /// [EnvironmentError.ProvisionFailed] with an actionable message.
+    /// No requested spec is available on this arity — it serves [#instanceStatus], a lookup on an
+    /// EXISTING instance. The `createFrom` path uses the three-argument form below so the failure
+    /// names the instance type and zone that were actually requested.
     private static EnvironmentError toProvisionError(Cause cause) {
+        return toProvisionError("", "", cause);
+    }
+
+    /// EC2 instance types are retired and their per-AZ availability varies, exactly as on Hetzner
+    /// (which is where the incident that motivated this was measured), so a rejection has to name
+    /// what was asked for — `InvalidParameterValue: Invalid instance type` does not.
+    private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
         return switch (cause) {
-            case AwsError.ApiError api when INSUFFICIENT_CAPACITY_CODE.equals(api.code()) -> EnvironmentError.capacityUnavailable("",
+            // #1111: the instance EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+            case EnvironmentError.ProvisionReadinessTimeout timeout -> timeout;
+            case AwsError.ApiError api when INSUFFICIENT_CAPACITY_CODE.equals(api.code()) -> EnvironmentError.capacityUnavailable(zone,
                                                                                                                                   new RuntimeException(api.message()));
-            case AwsError.ApiError api when SPOT_MAX_PRICE_TOO_LOW_CODE.equals(api.code()) -> EnvironmentError.provisionFailed(new RuntimeException("Spot max price is below the current market rate; raise max_price or omit it to accept the on-demand-capped rate. " + api.message()));
-            default -> EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+            case AwsError.ApiError api when SPOT_MAX_PRICE_TOO_LOW_CODE.equals(api.code()) -> EnvironmentError.provisionFailed(instanceType,
+                                                                                                                               zone,
+                                                                                                                               new RuntimeException("Spot max price is below the current market rate; raise max_price or omit it to accept the on-demand-capped rate. " + api.message()));
+            default -> EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
         };
     }
 

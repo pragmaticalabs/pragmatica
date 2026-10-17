@@ -5,7 +5,7 @@
     <parent>
         <artifactId>integrations</artifactId>
         <groupId>org.pragmatica-lite</groupId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -19,6 +19,11 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
+        </dependency>
+        <!-- Logging: OperatorWarnings logs every warning before emitting it (#1574) -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
         </dependency>
 
         <!-- Testing -->
@@ -43,4 +48,16 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

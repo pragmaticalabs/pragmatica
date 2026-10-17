@@ -23,8 +23,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.StreamConfig.streamConfig;
 
 
-/// Owner-routing publish decision for {@link StreamWriteRouter}: a node that materializes the partition
-/// appends locally; a metadata-only node (#265) write-forwards to the HRW owner instead of failing
+/// Owner-routing publish decision for {@link StreamWriteRouter}: the owner appends locally; any other node
+/// — metadata-only (#265) or a replica holding a ring (#1230) — write-forwards to the HRW owner instead of failing
 /// PARTITION_NOT_LOCAL. Mirrors the read-side routing coverage.
 class StreamWriteRouterTest {
     private static final NodeId SELF = new NodeId("self-node");
@@ -44,12 +44,15 @@ class StreamWriteRouterTest {
         return StreamWriteRouter.streamWriteRouter(partitionManager, Option.some(forwardClient), SELF, (_, _) -> owner);
     }
 
+    /// #1230: this test previously resolved a REMOTE owner and still expected a local append because the
+    /// ring was materialized here — it encoded the defect (ring presence authorizing a write). A replica
+    /// ring must forward; see `OwnerAuthorizedWritesTest`. The local arm is now reached by being the owner.
     @Test
-    void publish_appendsLocally_whenSelfMaterializesPartition() {
+    void publish_appendsLocally_whenSelfIsOwner() {
         partitionManager.createStream(streamConfig(STREAM));
         var forwardClient = new RecordingForwardClient();
 
-        router(forwardClient, Option.some(OWNER)).publish(STREAM, PARTITION, "e0".getBytes(), 1L).await().onFailureRun(Assertions::fail).onSuccess(offset -> assertThat(offset).isEqualTo(0L));
+        router(forwardClient, Option.some(SELF)).publish(STREAM, PARTITION, "e0".getBytes(), 1L).await().onFailureRun(Assertions::fail).onSuccess(offset -> assertThat(offset).isEqualTo(0L));
         assertThat(forwardClient.publishCalls).isZero();
         partitionManager.readLocal(STREAM, PARTITION, 0L, 10).onFailureRun(Assertions::fail).onSuccess(events -> assertThat(events).hasSize(1));
     }

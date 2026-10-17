@@ -5,6 +5,8 @@
 package org.pragmatica.aether.api;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 import java.util.Map;
 
 import org.pragmatica.config.DynamicConfigurationProvider;
@@ -34,6 +36,7 @@ public class DynamicConfigManager {
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final DynamicConfigurationProvider provider;
     private final NodeId self;
+    private final List<Consumer<String>> appliedListeners = new CopyOnWriteArrayList<>();
 
     private DynamicConfigManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                  KVStore<AetherKey, AetherValue> kvStore,
@@ -88,6 +91,7 @@ public class DynamicConfigManager {
             log.debug("Config updated from cluster: {}={}",
                       configValue.key(),
                       redactIfSensitive(configValue.key(), configValue.value()));
+            notifyApplied(configValue.key());
         }
     }
 
@@ -99,6 +103,21 @@ public class DynamicConfigManager {
         if (shouldApply(configKey)) {
             provider.remove(configKey.key());
             log.debug("Config removed from cluster: {}", configKey.key());
+            notifyApplied(configKey.key());
+        }
+    }
+
+    /// #381 — called with the dotted config key AFTER the overlay provider has applied a committed
+    /// put or remove that this node honours, so a listener reading through the provider sees the new
+    /// value. The node registers `NodeDeploymentManager::onConfigChanged` here; the initial KV load at
+    /// construction does not notify (no slice is registered before activation).
+    public void onApplied(Consumer<String> listener) {
+        appliedListeners.add(listener);
+    }
+
+    private void notifyApplied(String key) {
+        for (var listener : appliedListeners) {
+            listener.accept(key);
         }
     }
 

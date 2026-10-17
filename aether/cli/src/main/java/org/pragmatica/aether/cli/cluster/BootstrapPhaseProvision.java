@@ -1,19 +1,21 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -22,7 +24,6 @@ import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceType;
-import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
@@ -30,7 +31,10 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.aether.environment.docker.DockerComputeProvider;
+import org.pragmatica.aether.environment.docker.DockerNetwork;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -51,11 +55,22 @@ sealed interface BootstrapPhaseProvision {
         var allNodes = new ArrayList<ProvisionedNode>();
         var clusterName = ctx.config().cluster().name();
         var mgmtPort = ctx.config().operations().ports().management();
+        var dockerCores = DockerCores.mint(ctx.config().sources(),
+                                           clusterName);
+        var networks = ensureDockerNetwork(ctx);
+
+        if (networks.isFailure()) {
+            return networks.map(_ -> ctx);
+        }
+
+        var createdNetworks = networks.or(List.of());
 
         for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = sourceNameOrDefault(entry.getKey());
             var source = entry.getValue();
-            var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName);
+
+            persistCleanupHandle(ctx, sourceName, source);
+            var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName, dockerCores);
 
             if (result.isFailure()) {
                 return result.map(_ -> ctx);
@@ -64,13 +79,72 @@ sealed interface BootstrapPhaseProvision {
             var _ = result.onSuccess(allNodes::addAll);
         }
 
-        var updatedState = buildUpdatedState(ctx, allNodes);
+        var updatedState = buildUpdatedState(ctx, allNodes, createdNetworks);
 
         return success(ctx.withNodes(List.copyOf(allNodes)).withState(updatedState));
     }
 
-    private static BootstrapState buildUpdatedState(BootstrapContext ctx, List<ProvisionedNode> allNodes) {
+    /// A docker source needs the network its containers join (#2131): `docker run --network <name>` fails with "network not found" when nothing created
+    /// it. Reuse it when present; create it when absent, and RECORD it (persisted now, and in the state the phase returns) only when bootstrap created
+    /// it, so destroy can later remove exactly the networks it made and never one the user provided. Nothing happens without a docker source.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<List<CreatedResource>> ensureDockerNetwork(BootstrapContext ctx) {
+        var hasDocker = ctx.config().sources().values().stream().anyMatch(source -> source.type() == SourceType.DOCKER);
+
+        if (!hasDocker) {
+            return success(List.of());
+        }
+
+        return ProviderResolver.resolveDockerComputeWithoutBackup(ctx.state().clusterName()).flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                                                                                ? docker.ensureNetwork(ctx.state()
+                                                                                                                                          .clusterName()
+                                                                                                                                          .value())
+                                                                                                                        .await()
+                                                                                                                        .map(ensured -> recordCreatedNetwork(ctx,
+                                                                                                                                                             docker,
+                                                                                                                                                             ensured))
+                                                                                                                : success(List.<CreatedResource> of()));
+    }
+
+    @Contract
+    private static List<CreatedResource> recordCreatedNetwork(BootstrapContext ctx,
+                                                              DockerComputeProvider docker,
+                                                              DockerNetwork.Ensured ensured) {
+        var name = docker.config().networkName();
+
+        if (!ensured.owned()) {
+            System.out.printf("  Reusing docker network %s (not created by this cluster; it will not be removed)%n",
+                              name);
+
+            return List.of();
+        }
+
+        var network = CreatedResource.DockerNetwork.dockerNetwork(name);
+
+        System.out.printf(ensured == DockerNetwork.Ensured.CREATED
+                          ? "  Created docker network %s%n"
+                          : "  Reusing docker network %s (left by an earlier run of this cluster; ownership kept)%n",
+                          name);
+        var _ = BootstrapStatePersistence.appendResource(ctx.state().clusterName(),
+                                                         network)
+                                         .onFailure(cause -> System.err.printf("  WARN: docker network %s was created but NOT recorded in the cleanup ledger — %s."
+                                                                              + " Remove it with 'docker network rm %s' after destroy.%n",
+                                                                               name,
+                                                                               cause.message(),
+                                                                               name));
+
+        return List.of(network);
+    }
+
+    private static BootstrapState buildUpdatedState(BootstrapContext ctx,
+                                                    List<ProvisionedNode> allNodes,
+                                                    List<CreatedResource> createdNetworks) {
         var state = ctx.state().withProvisionedNodeIds(allNodes.stream().map(ProvisionedNode::nodeId).toList());
+
+        for (var network : createdNetworks) {
+            state = state.withResource(network);
+        }
+
         var rawToml = ctx.rawTomlContent();
 
         for (var entry : ctx.config().sources().entrySet()) {
@@ -79,12 +153,13 @@ sealed interface BootstrapPhaseProvision {
             var providerName = resolveProviderName(source);
 
             for (var node : allNodes) {
-                if (node.nodeId().startsWith(sourceName.value() + "-")) {
+                if (belongsTo(node.nodeId(), sourceName)) {
                     state = state.withResource(CreatedResource.ProvisionedVm.provisionedVm(providerName,
                                                                                            node.serverId(),
                                                                                            sourceName.value(),
-                                                                                           extractRole(node.nodeId(),
-                                                                                                       sourceName.value())));
+                                                                                           parseNodeId(node.nodeId()).map(parsed -> parsed.role()
+                                                                                                                                          .value())
+                                                                                                      .or("")));
                 }
             }
 
@@ -92,6 +167,134 @@ sealed interface BootstrapPhaseProvision {
         }
 
         return state;
+    }
+
+    /// #994 — the cleanup ledger must be able to NAME a paid VM the moment that VM exists, and the
+    /// credential that reaps it must already be resolvable when the first server is created. Both used
+    /// to be written only by [#buildUpdatedState], which runs ONLY after every source provisioned
+    /// successfully — so a failure part-way through PROVISION (observed 2026-09-11: a dedicated-core
+    /// quota refusal on the third of three servers) left the ledger holding the firewall and NO VMs.
+    /// Cleanup then had nothing to delete but the firewall, which the two surviving servers still held;
+    /// it retried `422 resource_in_use` six times, gave up, and never issued a single server delete.
+    ///
+    /// Records go to the PERSISTED state, not to the in-memory context: a failed phase returns a
+    /// `Result` failure, which carries no context, and
+    /// [ClusterBootstrapOrchestrator#cleanupOnFailure] re-loads the state FILE. The file is therefore
+    /// the only channel that survives the failure, which makes it the authority for created resources.
+    @Contract
+    private static void persistCleanupHandle(BootstrapContext ctx, SourceName sourceName, SourceProfile source) {
+        if (source.type() != SourceType.CLOUD) {
+            return;
+        }
+
+        persistCleanupHandle(ctx.state().clusterName(),
+                             ctx.rawTomlContent(),
+                             sourceName,
+                             source);
+    }
+
+    /// Takes the cluster name rather than the whole context so the persist is exercisable on its own:
+    /// the context carries nothing else this needs, and a seam that demands a full `BootstrapContext`
+    /// is a seam no test drives.
+    ///
+    /// #994 verification finding SF-1 — reads through [BootstrapStatePersistence#read] and CONSUMES the
+    /// save, because every step here used to fail silently. The real incident artifact recorded
+    /// `sources: []`, which is precisely this handle missing, and teardown without it cannot re-derive the
+    /// provisioning token at all. A silent no-op costs the operator that credential mapping with nothing
+    /// in the transcript to say so.
+    @Contract
+    static void persistCleanupHandle(ClusterName clusterName,
+                                     String rawToml,
+                                     SourceName sourceName,
+                                     SourceProfile source) {
+        var _ = BootstrapStatePersistence.read(clusterName)
+                                         .onFailure(cause -> warnHandleNotPersisted(clusterName,
+                                                                                    sourceName,
+                                                                                    "the persisted ledger is unreadable: " + cause.message()))
+                                         .or(Option.empty())
+                                         .onEmpty(() -> warnHandleNotPersisted(clusterName,
+                                                                               sourceName,
+                                                                               "no bootstrap state is persisted yet"))
+                                         .map(state -> withSourceHandle(state,
+                                                                        rawToml,
+                                                                        sourceName,
+                                                                        source,
+                                                                        resolveProviderName(source)))
+                                         .onPresent(state -> saveOrWarnHandle(state, clusterName, sourceName));
+    }
+
+    @Contract
+    private static void saveOrWarnHandle(BootstrapState state, ClusterName clusterName, SourceName sourceName) {
+        var _ = BootstrapStatePersistence.save(state).onFailure(cause -> warnHandleNotPersisted(clusterName,
+                                                                                                sourceName,
+                                                                                                "the ledger write failed: " + cause.message()));
+    }
+
+    @Contract
+    private static void warnHandleNotPersisted(ClusterName clusterName, SourceName sourceName, String reason) {
+        System.err.printf("  WARN: the cleanup handle for source '%s' was NOT persisted — %s.%n", sourceName, reason);
+        System.err.printf("  Teardown of cluster '%s' will have no credential mapping for this source and may fall"
+                         + " back to a raw provider env var naming a different account. Reap with"
+                         + " 'tools/cloud-reaper.sh --cluster %s --destroy' if bootstrap fails.%n",
+                          clusterName,
+                          clusterName);
+    }
+
+    /// #994 — appends the VM to the persisted cleanup ledger as soon as the provider reports it created,
+    /// so a refusal on a LATER node of the same role group still leaves every already-paid server
+    /// nameable by teardown. The role is passed in rather than parsed back out of the node id by
+    /// [#parseNodeId], because here it is known exactly.
+    ///
+    /// Duplicate-free on the success path: [#buildUpdatedState] rebuilds the resource list from the
+    /// pre-phase in-memory state and [ClusterBootstrapOrchestrator] saves THAT, replacing these
+    /// incremental records with an equal set rather than appending to them.
+    ///
+    /// #994 verification finding SF-1 — **every way this can fail to record is now printed WITH the server
+    /// id.** It was a silent no-op when the ledger was absent (which is what an unchecked pre-phase save
+    /// leaves behind), a silent no-op when the file was torn, and it discarded the save's `Result`. Each
+    /// of those drops a server that is already billing, and the recovery an operator needs is exactly the
+    /// id — so the id goes to stderr even though the ledger cannot hold it. It does NOT fail the
+    /// provisioning: the VM exists either way, aborting does not un-bill it, and a hard failure here would
+    /// turn a full disk into a dead bootstrap.
+    @Contract
+    static void recordProvisionedVm(ClusterName clusterName,
+                                    String providerName,
+                                    SourceName sourceName,
+                                    NodeRole role,
+                                    ProvisionedNode node) {
+        var _ = BootstrapStatePersistence.appendResource(clusterName,
+                                                         CreatedResource.ProvisionedVm.provisionedVm(providerName,
+                                                                                                     node.serverId(),
+                                                                                                     sourceName.value(),
+                                                                                                     role.value()))
+                                         .onFailure(cause -> warnVmNotRecorded(node,
+                                                                               clusterName,
+                                                                               cause.message()));
+    }
+
+    /// The id is the whole point of this message. With the ledger broken it is the only place the server
+    /// is named at all, so it has to be printed rather than logged at a level nobody reads — #994's cost
+    /// was two `ccx23` servers whose ids had to be reconstructed by hand from `hcloud server list`.
+    @Contract
+    private static void warnVmNotRecorded(ProvisionedNode node, ClusterName clusterName, String reason) {
+        System.err.printf("  WARN: VM %s (node %s) was NOT recorded in the cleanup ledger — %s.%n",
+                          node.serverId(),
+                          node.nodeId(),
+                          reason);
+        System.err.printf("  This server IS PAID and 'aether cluster destroy' will not find it. Remove it with"
+                         + " 'tools/cloud-reaper.sh --cluster %s --destroy', or directly by id %s.%n",
+                          clusterName,
+                          node.serverId());
+    }
+
+    /// #994 — Aspects: wraps a per-node provisioner so every node it creates is recorded BEFORE the
+    /// group's overall outcome is known, and records nothing for an attempt that failed. Composed in
+    /// [#provisionAndRecordRoleGroup], which is what production calls and what
+    /// `BootstrapPhaseProvisionLedgerTest` drives — so the line wiring this aspect to the recorder is
+    /// itself covered, not merely each half of it.
+    static ZoneProvisioner recordingProvisioner(ZoneProvisioner seam, Consumer<ProvisionedNode> recorder) {
+        return (nodeId, globalIndex, zone) -> seam.provisionInZone(nodeId, globalIndex, zone)
+                                                  .onSuccess(recorder);
     }
 
     static BootstrapState stampSourceHandle(BootstrapState state,
@@ -103,9 +306,24 @@ sealed interface BootstrapPhaseProvision {
             return state;
         }
 
-        var envVars = extractEnvVarNames(rawToml, sourceName.value());
+        warnOnUnmappedCredentials(sourceName, providerName, extractEnvVarNames(rawToml, sourceName.value()));
 
-        warnOnUnmappedCredentials(sourceName, providerName, envVars);
+        return withSourceHandle(state, rawToml, sourceName, source, providerName);
+    }
+
+    /// The handle stamp WITHOUT the unmapped-credential warning, so #994's pre-provision persist and the
+    /// success-path stamp can both write the handle while the operator still reads the warning exactly
+    /// once — from [#stampSourceHandle], which is the only caller that warns.
+    static BootstrapState withSourceHandle(BootstrapState state,
+                                           String rawToml,
+                                           SourceName sourceName,
+                                           SourceProfile source,
+                                           String providerName) {
+        if (source.type() != SourceType.CLOUD) {
+            return state;
+        }
+
+        var envVars = extractEnvVarNames(rawToml, sourceName.value());
         var handle = SourceCleanupHandle.sourceCleanupHandle(providerName, source.region(), envVars);
 
         return state.withSource(sourceName.value(), handle);
@@ -199,24 +417,77 @@ sealed interface BootstrapPhaseProvision {
                      .or(source.type().value());
     }
 
-    private static String extractRole(String nodeId, String sourceName) {
-        var suffix = nodeId.substring(sourceName.length() + 1);
-        var dashIndex = suffix.lastIndexOf('-');
+    /// The one parser of the node ids this phase mints (`<source>-<role>-<index>`, every branch:
+    /// cloud, SSH, forge, docker). Role and index are anchored at the END, so a source name that
+    /// itself contains dashes — or is a dash-prefix of another source (`eu` / `eu-1`) — cannot be
+    /// mis-attributed: `eu-1-core-0` parses to source `eu-1`, never to `eu` with role `1-core`.
+    /// Every consumer that used to test `startsWith(source + "-")` goes through this instead
+    /// (#296 review SF-1): [#belongsTo], [BootstrapPhaseDeploy] and [BootstrapPhasePost].
+    Pattern NODE_ID = Pattern.compile("^(.+)-(core|worker|spot)-(\\d+)$");
 
-        return dashIndex > 0
-               ? suffix.substring(0, dashIndex)
-               : suffix;
+    record ParsedNodeId(String source, NodeRole role, int index) {}
+
+    static Option<ParsedNodeId> parseNodeId(String nodeId) {
+        var matcher = NODE_ID.matcher(nodeId);
+
+        if (!matcher.matches()) {
+            return Option.empty();
+        }
+
+        return NodeRole.nodeRole(matcher.group(2))
+                       .option()
+                       .map(role -> new ParsedNodeId(matcher.group(1),
+                                                     role,
+                                                     Integer.parseInt(matcher.group(3))));
+    }
+
+    /// Exact source attribution: the id's source segment equals `sourceName`, not merely starts with it.
+    static boolean belongsTo(String nodeId, SourceName sourceName) {
+        return parseNodeId(nodeId).map(parsed -> parsed.source()
+                                                       .equals(sourceName.value()))
+                          .or(false);
+    }
+
+    /// #296 — the role a node id encodes, for the source the deploy phase is working on. A failure
+    /// is an invariant violation of this CLI's own minting, not a config error: it is refused rather
+    /// than defaulted to `core`, because a silent `core` is exactly the defect this closes. The
+    /// message names the source the id was parsed against, so a mis-attributed node (a source that
+    /// dash-prefixes another) is diagnosable rather than blamed on minting.
+    static Result<NodeRole> nodeRole(String nodeId, SourceName sourceName) {
+        return parseNodeId(nodeId).filter(parsed -> parsed.source()
+                                                          .equals(sourceName.value()))
+                          .map(ParsedNodeId::role)
+                          .toResult(new BootstrapError.DeploymentFailed(nodeId,
+                                                                        "node id does not encode a role for source '" + sourceName.value()
+                                                                       + "' (expected " + sourceName.value()
+                                                                       + "-<core|worker|spot>-<index>)"));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
-                                                                 SourceName sourceName,
-                                                                 SourceProfile source,
-                                                                 int managementPort,
-                                                                 ClusterName clusterName) {
+    static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
+                                                         SourceName sourceName,
+                                                         SourceProfile source,
+                                                         int managementPort,
+                                                         ClusterName clusterName) {
+        return provisionSource(ctx,
+                               sourceName,
+                               source,
+                               managementPort,
+                               clusterName,
+                               DockerCores.mint(ctx.config().sources(),
+                                                clusterName));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
+                                                         SourceName sourceName,
+                                                         SourceProfile source,
+                                                         int managementPort,
+                                                         ClusterName clusterName,
+                                                         DockerCores dockerCores) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
-            case DOCKER -> provisionDockerSource(sourceName, source, clusterName);
+            case DOCKER -> provisionDockerSource(ctx, sourceName, source, clusterName, dockerCores);
             case SSH -> provisionSshSource(sourceName, source);
             case FORGE -> provisionForgeSource(sourceName, source, managementPort);
         };
@@ -228,7 +499,7 @@ sealed interface BootstrapPhaseProvision {
                                                                       SourceProfile source,
                                                                       ClusterName clusterName) {
         var providerName = resolveProviderName(source);
-        var sshKeyIds = ctx.sshKeyIdsFor(providerName);
+        var sshKeyIds = ctx.sshKeyIdsFor(sourceName.value());
         // Ids from BootstrapPhaseFirewall, applied AT create so the node is never up-and-unfirewalled
         // (§6.2 — a Hetzner server with no firewall association accepts all inbound traffic).
         var firewallIds = ctx.firewallIdsFor(sourceName);
@@ -240,28 +511,75 @@ sealed interface BootstrapPhaseProvision {
                                                                                                                                                   clusterName));
     }
 
+    /// #1543 F2: each role's containers boot the image its runtime profile pins at the bootstrap version, so the cluster starts on the
+    /// image an upgrade later replaces; a role pinning none boots the provider's default image, as before.
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
+    private static Result<List<ProvisionedNode>> provisionDockerSource(BootstrapContext ctx,
+                                                                       SourceName sourceName,
                                                                        SourceProfile source,
-                                                                       ClusterName clusterName) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionWithCompute(compute,
-                                                                                               sourceName,
-                                                                                               source,
-                                                                                               clusterName));
+                                                                       ClusterName clusterName,
+                                                                       DockerCores dockerCores) {
+        return provisionWithCompute(role -> ProviderResolver.resolveDockerCompute(source,
+                                                                                  NodeUserDataRenderer.pinnedImageFor(ctx.config(),
+                                                                                                                      source,
+                                                                                                                      role),
+                                                                                  ctx.clusterSecret()),
+                                    sourceName,
+                                    source,
+                                    clusterName,
+                                    dockerCores);
     }
 
+    /// Package-visible so a test can drive the real call site with a recording provider (#2089).
+    ///
+    /// A Docker node boots from its `PEERS` list and aborts when its own id is not in it. The core ids are therefore minted HERE,
+    /// before any container exists, and every node of the source is created with the same full `id:host:port` list of them: the
+    /// provider can only echo `ctx.peers()`, and nothing pushes peers afterwards for Docker. A container's host is its name, which
+    /// is its node id (same Docker network).
+    static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                              SourceName sourceName,
+                                                              SourceProfile source,
+                                                              ClusterName clusterName) {
+        return provisionWithCompute(compute,
+                                    sourceName,
+                                    source,
+                                    clusterName,
+                                    DockerCores.mint(Map.of(sourceName.value(), source),
+                                                     clusterName));
+    }
+
+    static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                              SourceName sourceName,
+                                                              SourceProfile source,
+                                                              ClusterName clusterName,
+                                                              DockerCores dockerCores) {
+        return provisionWithCompute(_ -> Result.success(compute), sourceName, source, clusterName, dockerCores);
+    }
+
+    /// The compute is chosen per role (#1543 F2: each role's profile may pin its own image).
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
-    private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+    private static Result<List<ProvisionedNode>> provisionWithCompute(Fn1<Result<ComputeProvider>, NodeRole> computeFor,
                                                                       SourceName sourceName,
                                                                       SourceProfile source,
-                                                                      ClusterName clusterName) {
+                                                                      ClusterName clusterName,
+                                                                      DockerCores dockerCores) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
+        var coreIds = dockerCores.idsFor(sourceName.value());
+        var peers = dockerCores.peers();
 
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
             var result = roleTable.flatMap(rt -> rt.count())
-                                  .map(count -> provisionRoleGroup(compute, sourceName, role, count, source, clusterName));
+                                  .map(count -> computeFor.apply(role)
+                                                          .flatMap(compute -> provisionRoleGroup(compute,
+                                                                                                 sourceName,
+                                                                                                 role,
+                                                                                                 count,
+                                                                                                 source,
+                                                                                                 clusterName,
+                                                                                                 coreIds,
+                                                                                                 peers)));
 
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();
@@ -319,50 +637,127 @@ sealed interface BootstrapPhaseProvision {
         return success(List.copyOf(allNodes));
     }
 
+    /// A docker node is reached from the operator's host through its published management port, not by container name (#2089): the
+    /// node's address becomes `127.0.0.1` plus its own mapped port, which `docker port` reports for the container.
+    static Result<ProvisionedNode> withPublishedManagementPort(ProvisionedNode node) {
+        return DockerHostPorts.managementPort(node.serverId()).map(port -> ProvisionedNode.provisionedNode(node.nodeId(),
+                                                                                                           node.serverId(),
+                                                                                                           DOCKER_HOST_ADDRESS,
+                                                                                                           Option.some(port)));
+    }
+
+    static final String DOCKER_HOST_ADDRESS = "127.0.0.1";
+
     @SuppressWarnings("JBCT-EX-01")
     private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
                                                                     SourceName sourceName,
                                                                     NodeRole role,
                                                                     int count,
                                                                     SourceProfile source,
-                                                                    ClusterName clusterName) {
+                                                                    ClusterName clusterName,
+                                                                    List<String> coreIds,
+                                                                    String peers) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         var instanceType = source.roles().containsKey(role)
                            ? source.roles().get(role).instanceType().or("default")
                            : "default";
         var zone = source.zone().or("default");
-        var labels = Map.of("aether-cluster",
-                            clusterName.value(),
-                            "aether-source",
-                            sourceName.value(),
-                            "aether-role",
-                            role.value());
-        var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, labels);
+        var nodes = new ArrayList<ProvisionedNode>();
 
-        return CloudProviderSupport.provisionVia(compute, group).await();
+        for (var i = 0; i < count; i++) {
+            var minted = Option.some(role == NodeRole.CORE
+                                     ? coreIds.get(i)
+                                     : ProvisionContext.mintNodeId(Option.some(clusterName)));
+            var context = ProvisionContext.provisionContext(Option.some(clusterName),
+                                                            role.value(),
+                                                            sourceName,
+                                                            minted,
+                                                            Option.some(peers),
+                                                            ProvisionContext.DEFAULT_CORE_MAX,
+                                                            ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
+                                                            Map.of());
+            var provisioned = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                                          instanceType,
+                                                          role.value(),
+                                                          context)
+                                           .map(spec -> applyZone(spec, zone))
+                                           .flatMap(spec -> CloudProviderSupport.provisionOne(compute,
+                                                                                              sourceName.value()
+                                                                                             + "-" + role.value()
+                                                                                             + "-" + nodes.size(),
+                                                                                              spec)
+                                                                                .await())
+                                           .flatMap(BootstrapPhaseProvision::withPublishedManagementPort);
+
+            if (provisioned.isFailure()) {
+                return provisioned.map(_ -> List.<ProvisionedNode> of());
+            }
+
+            var _ = provisioned.onSuccess(nodes::add);
+        }
+
+        return success(List.copyOf(nodes));
     }
 
+    /// #994 verification finding SF-2 — package-visible so a test can drive **the real call site**, not
+    /// merely the composition it calls. The restructure into [#provisionAndRecordRoleGroup] closed the
+    /// original gap one level down and opened it again here: with only that function pinned, replacing the
+    /// call below with a direct [#rotateZonesForRoleGroup] — i.e. deleting the entire recording behaviour —
+    /// left all 724 `aether/cli` tests green (measured, probe V1). #994 **was** an unwired mechanism:
+    /// `buildUpdatedState` existed and worked and simply never ran on the failure path. A regression that
+    /// re-unwires recording is the same defect class, so the wiring itself needs a pin rather than an
+    /// argument that the delegation "carries no logic".
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<List<ProvisionedNode>> provisionCloudRoleGroup(ComputeProvider compute,
-                                                                         BootstrapContext ctx,
-                                                                         SourceName sourceName,
-                                                                         NodeRole role,
-                                                                         int count,
-                                                                         SourceProfile source,
-                                                                         ClusterName clusterName,
-                                                                         int nodeIndexBase) {
+    static Result<List<ProvisionedNode>> provisionCloudRoleGroup(ComputeProvider compute,
+                                                                 BootstrapContext ctx,
+                                                                 SourceName sourceName,
+                                                                 NodeRole role,
+                                                                 int count,
+                                                                 SourceProfile source,
+                                                                 ClusterName clusterName,
+                                                                 int nodeIndexBase) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
-        ZoneProvisioner seam = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
-                                                                                 ctx,
-                                                                                 sourceName,
-                                                                                 source,
-                                                                                 role,
-                                                                                 clusterName,
-                                                                                 nodeId,
-                                                                                 globalIndex,
-                                                                                 zone);
+        ZoneProvisioner provisionOne = (nodeId, globalIndex, zone) -> provisionOneInZone(compute,
+                                                                                         ctx,
+                                                                                         sourceName,
+                                                                                         source,
+                                                                                         role,
+                                                                                         clusterName,
+                                                                                         nodeId,
+                                                                                         globalIndex,
+                                                                                         zone);
 
-        return rotateZonesForRoleGroup(sourceName, role, count, nodeIndexBase, source.effectiveZones(), seam);
+        return provisionAndRecordRoleGroup(ctx.state().clusterName(),
+                                           resolveProviderName(source),
+                                           sourceName,
+                                           role,
+                                           count,
+                                           nodeIndexBase,
+                                           source.effectiveZones(),
+                                           provisionOne);
+    }
+
+    /// #994 — the whole composition that must hold for a mid-group refusal to be survivable: zone rotation
+    /// over `count` nodes, each attempt wrapped by [#recordingProvisioner] so a created VM reaches the
+    /// persisted ledger before the group's outcome is known.
+    ///
+    /// It is one package-visible function rather than three lines inside [#provisionCloudRoleGroup] because
+    /// of what that cost: with the composition assembled inline, a test could exercise the aspect and the
+    /// recorder separately while the LINE THAT WIRES THEM TOGETHER stayed uncovered — measured, not assumed,
+    /// by deleting the wrapper at the old call site and watching all 724 `aether/cli` tests pass. Driving
+    /// this function instead leaves only an argument-passing delegation untested.
+    static Result<List<ProvisionedNode>> provisionAndRecordRoleGroup(ClusterName clusterName,
+                                                                     String providerName,
+                                                                     SourceName sourceName,
+                                                                     NodeRole role,
+                                                                     int count,
+                                                                     int nodeIndexBase,
+                                                                     List<String> zones,
+                                                                     ZoneProvisioner provisionOne) {
+        var seam = recordingProvisioner(provisionOne,
+                                        node -> recordProvisionedVm(clusterName, providerName, sourceName, role, node));
+
+        return rotateZonesForRoleGroup(sourceName, role, count, nodeIndexBase, zones, seam);
     }
 
     /// Provisions one node into a SPECIFIC zone: builds the spec without placement, applies
@@ -544,7 +939,8 @@ sealed interface BootstrapPhaseProvision {
                                        clusterName,
                                        composedConfig,
                                        ctx.sshPublicKeys(),
-                                       List.of());
+                                       List.of(),
+                                       BootstrapPhaseDeploy.discoveryAssembly(ctx.config()));
     }
 
     /// Applies a single candidate zone to a built spec as a placement hint. An empty or

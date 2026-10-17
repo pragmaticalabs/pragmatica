@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.function.Function;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
@@ -12,6 +13,9 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import org.pragmatica.consensus.rabia.VoterConfiguration;
+import org.pragmatica.consensus.rabia.ClusterConfig;
+import org.pragmatica.consensus.rabia.ReconfigurationError;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
@@ -31,6 +35,8 @@ import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
 import org.pragmatica.consensus.net.NetworkMessage.KeepAlive;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
@@ -40,6 +46,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionEstablished;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionFailed;
 import org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkServiceMessage.OfflineFramesExpired;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
@@ -49,6 +56,10 @@ import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.RoundRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRejected;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.ReconfigurationRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
@@ -142,6 +153,80 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /// implementations without a Rabia engine.
     @Contract
     default void onStateRestored(Runnable listener) {}
+
+    default Result<Unit> configurePassiveClient() {
+        return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
+    }
+
+    default org.pragmatica.lang.Unit authorizePassiveClient() {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    default boolean isPassiveClientReady() {
+        return false;
+    }
+
+    default Result<Unit> installPassiveCoreDirectory(List<NodeId> members) {
+        return ReconfigurationError.NOT_PASSIVE_CLIENT.result();
+    }
+
+    default java.util.Set<NodeId> verifiedVoterHistoryIds() {
+        return java.util.Set.of();
+    }
+
+    default Result<Unit> initializeVoters(VoterConfiguration configuration) {
+        return ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.result();
+    }
+
+    /// Genesis wait-and-retry: withdraw the provisional roster until [#initializeVoters] supplies the
+    /// complete one. Default refusal for implementations without a Rabia engine.
+    default Result<Unit> deferGenesis() {
+        return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
+    }
+
+    default boolean isGenesisPending() {
+        return false;
+    }
+
+    /// Genesis by view agreement: defer genesis and run agreement rounds over the cores `discovered`
+    /// reports, or over `fixedView` (`cluster.genesis_voters`) when set. Default refusal for
+    /// implementations without a Rabia engine.
+    default Result<Unit> deferGenesis(Supplier<Set<NodeId>> discovered,
+                                      int configuredCount,
+                                      Option<ClusterConfig> fixedView,
+                                      Set<NodeId> configuredCores) {
+        return ReconfigurationError.BOOTSTRAP_ALREADY_STARTED.result();
+    }
+
+    default Option<VoterConfiguration> retirementSafeVoters() {
+        return Option.none();
+    }
+
+    default Option<VoterConfiguration> genesisVoters() {
+        return Option.none();
+    }
+
+    default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+        return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
+    }
+
+    default Option<VoterConfiguration> voterConfiguration() {
+        return Option.none();
+    }
+
+    default org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #1533 — install the check every batch this node submits must pass before entering consensus. Default
+    /// no-op for implementations without a Rabia engine.
+    default Unit installSubmitGuard(Function<List<C>, Result<Unit>> guard) {
+        return Unit.unit();
+    }
+
+    default Promise<Unit> reconfigure(ClusterConfig configuration) {
+        return ReconfigurationError.AUTHORITY_PERSISTENCE_UNSUPPORTED.promise();
+    }
 
     /// Get the route entries for RabiaNode's internal components.
     /// These should be combined with other entries when building the final router.
@@ -432,6 +517,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                           persistence,
                                           RabiaEngine.DEFAULT_PHASE_STALL_CHECK,
                                           consensusBridge);
+
+        network.setProposalRelayMembership(id -> consensus.voterConfiguration()
+                                                          .map(voters -> voters.contains(id))
+                                                          .or(false));
         // Wire the dedicated quorum-presence channel: TopologyObserver delivers the quorum
         // established/lost ClusterStateNotification edge to RabiaEngine ONLY, via this private
         // single-subscriber router (NOT the shared bus). Built here because `consensus` only
@@ -473,6 +562,17 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             leaderManager = LeaderManager.leaderManager(config.topology().self(),
                                                         delegateRouter);
         }
+
+        consensus.onVoterConfiguration(leaderManager::installVoterConfiguration);
+        // #1803: a node that joined a running cluster waits for its KV state to catch up before electing, so it
+        // cannot depose a live leader it has not yet read. "Joined" means it adopted an already-formed electorate
+        // (a genesis latecomer counts); a node that forms genesis itself or restarts from its own state does not.
+        leaderManager.installKvSyncProgress(() -> consensus.joinedFormedElectorate() && consensus.isPendingCatchUp());
+        // #1748: a follower that loses its leader asks the electorate before electing; consensus mode only, since
+        // local election has no network to ask over.
+        if (useConsensusLeaderElection) {
+            leaderManager.enableLeaderPreVote();
+        }
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class).route(route(SetClusterSize.class,
                                                                                                  topologyManager::handleSetClusterSize));
@@ -482,6 +582,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                                     topologyManager::handleDiscoveredNodes),
                                                                               route(Hello.class,
                                                                                     _ -> {}),
+
+        // HelloRefused answers a refused handshake on the CONTROL stream and is consumed by the
+        // dialer's Hello handler, never routed; the route satisfies sealed-hierarchy completeness.
+        route(NetworkMessage.HelloRefused.class,
+              _ -> {}),
 
         // Transport-internal liveness beacon (Wave 5): swallowed by the
         // QuicClusterNetwork inbound funnel BEFORE routing (it only refreshes
@@ -497,7 +602,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                                                                    syncHoldRegistry,
                                                                                                                    syncHoldConfig)),
                                                                               route(KVSyncResponse.class,
-                                                                                    _ -> onSyncResponseReceived.run()));
+                                                                                    _ -> onSyncResponseReceived.run()),
+                                                                              route(LeaderPreVoteRequest.class,
+                                                                                    leaderManager::leaderPreVoteRequest),
+                                                                              route(LeaderPreVoteResponse.class,
+                                                                                    leaderManager::leaderPreVoteResponse));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class).route(route(ConnectedNodesList.class,
                                                                                                topologyManager::reconcile),
                                                                                          route(ConnectNode.class,
@@ -512,6 +621,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // (AetherNode.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
         // The router routes are retained only to satisfy sealed-hierarchy coverage.
         route(ConnectionFailed.class,
+              _ -> {}),
+
+        // #1996: a dropped-frame notification is an operator event, delivered by the node's own route to its event
+        // aggregator; here the route only satisfies sealed-hierarchy coverage.
+        route(OfflineFramesExpired.class,
               _ -> {}),
                                                                                          route(ConnectionEstablished.class,
                                                                                                _ -> {}),
@@ -546,7 +660,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                      route(Decision.class, consensus::processDecision),
                                                                      route(SyncResponse.class,
                                                                            (SyncResponse r) -> consensus.processSyncResponse(r)));
-        var asyncRoutes = SealedBuilder.from(Asynchronous.class).route(route(SyncRequest.class,
+        var asyncRoutes = SealedBuilder.from(Asynchronous.class).route(route(SyncRejected.class,
+                                                                             consensus::handleSyncRejected),
+                                                                       route(RoundRequest.class,
+                                                                             consensus::handleRoundRequest),
+                                                                       route(ReconfigurationRequest.class,
+                                                                             consensus::reconfigurationRequest),
+                                                                       route(GenesisAnnouncement.class,
+                                                                             consensus::genesisAnnouncement),
+                                                                       route(SyncRequest.class,
                                                                              consensus::handleSyncRequest),
                                                                        route(NewBatch.class,
                                                                              (NewBatch b) -> consensus.handleNewBatch(b)));
@@ -642,8 +764,95 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             }
 
             @Override
+            public Result<Unit> configurePassiveClient() {
+                return consensus().configurePassiveClient();
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit authorizePassiveClient() {
+                consensus().authorizePassiveClient();
+
+                return org.pragmatica.lang.Unit.unit();
+            }
+
+            @Override
+            public boolean isPassiveClientReady() {
+                return consensus().isPassiveClientReady();
+            }
+
+            @Override
+            public Result<Unit> installPassiveCoreDirectory(List<NodeId> members) {
+                return consensus().installPassiveCoreDirectory(members, leaderManager()::installPassiveCoreDirectory);
+            }
+
+            @Override
+            public java.util.Set<NodeId> verifiedVoterHistoryIds() {
+                return consensus().verifiedVoterHistoryIds();
+            }
+
+            @Override
+            public Result<Unit> initializeVoters(VoterConfiguration configuration) {
+                return consensus().initializeVoters(configuration);
+            }
+
+            @Override
+            public Result<Unit> deferGenesis() {
+                return consensus().deferGenesis();
+            }
+
+            @Override
+            public boolean isGenesisPending() {
+                return consensus().isGenesisPending();
+            }
+
+            @Override
+            public Result<Unit> deferGenesis(Supplier<Set<NodeId>> discovered,
+                                             int configuredCount,
+                                             Option<ClusterConfig> fixedView,
+                                             Set<NodeId> configuredCores) {
+                return consensus().deferGenesis(discovered, configuredCount, fixedView, configuredCores);
+            }
+
+            @Override
+            public Option<VoterConfiguration> retirementSafeVoters() {
+                return consensus().retirementSafeVoters();
+            }
+
+            @Override
+            public Option<VoterConfiguration> genesisVoters() {
+                return consensus().genesisVoters();
+            }
+
+            @Override
+            public org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+                return consensus().voterReconfigurationStatus();
+            }
+
+            @Override
+            public Option<VoterConfiguration> voterConfiguration() {
+                return consensus().voterConfiguration();
+            }
+
+            @Override
+            public org.pragmatica.lang.Unit onVoterConfiguration(Consumer<VoterConfiguration> listener) {
+                consensus().onVoterConfiguration(listener);
+
+                return org.pragmatica.lang.Unit.unit();
+            }
+
+            @Override
+            public Promise<Unit> reconfigure(ClusterConfig configuration) {
+                return consensus().reconfigure(configuration);
+            }
+
+            @Override
             public <R> Promise<List<R>> apply(List<C> commands) {
                 return consensus().apply(commands);
+            }
+
+            @Override
+            public Unit installSubmitGuard(Function<List<C>, Result<Unit>> guard) {
+                return consensus().installSubmitGuard(guard);
             }
         }
 

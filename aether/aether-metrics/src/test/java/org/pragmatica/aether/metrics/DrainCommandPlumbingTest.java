@@ -1,11 +1,16 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
 import org.pragmatica.aether.metrics.fsm.ClusterSyncContext;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
@@ -27,13 +32,8 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.Server;
 import org.pragmatica.statemachine.Fsm;
 
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Function;
-import java.util.function.Supplier;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,8 +53,8 @@ class DrainCommandPlumbingTest {
         @Test
         void requestDrain_thenIsDrainRequested_isTrue() {
             var registry = DrainCommandRegistry.drainCommandRegistry();
-            registry.requestDrain(PEER_A);
 
+            registry.requestDrain(PEER_A);
             assertThat(registry.isDrainRequested(PEER_A)).isTrue();
             assertThat(registry.isDrainRequested(PEER_B)).isFalse();
             assertThat(registry.drainTargets()).containsExactly(PEER_A);
@@ -63,9 +63,9 @@ class DrainCommandPlumbingTest {
         @Test
         void clearDrain_removesTarget() {
             var registry = DrainCommandRegistry.drainCommandRegistry();
+
             registry.requestDrain(PEER_A);
             registry.clearDrain(PEER_A);
-
             assertThat(registry.isDrainRequested(PEER_A)).isFalse();
             assertThat(registry.drainTargets()).isEmpty();
         }
@@ -73,9 +73,9 @@ class DrainCommandPlumbingTest {
         @Test
         void requestDrain_isIdempotent() {
             var registry = DrainCommandRegistry.drainCommandRegistry();
-            registry.requestDrain(PEER_A);
-            registry.requestDrain(PEER_A);
 
+            registry.requestDrain(PEER_A);
+            registry.requestDrain(PEER_A);
             assertThat(registry.drainTargets()).containsExactly(PEER_A);
         }
     }
@@ -87,11 +87,10 @@ class DrainCommandPlumbingTest {
             var network = new RecordingNetwork();
             var ctx = buildContext(network, () -> Set.of(PEER_A));
 
-            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
-
-            assertThat(network.broadcastPings).hasSize(1);
-            assertThat(network.broadcastPings.get(0).drainNodes()).containsExactly(PEER_A);
-            assertThat(network.sentPings).as("single broadcast — no per-peer unicast").isEmpty();
+            ctx.broadcastPing(Epoch.epoch(0L, 1L, 0L), 1L);
+            assertThat(network.sentPings).hasSize(1);
+            assertThat(network.sentPings.get(0).drainNodes()).containsExactly(PEER_A);
+            assertThat(network.broadcastPings).as("role-scoped unicast — no global metrics broadcast").isEmpty();
         }
 
         @Test
@@ -99,10 +98,9 @@ class DrainCommandPlumbingTest {
             var network = new RecordingNetwork();
             var ctx = buildContext(network, Set::of);
 
-            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
-
-            assertThat(network.broadcastPings).hasSize(1);
-            assertThat(network.broadcastPings.get(0).drainNodes()).isEmpty();
+            ctx.broadcastPing(Epoch.epoch(0L, 1L, 0L), 1L);
+            assertThat(network.sentPings).hasSize(1);
+            assertThat(network.sentPings.get(0).drainNodes()).isEmpty();
         }
 
         @Test
@@ -110,10 +108,9 @@ class DrainCommandPlumbingTest {
             var network = new RecordingNetwork();
             var ctx = buildContextDefault(network);
 
-            ctx.broadcastPing(Epoch.epoch(1L, 0L), 1L);
-
-            assertThat(network.broadcastPings).hasSize(1);
-            assertThat(network.broadcastPings.get(0).drainNodes()).isEmpty();
+            ctx.broadcastPing(Epoch.epoch(0L, 1L, 0L), 1L);
+            assertThat(network.sentPings).hasSize(1);
+            assertThat(network.sentPings.get(0).drainNodes()).isEmpty();
         }
     }
 
@@ -123,11 +120,13 @@ class DrainCommandPlumbingTest {
         void onClusterSyncPing_drainNodesContainsSelf_invokesHandler() {
             var network = new RecordingNetwork();
             var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
             var calls = new AtomicInteger();
+
             collector.setDrainCommandHandler(calls::incrementAndGet);
-
             collector.onClusterSyncPing(drainPing());
-
             assertThat(calls.get()).isEqualTo(1);
         }
 
@@ -135,11 +134,13 @@ class DrainCommandPlumbingTest {
         void onClusterSyncPing_drainNodesAbsentSelf_doesNotInvokeHandler() {
             var network = new RecordingNetwork();
             var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
             var calls = new AtomicInteger();
+
             collector.setDrainCommandHandler(calls::incrementAndGet);
-
             collector.onClusterSyncPing(otherDrainPing());
-
             assertThat(calls.get()).isZero();
         }
 
@@ -147,11 +148,13 @@ class DrainCommandPlumbingTest {
         void onClusterSyncPing_emptyDrainNodes_doesNotInvokeHandler() {
             var network = new RecordingNetwork();
             var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
             var calls = new AtomicInteger();
+
             collector.setDrainCommandHandler(calls::incrementAndGet);
-
             collector.onClusterSyncPing(nonePing());
-
             assertThat(calls.get()).isZero();
         }
 
@@ -159,68 +162,175 @@ class DrainCommandPlumbingTest {
         void onClusterSyncPing_repeatedDrain_invokesHandlerEachTime() {
             var network = new RecordingNetwork();
             var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
             var calls = new AtomicInteger();
+
             collector.setDrainCommandHandler(calls::incrementAndGet);
-
             collector.onClusterSyncPing(drainPing());
             collector.onClusterSyncPing(drainPing());
-
             assertThat(calls.get()).isEqualTo(2);
+        }
+
+        /// Issue #1818: the departure push runs off the drain handler and reads the co-drainers from
+        /// `commandedDrainNodes`, so the ping's whole drain set must be visible when the handler runs.
+        @Test
+        void onClusterSyncPing_coDrainers_commandedDrainNodesHoldsTheWholeSetWhenTheHandlerRuns() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seenByHandler = new AtomicReference<Set<NodeId>>(Set.of());
+
+            collector.setDrainCommandHandler(() -> seenByHandler.set(collector.commandedDrainNodes()));
+            collector.onClusterSyncPing(coDrainPing(LEADER));
+            assertThat(seenByHandler.get()).containsExactlyInAnyOrder(SELF, PEER_A);
+        }
+
+        /// #2014: a FOLLOWER (not targeted) must still learn the drain set, so its DEAD edge reads a planned
+        /// departure as one. Deleting the observer call in `handleDrainCommand` turns this red.
+        @Test
+        void onClusterSyncPing_drainSetNotTargetingSelf_stillReachesTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seen = new AtomicReference<Set<NodeId>>(Set.of());
+
+            collector.setDrainSetObserver(seen::set);
+            collector.onClusterSyncPing(otherDrainPing());
+            assertThat(seen.get()).isNotEmpty().doesNotContain(SELF);
+        }
+
+        /// #2014: absence is how a cancelled drain is noticed, so an EMPTY authoritative set must reach the
+        /// observer too. Re-adding an `isEmpty()` guard turns this red.
+        @Test
+        void onClusterSyncPing_emptyDrainSet_reachesTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seen = new AtomicReference<Set<NodeId>>(null);
+
+            collector.setDrainSetObserver(seen::set);
+            collector.onClusterSyncPing(nonePing());
+            assertThat(seen.get()).isNotNull().isEmpty();
+        }
+
+        @Test
+        void onClusterSyncPing_nonAuthoritativeDrainSet_doesNotReachTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var calls = new AtomicInteger();
+
+            collector.setDrainSetObserver(_ -> calls.incrementAndGet());
+            collector.onClusterSyncPing(coDrainPing(PEER_B));
+            assertThat(calls.get()).isZero();
+        }
+
+        @Test
+        void onClusterSyncPing_nonAuthoritativeSender_doesNotRecordTheDrainSet() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            collector.onClusterSyncPing(coDrainPing(PEER_B));
+            assertThat(collector.commandedDrainNodes()).isEmpty();
         }
     }
 
     private static ClusterSyncPing drainPing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), Set.of(SELF));
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, 0L, Set.of(), Set.of(SELF), Map.of(), Set.of(), true, true);
     }
 
     private static ClusterSyncPing otherDrainPing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), Set.of(PEER_A));
+        return new ClusterSyncPing(LEADER,
+                                   Map.of(),
+                                   0L,
+                                   0L,
+                                   0L,
+                                   0L,
+                                   Set.of(),
+                                   Set.of(PEER_A),
+                                   Map.of(),
+                                   Set.of(),
+                                   true,
+                                   true);
+    }
+
+    private static ClusterSyncPing coDrainPing(NodeId sender) {
+        return new ClusterSyncPing(sender,
+                                   Map.of(),
+                                   0L,
+                                   0L,
+                                   0L,
+                                   0L,
+                                   Set.of(),
+                                   Set.of(SELF, PEER_A),
+                                   Map.of(),
+                                   Set.of(),
+                                   true,
+                                   true);
     }
 
     private static ClusterSyncPing nonePing() {
-        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, Set.of(), Set.of());
+        return new ClusterSyncPing(LEADER, Map.of(), 0L, 0L, 0L, 0L, Set.of(), Set.of(), Map.of(), Set.of(), true, true);
     }
 
     private static ClusterSyncContext buildContext(ClusterNetwork network, Supplier<Set<NodeId>> drainTargets) {
         var ctxRef = new AtomicReference<ClusterSyncContext>();
-        Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory =
-            fsm -> {
-                var ctx = new ClusterSyncContext(fsm,
-                                                 SELF,
-                                                 network,
-                                                 new NoopClusterSyncCollector(),
-                                                 TimeSpan.timeSpan(1).hours(),
-                                                 () -> 1L,
-                                                 3,
-                                                 () -> Epoch.epoch(1L, 0L),
-                                                 PeerObservationStore.peerObservationStore(),
-                                                 PeriodicObservationConfig.defaultConfig(),
-                                                 () -> true,
-                                                 drainTargets);
-                ctxRef.set(ctx);
-                return ctx.dormant();
-            };
+        Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory = fsm -> {
+            var ctx = new ClusterSyncContext(fsm,
+                                             SELF,
+                                             network,
+                                             new NoopClusterSyncCollector(),
+                                             TimeSpan.timeSpan(1).hours(),
+                                             () -> 1L,
+                                             3,
+                                             () -> Epoch.epoch(0L, 1L, 0L),
+                                             PeerObservationStore.peerObservationStore(),
+                                             PeriodicObservationConfig.defaultConfig(),
+                                             () -> true,
+                                             drainTargets);
+
+            ctxRef.set(ctx);
+
+            return ctx.dormant();
+        };
+
         Fsm.fsm("drain-command-test", factory);
+
         return ctxRef.get();
     }
 
     private static ClusterSyncContext buildContextDefault(ClusterNetwork network) {
         var ctxRef = new AtomicReference<ClusterSyncContext>();
-        Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory =
-            fsm -> {
-                var ctx = new ClusterSyncContext(fsm,
-                                                 SELF,
-                                                 network,
-                                                 new NoopClusterSyncCollector(),
-                                                 TimeSpan.timeSpan(1).hours(),
-                                                 () -> 1L,
-                                                 3,
-                                                 () -> Epoch.epoch(1L, 0L),
-                                                 PeerObservationStore.peerObservationStore());
-                ctxRef.set(ctx);
-                return ctx.dormant();
-            };
+        Function<Fsm<ClusterSyncState, ClusterFsmEvent>, ClusterSyncState> factory = fsm -> {
+            var ctx = new ClusterSyncContext(fsm,
+                                             SELF,
+                                             network,
+                                             new NoopClusterSyncCollector(),
+                                             TimeSpan.timeSpan(1).hours(),
+                                             () -> 1L,
+                                             3,
+                                             () -> Epoch.epoch(0L, 1L, 0L),
+                                             PeerObservationStore.peerObservationStore());
+
+            ctxRef.set(ctx);
+
+            return ctx.dormant();
+        };
+
         Fsm.fsm("drain-command-default-test", factory);
+
         return ctxRef.get();
     }
 
@@ -230,24 +340,62 @@ class DrainCommandPlumbingTest {
         private final CopyOnWriteArrayList<ClusterSyncPing> sentPings = new CopyOnWriteArrayList<>();
         private final CopyOnWriteArrayList<ClusterSyncPing> broadcastPings = new CopyOnWriteArrayList<>();
 
-        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
-            if (message instanceof ClusterSyncPing ping) {sentPings.add(ping);}
+        @Override
+        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+            if (message instanceof ClusterSyncPing ping) {
+                sentPings.add(ping);
+            }
+
             return Unit.unit();
         }
 
-        @Override public <M extends ProtocolMessage> Unit broadcast(M message) {
-            if (message instanceof ClusterSyncPing ping) {broadcastPings.add(ping);}
+        @Override
+        public <M extends ProtocolMessage> Unit broadcast(M message) {
+            if (message instanceof ClusterSyncPing ping) {
+                broadcastPings.add(ping);
+            }
+
             return Unit.unit();
         }
-        @Override public void connect(ConnectNode connectNode) {}
-        @Override public void disconnect(DisconnectNode disconnectNode) {}
-        @Override public void listNodes(ListConnectedNodes listConnectedNodes) {}
-        @Override public void handleSend(Send send) {}
-        @Override public void handleBroadcast(Broadcast broadcast) {}
-        @Override public Promise<Unit> start() {return Promise.success(Unit.unit());}
-        @Override public Promise<Unit> stop() {return Promise.success(Unit.unit());}
-        @Override public int connectedNodeCount() {return 0;}
-        @Override public Set<NodeId> connectedPeers() {return Set.of();}
-        @Override public Option<Server> server() {return Option.none();}
+
+        @Override
+        public void connect(ConnectNode connectNode) {}
+
+        @Override
+        public void disconnect(DisconnectNode disconnectNode) {}
+
+        @Override
+        public void listNodes(ListConnectedNodes listConnectedNodes) {}
+
+        @Override
+        public void handleSend(Send send) {}
+
+        @Override
+        public void handleBroadcast(Broadcast broadcast) {}
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public int connectedNodeCount() {
+            return 0;
+        }
+
+        @Override
+        public Set<NodeId> connectedPeers() {
+            return Set.of(PEER_A);
+        }
+
+        @Override
+        public Option<Server> server() {
+            return Option.none();
+        }
     }
 }

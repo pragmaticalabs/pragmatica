@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.http;
 
 import java.net.URI;
@@ -10,6 +9,7 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.time.Duration;
 import java.util.Map;
 import java.util.function.BiFunction;
+import java.util.function.UnaryOperator;
 
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -18,8 +18,9 @@ import org.pragmatica.http.NettyHttpOperations;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.parse.Network;
+import org.pragmatica.lang.io.AsyncCloseable;
 import org.pragmatica.lang.type.TypeToken;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -28,10 +29,17 @@ import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.PropertyNamingStrategies;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
 
-final class JdkHttpClient implements HttpClient {
+/// The `@Http` resource.
+///
+/// It implements [AsyncCloseable] because release dispatch sees only the resource OBJECT: this
+/// client HOLDS the [HttpOperations] that owns the Netty `EventLoopGroup` when the NETTY backend is
+/// selected, and a closeable held in a field is invisible to `ResourceFactory`'s default close no
+/// matter how wide that dispatch gets (#891). Closing the client closes the operations it owns.
+final class JdkHttpClient implements HttpClient, AsyncCloseable {
     private final HttpClientConfig config;
     private final HttpOperations operations;
     private volatile JsonMapper jsonMapper;
@@ -49,6 +57,15 @@ final class JdkHttpClient implements HttpClient {
 
     static JdkHttpClient jdkHttpClient(HttpClientConfig config) {
         return new JdkHttpClient(config, createOperations(config));
+    }
+
+    /// Test seam: a client over operations the CALLER supplies, so a test can observe whether
+    /// [#close()] reaches them. Both backends' operations own releasable state (the JDK one a selector
+    /// thread, #1097; the Netty one an event loop whose shutdown is only measurable from outside the
+    /// module, #895), but neither exposes a close COUNT, which is why the close tests could not go red on
+    /// a no-op close without this (review of #900, SF-3). Package-private; production goes through the config-driven factories above.
+    static JdkHttpClient jdkHttpClient(HttpClientConfig config, HttpOperations operations) {
+        return new JdkHttpClient(config, operations);
     }
 
     // NOTE: despite the name, this type now also produces a Netty-backed HttpOperations when
@@ -72,6 +89,18 @@ final class JdkHttpClient implements HttpClient {
         return config;
     }
 
+    /// Close the backing operations when they own releasable state.
+    ///
+    /// Both backends' operations are [AsyncCloseable]: the JDK one shuts its `HttpClient` down (#1097),
+    /// the Netty one its event loop, and either is awaited. Operations that implement no close convention
+    /// (a test double) take the success branch.
+    @Override
+    public Promise<Unit> close() {
+        return operations instanceof AsyncCloseable closeable
+               ? closeable.close()
+               : Promise.unitPromise();
+    }
+
     @Override
     public Promise<HttpResult<String>> get(String path) {
         return get(path, Map.of());
@@ -79,11 +108,7 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<String>> get(String path, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder().uri(buildUri(path)).GET().timeout(requestTimeout());
-
-        applyHeaders(builder, headers);
-
-        return operations.sendString(builder.build());
+        return sendString(path, headers, HttpRequest.Builder::GET);
     }
 
     @Override
@@ -93,15 +118,9 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<String>> post(String path, String body, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder()
-                                 .uri(buildUri(path))
-                                 .POST(BodyPublishers.ofString(body))
-                                 .header("Content-Type", "application/json")
-                                 .timeout(requestTimeout());
-
-        applyHeaders(builder, headers);
-
-        return operations.sendString(builder.build());
+        return sendString(path,
+                          headers,
+                          builder -> withJsonBody(builder.POST(BodyPublishers.ofString(body))));
     }
 
     @Override
@@ -111,15 +130,9 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<String>> put(String path, String body, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder()
-                                 .uri(buildUri(path))
-                                 .PUT(BodyPublishers.ofString(body))
-                                 .header("Content-Type", "application/json")
-                                 .timeout(requestTimeout());
-
-        applyHeaders(builder, headers);
-
-        return operations.sendString(builder.build());
+        return sendString(path,
+                          headers,
+                          builder -> withJsonBody(builder.PUT(BodyPublishers.ofString(body))));
     }
 
     @Override
@@ -129,11 +142,7 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<String>> delete(String path, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder().uri(buildUri(path)).DELETE().timeout(requestTimeout());
-
-        applyHeaders(builder, headers);
-
-        return operations.sendString(builder.build());
+        return sendString(path, headers, HttpRequest.Builder::DELETE);
     }
 
     @Override
@@ -143,16 +152,9 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<String>> patch(String path, String body, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder()
-                                 .uri(buildUri(path))
-                                 .method("PATCH",
-                                         BodyPublishers.ofString(body))
-                                 .header("Content-Type", "application/json")
-                                 .timeout(requestTimeout());
-
-        applyHeaders(builder, headers);
-
-        return operations.sendString(builder.build());
+        return sendString(path,
+                          headers,
+                          builder -> withJsonBody(builder.method("PATCH", BodyPublishers.ofString(body))));
     }
 
     @Override
@@ -162,26 +164,52 @@ final class JdkHttpClient implements HttpClient {
 
     @Override
     public Promise<HttpResult<byte[]>> getBytes(String path, Map<String, String> headers) {
-        var builder = HttpRequest.newBuilder().uri(buildUri(path)).GET().timeout(requestTimeout());
+        return request(path, headers, HttpRequest.Builder::GET).fold(Promise::failure, operations::sendBytes);
+    }
 
-        applyHeaders(builder, headers);
+    private Promise<HttpResult<String>> sendString(String path,
+                                                   Map<String, String> headers,
+                                                   UnaryOperator<HttpRequest.Builder> method) {
+        return request(path, headers, method).fold(Promise::failure, operations::sendString);
+    }
 
-        return operations.sendBytes(builder.build());
+    private static HttpRequest.Builder withJsonBody(HttpRequest.Builder builder) {
+        return builder.header("Content-Type", "application/json");
     }
 
     private Duration requestTimeout() {
         return Duration.ofMillis(config.requestTimeout().millis());
     }
 
-    private URI buildUri(String path) {
-        var fullUrl = config.baseUrl().map(base -> joinUrl(base, path));
-
-        return fullUrl.map(url -> parseUri(url))
-                      .or(() -> parseUri(path));
+    /// Build the request as a `Result`, so a URI that does not parse, a URI without a scheme, a
+    /// header the JDK refuses, or a null path FAILS THE PROMISE instead of escaping `get`/`post`/…
+    /// as an exception. EVERYTHING that touches the caller's input runs inside the lift — the base
+    /// join included, which is where a null path used to throw synchronously when a `base_url` was
+    /// configured (review of #1080, SF-3). `URI.create` rather than `Network.parseURI` on purpose:
+    /// the latter's cause carries the whole stack trace as its message, and `InvalidRequest.detail`
+    /// carries the exception's one-line message (SF-2). The old code unwrapped the parse and let
+    /// the builder throw, which is what #270 R6 is.
+    private Result<HttpRequest> request(String path,
+                                        Map<String, String> headers,
+                                        UnaryOperator<HttpRequest.Builder> method) {
+        return Result.lift(throwable -> invalidRequest(path, throwable), () -> buildRequest(path, headers, method));
     }
 
-    private static URI parseUri(String uri) {
-        return Network.parseURI(uri).unwrap();
+    private HttpRequest buildRequest(String path,
+                                     Map<String, String> headers,
+                                     UnaryOperator<HttpRequest.Builder> method) {
+        var url = config.baseUrl().map(base -> joinUrl(base, path)).or(path);
+        var builder = method.apply(HttpRequest.newBuilder().uri(URI.create(url)).timeout(requestTimeout()));
+
+        applyHeaders(builder, headers);
+
+        return builder.build();
+    }
+
+    private static HttpClientError.InvalidRequest invalidRequest(String path, Throwable throwable) {
+        var detail = option(throwable.getMessage()).or(throwable.getClass().getSimpleName());
+
+        return new HttpClientError.InvalidRequest(String.valueOf(path), detail);
     }
 
     private static String joinUrl(String base, String path) {

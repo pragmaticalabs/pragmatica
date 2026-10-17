@@ -27,21 +27,17 @@ import static org.pragmatica.lang.Result.all;
 /// 4. **Result.all() for parallel validation** — all fields are validated
 ///    independently; failures are collected, not short-circuited.
 public interface ValidateOrder {
-
     Promise<ValidOrder> apply(OrderProcessor.OrderRequest raw);
 
     /// Validated order — only constructible through the `validOrder` factory.
     /// Guarantees all fields have passed validation.
     record ValidOrder(OrderId orderId, String customerId, String productId, int quantity, Money amount) {
-
         public static Result<ValidOrder> validOrder(OrderProcessor.OrderRequest raw) {
-            return all(
-                Result.success(OrderId.generate()),
-                validateCustomerId(raw.customerId()),
-                validateProductId(raw.productId()),
-                validateQuantity(raw.quantity()),
-                Money.money(raw.amount())
-            ).map(ValidOrder::new);
+            return all(Result.success(OrderId.generate()),
+                       validateCustomerId(raw.customerId()),
+                       validateProductId(raw.productId()),
+                       validateQuantity(raw.quantity()),
+                       Money.money(raw.amount())).map(ValidOrder::new);
         }
 
         private static Result<String> validateCustomerId(String customerId) {

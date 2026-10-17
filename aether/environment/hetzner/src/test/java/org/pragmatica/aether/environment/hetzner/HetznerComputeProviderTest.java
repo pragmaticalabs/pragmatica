@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.environment.hetzner;
 
@@ -65,6 +64,14 @@ class HetznerComputeProviderTest {
             "#!/bin/bash\necho hello").unwrap();
     }
 
+    private static HetznerEnvironmentConfig configWithRegion(String region) {
+        return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
+            hetznerConfig("test-token"),
+            "cx22", "ubuntu-24.04", region,
+            List.of(1L, 2L), List.of(10L), List.of(5L),
+            "#!/bin/bash\necho hello").unwrap();
+    }
+
     private static HetznerEnvironmentConfig configWithImage(String image) {
         return HetznerEnvironmentConfig.hetznerEnvironmentConfig(
             hetznerConfig("test-token"),
@@ -91,17 +98,40 @@ class HetznerComputeProviderTest {
         provider = HetznerComputeProvider.hetznerComputeProvider(testClient, CONFIG).unwrap();
     }
 
+    @Test
+    void observedZone_usesNativeLocationNotLabels() {
+        var server = new Server(1, "test", "running", serverType(), image(), null, null,
+                                Map.of("zone", "claimed"), new Server.Location("hel1"));
+        assertThat(HetznerComputeProvider.toInstanceInfo(server).observedZone().unwrap()).isEqualTo("hel1");
+    }
+
     @Nested
     class ProvisionTests {
 
         @Test
         void provision_success_returnsInstanceInfo() {
             testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.getServerResponse = Promise.success(runningServer(42, "aether-test"));
 
             seededProvider().provision(InstanceType.ON_DEMAND)
                             .await()
                             .onFailure(cause -> assertThat(cause).isNull())
                             .onSuccess(HetznerComputeProviderTest::assertProvisionedInstanceInfo);
+            assertThat(testClient.lastGetServerId).isEqualTo(42);
+        }
+
+        /// #1111: createServer succeeds, then the server reports `off` (boot crash). The server EXISTS and bills, so the cause that leaves
+        /// `createFrom` must say so (typed), not read as a plain rejection.
+        @Test
+        void provision_serverCrashesDuringBoot_failsWithTheTypedReadinessTimeout() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.getServerResponse = Promise.success(new Server(42, "aether-test", "off", serverType(), image(),
+                                                                       publicNet("1.2.3.4"), List.of(), Map.of(), null));
+
+            seededProvider().provision(InstanceType.ON_DEMAND)
+                            .await()
+                            .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
+                            .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
         }
 
         @Test
@@ -133,6 +163,31 @@ class HetznerComputeProviderTest {
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(HetznerComputeProviderTest::assertCapacityUnavailableInNbg1);
+        }
+
+        /// The measured 2026-09-10 incident: Hetzner refuses a RETIRED server type with a body that
+        /// names neither the type nor the location. The provider must thread both onto the failure,
+        /// otherwise the operator sees only "unsupported location for server type" and has no way to
+        /// tell which of the two to change.
+        ///
+        /// `zz-sentinel-server-type-99` is a value no Hetzner catalogue contains, so this passes only
+        /// if the requested type is genuinely threaded through rather than matched incidentally.
+        @Test
+        void provision_unsupportedLocationForServerType_namesRequestedTypeAndLocation() {
+            testClient.createServerResponse =
+                new HetznerError.ApiError(422, "invalid_input", "unsupported location for server type").promise();
+            var context = ProvisionContext.provisionContext(maybeClusterName("cluster-x"),
+                                                             "core",
+                                                             sourceNameOrDefault("eu-1"),
+                                                             ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "zz-sentinel-server-type-99", "core", context)
+                                    .unwrap()
+                                    .withPlacement(PlacementHint.zoneHint("hel1"));
+
+            provider.provision(spec)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(HetznerComputeProviderTest::assertProvisionFailedNamesSentinelTypeInHel1);
         }
 
         @Test
@@ -203,6 +258,24 @@ class HetznerComputeProviderTest {
             provider.provision(ctmSpec("default")).await().onFailure(cause -> assertThat(cause).isNull());
 
             assertThat(testClient.lastCreateServerRequest.serverType()).isEqualTo("cx22");
+        }
+
+        /// #992: a blank region never reaches the wire as `"location":""`. `cluster init` demands a region,
+        /// but a config written any other way (by hand, templated, an older CLI) reaches the provider too, and
+        /// Hetzner is the one provider whose placement is not already a required credential. Refused before
+        /// any Hetzner call, so no server lands in a location nobody named.
+        @Test
+        void provision_blankRegion_failsBeforeCreateServer() {
+            var regionlessProvider = HetznerComputeProvider.hetznerComputeProvider(testClient, configWithRegion(""))
+                                                           .unwrap();
+
+            var result = regionlessProvider.provision(ctmSpec("default")).await();
+
+            assertThat(result.isFailure()).as("a blank region must refuse the provision: %s", result).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("region"));
+            assertThat(testClient.lastCreateServerRequest)
+                    .as("#992: the create-server call must never be sent with an empty location")
+                    .isNull();
         }
 
         @Test
@@ -611,22 +684,6 @@ class HetznerComputeProviderTest {
     }
 
     @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsReboot() {
-            testClient.rebootServerResponse = Promise.success(Unit.unit());
-
-            provider.restart(new InstanceId("42"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastRebootServerId).isEqualTo(42L);
-        }
-    }
-
-    @Nested
     class ApplyTagsTests {
 
         @Test
@@ -729,9 +786,24 @@ class HetznerComputeProviderTest {
             assertThat(HetznerComputeProvider.mapStatus("deleting")).isEqualTo(InstanceStatus.STOPPING);
         }
 
+        /// #1049 — exhaustive over Hetzner Cloud's documented `server.status` enum (API reference, Servers:
+        /// running, initializing, starting, stopping, off, deleting, migrating, rebuilding, unknown), plus one
+        /// undocumented value. `unknown` and anything unrecognised must never read as stopping or terminated.
         @Test
-        void mapStatus_unknown_returnsTerminated() {
-            assertThat(HetznerComputeProvider.mapStatus("unknown")).isEqualTo(InstanceStatus.TERMINATED);
+        void mapStatus_everyDocumentedStatus_andAnUnrecognisedOne_mapExhaustively() {
+            var expected = Map.ofEntries(Map.entry("running", InstanceStatus.RUNNING),
+                                         Map.entry("initializing", InstanceStatus.PROVISIONING),
+                                         Map.entry("starting", InstanceStatus.PROVISIONING),
+                                         Map.entry("stopping", InstanceStatus.STOPPING),
+                                         Map.entry("off", InstanceStatus.STOPPING),
+                                         Map.entry("deleting", InstanceStatus.STOPPING),
+                                         Map.entry("migrating", InstanceStatus.PROVISIONING),
+                                         Map.entry("rebuilding", InstanceStatus.PROVISIONING),
+                                         Map.entry("unknown", InstanceStatus.UNKNOWN),
+                                         Map.entry("a-status-hetzner-adds-later", InstanceStatus.UNKNOWN));
+
+            assertThat(expected).hasSize(10);
+            expected.forEach((status, mapped) -> assertThat(HetznerComputeProvider.mapStatus(status)).as(status).isEqualTo(mapped));
         }
     }
 
@@ -756,7 +828,7 @@ class HetznerComputeProviderTest {
 
         @Test
         void collectAddresses_noAddresses_returnsEmpty() {
-            var server = new Server(1, "test", "running", serverType(), image(), null, null, Map.of());
+            var server = new Server(1, "test", "running", serverType(), image(), null, null, Map.of(), null);
             var addresses = HetznerComputeProvider.collectAddresses(server);
 
             assertThat(addresses).isEmpty();
@@ -778,7 +850,7 @@ class HetznerComputeProviderTest {
         @Test
         void toInstanceInfo_nullLabels_returnsEmptyMap() {
             var server = new Server(1, "test", "running", serverType(), image(),
-                                    publicNet("1.2.3.4"), List.of(), null);
+                                    publicNet("1.2.3.4"), List.of(), null, null);
             var info = HetznerComputeProvider.toInstanceInfo(server);
 
             assertThat(info.tags()).isEmpty();
@@ -849,6 +921,13 @@ class HetznerComputeProviderTest {
         assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class);
     }
 
+    private static void assertProvisionFailedNamesSentinelTypeInHel1(Cause cause) {
+        assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class);
+        assertThat(cause.message()).contains("unsupported location for server type")
+                                   .contains("zz-sentinel-server-type-99")
+                                   .contains("hel1");
+    }
+
     private static void assertCapacityUnavailableInNbg1(Cause cause) {
         assertThat(cause).isInstanceOf(EnvironmentError.CapacityUnavailable.class);
         assertThat(((EnvironmentError.CapacityUnavailable) cause).zone()).isEqualTo("nbg1");
@@ -874,12 +953,12 @@ class HetznerComputeProviderTest {
 
     private static Server runningServer(long id, String name) {
         return new Server(id, name, "running", serverType(), image(),
-                          publicNet("1.2.3.4"), List.of(), Map.of());
+                          publicNet("1.2.3.4"), List.of(), Map.of(), null);
     }
 
     private static Server initializingServer(long id, String name) {
         return new Server(id, name, "initializing", serverType(), image(),
-                          publicNet("5.6.7.8"), List.of(), Map.of());
+                          publicNet("5.6.7.8"), List.of(), Map.of(), null);
     }
 
     private static Server serverWithAddresses(String publicIp, List<String> privateIps) {
@@ -887,12 +966,12 @@ class HetznerComputeProviderTest {
                                     .map(ip -> new Server.PrivateNet(1L, ip))
                                     .toList();
         return new Server(1, "test", "running", serverType(), image(),
-                          publicNet(publicIp), privateNets, Map.of());
+                          publicNet(publicIp), privateNets, Map.of(), null);
     }
 
     private static Server serverWithLabels(long id, String name, Map<String, String> labels) {
         return new Server(id, name, "running", serverType(), image(),
-                          publicNet("1.2.3.4"), List.of(), labels);
+                          publicNet("1.2.3.4"), List.of(), labels, null);
     }
 
     private static Server.ServerType serverType() {
@@ -1242,6 +1321,20 @@ class HetznerComputeProviderTest {
             return new Firewall(id, "aether-prod-eu-hetzner-eu", List.of(), Map.of());
         }
 
+        /// An Aether ingress firewall as `createIngressFirewall` labels it: cluster AND source.
+        private static Firewall ingressFirewall(long id, String source) {
+            return new Firewall(id,
+                                "aether-prod-eu-" + source,
+                                List.of(),
+                                Map.of("aether-cluster", "prod-eu", "aether-source", source));
+        }
+
+        /// A firewall carrying only the cluster label — not an ingress firewall (a harness partition
+        /// firewall, #1500, or one an operator labelled by hand).
+        private static Firewall clusterLabelledFirewall(long id) {
+            return new Firewall(id, "partition-prod-eu", List.of(), Map.of("aether-cluster", "prod-eu"));
+        }
+
         @Test
         void createFrom_whenConfigCarriesFirewallIds_usesThemWithoutLookup() {
             // The bootstrap path is unchanged: ProviderResolver already threaded the just-created
@@ -1294,7 +1387,7 @@ class HetznerComputeProviderTest {
             // creating the server would produce exactly the publicly-reachable node #444 is about.
             testClient.firewallsBySelector.put("aether-cluster=prod-eu,aether-source=default",
                                                Promise.success(List.of()));
-            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(firewall(91))));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(ingressFirewall(91, "hetzner-eu"))));
 
             replacementProvider().createFrom(replacementRequest(ProvisionContext.DEFAULT_SOURCE_NAME))
                                  .await()
@@ -1304,6 +1397,40 @@ class HetznerComputeProviderTest {
 
             assertThat(testClient.lastCreateServerRequest).as("no server may be created less firewalled than its peers")
                                                           .isNull();
+        }
+
+        /// #1503: a firewall that carries the cluster label but no source label is not an ingress firewall,
+        /// so it is no evidence that the source selector missed one. Counting it made every replacement fail
+        /// closed and disabled auto-heal for the whole cluster (the harness's partition firewalls, #1500).
+        @Test
+        void createFrom_whenClusterHasOnlyNonIngressFirewalls_createsUnfirewalled() {
+            testClient.firewallsBySelector.put(SOURCE_SELECTOR, Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR, Promise.success(List.of(clusterLabelledFirewall(92))));
+
+            replacementProvider().createFrom(replacementRequest(SOURCE))
+                                 .await()
+                                 .onFailure(cause -> assertThat(cause).as("#1503: a non-ingress firewall must not block auto-heal")
+                                                                      .isNull());
+
+            assertThat(testClient.lastCreateServerRequest).isNotNull();
+            assertThat(testClient.lastCreateServerRequest.firewalls()).isEmpty();
+        }
+
+        /// #1503 control: a genuine selector miss still fails closed when non-ingress firewalls sit beside it.
+        @Test
+        void createFrom_whenIngressFirewallOfAnotherSourceExistsBesideNonIngress_refusesToCreate() {
+            testClient.firewallsBySelector.put("aether-cluster=prod-eu,aether-source=default",
+                                               Promise.success(List.of()));
+            testClient.firewallsBySelector.put(CLUSTER_SELECTOR,
+                                               Promise.success(List.of(clusterLabelledFirewall(92),
+                                                                       ingressFirewall(91, "hetzner-eu"))));
+
+            replacementProvider().createFrom(replacementRequest(ProvisionContext.DEFAULT_SOURCE_NAME))
+                                 .await()
+                                 .onSuccess(info -> assertThat(info).isNull())
+                                 .onFailure(cause -> assertThat(cause.message()).contains("has 1 Aether-managed firewall(s)"));
+
+            assertThat(testClient.lastCreateServerRequest).isNull();
         }
 
         @Test

@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-Apache%202-blue.svg)
 ![Java](https://img.shields.io/badge/Java-25-orange.svg)
-![Maven Central](https://img.shields.io/badge/Maven-1.0.0-rc3-blue.svg)
+![Maven Central](https://img.shields.io/badge/Maven-1.0.0--rc4-blue.svg)
 
 ## Modern Functional Programming for Java 25
 
@@ -27,7 +27,7 @@ public User getUser(String id) throws UserNotFoundException, DatabaseException {
 // Clean, safe, composable
 public Promise<User> getUser(String id) {
     return database.findUser(id)
-                   .filter(user -> user.isActive())
+                   .filter(Causes.cause("User is inactive"), User::isActive)
                    .map(this::enrichUserData);
 }
 ```
@@ -36,10 +36,10 @@ public Promise<User> getUser(String id) {
 
 ### Eliminate Null Pointer Exceptions
 ```java
-Option<String> name = Option.option(user.getName())
-                            .map(String::toUpperCase)
-                            .filter(n -> n.length() > 2)
-                            .or("Anonymous");
+String name = Option.option(user.getName())
+                    .map(String::toUpperCase)
+                    .filter(n -> n.length() > 2)
+                    .or("Anonymous");  // or(T) unwraps the Option
 ```
 
 ### Safe Error Handling Without Exceptions
@@ -89,20 +89,20 @@ Pragmatica Core targets Java 25 and leverages modern language features:
 
 ### Maven Configuration
 
-Pragmatica Core is available on Maven Central. Simply add the dependency to your `pom.xml`:
+Once 1.0.0-rc4 is published to Maven Central, add the dependency to your `pom.xml`:
 
 ```xml
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </dependency>
 ```
 
 For Gradle users:
 
 ```gradle
-implementation 'org.pragmatica-lite:core:1.0.0-rc3'
+implementation 'org.pragmatica-lite:core:1.0.0-rc4'
 ```
 
 ### Your First Pragmatica Application
@@ -159,7 +159,7 @@ Handle success and failure without exceptions:
 ```java
 Result<String> result = processData()
     .map(String::trim)
-    .filter(s -> !s.isEmpty())
+    .filter(EMPTY_INPUT, s -> !s.isEmpty())  // EMPTY_INPUT is a Cause constant
     .recover(_ -> "default");
 ```
 
@@ -178,7 +178,7 @@ Composable asynchronous programming:
 ```java
 Promise<String> response = httpClient.get(url)
     .map(Response::body)
-    .timeout(Duration.ofSeconds(5))
+    .timeout(timeSpan(5).seconds())  // static import org.pragmatica.lang.io.TimeSpan.timeSpan
     .onFailure(err -> logger.error("Request failed", err));
 ```
 
@@ -236,7 +236,7 @@ Serialize and deserialize Result, Option, and Promise types:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jackson</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </dependency>
 ```
 
@@ -264,7 +264,7 @@ Promise-based JPA operations with typed errors:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jpa</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </dependency>
 ```
 
@@ -272,16 +272,19 @@ Promise-based JPA operations with typed errors:
 var ops = JpaOperations.jpaOperations(entityManager);
 
 // Transactional operations
-Promise<User> result = Transactional.withTransaction(
+// withTransaction decorates a function; applying it runs the operation inside the transaction
+var saveUser = Transactional.withTransaction(
     entityManager,
     JpaError::fromException,
-    tx -> ops.persist(newUser)
-        .flatMap(saved -> ops.flush().map(_ -> saved))
+    (User user) -> ops.persist(JpaError::fromException, user)
+        .flatMap(saved -> ops.flush(JpaError::fromException).map(_ -> saved))
 );
 
-// Typed errors: EntityNotFound, OptimisticLock, DatabaseFailure, etc.
+Promise<User> result = saveUser.apply(newUser);
+
+// Typed errors: ConstraintViolation, EntityExists, OptimisticLock, DatabaseFailure, etc.
 result.onFailure(error -> switch (error) {
-    case JpaError.EntityNotFound _ -> handleNotFound();
+    case JpaError.ConstraintViolation violation -> handleConstraint(violation.constraint());
     case JpaError.OptimisticLock lock -> handleConflict(lock.entityType());
     case JpaError.DatabaseFailure db -> handleDatabaseError(db.cause());
     default -> handleUnexpected(error);
@@ -296,7 +299,7 @@ Monitor Result, Option, and Promise operations:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>micrometer</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </dependency>
 ```
 

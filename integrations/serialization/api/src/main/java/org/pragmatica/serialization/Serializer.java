@@ -27,6 +27,13 @@ import io.netty.buffer.PooledByteBufAllocator;
 /// Such failures are fatal and should result in immediate application shutdown rather than
 /// attempting graceful error handling.
 public interface Serializer {
+    /// Returns this serializer; a custom serializer retains whatever bytes it already emits.
+    /// SliceCodec overrides this for Map/Set values written through framework or generated codecs;
+    /// hand-rolled collection formats are not canonicalized automatically.
+    default Serializer canonical() {
+        return this;
+    }
+
     /// Encode an object to a byte array.
     ///
     /// @param object the object to serialize

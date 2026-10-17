@@ -187,6 +187,10 @@ Aether uses a three-tier ClassLoader hierarchy to balance isolation with sharing
 - Tracks loaded artifacts with versions
 - First slice to load a dependency sets the canonical version
 - Subsequent slices check compatibility
+- Version ordering for that check (#1435): a release is newer than any of its pre-releases, and qualifier
+  tokens compare numerically where numeric (`rc9` < `rc10`). So a loaded pre-release never satisfies a
+  requester of the release it precedes: `^1.0.0` against a loaded `1.0.0-SNAPSHOT` is a conflict, while
+  `^1.0.0-SNAPSHOT` against a loaded `1.0.0` is compatible
 
 ### SliceClassLoader
 
@@ -393,7 +397,8 @@ Common failure scenarios:
 
 | Error | Cause | Resolution |
 |-------|-------|------------|
-| `Artifact not found` | JAR not in any repository | Check repository configuration |
+| `Artifact not found` | Every repository answered "absent" | Check repository configuration |
+| `Artifact unavailable, not every repository answered` | At least one repository could not answer (timeout, network, write failure); the message lists each repository's outcome in lookup order | Not evidence of loss: read the per-repository outcomes, restore the unreachable repository, and expect the deployment to retry |
 | `Manifest not found` | Missing MANIFEST.MF | Ensure slice JAR is properly built |
 | `Missing Slice-Artifact` | Incomplete manifest | Add required manifest attributes |
 | `Circular dependency` | A→B→A | Restructure slice dependencies |

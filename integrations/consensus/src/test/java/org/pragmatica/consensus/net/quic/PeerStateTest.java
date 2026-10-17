@@ -19,6 +19,7 @@ import org.pragmatica.consensus.net.quic.PeerState.Phase;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.StreamType;
 
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
@@ -31,6 +32,8 @@ import static org.mockito.Mockito.when;
 class PeerStateTest {
     private static final NodeId PEER = new NodeId("peer-1");
     private static final long T0 = 1_000_000_000L;
+    private static final NodeId LOWER = new NodeId("aaa");
+    private static final NodeId HIGHER = new NodeId("zzz");
 
     private PeerState state() {
         return PeerState.peerState(PEER, T0);
@@ -175,6 +178,144 @@ class PeerStateTest {
     }
 
     @Test
+    void attach_lowerIdDialOverRecentlyHeardHigherIdIncumbent_isDuplicate() {
+        // Ghost dial (recycled IP): the acceptor attached a handshake aimed at another peer. The
+        // incumbent was initiated by the HIGHER id, is 1s old and was heard from 500ms ago, so the
+        // lower-id link must not displace it (the #1390 convergence applies to silent incumbents only).
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(HIGHER);
+        s.attach(incumbent, T0 + 2);
+        var oneSecond = TimeUnit.SECONDS.toNanos(1);
+        s.markInbound(T0 + 2 + oneSecond / 2);
+        var result = s.attach(initiatedBy(LOWER), T0 + 2 + oneSecond);
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(result.superseded().isEmpty()).as("heard-from incumbent is not displaced").isTrue();
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).as("incumbent unchanged").isSameAs(incumbent);
+    }
+
+    @Test
+    void attach_lowerIdDialInsideTheRaceWindow_supersedesEvenAfterTheIncumbentWasHeard() {
+        // Formation dual-dial race: receipts are not symmetric across the two ends, so a heard-from
+        // incumbent that is only 100ms old must still yield to the lower-id link (#1390 convergence).
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(HIGHER);
+        s.attach(incumbent, T0 + 2);
+        var hundredMillis = TimeUnit.MILLISECONDS.toNanos(100);
+        s.markInbound(T0 + 2 + hundredMillis / 2);
+        var fresh = initiatedBy(LOWER);
+        var result = s.attach(fresh, T0 + 2 + hundredMillis);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().or((QuicPeerConnection) null)).isSameAs(incumbent);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(fresh);
+    }
+
+    @Test
+    void attach_lowerIdDialOverReceiptSilentHigherIdIncumbent_supersedes() {
+        // Control for the floor above: same shapes, but the incumbent has been silent for more than
+        // SUPERSEDE_MIN_AGE, so the lower-id link is adopted and the old one handed back to close.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(HIGHER);
+        s.attach(incumbent, T0 + 2);
+        s.markInbound(T0 + 3);
+        var silent = TimeUnit.SECONDS.toNanos(3) + 10L;
+        var fresh = initiatedBy(LOWER);
+        var result = s.attach(fresh, T0 + 3 + silent);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().or((QuicPeerConnection) null)).isSameAs(incumbent);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(fresh);
+    }
+
+    @Test
+    void attach_higherIdDialOverReceiptSilentLowerIdIncumbent_supersedes() {
+        // M5: the lower-id incumbent's peer evicted its end and redials, but our end never saw the close.
+        // 10s old, last heard 5s before the redial: the completed Hello proves the peer abandoned the
+        // old link, so it is superseded and handed back to close (before, it answered DUPLICATE until
+        // this end's own liveness sweep evicted it).
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(LOWER);
+        s.attach(incumbent, T0 + 2);
+        var fiveSeconds = TimeUnit.SECONDS.toNanos(5);
+        s.markInbound(T0 + 2 + fiveSeconds);
+        var fresh = initiatedBy(HIGHER);
+        var result = s.attach(fresh, T0 + 2 + 2 * fiveSeconds);
+        assertThat(result.result()).isEqualTo(AttachResult.RECONNECTED);
+        assertThat(result.superseded().or((QuicPeerConnection) null)).isSameAs(incumbent);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(fresh);
+    }
+
+    @Test
+    void attach_higherIdDialOverRecentlyHeardLowerIdIncumbent_isDuplicate() {
+        // Companion: the same incumbent, heard 100ms before the handshake, is a working link.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(LOWER);
+        s.attach(incumbent, T0 + 2);
+        var tenSeconds = TimeUnit.SECONDS.toNanos(10);
+        s.markInbound(T0 + 2 + tenSeconds - TimeUnit.MILLISECONDS.toNanos(100));
+        var result = s.attach(initiatedBy(HIGHER), T0 + 2 + tenSeconds);
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(result.superseded().isEmpty()).isTrue();
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(incumbent);
+    }
+
+    @Test
+    void attach_higherIdDialInsideTheRaceWindow_keepsTheLowerIdIncumbentWithoutReceipts() {
+        // Formation dual-dial race: the lower-id link that landed first keeps its place at both ends.
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(LOWER);
+        s.attach(incumbent, T0 + 2);
+        var result = s.attach(initiatedBy(HIGHER), T0 + 2 + TimeUnit.MILLISECONDS.toNanos(100));
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(incumbent);
+    }
+
+    @Test
+    void attach_receiptFloorScalesWithTheKeepaliveInterval() {
+        // A 9s floor (three 3s keepalive intervals): an incumbent heard 5s ago is still a working link,
+        // though 5s exceeds the 3s minimum that would have superseded it.
+        var s = PeerState.peerState(PEER, T0, ignored -> {}, TimeUnit.SECONDS.toNanos(9));
+        s.beginConnecting(T0 + 1);
+        var incumbent = initiatedBy(LOWER);
+        s.attach(incumbent, T0 + 2);
+        var fiveSeconds = TimeUnit.SECONDS.toNanos(5);
+        s.markInbound(T0 + 2 + fiveSeconds);
+        var result = s.attach(initiatedBy(HIGHER), T0 + 2 + 2 * fiveSeconds);
+        assertThat(result.result()).isEqualTo(AttachResult.DUPLICATE);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(incumbent);
+    }
+
+    @Test
+    void attach_flippedArrivalOrderBothEndsSilent_bothEndsKeepTheLowerIdLink() {
+        // N5: the two ends see the two dials in opposite order and one handshake is delayed past the 500ms
+        // race window (600ms here), with no receipt at either end. Both must converge on the lower-id link;
+        // before, the lower-id incumbent's end kept it but the higher-id incumbent's end yielded to the
+        // lower-id link only by the window rule, so the ends could disagree and both links died.
+        var atLowerFirst = state();
+        atLowerFirst.beginConnecting(T0 + 1);
+        var lowerLinkAtX = initiatedBy(LOWER);
+        atLowerFirst.attach(lowerLinkAtX, T0 + 2);
+        atLowerFirst.attach(initiatedBy(HIGHER), T0 + 2 + TimeUnit.MILLISECONDS.toNanos(600));
+        var atHigherFirst = state();
+        atHigherFirst.beginConnecting(T0 + 1);
+        atHigherFirst.attach(initiatedBy(HIGHER), T0 + 2);
+        var lowerLinkAtY = initiatedBy(LOWER);
+        atHigherFirst.attach(lowerLinkAtY, T0 + 2 + TimeUnit.MILLISECONDS.toNanos(600));
+        assertThat(atLowerFirst.activeConnection().or((QuicPeerConnection) null)).isSameAs(lowerLinkAtX);
+        assertThat(atHigherFirst.activeConnection().or((QuicPeerConnection) null)).isSameAs(lowerLinkAtY);
+    }
+
+    private static QuicPeerConnection initiatedBy(NodeId initiator) {
+        var chan = mock(QuicChannel.class);
+        when(chan.isActive()).thenReturn(true);
+        return QuicPeerConnection.quicPeerConnection(PEER, initiator, chan);
+    }
+
+    @Test
     void evict_from_CONNECTED_moves_to_EVICTED_and_returns_the_connection() {
         var s = state();
         s.beginConnecting(T0 + 1);
@@ -185,6 +326,22 @@ class PeerStateTest {
         assertThat(evicted.or((QuicPeerConnection) null)).isSameAs(conn);
         assertThat(s.phase()).isEqualTo(Phase.EVICTED);
         assertThat(s.activeConnection().isEmpty()).isTrue();
+    }
+
+    /// #1578: an eviction that names a connection other than the bound one is a no-op — the caller
+    /// learned "dead" from a stale reference, and the bound connection is its replacement.
+    @Test
+    void evictIfBound_withAReplacedConnection_leavesTheBoundOneConnected() {
+        var s = state();
+        s.beginConnecting(T0 + 1);
+        var replaced = liveConnection();
+        var bound = liveConnection();
+        s.attach(bound, T0 + 2);
+        assertThat(s.evictIfBound(replaced, T0 + 3).isEmpty()).isTrue();
+        assertThat(s.phase()).isEqualTo(Phase.CONNECTED);
+        assertThat(s.activeConnection().or((QuicPeerConnection) null)).isSameAs(bound);
+        assertThat(s.evictIfBound(bound, T0 + 4).or((QuicPeerConnection) null)).isSameAs(bound);
+        assertThat(s.phase()).isEqualTo(Phase.EVICTED);
     }
 
     @Test
@@ -210,6 +367,53 @@ class PeerStateTest {
         assertThat(removed.or((QuicPeerConnection) null)).isSameAs(conn);
         assertThat(s.phase()).isEqualTo(Phase.REMOVED);
         assertThat(s.offlineBufferSize()).isZero();
+    }
+
+    private record UnbufferedMsg(byte tag) implements Message.Wired, org.pragmatica.consensus.net.NoOfflineBuffering {
+        @Override
+        public StreamType streamType() {
+            return StreamType.FORWARD;
+        }
+    }
+
+    /// #1973: a NoOfflineBuffering message offered while the peer has no live connection is NOT buffered (it would be delivered on
+    /// reattach, after its caller was told it was not sent); an ordinary message is still queued in the same phases.
+    @Test
+    void offerOutbound_noOfflineBufferingMessage_isNeverBuffered_inEveryNonConnectedPhase() {
+        var init = state();
+        var connecting = state();
+        var evicted = state();
+
+        connecting.beginConnecting(T0 + 1);
+        evicted.attach(liveConnection(), T0 + 1);
+        evicted.evict(T0 + 2);
+
+        for (var s : List.of(init, connecting, evicted)) {
+            var phase = s.phase();
+
+            assertThat(s.offerOutbound(new UnbufferedMsg((byte) 1))).as(phase.toString()).isNotInstanceOf(OfferOutcome.Queued.class);
+            assertThat(s.offlineBufferSize()).as(phase + ": nothing buffered").isZero();
+            assertThat(s.offerOutbound(out((byte) 2))).as(phase + ": control, an ordinary message").isInstanceOf(OfferOutcome.Queued.class);
+            assertThat(s.offlineBufferSize()).as(phase + ": the ordinary one is buffered").isEqualTo(1);
+        }
+    }
+
+    /// #2011: a NewBatch left in the offline buffer would be re-delivered on reattach with no time limit, long after its
+    /// slot decided and beyond the committed-batch window, re-queuing a committed batch. It must never be buffered.
+    @Test
+    void offerOutbound_rabiaNewBatch_isNeverBuffered_whileOtherConsensusFramesStillAre() {
+        var evicted = state();
+
+        evicted.attach(liveConnection(), T0 + 1);
+        evicted.evict(T0 + 2);
+        var newBatch = new org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch<org.pragmatica.consensus.Command>(
+            NodeId.nodeId("sender").unwrap(), org.pragmatica.consensus.StateMachine.Batch.emptyBatch());
+        var propose = new org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose<org.pragmatica.consensus.Command>(
+            NodeId.nodeId("sender").unwrap(), org.pragmatica.consensus.rabia.Phase.ZERO, org.pragmatica.consensus.StateMachine.Batch.emptyBatch());
+
+        assertThat(evicted.offerOutbound(newBatch)).isInstanceOf(OfferOutcome.NotBuffered.class);
+        assertThat(evicted.offlineBufferSize()).isZero();
+        assertThat(evicted.offerOutbound(propose)).as("control: a Propose is still buffered").isInstanceOf(OfferOutcome.Queued.class);
     }
 
     @Test
@@ -281,11 +485,63 @@ class PeerStateTest {
         s.offerOutbound(out((byte) 1));
         s.offerOutbound(out((byte) 2));
         s.offerOutbound(out((byte) 3));
-        var drained = s.drainOfflineBuffer();
+        var drained = s.drainOfflineBuffer(T0 + 10).live();
         assertThat(drained).hasSize(3);
-        assertThat(((TestMsg) drained.get(0)).tag()).isEqualTo((byte) 1);
-        assertThat(((TestMsg) drained.get(1)).tag()).isEqualTo((byte) 2);
-        assertThat(((TestMsg) drained.get(2)).tag()).isEqualTo((byte) 3);
+        assertThat(((TestMsg) drained.get(0).message()).tag()).isEqualTo((byte) 1);
+        assertThat(((TestMsg) drained.get(1).message()).tag()).isEqualTo((byte) 2);
+        assertThat(((TestMsg) drained.get(2).message()).tag()).isEqualTo((byte) 3);
+        assertThat(s.offlineBufferSize()).isZero();
+    }
+
+    /// #1996: the expiry instant is a boundary. Flushed ONE nanosecond before it the frame is delivered; flushed AT it, the
+    /// caller's own timer has fired at the same instant, so the frame is dropped. The pair pins `>=` against both `>` and
+    /// an off-by-one in the other direction.
+    @Test
+    void drainOfflineBuffer_expiryBoundary_deliversBeforeTheInstant_dropsAtIt() {
+        var life = org.pragmatica.lang.io.TimeSpan.timeSpan(500).nanos();
+        var before = state();
+        var at = state();
+
+        before.beginConnecting(T0 + 1);
+        at.beginConnecting(T0 + 1);
+        before.offerOutbound(out((byte) 1), PeerState.Expiry.after(life, T0));
+        at.offerOutbound(out((byte) 1), PeerState.Expiry.after(life, T0));
+
+        var beforeInstant = before.drainOfflineBuffer(T0 + 499);
+        var atInstant = at.drainOfflineBuffer(T0 + 500);
+
+        assertThat(beforeInstant.live()).as("one nanosecond before the instant, still deliverable").hasSize(1);
+        assertThat(beforeInstant.expired()).isEmpty();
+        assertThat(atInstant.live()).as("at the instant the caller has given up").isEmpty();
+        assertThat(atInstant.expired()).hasSize(1);
+    }
+
+    @Test
+    void drainOfflineBuffer_neverExpiry_isDeliveredHoweverLateTheFlush() {
+        var s = state();
+
+        s.beginConnecting(T0 + 1);
+        s.offerOutbound(out((byte) 1));
+        var drained = s.drainOfflineBuffer(T0 + Long.MAX_VALUE / 2);
+
+        assertThat(drained.live()).hasSize(1);
+        assertThat(drained.expired()).isEmpty();
+    }
+
+    @Test
+    void drainOfflineBuffer_splitsLiveFromExpired_keepingFifoOrderOfTheLive() {
+        var s = state();
+
+        s.beginConnecting(T0 + 1);
+        s.offerOutbound(out((byte) 1), PeerState.Expiry.after(org.pragmatica.lang.io.TimeSpan.timeSpan(100).nanos(), T0));
+        s.offerOutbound(out((byte) 2), PeerState.Expiry.after(org.pragmatica.lang.io.TimeSpan.timeSpan(1000).nanos(), T0));
+        s.offerOutbound(out((byte) 3), PeerState.Expiry.NEVER);
+
+        var drained = s.drainOfflineBuffer(T0 + 200);
+
+        assertThat(drained.expired()).hasSize(1);
+        assertThat(((TestMsg) drained.expired().getFirst()).tag()).isEqualTo((byte) 1);
+        assertThat(drained.live()).extracting(entry -> ((TestMsg) entry.message()).tag()).containsExactly((byte) 2, (byte) 3);
         assertThat(s.offlineBufferSize()).isZero();
     }
 
@@ -299,7 +555,7 @@ class PeerStateTest {
         s.beginConnecting(T0 + 4);      // EVICTED → CONNECTING
         assertThat(s.offlineBufferSize()).isEqualTo(1);
         s.attach(liveConnection(), T0 + 5); // CONNECTING → CONNECTED
-        assertThat(s.drainOfflineBuffer()).hasSize(1);
+        assertThat(s.drainOfflineBuffer(T0 + 10).live()).hasSize(1);
     }
 
     @Test

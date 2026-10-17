@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.generator;
 
 import javax.annotation.processing.Filer;
@@ -397,12 +396,10 @@ public class FactoryClassGenerator {
 
         for (var method : model.methods()) {
             for (var interceptor : method.interceptors()) {
-                var key = interceptor.deduplicationKey();
+                var key = provisionKey(interceptor, method);
 
                 if (!seen.containsKey(key)) {
-                    var varName = issueUniqueName(lowercaseFirst(interceptor.variableSafeName())
-                                                + "_" + interceptor.variableSafeConfigSection(),
-                                                  issuedNames);
+                    var varName = issueUniqueName(variableNameFor(interceptor, method), issuedNames);
 
                     seen.put(key, new InterceptorEntry(varName, interceptor, method));
                 }
@@ -410,6 +407,37 @@ public class FactoryClassGenerator {
         }
 
         return new ArrayList<>(seen.values());
+    }
+
+    /// Identity of one provisioned interceptor instance.
+    ///
+    /// Interceptors are shared per `(type, config)` on purpose — one rate-limit bucket, one circuit
+    /// breaker, one cache NAME across every method that names the section. A method carrying a
+    /// `@Key` is the exception: the extractor is provisioned INTO the instance
+    /// (`withKeyExtractor`), and an instance shared across methods captured the first method's
+    /// extractor and applied it to every other method's request type (#279). So a key-bearing
+    /// method gets its own instance; what is shared underneath (the named cache or store) is shared
+    /// by the factory's registry, not by the generated variable.
+    private static String provisionKey(ResourceQualifierModel interceptor, MethodModel method) {
+        return carriesKey(method)
+               ? interceptor.deduplicationKey() + "#" + method.name()
+               : interceptor.deduplicationKey();
+    }
+
+    private static boolean carriesKey(MethodModel method) {
+        var singleKey = method.keyExtractor().isPresent();
+        var multiParamKey = method.multiParamKeyParam().isPresent();
+
+        return singleKey || multiParamKey;
+    }
+
+    /// Generated variable name: type + section, plus the method for a per-method instance.
+    private String variableNameFor(ResourceQualifierModel interceptor, MethodModel method) {
+        var base = lowercaseFirst(interceptor.variableSafeName()) + "_" + interceptor.variableSafeConfigSection();
+
+        return carriesKey(method)
+               ? base + "_" + method.name()
+               : base;
     }
 
     /// Returns `candidate` if unused, otherwise the first free `candidate_N` (N starting at 2).
@@ -788,7 +816,7 @@ public class FactoryClassGenerator {
         var interceptorVarMap = new LinkedHashMap<String, String>();
 
         for (var ie : allInterceptors) {
-            interceptorVarMap.put(ie.qualifier().deduplicationKey(),
+            interceptorVarMap.put(provisionKey(ie.qualifier(), ie.firstMethod()),
                                   ie.varName());
         }
 
@@ -816,7 +844,7 @@ public class FactoryClassGenerator {
 
                 for (int i = interceptors.size() - 1; i >= 0; i--) {
                     var ic = interceptors.get(i);
-                    var icVarName = interceptorVarMap.get(ic.deduplicationKey());
+                    var icVarName = interceptorVarMap.get(provisionKey(ic, method));
 
                     expression = icVarName + ".intercept(" + expression + ")";
                 }
@@ -875,15 +903,15 @@ public class FactoryClassGenerator {
         var configSection = escapeJavaString(qualifier.configSection());
         var typeName = importTracker.use(qualifier.resourceType().toString());
 
-        return findKeyInfoForInterceptor(entry, model).fold(() -> "ctx.resources().provide(" + typeName
-                                                                 + ".class, \"" + configSection
-                                                                 + "\")",
-                                                            ki -> generateProvideWithContext(configSection,
-                                                                                             ki,
-                                                                                             entry.firstMethod(),
-                                                                                             model,
-                                                                                             importTracker,
-                                                                                             typeName));
+        return findKeyInfoForInterceptor(entry).fold(() -> "ctx.resources().provide(" + typeName
+                                                          + ".class, \"" + configSection
+                                                          + "\")",
+                                                     ki -> generateProvideWithContext(configSection,
+                                                                                      ki,
+                                                                                      entry.firstMethod(),
+                                                                                      model,
+                                                                                      importTracker,
+                                                                                      typeName));
     }
 
     private String generateProvideWithContext(String configSection,
@@ -909,26 +937,25 @@ public class FactoryClassGenerator {
              + "))";
     }
 
-    private Option<KeyExtractorInfo> findKeyInfoForInterceptor(InterceptorEntry entry, SliceModel model) {
-        for (var method : model.methods()) {
-            for (var interceptor : method.interceptors()) {
-                if (interceptor.deduplicationKey().equals(entry.qualifier().deduplicationKey())) {
-                    if (method.keyExtractor().isPresent()) {
-                        return method.keyExtractor();
-                    }
-                    // Check multi-param key resolution — use simple record name (inner record of factory class)
-                    if (method.multiParamKeyParam().isPresent()) {
-                        var keyParam = method.multiParamKeyParam().expect("checked with isPresent above");
-                        var requestRecordName = capitalize(method.name()) + "Request";
+    /// The key extractor of the method this entry was provisioned FOR — its own, never another
+    /// method's. A key-bearing method has its own entry (see [#provisionKey]); an entry shared by
+    /// key-less methods has none to offer.
+    private Option<KeyExtractorInfo> findKeyInfoForInterceptor(InterceptorEntry entry) {
+        var method = entry.firstMethod();
 
-                        return KeyExtractorInfo.single(keyParam.type().toString(),
-                                                       keyParam.name(),
-                                                       requestRecordName)
-                                               .fold(_ -> Option.none(),
-                                                     Option::some);
-                    }
-                }
-            }
+        if (method.keyExtractor().isPresent()) {
+            return method.keyExtractor();
+        }
+        // Check multi-param key resolution — use simple record name (inner record of factory class)
+        if (method.multiParamKeyParam().isPresent()) {
+            var keyParam = method.multiParamKeyParam().expect("checked with isPresent above");
+            var requestRecordName = capitalize(method.name()) + "Request";
+
+            return KeyExtractorInfo.single(keyParam.type().toString(),
+                                           keyParam.name(),
+                                           requestRecordName)
+                                   .fold(_ -> Option.none(),
+                                         Option::some);
         }
 
         return Option.none();
@@ -1026,9 +1053,9 @@ public class FactoryClassGenerator {
         var seenSignatures = new HashSet<String>();
         var visited = new HashSet<String>();
         var queue = new ArrayDeque<TypeElement>();
+
         queue.add(interfaceElement);
         visited.add(interfaceElement.getQualifiedName().toString());
-
         while (!queue.isEmpty()) {
             var iface = queue.removeFirst();
 
@@ -1038,7 +1065,6 @@ public class FactoryClassGenerator {
                 }
 
                 var method = (ExecutableElement) enclosed;
-
                 // Only ABSTRACT methods are proxy candidates. javax.lang.model reports implicit
                 // modifiers, so this one check excludes static, default, AND Java 9+ private
                 // interface methods — a modifier-skip list missed private and changed generated
@@ -1052,26 +1078,24 @@ public class FactoryClassGenerator {
                 if (!seenSignatures.add(methodSignature(method, resolved))) {
                     continue;
                 }
-
                 // A dependency method taking a MessageContext cannot be proxied: the caller has no
                 // envelope to draw one from. Left unchecked this generates silently — a phantom
                 // request record pairing the event with a context nobody can supply.
                 if (takesMessageContext(resolved)) {
                     reportContextTakingDependencyMethod(dep, method);
-
                     continue;
                 }
 
-                extractPromiseTypeArg(resolved.getReturnType())
-                                     .map(responseType -> toProxyMethodInfo(method, resolved, responseType))
+                extractPromiseTypeArg(resolved.getReturnType()).map(responseType -> toProxyMethodInfo(method,
+                                                                                                      resolved,
+                                                                                                      responseType))
                                      .onPresent(methods::add)
                                      .onEmpty(() -> reportNonPromiseDependencyMethod(dep, method, resolved));
             }
 
             for (var superType : iface.getInterfaces()) {
-                if (superType instanceof DeclaredType dt
-                    && dt.asElement() instanceof TypeElement superInterface
-                    && visited.add(superInterface.getQualifiedName().toString())) {
+                if (superType instanceof DeclaredType dt && dt.asElement() instanceof TypeElement superInterface && visited.add(superInterface.getQualifiedName()
+                                                                                                                                              .toString())) {
                     queue.addLast(superInterface);
                 }
             }
@@ -1086,7 +1110,8 @@ public class FactoryClassGenerator {
     private String methodSignature(ExecutableElement method, ExecutableType resolved) {
         var params = resolved.getParameterTypes()
                              .stream()
-                             .map(t -> types.erasure(t).toString())
+                             .map(t -> types.erasure(t)
+                                            .toString())
                              .collect(Collectors.joining(","));
 
         return method.getSimpleName() + "(" + params + ")";
@@ -1320,16 +1345,12 @@ public class FactoryClassGenerator {
                            + "(" + paramType
                            + " " + declared.getFirst().name()
                            + ") {");
-                out.println("                return delegate." + method.name()
-                           + "(" + declared.getFirst().name()
-                           + ");");
+                out.println("                return delegate." + method.name() + "(" + declared.getFirst().name() + ");");
             } else {
                 var paramList = declared.stream()
                                         .map(p -> importTracker.use(p.type().toString()) + " " + p.name())
                                         .collect(Collectors.joining(", "));
-                var argList = declared.stream()
-                                      .map(MethodParameterInfo::name)
-                                      .collect(Collectors.joining(", "));
+                var argList = declared.stream().map(MethodParameterInfo::name).collect(Collectors.joining(", "));
 
                 out.println("            public Promise<" + responseType
                            + "> " + method.name()
@@ -1539,10 +1560,7 @@ public class FactoryClassGenerator {
             // #386 D5: the dispatcher delivers a ContextualEvent; the adapter unpacks it so the user
             // method keeps its declared (T event, MessageContext context) shape.
             var contextualEvent = importTracker.use(CONTEXTUAL_EVENT_TYPE);
-            var eventType = importTracker.use(method.payloadParameters()
-                                                    .getFirst()
-                                                    .type()
-                                                    .toString());
+            var eventType = importTracker.use(method.payloadParameters().getFirst().type().toString());
 
             out.println("                        contextual -> " + delegateExpr
                        + "." + method.name()
@@ -1616,9 +1634,8 @@ public class FactoryClassGenerator {
     /// diagnostic. Now only a genuine Promise extracts; everything else reports (see
     /// [#reportNonPromiseDependencyMethod]).
     private Option<String> extractPromiseTypeArg(TypeMirror type) {
-        if (type instanceof DeclaredType dt
-            && dt.asElement() instanceof TypeElement typeElement
-            && typeElement.getQualifiedName().contentEquals(PROMISE_QUALIFIED_NAME)) {
+        if (type instanceof DeclaredType dt && dt.asElement() instanceof TypeElement typeElement && typeElement.getQualifiedName()
+                                                                                                               .contentEquals(PROMISE_QUALIFIED_NAME)) {
             var typeArgs = dt.getTypeArguments();
 
             if (!typeArgs.isEmpty()) {
@@ -1634,19 +1651,17 @@ public class FactoryClassGenerator {
     private boolean takesMessageContext(ExecutableType resolved) {
         var params = resolved.getParameterTypes();
 
-        return !params.isEmpty()
-               && MethodModel.MESSAGE_CONTEXT_TYPE.equals(types.erasure(params.getLast()).toString());
+        return ! params.isEmpty() && MethodModel.MESSAGE_CONTEXT_TYPE.equals(types.erasure(params.getLast()).toString());
     }
 
     private void reportContextTakingDependencyMethod(DependencyModel dep, ExecutableElement method) {
-        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName()
-                                                                             .toString();
+        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName().toString();
 
         processingEnv.getMessager()
                      .printMessage(Diagnostic.Kind.ERROR,
                                    MessageContextRule.dependencyMethodViolation(declaringInterface,
-                                                                                 method.getSimpleName().toString(),
-                                                                                 dep.interfaceQualifiedName()),
+                                                                                method.getSimpleName().toString(),
+                                                                                dep.interfaceQualifiedName()),
                                    method);
     }
 
@@ -1657,9 +1672,10 @@ public class FactoryClassGenerator {
     /// inherited methods: the message names the declaring interface (where the signature lives)
     /// and, when that differs from the dependency the slice factory takes, the inheriting
     /// dependency; the return type is reported after `asMemberOf` substitution.
-    private void reportNonPromiseDependencyMethod(DependencyModel dep, ExecutableElement method, ExecutableType resolved) {
-        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName()
-                                                                             .toString();
+    private void reportNonPromiseDependencyMethod(DependencyModel dep,
+                                                  ExecutableElement method,
+                                                  ExecutableType resolved) {
+        var declaringInterface = ((TypeElement) method.getEnclosingElement()).getQualifiedName().toString();
         var inheritedNote = declaringInterface.equals(dep.interfaceQualifiedName())
                             ? ""
                             : " (inherited by dependency %s)".formatted(dep.interfaceQualifiedName());
@@ -1667,9 +1683,9 @@ public class FactoryClassGenerator {
         processingEnv.getMessager()
                      .printMessage(Diagnostic.Kind.ERROR,
                                    "Slice dependency method %s.%s returns %s; a slice dependency method must return Promise<T> — slice-to-slice calls are remote-capable, and local shapes (Result, Option, bare values) belong on a step or leaf%s".formatted(declaringInterface,
-                                                                                                                                                                                                                                                            method.getSimpleName(),
-                                                                                                                                                                                                                                                            resolved.getReturnType(),
-                                                                                                                                                                                                                                                            inheritedNote),
+                                                                                                                                                                                                                                                               method.getSimpleName(),
+                                                                                                                                                                                                                                                               resolved.getReturnType(),
+                                                                                                                                                                                                                                                               inheritedNote),
                                    method);
     }
 
@@ -1761,6 +1777,29 @@ public class FactoryClassGenerator {
 
     /// Compute the slice artifact coordinate string for resource cleanup.
     /// Format: "groupId:artifactId-kebab-case-slice-name"
+    /// The slice's BASE coordinate — `groupId:artifactId-kebab(SliceName)`, two segments.
+    ///
+    /// NOT the runtime release identity, and deliberately not made into one (#892). The generated
+    /// `stop()` passes this to `resources.releaseAll(...)`, but a deployed slice is identified by
+    /// its `Artifact` — `groupId:artifactId:version`, three segments — and this processor has no
+    /// version to emit: `SliceProcessor`'s `@SupportedOptions` carries `slice.groupId` and
+    /// `slice.artifactId` only, and compile-time code cannot know the version a slice is deployed
+    /// under in any case. EVERY generated `stop()` therefore carries a coordinate no registered
+    /// scope can match — structurally, since this method emits exactly one colon and
+    /// `Artifact.asString()` exactly two, and a Maven coordinate cannot contain a colon. No count
+    /// is quoted: it is a function of which modules are built when it is taken.
+    ///
+    /// `SliceLoadingContext.SliceAwareResourceProvider.releaseAll` now substitutes the deployed
+    /// `Artifact` string it already provisions under, so the argument emitted here is consulted
+    /// only where that wrapper is absent — a context with no slice id, which provisions
+    /// unattributed and releases nothing either way. Widening this to a versioned coordinate would
+    /// restore exactly the two-independently-computed-strings shape that produced the defect.
+    ///
+    /// That warning is ENFORCED, not merely stated — a comment carries none of the verification of
+    /// the code it sits in. A widened literal that agrees with the deployed artifact classifies as
+    /// `EXACT` and is silent; one that has DRIFTED classifies as `FOREIGN` and is refused and logged
+    /// at WARNING. Pinned by `SliceLoadingContextReleaseIdentityTest$AgreementClassification
+    /// .between_isForeign_whenAWidenedGeneratorCoordinateHasDriftedFromTheDeployedVersion`.
     private String computeSliceArtifactCoordinate(String sliceName) {
         var options = processingEnv.getOptions();
         var groupId = options.getOrDefault("slice.groupId", "unknown");
@@ -1807,7 +1846,8 @@ public class FactoryClassGenerator {
         var provideCall = resource.isPublisher() || resource.isStreamResource()
                           ? "ctx.resources().provide(" + typeName
                            + ".class, \"" + configSection
-                           + "\", " + streamProvisioningContext(resource, importTracker) + ")"
+                           + "\", " + streamProvisioningContext(resource, importTracker)
+                           + ")"
                           : "ctx.resources().provide(" + typeName + ".class, \"" + configSection + "\")";
         // Typed-topic publisher: wrap the provisioned Publisher in a TypedPublisher bound to the
         // single-source Topic<T> constant named by @ResourceQualifier(config = "<CONSTANT>") (#396),
@@ -1885,7 +1925,9 @@ public class FactoryClassGenerator {
     ///
     /// Supported parameter types:
     ///   - Primitives: String, int, long, double, boolean → require* methods
-    ///   - Optional primitives: Option<String>, Option<Integer>, etc. → get* wrapped in Result.success
+    ///   - Optional primitives: Option<String> → getString wrapped in Result.success; Option<Integer>,
+    ///     Option<Long>, Option<Double>, Option<Boolean> → get* directly (they answer Result<Option<T>>,
+    ///     so a malformed value fails the chain, #1098)
     ///   - Collections: List<String> → requireStringList
     ///   - Value objects: any type with a JBCT factory `typeName(String) → Result<T>` → requireString + flatMap
     ///   - Optional value objects: Option<T> where T has a factory → getString + map with unwrap
@@ -1981,13 +2023,15 @@ public class FactoryClassGenerator {
     private enum ConfigAccessKind {
         /// Primitive types: String, int, long, double, boolean → requireX(section, key)
         REQUIRED_PRIMITIVE,
-        /// Optional primitives: Option<String>, Option<Integer>, etc. → Result.success(getX(section, key))
+        /// Optional primitives: Option<String> → Result.success(getString(section, key));
+        /// Option<Integer>/Long/Double/Boolean → getX(section, key), already a Result<Option<T>>
         OPTIONAL_PRIMITIVE,
         /// String list: List<String> → requireStringList(section, key)
         REQUIRED_STRING_LIST,
         /// Value object with JBCT factory: requireString(section, key).flatMap(Type::factory)
         REQUIRED_VALUE_OBJECT,
-        /// Optional value object: Result.success(getString(section, key).map(s -> Type.factory(s).expect(...)))
+        /// Optional value object: getString(section, key).fold(() -> success(none), s -> Type.factory(s).map(Option::some)),
+        /// a Result<Option<T>> whose failure is the factory's own cause (#1429)
         OPTIONAL_VALUE_OBJECT
     }
 
@@ -1997,6 +2041,9 @@ public class FactoryClassGenerator {
                                     String facadeMethod,
                                     String valueObjectType,
                                     String valueObjectFactory) {
+        /// Fully qualified, so the emitted expression needs no import and cannot collide with a user `Option`.
+        private static final String OPTION_FQN = "org.pragmatica.lang.Option";
+
         static ConfigFieldParam fromParameter(javax.lang.model.element.VariableElement param,
                                               Elements elements,
                                               Types types,
@@ -2052,7 +2099,7 @@ public class FactoryClassGenerator {
                                             "",
                                             "");
             }
-            // Optional value object: Option<Url> → getString + map with factory unwrap
+            // Optional value object: Option<Url> → getString folded into Result<Option<Url>> via the factory
             var voInfo = findValueObjectFactory(innerTypeName, elements);
 
             if (voInfo != null) {
@@ -2195,9 +2242,15 @@ public class FactoryClassGenerator {
 
             return switch (kind) {
                 case REQUIRED_PRIMITIVE, REQUIRED_STRING_LIST -> configCall;
-                case OPTIONAL_PRIMITIVE -> "Result.success(" + configCall + ")";
+                // #1098: the typed get* answer Result<Option<T>> — a malformed value is a failure
+                // that must reach Result.all; only getString is a bare Option<String> to wrap.
+                case OPTIONAL_PRIMITIVE -> "getString".equals(facadeMethod)
+                                           ? "Result.success(" + configCall + ")"
+                                           : configCall;
                 case REQUIRED_VALUE_OBJECT -> configCall + ".flatMap(" + valueObjectType + "::" + valueObjectFactory + ")";
-                case OPTIONAL_VALUE_OBJECT -> "Result.success(" + configCall + ".map(s -> " + valueObjectType + "." + valueObjectFactory + "(s).expect(\"optional " + valueObjectType + " value validated at config load time\")))";
+                // #1429: a present but invalid value fails the chain with the factory's own cause, as the
+                // typed get* readers do since #1098; nothing validates it earlier, so it must never be unwrapped.
+                case OPTIONAL_VALUE_OBJECT -> configCall + ".fold(() -> Result.<" + OPTION_FQN + "<" + valueObjectType + ">>success(" + OPTION_FQN + ".none()), s -> " + valueObjectType + "." + valueObjectFactory + "(s).map(" + OPTION_FQN + "::some))";
             };
         }
     }
@@ -2233,17 +2286,18 @@ public class FactoryClassGenerator {
     private record CodecTypeEntry(String qualifiedName,
                                   String simpleName,
                                   CodecTypeKind kind,
-                                  List<ComponentInfo> components) {
+                                  List<ComponentInfo> components,
+                                  boolean hasUnknownSentinel) {
         static CodecTypeEntry record(String qualifiedName, String simpleName, List<ComponentInfo> components) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.RECORD, components);
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.RECORD, components, false);
         }
 
-        static CodecTypeEntry enumType(String qualifiedName, String simpleName) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.ENUM, List.of());
+        static CodecTypeEntry enumType(String qualifiedName, String simpleName, boolean hasUnknownSentinel) {
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.ENUM, List.of(), hasUnknownSentinel);
         }
 
         static CodecTypeEntry opaque(String qualifiedName, String simpleName) {
-            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.OPAQUE, List.of());
+            return new CodecTypeEntry(qualifiedName, simpleName, CodecTypeKind.OPAQUE, List.of(), false);
         }
     }
 
@@ -2265,7 +2319,6 @@ public class FactoryClassGenerator {
         var codecEntries = plan.entries();
 
         reportTagCollisions(model, codecEntries);
-
         out.println();
         out.println("            @Override");
         out.println("            public SliceCodec codec(SliceCodec parent) {");
@@ -2315,9 +2368,9 @@ public class FactoryClassGenerator {
                 processingEnv.getMessager()
                              .printMessage(Diagnostic.Kind.ERROR,
                                            "Codec tag collision in slice %s: %s and %s both derive tag %d. Wire tags come from the fully-qualified type name, so rename one of them.".formatted(model.simpleName(),
-                                                                                                                                                                                              existing,
-                                                                                                                                                                                              name,
-                                                                                                                                                                                              CodecTagSpace.hashedTag(name)));
+                                                                                                                                                                                                existing,
+                                                                                                                                                                                                name,
+                                                                                                                                                                                                CodecTagSpace.hashedTag(name)));
             }
         }
     }
@@ -2327,14 +2380,14 @@ public class FactoryClassGenerator {
     /// These are types the slice must be able to serialize but whose codecs cannot be generated
     /// here — the node has to supply them (`@CodecFor`). Listing them makes their absence fail at
     /// slice load, naming the type, instead of at the first write with `No codec registered`.
-    private void generateRequiredTypesArgument(PrintWriter out, List<String> requiredTypes, ImportTracker importTracker) {
+    private void generateRequiredTypesArgument(PrintWriter out,
+                                               List<String> requiredTypes,
+                                               ImportTracker importTracker) {
         if (requiredTypes.isEmpty()) {
             return;
         }
 
-        var classLiterals = requiredTypes.stream()
-                                         .map(name -> name + ".class")
-                                         .collect(Collectors.joining(", "));
+        var classLiterals = requiredTypes.stream().map(name -> name + ".class").collect(Collectors.joining(", "));
 
         out.println("                    " + importTracker.use("java.util.Set") + ".of(" + classLiterals + "));");
     }
@@ -2350,10 +2403,18 @@ public class FactoryClassGenerator {
         switch (entry.kind()) {
             case RECORD -> generateRecordTypeCodec(out, entry, comma);
             case ENUM -> {
+                // #964: never the raw values()[readCompact(buf)] index. An ordinal past this node's
+                // values() array threw AIOOBE, both transport boundaries caught it, and the message was
+                // dropped silently and permanently. Which form is emitted depends on whether the
+                // application enum can represent a value it does not know — see declaresUnknownSentinel.
+                var reader = entry.hasUnknownSentinel()
+                             ? "(codec, buf) -> SliceCodec.readEnum(buf, " + name + ".values(), " + name + ".UNKNOWN)"
+                             : "(codec, buf) -> SliceCodec.readEnumOrFail(buf, " + name + ".values(), " + name + ".class)";
+
                 out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");
                 out.println("                        SliceCodec.deterministicTag(\"" + escapeJavaString(fqn) + "\"),");
                 out.println("                        (codec, buf, val) -> SliceCodec.writeCompact(buf, val.ordinal()),");
-                out.println("                        (codec, buf) -> " + name + ".values()[SliceCodec.readCompact(buf)])" + comma);
+                out.println("                        " + reader + ")" + comma);
             }
             case OPAQUE -> {
                 out.println("                    new SliceCodec.TypeCodec<" + name + ">(" + name + ".class,");
@@ -2434,7 +2495,7 @@ public class FactoryClassGenerator {
 
     /// Collect codec entries for the type arguments of resource-qualified factory parameters.
     ///
-    /// A resource such as `DurableEntity<String, OrderState>` serializes its type arguments through
+    /// A resource such as `DurableEntity<String, OrderState, OrderCommand>` serializes its type arguments through
     /// the slice codec, yet the author never names them in a slice method signature — the fixture
     /// this was found on deliberately keeps entity state off the HTTP boundary. Walking
     /// `model.methods()` alone therefore leaves the state type without a codec and the first write
@@ -2476,18 +2537,16 @@ public class FactoryClassGenerator {
                                               List<String> requiredTypes) {
         // Type variables and wildcards name no class, so there is nothing to register and nothing to
         // check for at startup either.
-        if (! (typeArgument instanceof DeclaredType dt) || ! (dt.asElement() instanceof TypeElement te)) {
+        if (! (typeArgument instanceof DeclaredType dt) || !(dt.asElement() instanceof TypeElement te)) {
             return;
         }
 
         var qualifiedName = getQualifiedTypeName(typeArgument);
-
         // FrameworkCodecs already registers String, the boxed primitives, List/Set/Map and the
         // org.pragmatica.lang carriers, so those need neither generation nor a checklist entry.
         if (isFrameworkOrJdkType(qualifiedName) || !seen.add(qualifiedName)) {
             return;
         }
-
         // A SEALED interface names no codec of its own, but its permitted subclasses do. Without this
         // recursion a sealed command hierarchy (`Mutator` variants) landed in `requiredTypes` with no
         // codec generated for any variant, so the type checked out at compile time and failed at the
@@ -2642,12 +2701,49 @@ public class FactoryClassGenerator {
         }
     }
 
+    /// Whether an application enum can represent a value this node does not know (#964).
+    ///
+    /// Framework `@Codec` enums are REQUIRED to declare a last `UNKNOWN` by `CodecProcessor`, because
+    /// they are the cluster's own protocol: a node has to keep parsing a consensus or membership
+    /// message whose enum field it cannot read. Slice enums are APPLICATION types, so the same rule
+    /// would be an API tax on every enum an author ever puts in a durable entity. Here it is opt-in:
+    /// declare `UNKNOWN` last and an unrecognised ordinal decodes to it with the rest of the message
+    /// intact; leave it off and the decode fails with a typed exception naming the enum and the
+    /// ordinal, which drops the message exactly as before but ATTRIBUTABLY.
+    ///
+    /// To make it mandatory for slice enums too, turn the warning below into a
+    /// `Diagnostic.Kind.ERROR` — the generator already emits the correct call for both shapes.
+    private boolean declaresUnknownSentinel(TypeElement te) {
+        var constants = te.getEnclosedElements()
+                          .stream()
+                          .filter(enclosed -> enclosed.getKind() == ElementKind.ENUM_CONSTANT)
+                          .map(enclosed -> enclosed.getSimpleName()
+                                                   .toString())
+                          .toList();
+
+        if (!constants.isEmpty() && "UNKNOWN".equals(constants.getLast())) {
+            return true;
+        }
+
+        processingEnv.getMessager()
+                     .printMessage(Diagnostic.Kind.WARNING,
+                                   "Enum " + te.getQualifiedName()
+                                  + " crosses the wire as an ordinal but declares no UNKNOWN sentinel,"
+                                  + " so a node running an older copy of it cannot decode a constant added"
+                                  + " later — the whole message is dropped, with a named error rather than"
+                                  + " silently (#964). Append UNKNOWN as the LAST constant to have"
+                                  + " unrecognised values decode to it and keep the rest of the message.",
+                                   te);
+
+        return false;
+    }
+
     private CodecTypeEntry buildCodecEntryFromElement(TypeElement te,
                                                       String qualifiedName,
                                                       String simpleName,
                                                       ImportTracker importTracker) {
         if (te.getKind() == ElementKind.ENUM) {
-            return CodecTypeEntry.enumType(qualifiedName, simpleName);
+            return CodecTypeEntry.enumType(qualifiedName, simpleName, declaresUnknownSentinel(te));
         }
 
         if (te.getKind() == ElementKind.RECORD) {

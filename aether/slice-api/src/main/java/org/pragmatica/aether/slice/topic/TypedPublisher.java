@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.topic;
 
 import org.pragmatica.aether.slice.Publisher;
@@ -11,7 +10,7 @@ import org.pragmatica.lang.Unit;
 
 /// Thin typed facade over the existing string-keyed publish machinery: it binds a [Topic] to a
 /// runtime [Publisher] (in production the `TopicPublisher` provisioned for the topic's name) and
-/// forwards every publish to it unchanged.
+/// forwards every publish to it unchanged, including a caller's idempotency key.
 ///
 /// The facade adds no delivery behaviour of its own — it is a `Publisher<T>` itself, so it drops
 /// into any code that already accepts the erased `Publisher`, keeping the existing pub/sub path
@@ -36,5 +35,11 @@ public record TypedPublisher<T>(Topic<T> topic, Publisher<T> delegate) implement
     @Override
     public Promise<Unit> publish(T message) {
         return delegate.publish(message);
+    }
+
+    /// Forwards the caller's idempotency key unchanged (#1237) — the inherited default would drop it.
+    @Override
+    public Promise<Unit> publish(T message, String idempotencyKey) {
+        return delegate.publish(message, idempotencyKey);
     }
 }

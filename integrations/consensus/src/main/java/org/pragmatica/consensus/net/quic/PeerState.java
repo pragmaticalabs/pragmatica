@@ -24,8 +24,10 @@ import java.util.function.Consumer;
 import java.util.function.LongUnaryOperator;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NoOfflineBuffering;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
 
 import static org.pragmatica.lang.Option.option;
@@ -89,11 +91,40 @@ import static org.pragmatica.lang.Option.option;
 /// Distinct from Netty writability backpressure (which owns a separate per-stream queue on
 /// the `QuicStreamChannel`). Holds serialized broadcast/send payloads while the peer is
 /// CONNECTING or EVICTED. Bounded by [OFFLINE_BUFFER_MAX]; overflow drops the oldest entry
-/// (consensus messages are idempotent — the stall detector re-broadcasts stuck rounds).
+/// (consensus messages are idempotent — the stall detector re-broadcasts stuck rounds). Also bounded in TIME: every
+/// entry carries an [Expiry] (the caller's deadline, or the cluster-wide cap) and a drain drops what has passed it (#1996).
 ///
 /// Drained by [drainOfflineBuffer] right after `attach` completes. Cleared by `authoritativeRemove`.
 public final class PeerState {
     public static final int OFFLINE_BUFFER_MAX = 10_000;
+
+    /// The instant after which a buffered request frame must not be delivered (#1996): the moment its caller gives up.
+    /// Absolute `System.nanoTime` of the sending node, never put on the wire — the buffer is sender-side, so the
+    /// clock is the one that measured the caller's timeout. A frame is expired AT its instant, not after it: the
+    /// caller's timer fires at that same instant, so a frame flushed exactly then has an answer nobody collects.
+    public record Expiry(boolean bounded, long atNanos) {
+        /// No expiry: the frame is held until the buffer's size bound evicts it. The transport never offers this (#1996: every
+        /// frame it buffers expires at its caller's deadline or the cluster cap); it exists for the PeerState-level API and its tests.
+        public static final Expiry NEVER = new Expiry(false, 0L);
+
+        public static Expiry after(TimeSpan lifetime, long nowNanos) {
+            return new Expiry(true, nowNanos + lifetime.nanos());
+        }
+
+        public boolean passed(long nowNanos) {
+            return bounded && nowNanos - atNanos >= 0;
+        }
+    }
+
+    /// One buffered frame and the instant its caller stops waiting for it.
+    public record Buffered(Message.Wired message, Expiry expiry) {}
+
+    /// What [#drainOfflineBuffer] found at flush time: frames still worth delivering, and frames whose caller had
+    /// already given up, which the caller of the drain must report rather than deliver (#1996).
+    public record Drained(List<Buffered> live, List<Message.Wired> expired) {
+        public static final Drained EMPTY = new Drained(List.of(), List.of());
+    }
+
     /// Transition-record cause constants. Stable machine-readable identifiers consumed by the
     /// Wave-1 journal AND matched by `QuicClusterNetwork.emitPeerTransition` to map each
     /// transition onto exactly one typed transport emission.
@@ -111,6 +142,12 @@ public final class PeerState {
     /// dual-dial race during formation (kept as DUPLICATE) from a post-partition reconnect
     /// (adopted) where `isActive()` lies indefinitely on a partition-orphaned link.
     private static final long SUPERSEDE_MIN_AGE_NANOS = TimeUnit.SECONDS.toNanos(3);
+    /// A lower-id link that arrives within this long of the incumbent's attach is the dual-dial race
+    /// of formation, and BOTH ends must converge on the lower-id link (#1390) whatever traffic the
+    /// incumbent already carried: receipts are not symmetric across the two ends, so the receipt floor
+    /// must not apply inside the race. Beyond it the incumbent is an established link. A guess sized
+    /// well above a loopback/LAN handshake and below the ~2s a ghost-dialed link lives (cloud run 1).
+    private static final long CONVERGENCE_WINDOW_NANOS = TimeUnit.MILLISECONDS.toNanos(500);
 
     public enum Phase {
         INIT,
@@ -132,6 +169,10 @@ public final class PeerState {
 
         /// Peer is REMOVED — message dropped.
         record Dropped() implements OfferOutcome {}
+
+        /// The peer has no live connection and the message is [NoOfflineBuffering]: it was NOT buffered and
+        /// is dropped, so it can never be delivered after a reconnect.
+        record NotBuffered() implements OfferOutcome {}
     }
 
     public enum AttachResult {
@@ -177,12 +218,12 @@ public final class PeerState {
     /// Wave-5 reconnect provenance: true once the peer has reached CONNECTED (upstream has been
     /// told about it via ADD/RECONNECT); reset by [#readmit] (upstream saw the REMOVE). Guarded by `this`.
     private boolean announcedUpstream;
-    private final Deque<Message.Wired> offlineBuffer = new ArrayDeque<>();
+    private final Deque<Buffered> offlineBuffer = new ArrayDeque<>();
     /// Wall-clock-free (`System.nanoTime`) instant of the most recent inbound frame observed on
     /// this peer's link, across ALL lanes (transport keepalives, ClusterSync pongs, consensus).
     /// RECEIPT EVIDENCE ONLY (Wave 5): refreshed EXCLUSIVELY by [#markInbound] — the single
     /// inbound funnel (`QuicClusterNetwork.onMessageReceived`, post-blackhole-guard). A dial
-    /// success / attach (including a LATE attach after the per-attempt dial timeout) never
+    /// success / attach (including an attach from EVICTED — a completion after an eviction) never
     /// refreshes it: our OWN outbound handshake completing is not evidence the peer is sending
     /// to us. The CONNECTED-zombie liveness TTL sweep (`QuicClusterNetwork.sweepPeer`) pairs this
     /// receipt clock with the phase age: a link is silent-zombie only when BOTH exceed the TTL,
@@ -190,6 +231,10 @@ public final class PeerState {
     /// Blackholed inbound is intentionally NOT counted (the chaos substrate keeps the link
     /// CONNECTED yet silent), so the sweep still trips.
     private long lastInboundAtNanos;
+    /// True once [#markInbound] has ever fired: distinguishes "never heard from this peer" from a
+    /// receipt at nanoTime zero, so the cross-direction supersede floor protects only an incumbent
+    /// with positive receipt evidence. Guarded by `this`.
+    private boolean inboundObserved;
     /// Wall-clock instant (ms) at which the missing-peer reconciler is next allowed to
     /// attempt a re-dial of this peer. Zero means no reconciler attempt has been made yet
     /// (any reconciler tick may dispatch immediately). Used by `QuicClusterNetwork`'s
@@ -201,24 +246,42 @@ public final class PeerState {
     /// for this peer up to a configured cap, reset by `resetReconcileBackoff` on a
     /// successful attach.
     private long reconcileCurrentDelayMs;
+    /// How recently the peer must have been heard from for an established incumbent to survive a fresh
+    /// handshake of either direction. At least [SUPERSEDE_MIN_AGE_NANOS], and the network raises it to
+    /// three keepalive intervals so a healthy idle link is never mistaken for a silent one.
+    private final long receiptFloorNanos;
 
-    private PeerState(NodeId peerId, long nowNanos, Consumer<PeerTransitionRecord> transitionListener) {
+    private PeerState(NodeId peerId,
+                      long nowNanos,
+                      Consumer<PeerTransitionRecord> transitionListener,
+                      long receiptFloorNanos) {
         this.peerId = peerId;
         this.phaseChangedAtNanos = nowNanos;
         this.transitionListener = transitionListener;
+        this.receiptFloorNanos = Math.max(SUPERSEDE_MIN_AGE_NANOS, receiptFloorNanos);
     }
 
     public static PeerState peerState(NodeId peerId, long nowNanos) {
         return new PeerState(peerId,
                              nowNanos,
-                             ignored -> {});
+                             ignored -> {},
+                             SUPERSEDE_MIN_AGE_NANOS);
     }
 
     /// Factory with the transition-chokepoint listener (Wave 1 journal + Wave 5 emission).
     /// The listener receives one [PeerTransitionRecord] per phase mutation, invoked OUTSIDE
     /// the per-peer monitor in mutation order.
     public static PeerState peerState(NodeId peerId, long nowNanos, Consumer<PeerTransitionRecord> transitionListener) {
-        return new PeerState(peerId, nowNanos, transitionListener);
+        return new PeerState(peerId, nowNanos, transitionListener, SUPERSEDE_MIN_AGE_NANOS);
+    }
+
+    /// [#peerState(NodeId, long, Consumer)] with a receipt floor (see [#receiptFloorNanos]); values below
+    /// the 3s default are raised to it.
+    public static PeerState peerState(NodeId peerId,
+                                      long nowNanos,
+                                      Consumer<PeerTransitionRecord> transitionListener,
+                                      long receiptFloorNanos) {
+        return new PeerState(peerId, nowNanos, transitionListener, receiptFloorNanos);
     }
 
     /// Rewire the transition listener. Used by `QuicClusterNetwork.seedPeerForTests` so states
@@ -269,6 +332,7 @@ public final class PeerState {
     @Contract
     public synchronized void markInbound(long nowNanos) {
         this.lastInboundAtNanos = nowNanos;
+        this.inboundObserved = true;
     }
 
     /// Nanoseconds since the most recent inbound frame (= now − lastInboundAtNanos). Used by the
@@ -359,7 +423,13 @@ public final class PeerState {
     /// sub-millisecond dual-dial race during formation.
     private AttachOutcome attachOverConnected(QuicPeerConnection newConnection, long nowNanos) {
         if (connection != null && connection.isActive()) {
-            if (phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS) {
+            var directionOrder = connection.initiator()
+                                           .flatMap(current -> newConnection.initiator()
+                                                                            .map(current::compareTo))
+                                           .or(0);
+            // Both ends choose the physical link dialed by the lower identity, independently of
+            // arrival order. Same-direction reconnects retain the existing age-based policy.
+            if (isIncumbentKept(directionOrder, nowNanos)) {
                 return new AttachOutcome(AttachResult.DUPLICATE, Option.empty());
             }
 
@@ -379,6 +449,33 @@ public final class PeerState {
         return new AttachOutcome(AttachResult.RECONNECTED, Option.empty());
     }
 
+    /// Whether an active incumbent survives a fresh attach (true = DUPLICATE). A same-direction link
+    /// within [SUPERSEDE_MIN_AGE_NANOS] of the incumbent's phase start is a dual-dial race. Across
+    /// directions both ends prefer the link dialed by the LOWER id (#1390). A lower-id incumbent survives
+    /// while it is younger than [#receiptFloorNanos] (the race is live, and BOTH ends must keep the same
+    /// link even when one end's handshake is delayed past [CONVERGENCE_WINDOW_NANOS] and both are still
+    /// silent) or while its peer was heard within that floor; an older receipt-silent one is superseded —
+    /// a completed Hello from the verified peer proves it abandoned the old link, and answering every
+    /// redial with DUPLICATE until this end's own liveness sweep evicts it is the M5 outage. A higher-id
+    /// incumbent yields to the lower-id link inside [CONVERGENCE_WINDOW_NANOS] and survives beyond it only
+    /// while heard from. A stray handshake (a dial aimed at a recycled address) cannot tear down a
+    /// heard-from link.
+    private boolean isIncumbentKept(int directionOrder, long nowNanos) {
+        return switch (Integer.signum(directionOrder)) {
+            case -1 -> phaseAgeNanos(nowNanos) <= receiptFloorNanos || isHeardFromRecently(nowNanos);
+            case 0 -> phaseAgeNanos(nowNanos) <= SUPERSEDE_MIN_AGE_NANOS;
+            default -> !isInsideRaceWindow(nowNanos) && isHeardFromRecently(nowNanos);
+        };
+    }
+
+    private boolean isInsideRaceWindow(long nowNanos) {
+        return phaseAgeNanos(nowNanos) <= CONVERGENCE_WINDOW_NANOS;
+    }
+
+    private boolean isHeardFromRecently(long nowNanos) {
+        return inboundObserved && inboundAgeNanos(nowNanos) <= receiptFloorNanos;
+    }
+
     /// Transitions CONNECTED → EVICTED. Preserves offline buffer for reconnect drain.
     /// Returns the evicted connection for the caller to close. Empty if no-op.
     public Option<QuicPeerConnection> evict(long nowNanos) {
@@ -387,6 +484,24 @@ public final class PeerState {
         flushTransitions();
 
         return evicted;
+    }
+
+    /// #1578 — [#evict], but only while `expected` is still the bound connection. A caller that
+    /// learned a connection is dead from a reference it captured earlier (a write, a failed lane
+    /// open) must not evict whatever is bound NOW: after a duplicate dial is resolved, that is the
+    /// surviving connection, and evicting it tears down the pair the resolution just kept.
+    public Option<QuicPeerConnection> evictIfBound(QuicPeerConnection expected, long nowNanos) {
+        var evicted = evictIfBoundInternal(expected, nowNanos);
+
+        flushTransitions();
+
+        return evicted;
+    }
+
+    private synchronized Option<QuicPeerConnection> evictIfBoundInternal(QuicPeerConnection expected, long nowNanos) {
+        return connection == expected
+               ? evictInternal(nowNanos)
+               : Option.empty();
     }
 
     private synchronized Option<QuicPeerConnection> evictInternal(long nowNanos) {
@@ -410,8 +525,9 @@ public final class PeerState {
     /// CONNECTING → EVICTED transition so the caller emits diagnostics / re-dials exactly once.
     /// No-op (returns `false`) from any other phase — distinct from [#evict], which only handles
     /// the CONNECTED → EVICTED stale-link path. EVICTED is dial-eligible via [#beginConnecting].
-    /// A LATE dial completion after this eviction still attaches normally ([#attach] from
-    /// EVICTED) — provenance decides ACCEPTED vs RECONNECTED.
+    /// A dial whose socket is still open when this eviction happens may complete afterwards and attach
+    /// normally ([#attach] from EVICTED) — provenance decides ACCEPTED vs RECONNECTED. The network's
+    /// per-attempt timeout closes the evicted attempt's socket, so a timed-out attempt never does (#1578).
     public boolean evictStaleConnecting(long nowNanos) {
         var evicted = evictStaleConnectingInternal(nowNanos);
 
@@ -492,36 +608,57 @@ public final class PeerState {
     /// as-is, serialized lazily at the single write/drain site, retaining its lane); `Dropped`
     /// when the peer is REMOVED.
     public synchronized OfferOutcome offerOutbound(Message.Wired message) {
+        return offerOutbound(message, Expiry.NEVER);
+    }
+
+    /// As [#offerOutbound(Message.Wired)], for a request frame whose caller stops waiting at `expiry`: a frame held
+    /// past that instant is dropped by [#drainOfflineBuffer] instead of delivered (#1996).
+    public synchronized OfferOutcome offerOutbound(Message.Wired message, Expiry expiry) {
         return switch (phase) {
             case CONNECTED -> new OfferOutcome.SendNow(connection);
             case REMOVED -> new OfferOutcome.Dropped();
-            case INIT, CONNECTING, EVICTED -> {
-                var wasFull = offlineBuffer.size() >= OFFLINE_BUFFER_MAX;
-
-                if (wasFull) {
-                    offlineBuffer.pollFirst();
-                }
-
-                offlineBuffer.offerLast(message);
-                yield new OfferOutcome.Queued(wasFull);
-            }
+            case INIT, CONNECTING, EVICTED -> message instanceof NoOfflineBuffering
+                                              ? new OfferOutcome.NotBuffered()
+                                              : buffered(message, expiry);
         };
     }
 
-    /// Drain the offline buffer. Intended to be called right after `attach` returns ACCEPTED.
-    /// The returned list is a snapshot of the buffered messages (each re-sent on its own lane
-    /// at drain time); internal deque is left empty.
-    public synchronized List<Message.Wired> drainOfflineBuffer() {
-        if (offlineBuffer.isEmpty()) {
-            return List.of();
+    /// Called only from [#offerOutbound], under the per-peer monitor.
+    private OfferOutcome buffered(Message.Wired message, Expiry expiry) {
+        var wasFull = offlineBuffer.size() >= OFFLINE_BUFFER_MAX;
+
+        if (wasFull) {
+            offlineBuffer.pollFirst();
         }
 
-        var drained = new ArrayList<Message.Wired>(offlineBuffer.size());
+        offlineBuffer.offerLast(new Buffered(message, expiry));
 
-        drained.addAll(offlineBuffer);
+        return new OfferOutcome.Queued(wasFull);
+    }
+
+    /// Drain the offline buffer. Intended to be called right after `attach` returns ACCEPTED.
+    /// `live` is a snapshot of the frames to re-send (each on its own lane at drain time); `expired` holds the frames
+    /// whose caller had given up by `nowNanos` — never delivered, so the caller of the drain can report them (#1996).
+    /// The internal deque is left empty.
+    public synchronized Drained drainOfflineBuffer(long nowNanos) {
+        if (offlineBuffer.isEmpty()) {
+            return Drained.EMPTY;
+        }
+
+        var live = new ArrayList<Buffered>(offlineBuffer.size());
+        var expired = new ArrayList<Message.Wired>();
+
+        for (var entry : offlineBuffer) {
+            if (entry.expiry().passed(nowNanos)) {
+                expired.add(entry.message());
+            } else {
+                live.add(entry);
+            }
+        }
+
         offlineBuffer.clear();
 
-        return drained;
+        return new Drained(live, expired);
     }
 
     /// Size of the offline buffer. Used for diagnostics and metrics.

@@ -31,7 +31,8 @@ public sealed interface ManagementApiResponses {
                           boolean isLeader,
                           String leader,
                           String buildTimestamp,
-                          String buildVersion) {}
+                          String buildVersion,
+                          org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfiguration) {}
 
     record ClusterInfo(int nodeCount, String leaderId, boolean quorate, List<NodeInfo> nodes) {}
 
@@ -144,7 +145,67 @@ public sealed interface ManagementApiResponses {
 
     record ScaleResponse(String status, String artifact, int instances) {}
 
-    record BlueprintResponse(String status, String blueprint, int slices) {}
+    /// #759 review (C1, C2) — this response is a PUBLISH-TIME SNAPSHOT: `SliceRoutes.deployStatus`
+    /// computes it the instant `publishFromArtifact` commits the blueprint, before any node has
+    /// attempted to load a slice [mechanism: `SliceRoutes.java:233-244`]. `pending` (zero
+    /// `activeInstances`, zero `failedInstances`) is therefore the NORMAL first answer for a fresh
+    /// deploy, not a rare or degraded case — `degraded`/`deployed` are reachable here only on a
+    /// redeploy of an already-active artifact set, or under `BEST_EFFORT` where a prior partial
+    /// failure is still visible in `deploymentMap()`. `targetInstances` / `activeInstances` /
+    /// `failedInstances` let an operator tell total outage from healthy without a follow-up call.
+    /// Callers that need the terminal outcome MUST poll `statusUrl` [mechanism: the CLI's
+    /// `aether/cli/.../DeploymentWait.java:32-40,52-67` implements exactly this poll-until-terminal
+    /// loop, driven from `AetherCli.java:2261-2268,2273-2275`].
+    ///
+    /// `statusUrl` always points at `GET /api/v1/blueprints/status/{id}`, and — as of #759 Phase 2 —
+    /// that endpoint IS durable across a rollback: under the default `ALL_OR_NOTHING` atomicity, a
+    /// deterministic failure triggers `unloadBlueprintSlices`, which removes the blueprint's
+    /// `AppBlueprintKey` from the KV store entirely [mechanism: `ClusterDeploymentState.java:2139-2158`],
+    /// but the terminal `FAILED`/`ROLLED_BACK` `DeploymentOutcomeValue` written at the same time survives
+    /// that removal and is what `statusUrl` now reads first — see `SliceRoutes.handleGetBlueprintStatus`.
+    /// A `statusUrl` GET issued after rollback therefore answers `200` with `overallStatus` `FAILED` or
+    /// `ROLLED_BACK`, `cause`, and `failingSlices`, `slices = []` (nothing left to report per-slice once
+    /// `AppBlueprintKey` is gone), not `404`; `404 BLUEPRINT_NOT_FOUND` now means only "never reached a
+    /// terminal outcome and nothing live in the KV store either" (never attempted, still in flight, or
+    /// crash-orphaned — see `BlueprintService.outcome`).
+    ///
+    /// #759 review round 3 BLOCKING 3: the `slices = []` degenerate shape above is specific to
+    /// `ALL_OR_NOTHING`, where the failing rollback removes `AppBlueprintKey` outright. Under
+    /// `BEST_EFFORT`, a deterministic slice failure records the same kind of terminal outcome
+    /// (`ClusterDeploymentState.recordBestEffortFailureOutcome`) WITHOUT removing `AppBlueprintKey` —
+    /// siblings keep serving. A `statusUrl` GET against a still-live blueprint with a terminal outcome
+    /// therefore answers `200` `PARTIAL`, with real `slices` per-instance counts alongside the same
+    /// `cause`/`failingSlices`/`timestampMs` — never the degenerate `slices = []` shape, and never a
+    /// bare `FAILED`/`ROLLED_BACK` that discards what is still running. The `DeploymentFailed` event
+    /// on `GET /api/events` remains the timeline of when and what failed
+    /// [mechanism: `ClusterEventAggregator.java:881-885` — `details.artifact` names the failed
+    /// artifact; `MAX_RETAINED_EVENTS = 10_000` (`:139`) bounds retention for the whole
+    /// cluster-event stream, not per-artifact; `StatusRoutes.java:114-115` — the route accepts
+    /// only `sinceEpoch`/`sinceSeq`, no server-side artifact filter, so a caller must fetch and
+    /// filter client-side on `details.artifact`]; `statusUrl`'s outcome record is the durable summary,
+    /// not a replacement for the timeline. See `aether/docs/reference/management-api.md`
+    /// `POST /api/blueprints/deploy`.
+    /// #1336: `rejectedStreamBindings` lists every `[streams.*]` declaration the publish accepted the
+    /// blueprint WITHOUT binding — each by its TOML `field`, the `rule` it failed and the diagnostic.
+    /// Empty when every declaration bound. A slice using a rejected alias fails to load naming that
+    /// alias; this is where the operator learns why, at the point where it is actionable. Rules whose
+    /// violation leaves nothing to bind refuse the publish instead (`422`), so they never appear here.
+    /// #1564: `warnings` lists every deploy-time warning, each by `field`, `rule` and message; empty when none.
+    record BlueprintResponse(String status,
+                             String blueprint,
+                             int targetInstances,
+                             int activeInstances,
+                             int failedInstances,
+                             String statusUrl,
+                             List<RejectedStreamBinding> rejectedStreamBindings,
+                             List<DeployWarning> warnings) {}
+
+    record RejectedStreamBinding(String field, String rule, String message) {}
+
+    /// #1564: a deploy-time warning — a stream validation warning, or a replication warning a stream, durable topic
+    /// or durable entity declaration raised (`replication-factor-below-three`, `confirmation-equals-replication-factor`,
+    /// `confirmation-factor-owner-only`) — by its TOML `field`, the `rule` (the warning's code) and the sentence.
+    record DeployWarning(String field, String rule, String message) {}
 
     record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
 
@@ -154,9 +215,31 @@ public sealed interface ManagementApiResponses {
 
     record BlueprintSliceInfo(String artifact, int instances, boolean isDependency, List<String> dependencies) {}
 
-    record BlueprintStatusResponse(String id, String overallStatus, List<BlueprintSliceStatus> slices) {}
+    /// #759 Phase 2 — `overallStatus` carries `"FAILED"`/`"ROLLED_BACK"` from
+    /// `BlueprintService.outcome(id)` when a terminal failure outcome exists, taking priority over
+    /// whatever `get(id)` currently holds (including a stale non-empty value left by rollback). In
+    /// that case `slices` is the true degenerate empty list — outcome-sourced responses do not carry
+    /// live per-slice detail — and `cause`/`failingSlices`/`timestampMs` are populated from the
+    /// outcome record. For every other response (`SUCCEEDED` outcome or no outcome at all, `get(id)`
+    /// present), `slices` carries the live snapshot as before and `cause`/`failingSlices` are the
+    /// degenerate empty-string/empty-list, `timestampMs` is `0` — never fabricated. See
+    /// `SliceRoutes.handleGetBlueprintStatus`.
+    record BlueprintStatusResponse(String id,
+                                   String overallStatus,
+                                   List<BlueprintSliceStatus> slices,
+                                   String cause,
+                                   List<String> failingSlices,
+                                   long timestampMs) {}
 
-    record BlueprintSliceStatus(String artifact, int targetInstances, int activeInstances, String status) {}
+    /// #759 — `failedInstances` surfaces `SliceState.FAILED` entries still present in
+    /// `deploymentMap()` at response time (e.g. `BEST_EFFORT` deploys, or a query that lands before
+    /// `ALL_OR_NOTHING` rollback cleanup runs); `status` folds it in as `"FAILED"`, taking priority
+    /// over the target/active comparison. See `SliceRoutes.determineSliceDeploymentStatus`.
+    record BlueprintSliceStatus(String artifact,
+                                int targetInstances,
+                                int activeInstances,
+                                int failedInstances,
+                                String status) {}
 
     record BlueprintDeleteResponse(String status, String id) {}
 
@@ -184,9 +267,9 @@ public sealed interface ManagementApiResponses {
                                         double avgLatencyMs,
                                         long totalInvocations,
                                         long totalGcPauseMs,
-                                        double latencyP50,
-                                        double latencyP95,
-                                        double latencyP99,
+                                        double intervalMeanLatencyP50,
+                                        double intervalMeanLatencyP95,
+                                        double intervalMeanLatencyP99,
                                         double errorRate,
                                         long eventCount,
                                         long sampleCount,
@@ -196,8 +279,9 @@ public sealed interface ManagementApiResponses {
     /// boundary, leaving no external observer able to measure coordination load on a core node.
     /// LIVE monotonic totals (not minute aggregates): a differencing consumer needs raw totals over
     /// its own window, the same contract `/metrics/transport` serves. NODE-LOCAL scope — each core
-    /// answers for itself. `pendingBatches` is a level; `avgDecisionLatencyMs` is derived over the
-    /// cumulative counts.
+    /// answers for itself. `pendingBatches` and `oldestPendingBatchAgeMs` are levels (the age is 0 when
+    /// nothing is pending, #1117); `applyTimeoutCount` is the monotonic total of applies never answered
+    /// within the apply timeout; `avgDecisionLatencyMs` is derived over the cumulative counts.
     record ConsensusMetricsResponse(String role,
                                     Option<String> leaderId,
                                     int pendingBatches,
@@ -208,14 +292,16 @@ public sealed interface ManagementApiResponses {
                                     long fastPathCount,
                                     long syncSuccessCount,
                                     long syncFailureCount,
-                                    double avgDecisionLatencyMs) {}
+                                    double avgDecisionLatencyMs,
+                                    long oldestPendingBatchAgeMs,
+                                    long applyTimeoutCount) {}
 
     record DerivedMetricsResponse(double requestRate,
                                   double errorRate,
                                   double gcRate,
-                                  double latencyP50,
-                                  double latencyP95,
-                                  double latencyP99,
+                                  double intervalMeanLatencyP50,
+                                  double intervalMeanLatencyP95,
+                                  double intervalMeanLatencyP99,
                                   double eventLoopSaturation,
                                   double heapSaturation,
                                   double cpuTrend,
@@ -314,8 +400,6 @@ public sealed interface ManagementApiResponses {
     record ThresholdSetResponse(String status, String metric, double warning, double critical) {}
 
     record ThresholdRemovedResponse(String status, String metric) {}
-
-    record AlertsClearedResponse(String status) {}
 
     record AlertsResponse(List<AlertManager.AlertView> active, List<AlertManager.AlertHistoryView> history) {}
 
@@ -546,7 +630,7 @@ public sealed interface ManagementApiResponses {
                                      List<ClusterGenerationCommunity> communities,
                                      List<ClusterGenerationPartition> partitions) {}
 
-    record EpochInfo(long rabiaTerm, long localCounter) {}
+    record EpochInfo(long incarnation, long rabiaTerm, long localCounter) {}
 
     record ClusterGenerationCore(int desiredSize, List<ClusterGenerationMember> members) {}
 
@@ -583,13 +667,43 @@ public sealed interface ManagementApiResponses {
 
     record GovernorInfo(String governorId, String community, int memberCount, List<String> members) {}
 
+    /// #1652 — `GET /cluster/communities`.
+    record CommunitiesResponse(List<CommunityInfo> communities) {}
+
+    /// #1652 — one community: the union of its committed `CommunityValue` (state, targetSize, role,
+    /// createdAt, dissolvedAt) and its committed roster (governorId, members, communityTerm). A half with
+    /// no committed record is `null`, never a fabricated default. `liveMembers` is the LEADER's
+    /// instantaneous observation, not committed state — `null` when the serving node cannot observe it.
+    record CommunityInfo(String communityId,
+                         Option<String> state,
+                         Option<Integer> targetSize,
+                         Option<String> role,
+                         Option<Long> createdAt,
+                         Option<Long> dissolvedAt,
+                         Option<String> governorId,
+                         List<String> members,
+                         int memberCount,
+                         Option<Long> communityTerm,
+                         Option<Integer> liveMembers) {}
+
     record CircuitBreakerStatusResponse(int consecutiveFailures, int trippedAt, long nextAllowedMs, boolean tripped) {}
 
     record CircuitBreakerResetResponse(String status, int priorFailureCount) {}
 
     record AutoHealStatusResponse(boolean enabled) {}
 
+    /// #689: one provisioned node per entry whose advertised role — as membership holds it after the
+    /// blank-downgrade merge, `""` when no label ever arrived — disagreed with the role the leader
+    /// provisioned it with at the node's last observed join; `classifiedAs` is what membership made
+    /// of the label. Leader-scoped, like the intents it is derived from.
+    record RoleMismatchEntry(String nodeId, String intendedRole, String advertisedRole, String classifiedAs) {}
+
+    record RoleMismatchesResponse(List<RoleMismatchEntry> mismatches) {}
+
     record AutoHealToggleResponse(boolean enabled, boolean previousState) {}
+
+    /// #683: what a gossip-key rotation reports back — ids only, never key material.
+    record GossipKeyRotationResponse(int currentKeyId, int previousKeyId, long rotatedAt) {}
 
     /// One desired-topology entry: how many nodes of `role` the cluster wants in `sourceName`.
     ///
@@ -657,7 +771,8 @@ public sealed interface ManagementApiResponses {
                                      boolean belowThreshold,
                                      boolean armed,
                                      CoreAbsenceSnapshot coreAbsence,
-                                     List<MembershipNodeDetail> members) {}
+                                     List<MembershipNodeDetail> members,
+                                     boolean completeClusterView) {}
 
     /// Per-peer membership detail as seen by the answering node's `MembershipFsm`: the lifecycle
     /// `state` (Observed/Member/Suspect/Departing/Dead), the incarnation high-water mark, the
@@ -679,7 +794,7 @@ public sealed interface ManagementApiResponses {
     /// the diagnostic that lets the cloud handover test verify the fence engaged. `entries` is sorted
     /// by `identity` for stable output; an empty list means no ownership of that domain is committed
     /// yet (the operator-meaningful answer, not an error).
-    record OwnershipResponse(String domain, List<OwnershipEntry> entries) {}
+    record OwnershipResponse(String domain, List<OwnershipEntry> entries, boolean completeClusterView) {}
 
     /// Per-partition/key committed-ownership + fence row: `identity` is the domain-specific
     /// partition/key (community id, DHT partition id, or `{stream}:{partition}`), `owner` the
@@ -699,12 +814,15 @@ public sealed interface ManagementApiResponses {
     /// complete view; when false, `hrwOwner` names the node to re-query. `ownerHeadOffset` is the
     /// answering node's local next-expected offset (head + 1) — on the owner it is the true tail used
     /// to spot a CAUGHT_UP replica whose `confirmedOffset` lags it (#333 write-idle residual).
+    /// `ownerActivationBlock` is why the answering node's owner promotion of the partition waits for an
+    /// operator (#1555: a divergent peer, or members unreachable past the alarm window), `""` when it does not.
     record StreamReplicasResponse(String stream,
                                   int partition,
                                   String hrwOwner,
                                   boolean servedByOwner,
                                   long ownerHeadOffset,
                                   long earliestRetainedOffset,
+                                  String ownerActivationBlock,
                                   List<ReplicaStateDetail> replicas) {}
 
     /// Per-replica state row: `state` is the `ReplicationState` name (`SYNCING` / `CAUGHT_UP` /
@@ -743,8 +861,24 @@ public sealed interface ManagementApiResponses {
 
     /// #488 declarative-consumer view for THIS node. `attachedSubscriptions` is the count actually
     /// subscribed here, which for a correctly assigned consumer equals the number of partitions this
-    /// node was assigned — not the stream's partition count.
-    record DeclarativeConsumersResponse(int attachedSubscriptions, List<DeclarativeConsumerDetail> consumers) {}
+    /// node was assigned — not the stream's partition count. `cursorCommitFailureCount` (#654) is the
+    /// node-wide count of cursor commits — final flush at detach, or periodic checkpoint — that
+    /// failed or did not settle within their shutdown bound; see the redelivery contract on
+    /// `org.pragmatica.aether.stream.StreamConsumerRuntime#close`. It is not reset by a redeploy or a
+    /// reconcile, only by a node restart.
+    ///
+    /// `attachSkippedNoLocalSliceCount` (#1389) is the node-wide count of times this node was named for
+    /// partitions it could not consume because the slice is not loaded here — counted once per entry into
+    /// that state per declaration, and once per attach that found the bridge gone mid-pass, matching the
+    /// WARN lines one for one. It is NOT a partition count. It rises when a durable group is assigned
+    /// here and consumed nowhere; paired with `attachedSubscriptions` staying flat, that is the liveness
+    /// gap, whose recovery is the leader reassigning the partitions once the deployment map stops naming
+    /// this node ACTIVE, or the slice activating here. Same lifetime as `cursorCommitFailureCount`: only
+    /// a node restart resets it.
+    record DeclarativeConsumersResponse(int attachedSubscriptions,
+                                        long cursorCommitFailureCount,
+                                        long attachSkippedNoLocalSliceCount,
+                                        List<DeclarativeConsumerDetail> consumers) {}
 
     /// One declared `[streams.X]` consumer as this node sees it.
     ///
@@ -777,8 +911,21 @@ public sealed interface ManagementApiResponses {
     /// bootstrap window; `consumerNode` is additionally absent when nothing can consume the partition.
     record DeclarativeConsumerAssignment(int partition, Option<String> consumerNode, Option<String> ownerNode) {}
 
-    /// `committedOffset` is the next offset this consumer will read — one past the last delivered event.
-    record DeclarativeConsumerPartition(int partition, long committedOffset, boolean stalled) {}
+    /// `committedOffset` is the next offset this consumer will read — one past the last delivered
+    /// event. `lastCursorCommitFailure` (#654) is this partition's most recent cursor commit failure
+    /// detail while the consumer stays attached, empty when its last commit succeeded — same
+    /// empty-for-absent convention as `DeclarativeConsumerDetail#diagnostic`. `deadLetterInFlight` /
+    /// `retryInFlight` (#1266): the delivery loop is held behind a dead-letter append or a scheduled
+    /// retry of the head event — a frozen offset with all three `false` is a quiet partition.
+    /// `awaitingCursorFetch`: the consumer has not started at all, because its cursor fetch keeps failing
+    /// and is being retried.
+    record DeclarativeConsumerPartition(int partition,
+                                        long committedOffset,
+                                        boolean stalled,
+                                        String lastCursorCommitFailure,
+                                        boolean deadLetterInFlight,
+                                        boolean retryInFlight,
+                                        boolean awaitingCursorFetch) {}
 
     /// Per-stream hydration row: `partitionsDeclared` the configured partition count,
     /// `ringsMaterialized` the rings actually built on this node (gated below declared on non-replicas),
@@ -848,7 +995,11 @@ public sealed interface ManagementApiResponses {
                                 int newCount,
                                 long configVersion) {}
 
-    record UpgradeRequest(String targetVersion) {}
+    /// `expectedVersion` is the committed `configVersion` the operator read before asking (#1424), the same
+    /// optimistic fence apply-config and scale carry. A primitive `long`, so an omitted or `null` field is
+    /// refused at decode (400) rather than read as the `0` wildcard; an explicit `0` against a populated config
+    /// is refused as an unfenced overwrite (409). BREAKING for a client that omitted it.
+    record UpgradeRequest(String targetVersion, long expectedVersion) {}
 
     record UpgradeResponse(String status, String from, String to) {}
 
@@ -915,31 +1066,12 @@ public sealed interface ManagementApiResponses {
     /// ring clockwise.
     record DhtReplicationEntry(String key, List<String> nodes) {}
 
-    /// Request shape for `POST /api/nodes/promote/{id}` (P-NEW-E, 2026-05-21).
-    /// Promotes a single node from its current role to `targetRole`, by writing a
-    /// fresh `ActivationDirectiveValue` under `ActivationDirectiveKey(nodeId)`
-    /// via consensus. The downstream `ClusterDeploymentManager` consumes the
-    /// `ActivationDirectivePutReceived` event and drives the role-aware node
-    /// machinery (`ForwardingClusterNode` / `SwitchableClusterNode`) to align
-    /// runtime behavior to the new role.
-    ///
-    /// Accepted `targetRole` values: `"CORE"` (case-insensitive `"core"`),
-    /// `"WORKER"` (case-insensitive `"worker"`). Any other value yields a
-    /// 400-style validation failure. The CORE → WORKER and WORKER → CORE
-    /// transitions are both supported.
-    ///
-    /// Route target is `LEADER` — the leader is the consensus writer; the
-    /// management plane forwards the request automatically when posted to a
-    /// follower. See `aether/docs/internal/production-readiness-followup-2026-05-21.md`
-    /// P-NEW-E.
+    /// Compatibility request for acknowledging an existing immutable node role.
+    /// CORE, WORKER and SPOT are accepted case-insensitively. A different role is refused
+    /// with IMMUTABLE_ROLE (409); an unknown node returns 404. No consensus write occurs.
     record PromoteNodeRequest(String targetRole) {}
 
-    /// Response shape for `POST /api/nodes/promote/{id}`. `previousRole` reflects
-    /// the role observed in the KV-Store ActivationDirective at the start of the
-    /// request (`"CORE"` when no directive existed — every joining node defaults
-    /// to CORE until an operator promotes it). `newRole` is the role just
-    /// written. `nodeId` is the target node. `success=true` is returned only
-    /// once the consensus write succeeds.
+    /// Same-role acknowledgement only: previousRole equals newRole and no directive is changed.
     record PromoteNodeResponse(boolean success, String nodeId, String previousRole, String newRole, String message) {}
 
     /// Wire shape for `GET /api/versions` (#198 §11.3) — the version registries of the versioned
@@ -956,13 +1088,20 @@ public sealed interface ManagementApiResponses {
     ///
     /// A partition this node has never folded is ABSENT from `checkpointedThrough` rather than reported
     /// as `0`: "nothing to say about it" and "checkpointed through offset 0" are different claims.
+    ///
+    /// `checkpointLag` (#1302, #1330) is, per partition this node OWNS, the log head minus the COMMITTED
+    /// checkpoint in consensus KV — how far a recovery would replay. A replica reports none (its fold is a
+    /// read-side cache), and the baseline is never this node's own save record, which a fenced save leaves
+    /// claiming coverage the cluster refused. Its node-wide maximum is the
+    /// `entity.checkpoint.lag.max` metric the alert threshold evaluates; this map names the partition.
     record EntityCheckpointsResponse(List<EntityKeyspaceCheckpointView> keyspaces) {}
 
     record EntityKeyspaceCheckpointView(String keyspace,
                                         int partitionCount,
                                         long writes,
                                         long failures,
-                                        Map<Integer, Long> checkpointedThrough) {}
+                                        Map<Integer, Long> checkpointedThrough,
+                                        Map<Integer, Long> checkpointLag) {}
 
     /// Per-keyspace HOSTING view (#634-3, entity hosting-set fold-in, owner-ruled 2026-08-24): the set
     /// of nodes with a committed per-node registration IS the candidate set the leader mints entity-arc

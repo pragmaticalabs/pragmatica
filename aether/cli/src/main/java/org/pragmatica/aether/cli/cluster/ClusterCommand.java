@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.AetherCli;
@@ -12,7 +11,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
 
-@Command(name = "cluster", description = "Cluster lifecycle management", subcommands = {ClusterInitCommand.class, ClusterBootstrapCommand.class, ClusterScaffoldCommand.class, ClusterListCommand.class, ClusterUseCommand.class, ClusterRemoveCommand.class, ClusterStatusCommand.class, ClusterProvisioningCommand.class, ClusterMembershipCommand.class, ClusterOwnershipCommand.class, ClusterExportCommand.class, ClusterApplyCommand.class, ClusterDrainCommand.class, ClusterDestroyCommand.class, ClusterScaleCommand.class, ClusterUpgradeCommand.class, ClusterMigrateCommand.class, ClusterTopologyCommand.class, ClusterJournalCommand.class, ClusterGovernorsCommand.class, ClusterGenerationCommand.class, ClusterAwaitQuiescedCommand.class, ClusterCreateKeyCommand.class, ClusterRotateKeyCommand.class, ClusterRevokeKeyCommand.class, ClusterListKeysCommand.class})
+@Command(name = "cluster", description = "Cluster lifecycle management", subcommands = {ClusterInitCommand.class, ClusterBootstrapCommand.class, ClusterScaffoldCommand.class, ClusterListCommand.class, ClusterUseCommand.class, ClusterRemoveCommand.class, ClusterStatusCommand.class, ClusterProvisioningCommand.class, ClusterMembershipCommand.class, ClusterOwnershipCommand.class, ClusterCommunitiesCommand.class, ClusterExportCommand.class, ClusterApplyCommand.class, ClusterDrainCommand.class, ClusterClearUnconfirmedCommand.class, ClusterDestroyCommand.class, ClusterScaleCommand.class, ClusterUpgradeCommand.class, ClusterUpgradeStatusCommand.class, ClusterUpgradePauseCommand.class, ClusterUpgradeResumeCommand.class, ClusterUpgradeAbortCommand.class, ClusterMigrateCommand.class, ClusterTopologyCommand.class, ClusterJournalCommand.class, ClusterGovernorsCommand.class, ClusterGenerationCommand.class, ClusterAwaitQuiescedCommand.class, ClusterCreateKeyCommand.class, ClusterRotateKeyCommand.class, ClusterRotateGossipKeyCommand.class, ClusterRevokeKeyCommand.class, ClusterListKeysCommand.class})
 @Contract
 public class ClusterCommand implements Runnable {
     @CommandLine.ParentCommand

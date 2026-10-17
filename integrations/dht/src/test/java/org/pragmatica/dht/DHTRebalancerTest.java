@@ -472,7 +472,7 @@ class DHTRebalancerTest {
         public void send(NodeId target, ProtocolMessage message) {
             captured.add(new CapturedMessage(target, message));
             if (message instanceof DHTMessage.MigrationDataResponse response && response.ackRequested()) {
-                ackSink.get().accept(new DHTMessage.MigrationDataAck(response.requestId(), target));
+                ackSink.get().accept(new DHTMessage.MigrationDataAck(response.requestId(), target, true));
             }
         }
 

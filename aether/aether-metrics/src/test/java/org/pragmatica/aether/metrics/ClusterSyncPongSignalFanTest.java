@@ -1,20 +1,21 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
-
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
-import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.leader.LeaderManager;
-import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+
+import org.pragmatica.cluster.metrics.MetricObservation;
+import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderManager;
+import org.pragmatica.lang.Option;
+
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -25,8 +26,21 @@ class ClusterSyncPongSignalFanTest {
     private static final NodeId PEER_B = NodeId.nodeId("peer-b").unwrap();
 
     private static ClusterSyncPong readyPong(NodeId sender) {
-        return new ClusterSyncPong(sender, java.util.Map.of(), 0L, 0L, 0L, "READY",
-                                   List.of(), List.of(), List.of(), Option.none(), 1L);
+        return new ClusterSyncPong(sender,
+                                   new MetricObservation(1L,
+                                                         System.nanoTime(),
+                                                         System.currentTimeMillis(),
+                                                         java.util.Map.of()),
+                                   1L,
+                                   0L,
+                                   0L,
+                                   0L,
+                                   0L,
+                                   "READY",
+                                   List.of(),
+                                   List.of(),
+                                   List.of(),
+                                   Option.none());
     }
 
     @Nested
@@ -42,10 +56,8 @@ class ClusterSyncPongSignalFanTest {
 
             fan.fan(readyPong(PEER_A));
             assertThat(fan.readinessSnapshot()).containsKey(PEER_A);
-
             leaderManager.setLeader(false);
             fan.fan(readyPong(PEER_B));
-
             assertThat(fan.readinessSnapshot()).doesNotContainKey(PEER_B);
         }
     }
@@ -56,15 +68,26 @@ class ClusterSyncPongSignalFanTest {
         void fan_whenLeaderAndCandidatePresent_invokesReadyCandidateSink() {
             var leaderManager = new TestLeaderManager(true);
             var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
-            ClusterSyncPongSignalFan.ReadyCandidateSink sink =
-                (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
+            ClusterSyncPongSignalFan.ReadyCandidateSink sink = (sender, candidate) -> recorded.add(java.util.Map.entry(sender,
+                                                                                                                       candidate));
             var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager, sink);
-
-            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
-                                            List.of(), List.of(), List.of(), Option.some(PEER_A));
+            var pong = new ClusterSyncPong(OBSERVER,
+                                           new MetricObservation(0L,
+                                                                 System.nanoTime(),
+                                                                 System.currentTimeMillis(),
+                                                                 java.util.Map.of()),
+                                   0L,
+                                           0L,
+                                           0L,
+                                           0L,
+                                           0L,
+                                           "JOINING",
+                                           List.of(),
+                                           List.of(),
+                                           List.of(),
+                                           Option.some(PEER_A));
 
             fan.fan(pong);
-
             assertThat(recorded).containsExactly(java.util.Map.entry(OBSERVER, PEER_A));
         }
 
@@ -72,15 +95,26 @@ class ClusterSyncPongSignalFanTest {
         void fan_whenLeaderAndCandidateAbsent_doesNotInvokeReadyCandidateSink() {
             var leaderManager = new TestLeaderManager(true);
             var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
-            ClusterSyncPongSignalFan.ReadyCandidateSink sink =
-                (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
+            ClusterSyncPongSignalFan.ReadyCandidateSink sink = (sender, candidate) -> recorded.add(java.util.Map.entry(sender,
+                                                                                                                       candidate));
             var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager, sink);
-
-            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "READY",
-                                            List.of(), List.of(), List.of(), Option.none());
+            var pong = new ClusterSyncPong(OBSERVER,
+                                           new MetricObservation(0L,
+                                                                 System.nanoTime(),
+                                                                 System.currentTimeMillis(),
+                                                                 java.util.Map.of()),
+                                   0L,
+                                           0L,
+                                           0L,
+                                           0L,
+                                           0L,
+                                           "READY",
+                                           List.of(),
+                                           List.of(),
+                                           List.of(),
+                                           Option.none());
 
             fan.fan(pong);
-
             assertThat(recorded).isEmpty();
         }
 
@@ -88,15 +122,26 @@ class ClusterSyncPongSignalFanTest {
         void fan_whenNotLeaderAndCandidatePresent_doesNotInvokeReadyCandidateSink() {
             var leaderManager = new TestLeaderManager(false);
             var recorded = new java.util.ArrayList<java.util.Map.Entry<NodeId, NodeId>>();
-            ClusterSyncPongSignalFan.ReadyCandidateSink sink =
-                (sender, candidate) -> recorded.add(java.util.Map.entry(sender, candidate));
+            ClusterSyncPongSignalFan.ReadyCandidateSink sink = (sender, candidate) -> recorded.add(java.util.Map.entry(sender,
+                                                                                                                       candidate));
             var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager, sink);
-
-            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
-                                            List.of(), List.of(), List.of(), Option.some(PEER_A));
+            var pong = new ClusterSyncPong(OBSERVER,
+                                           new MetricObservation(0L,
+                                                                 System.nanoTime(),
+                                                                 System.currentTimeMillis(),
+                                                                 java.util.Map.of()),
+                                   0L,
+                                           0L,
+                                           0L,
+                                           0L,
+                                           0L,
+                                           "JOINING",
+                                           List.of(),
+                                           List.of(),
+                                           List.of(),
+                                           Option.some(PEER_A));
 
             fan.fan(pong);
-
             assertThat(recorded).isEmpty();
         }
 
@@ -106,19 +151,44 @@ class ClusterSyncPongSignalFanTest {
             // to NOOP. A candidate-present pong must not NPE or raise — it is silently dropped.
             var leaderManager = new TestLeaderManager(true);
             var fan = ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager);
+            var pong = new ClusterSyncPong(OBSERVER,
+                                           new MetricObservation(0L,
+                                                                 System.nanoTime(),
+                                                                 System.currentTimeMillis(),
+                                                                 java.util.Map.of()),
+                                   0L,
+                                           0L,
+                                           0L,
+                                           0L,
+                                           0L,
+                                           "JOINING",
+                                           List.of(),
+                                           List.of(),
+                                           List.of(),
+                                           Option.some(PEER_A));
 
-            var pong = new ClusterSyncPong(OBSERVER, java.util.Map.of(), 0L, 0L, 0L, "JOINING",
-                                            List.of(), List.of(), List.of(), Option.some(PEER_A));
-
-            fan.fan(pong); // must not throw
+            fan.fan(pong);  // must not throw
         }
     }
 
     @Nested
     class ReadinessView {
         private ClusterSyncPong pong(NodeId sender, String state, long incarnation) {
-            return new ClusterSyncPong(sender, java.util.Map.of(), 0L, 0L, 0L, state,
-                                       List.of(), List.of(), List.of(), Option.none(), incarnation);
+            return new ClusterSyncPong(sender,
+                                       new MetricObservation(incarnation,
+                                                             System.nanoTime(),
+                                                             System.currentTimeMillis(),
+                                                             java.util.Map.of()),
+                                   incarnation,
+                                       0L,
+                                       0L,
+                                       0L,
+                                       0L,
+                                       state,
+                                       List.of(),
+                                       List.of(),
+                                       List.of(),
+                                       Option.none());
         }
 
         private ClusterSyncPongSignalFan fan(LeaderManager leaderManager, AtomicLong clock) {
@@ -133,7 +203,6 @@ class ClusterSyncPongSignalFanTest {
             var f = fan(new TestLeaderManager(true), clock);
 
             f.fan(pong(PEER_A, "READY", 1L));
-
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
 
@@ -142,7 +211,6 @@ class ClusterSyncPongSignalFanTest {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "SYNCING", 1L));
-
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.SYNCING);
         }
 
@@ -151,7 +219,6 @@ class ClusterSyncPongSignalFanTest {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "DRAINING", 1L));
-
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.DRAINING);
         }
 
@@ -160,18 +227,19 @@ class ClusterSyncPongSignalFanTest {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "BOGUS", 1L));
-
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.SYNCING);
         }
 
+        /// The pong's `incarnation` is the sender's boot token — equality only, never ordered (owner
+        /// ruling, session 28). The first token pins the entry; a different token is another process
+        /// claiming the NodeId (terminal removal) and is ignored, never installed as a fresh entry.
         @Test
-        void fan_higherIncarnation_replacesEntry() {
+        void fan_differentBootToken_isIgnored_pinnedEntryKept() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "READY", 1L));
             f.fan(pong(PEER_A, "DRAINING", 2L));
-
-            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.DRAINING);
+            assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
 
         @Test
@@ -180,17 +248,16 @@ class ClusterSyncPongSignalFanTest {
 
             f.fan(pong(PEER_A, "SYNCING", 1L));
             f.fan(pong(PEER_A, "READY", 1L));
-
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
 
+        /// Tokens carry no order: a numerically HIGHER token is just as much another process.
         @Test
-        void fan_lowerIncarnation_ignoredAsStale() {
+        void fan_differentBootToken_numericallyHigher_isAlsoIgnored() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "READY", 5L));
-            f.fan(pong(PEER_A, "DRAINING", 2L));
-
+            f.fan(pong(PEER_A, "DRAINING", 9L));
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
 
@@ -198,9 +265,9 @@ class ClusterSyncPongSignalFanTest {
         void fan_syncingPongs_decrementCountdownThenReapWhenWarmedUp() {
             var reaped = new ArrayList<NodeId>();
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
             f.onStuckSyncing(reaped::add);
             f.warmedUp(() -> true);
-
             for (int i = 0; i <= ClusterSyncPongSignalFan.SYNC_REAP_THRESHOLD; i++) {
                 f.fan(pong(PEER_A, "SYNCING", 1L));
             }
@@ -213,14 +280,14 @@ class ClusterSyncPongSignalFanTest {
         void fan_readyPongResetsCountdown_noReapAfterPriorSyncing() {
             var reaped = new ArrayList<NodeId>();
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
             f.onStuckSyncing(reaped::add);
             f.warmedUp(() -> true);
-
             for (int i = 0; i < ClusterSyncPongSignalFan.SYNC_REAP_THRESHOLD - 1; i++) {
                 f.fan(pong(PEER_A, "SYNCING", 1L));
             }
-            f.fan(pong(PEER_A, "READY", 1L));
 
+            f.fan(pong(PEER_A, "READY", 1L));
             assertThat(reaped).isEmpty();
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY);
         }
@@ -230,9 +297,9 @@ class ClusterSyncPongSignalFanTest {
             var reaped = new ArrayList<NodeId>();
             var warmed = new AtomicBoolean(false);
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
             f.onStuckSyncing(reaped::add);
             f.warmedUp(warmed::get);
-
             for (int i = 0; i < ClusterSyncPongSignalFan.SYNC_REAP_THRESHOLD + 5; i++) {
                 f.fan(pong(PEER_A, "SYNCING", 1L));
             }
@@ -244,10 +311,9 @@ class ClusterSyncPongSignalFanTest {
         @Test
         void evict_removesEntryRegardlessOfIncarnation() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
             f.fan(pong(PEER_A, "READY", 9L));
-
             f.evict(PEER_A);
-
             assertThat(f.readinessSnapshot()).doesNotContainKey(PEER_A);
         }
 
@@ -255,25 +321,23 @@ class ClusterSyncPongSignalFanTest {
         void sweepStale_removesEntriesOlderThanMaxAge() {
             var clock = new AtomicLong(1_000L);
             var f = fan(new TestLeaderManager(true), clock);
-            f.fan(pong(PEER_A, "READY", 1L));   // stamped at 1_000
+
+            f.fan(pong(PEER_A, "READY", 1L));  // stamped at 1_000
             clock.set(5_000L);
-            f.fan(pong(PEER_B, "READY", 1L));   // stamped at 5_000
-
+            f.fan(pong(PEER_B, "READY", 1L));  // stamped at 5_000
             clock.set(5_500L);
-            f.sweepStale(1_000L);               // cutoff = 4_500 — PEER_A removed, PEER_B kept
-
-            assertThat(f.readinessSnapshot()).doesNotContainKey(PEER_A)
-                                             .containsKey(PEER_B);
+            f.sweepStale(1_000L);  // cutoff = 4_500 — PEER_A removed, PEER_B kept
+            assertThat(f.readinessSnapshot()).doesNotContainKey(PEER_A).containsKey(PEER_B);
         }
 
         @Test
         void readinessSnapshot_reflectsMultipleNodeStates() {
             var f = fan(new TestLeaderManager(true), new AtomicLong(0L));
+
             f.fan(pong(PEER_A, "READY", 1L));
             f.fan(pong(PEER_B, "DRAINING", 1L));
-
             assertThat(f.readinessSnapshot()).containsEntry(PEER_A, NodeReportedState.READY)
-                                             .containsEntry(PEER_B, NodeReportedState.DRAINING);
+                      .containsEntry(PEER_B, NodeReportedState.DRAINING);
         }
 
         @Test
@@ -281,8 +345,98 @@ class ClusterSyncPongSignalFanTest {
             var f = fan(new TestLeaderManager(false), new AtomicLong(0L));
 
             f.fan(pong(PEER_A, "READY", 1L));
-
             assertThat(f.readinessSnapshot()).isEmpty();
+        }
+    }
+
+    /// #1054 — the drain ACKNOWLEDGEMENT callback. The membership FSM latches a drain acknowledgement from it, so
+    /// it must fire for exactly the pongs the readiness view records as `DRAINING`: leader only, current incarnation
+    /// only, every such pong.
+    @Nested
+    class DrainingReported {
+        private ClusterSyncPong pong(NodeId sender, String state, long incarnation) {
+            return new ClusterSyncPong(sender,
+                                       new MetricObservation(incarnation,
+                                                             System.nanoTime(),
+                                                             System.currentTimeMillis(),
+                                                             java.util.Map.of()),
+                                   incarnation,
+                                       0L,
+                                       0L,
+                                       0L,
+                                       0L,
+                                       state,
+                                       List.of(),
+                                       List.of(),
+                                       List.of(),
+                                       Option.none());
+        }
+
+        private ClusterSyncPongSignalFan fan(LeaderManager leaderManager) {
+            return ClusterSyncPongSignalFan.clusterSyncPongSignalFan(leaderManager,
+                                                                     ClusterSyncPongSignalFan.ReadyCandidateSink.NOOP,
+                                                                     new AtomicLong(0L)::get);
+        }
+
+        @Test
+        void fan_drainingPongsWhileLeader_reportSenderOnEveryPong() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true));
+
+            f.onDrainingReported(reported::add);
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+            assertThat(reported).containsExactly(PEER_A, PEER_A);
+        }
+
+        @Test
+        void fan_readyPong_doesNotReport() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true));
+
+            f.onDrainingReported(reported::add);
+            f.fan(pong(PEER_A, "READY", 1L));
+            assertThat(reported).isEmpty();
+        }
+
+        @Test
+        void fan_drainingPongWhenNotLeader_doesNotReport() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(false));
+
+            f.onDrainingReported(reported::add);
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+            assertThat(reported).isEmpty();
+        }
+
+        /// A `DRAINING` pong from a process other than the pinned one must not acknowledge a drain on behalf
+        /// of the pinned process. Control: the pinned process's own `DRAINING` pong is reported.
+        @Test
+        void fan_differentBootTokenDrainingPong_doesNotReport() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true));
+
+            f.onDrainingReported(reported::add);
+            f.fan(pong(PEER_A, "READY", 5L));
+            f.fan(pong(PEER_A, "DRAINING", 4L));
+            assertThat(f.readinessSnapshot()).as("the other process's pong was fenced out")
+                      .containsEntry(PEER_A, NodeReportedState.READY);
+            assertThat(reported).isEmpty();
+            f.fan(pong(PEER_A, "DRAINING", 5L));
+            assertThat(reported).as("control: the pinned process's drain is acknowledged").containsExactly(PEER_A);
+        }
+
+        @Test
+        void onDrainingReported_null_resetsToNoop() {
+            var reported = new ArrayList<NodeId>();
+            var f = fan(new TestLeaderManager(true));
+
+            f.onDrainingReported(reported::add);
+            f.onDrainingReported(null);
+            f.fan(pong(PEER_A, "DRAINING", 1L));
+            assertThat(reported).as("the replaced callback is no longer invoked").isEmpty();
+            assertThat(f.readinessSnapshot()).as("and the pong is still recorded, so the reset did not throw")
+                      .containsEntry(PEER_A, NodeReportedState.DRAINING);
         }
     }
 
@@ -298,26 +452,48 @@ class ClusterSyncPongSignalFanTest {
             this.leader = value;
         }
 
-        @Override public Option<NodeId> leader() {
-            return leader ? Option.some(OBSERVER) : Option.none();
+        @Override
+        public Option<NodeId> leader() {
+            return leader
+                   ? Option.some(OBSERVER)
+                   : Option.none();
         }
 
-        @Override public boolean isLeader() {
+        @Override
+        public boolean isLeader() {
             return leader;
         }
 
-        @Override public Option<Long> currentLeaderEpoch() {
+        @Override
+        public Option<Long> currentLeaderEpoch() {
             return Option.none();
         }
 
-        @Override public void onLeaderCommitted(NodeId leader) {}
-        @Override public void triggerElection() {}
-        @Override public void stop() {}
-        @Override public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
-        @Override public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
-        @Override public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
-        @Override public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
-        @Override public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
-        @Override public void watchClusterState(org.pragmatica.consensus.topology.ClusterStateNotification q) {}
+        @Override
+        public void onLeaderCommitted(NodeId leader) {}
+
+        @Override
+        public void triggerElection() {}
+
+        @Override
+        public void stop() {}
+
+        @Override
+        public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
+
+        @Override
+        public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
+
+        @Override
+        public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
+
+        @Override
+        public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
+
+        @Override
+        public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
+
+        @Override
+        public void watchClusterState(org.pragmatica.consensus.topology.ClusterStateNotification q) {}
     }
 }

@@ -91,7 +91,7 @@ class SwimObservationStreamTest {
             // birth), and only our OWN probe-timeout past the join deadline (joinGrace 0 here)
             // escalates it OBSERVED->SUSPECT->FAULTY. In COLD_BOOT a never-HEALTHY peer's FAULTY edge
             // is suppressed to UnknownObserved (cold-boot gate).
-            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
 
             assertThat(protocol.members().get(NODE_A).state())
@@ -124,14 +124,14 @@ class SwimObservationStreamTest {
         @Test
         void coldBoot_oncePeerHealthy_thenLost_emitsFaulty() {
             // Step 1: NODE_A becomes HEALTHY via gossip
-            var aliveUpdate = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             assertThat(observations.byType(SwimObservation.HealthyObserved.class)).hasSize(1);
             assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
 
             // Step 2: peer transitions to SUSPECT via gossip
-            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
+            var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
 
             assertThat(observations.byType(SwimObservation.SuspectObserved.class)).hasSize(1);
@@ -183,18 +183,18 @@ class SwimObservationStreamTest {
         @Test
         void transportHint_unreachable_acceleratesSuspicion() {
             // Bring NODE_A to HEALTHY first (so cold-boot suppression doesn't apply)
-            var aliveUpdate = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
             assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
 
             // Drive NODE_A into SUSPECT via gossip
-            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
+            var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
             assertThat(observations.byType(SwimObservation.SuspectObserved.class)).hasSize(1);
 
             // Apply transport hint: peer unreachable → suspect window biased toward 3s floor.
             protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A,
-                                                                                          TestCause.NETWORK_LOST));
+                                                                                          TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
 
             var startedAt = System.currentTimeMillis();
             protocol.start();
@@ -212,12 +212,12 @@ class SwimObservationStreamTest {
         }
 
         @Test
-        void transportHint_reachable_isNoOp_swimRemainsAuthoritative() {
+        void transportHint_reachable_neverReportsLife_swimRemainsAuthoritative() {
             // Bring NODE_A to HEALTHY then to SUSPECT
-            var aliveUpdate = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
-            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
+            var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
 
             var preReachableTs = protocol.suspectTimestampForTest(NODE_A);
@@ -225,8 +225,9 @@ class SwimObservationStreamTest {
                 .as("NODE_A should have a recorded suspect timestamp after SUSPECT transition")
                 .isTrue();
 
-            // PeerReachable is a NO-OP: transport may report death, never life. SWIM probe-ack
-            // is the sole recovery path, so the suspect window must be untouched.
+            // PeerReachable never reports life: it only retracts the transport's own LINK_LOST
+            // hint (#1061), and none was recorded here. SWIM probe-ack is the sole recovery path,
+            // so the suspicion clock and the SUSPECT state must be untouched.
             protocol.recordTransportHint(NODE_A, new TransportObservation.PeerReachable(NODE_A));
 
             var postReachableTs = protocol.suspectTimestampForTest(NODE_A);
@@ -262,7 +263,7 @@ class SwimObservationStreamTest {
         @Test
         void observation_isIdempotent_onRepeatedSameState() {
             // Drive HEALTHY edge once
-            var aliveUpdate = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             assertThat(observations.byType(SwimObservation.HealthyObserved.class))
@@ -282,18 +283,18 @@ class SwimObservationStreamTest {
         @Test
         void observations_areEdgeTriggered() {
             // HEALTHY edge → 1 observation
-            var aliveUpdate = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             // SUSPECT edge (different incarnation) → 1 observation
-            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
+            var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 1, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 2L, List.of(suspectUpdate)));
 
             // FAULTY edge → 1 observation. The second-hand (gossip) FAULTY needs local
             // transport-down corroboration to drive the death path (P1 death-path
             // co-confirmation) so the FaultyObserved + DepartedObserved pair fires.
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST));
-            var faultyUpdate = new MembershipUpdate(NODE_A, MemberState.FAULTY, 2, ADDR_A);
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
+            var faultyUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 2, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 3L, List.of(faultyUpdate)));
 
             // MemberDiscovered is a join event (feeds the QUIC dial set), not a health
@@ -333,7 +334,7 @@ class SwimObservationStreamTest {
         @Test
         void swimAuthority_overridesTransportHint_onRecovery() {
             // SWIM observes NODE_A as ALIVE/HEALTHY
-            var aliveUpdate = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             assertThat(observations.byType(SwimObservation.HealthyObserved.class)).hasSize(1);
@@ -347,7 +348,7 @@ class SwimObservationStreamTest {
             // merely biasing a timer that may never start (#94). Transport accelerates DEATH
             // suspicion — it never reports life.
             protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A,
-                                                                                          TestCause.NETWORK_LOST));
+                                                                                          TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("Transport unreachable on an ALIVE, ever-healthy peer initiates SUSPECT")
@@ -359,7 +360,7 @@ class SwimObservationStreamTest {
             // SWIM remains authoritative on RECOVERY: a higher-incarnation ALIVE refutation
             // (the peer's own re-announcement / probe-ack path) returns it to HEALTHY. Transport
             // may accelerate death suspicion, never report life — the suspicion is refutable.
-            var refutation = new MembershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A);
+            var refutation = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A);
             protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(refutation)));
 
             SwimHealth healthAfter = protocol.currentHealth()
@@ -388,7 +389,7 @@ class SwimObservationStreamTest {
         @Test
         void currentHealth_neverSeenPeer_classifiedAsUnknown() {
             // Inject SUSPECT update for never-healthy peer
-            var suspectUpdate = new MembershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
+            var suspectUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.SUSPECT, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(suspectUpdate)));
 
             SwimHealth health = protocol.currentHealth()
@@ -401,7 +402,7 @@ class SwimObservationStreamTest {
 
         @Test
         void currentHealth_alivePeer_classifiedAsHealthy() {
-            var aliveUpdate = new MembershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
+            var aliveUpdate = MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 0, ADDR_A);
             protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(aliveUpdate)));
 
             SwimHealth health = protocol.currentHealth()
@@ -449,7 +450,7 @@ class SwimObservationStreamTest {
         }
 
         private void seenHealthy(SwimProtocol protocol, NodeId nodeId, InetSocketAddress addr) {
-            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(new MembershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
+            protocol.onMessage(ADDR_B, new Ping(NODE_B, 1L, List.of(MembershipUpdate.membershipUpdate(nodeId, MemberState.ALIVE, 0, addr))));
         }
 
         @Test
@@ -459,7 +460,7 @@ class SwimObservationStreamTest {
             assertThat(protocol.everSeenHealthyForTest(NODE_A)).isTrue();
             assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.ALIVE);
 
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST));
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("Transport unreachable on an ALIVE, ever-healthy peer initiates SUSPECT in the same call")
@@ -477,7 +478,7 @@ class SwimObservationStreamTest {
             var protocol = protocolWith(tightConfig);
             seenHealthy(protocol, NODE_A, ADDR_A);
 
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST));
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
             assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
 
             protocol.start();
@@ -504,12 +505,12 @@ class SwimObservationStreamTest {
             var protocol = protocolWith(swimConfig());
             seenHealthy(protocol, NODE_A, ADDR_A);
 
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST));
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
             assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
 
             // The peer refutes within the window via a higher-incarnation ALIVE (its
             // re-announcement / probe-ack path). SWIM stays authoritative on recovery.
-            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(new MembershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A))));
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 2L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 5, ADDR_A))));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("A refutation returns the transport-suspected peer to ALIVE — recovery preserved")
@@ -524,7 +525,7 @@ class SwimObservationStreamTest {
             // NODE_A was never observed HEALTHY (no ALIVE gossip).
             assertThat(protocol.everSeenHealthyForTest(NODE_A)).isFalse();
 
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST));
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
 
             assertThat(protocol.members().containsKey(NODE_A))
                 .as("A never-connected peer must not be resurrected into membership by a hint")
@@ -543,7 +544,7 @@ class SwimObservationStreamTest {
             seenHealthy(protocol, NODE_A, ADDR_A);
 
             // First hint initiates SUSPECT.
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST));
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
             assertThat(protocol.members().get(NODE_A).state()).isEqualTo(MemberState.SUSPECT);
             var firstStamp = protocol.suspectTimestampForTest(NODE_A).fold(() -> -1L, t -> t);
             var suspectEdgesAfterFirst = observations.byType(SwimObservation.SuspectObserved.class).size();
@@ -551,7 +552,7 @@ class SwimObservationStreamTest {
             // Repeated hints on the already-SUSPECT peer must be idempotent: no clock restart,
             // no new SUSPECT edge, no FAULTY<->SUSPECT oscillation.
             for (var i = 0; i < 5; i++) {
-                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST));
+                protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
             }
 
             assertThat(protocol.members().get(NODE_A).state())
@@ -573,7 +574,7 @@ class SwimObservationStreamTest {
             protocol.putMemberForTest(NODE_A, ADDR_A, MemberState.FAULTY);
             var observationsBefore = observations.all.size();
 
-            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST));
+            protocol.recordTransportHint(NODE_A, new TransportObservation.PeerUnreachable(NODE_A, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
 
             assertThat(protocol.members().get(NODE_A).state())
                 .as("A hint must not move a FAULTY peer — death is terminal until SWIM re-admits")
@@ -587,7 +588,7 @@ class SwimObservationStreamTest {
         void unreachableHint_forSelf_isIgnored() {
             var protocol = protocolWith(swimConfig());
 
-            protocol.recordTransportHint(SELF_ID, new TransportObservation.PeerUnreachable(SELF_ID, TestCause.NETWORK_LOST));
+            protocol.recordTransportHint(SELF_ID, new TransportObservation.PeerUnreachable(SELF_ID, TestCause.NETWORK_LOST, TransportObservation.HintOrigin.LINK_LOST));
 
             assertThat(protocol.members().containsKey(SELF_ID))
                 .as("A self-hint must never introduce self into membership")

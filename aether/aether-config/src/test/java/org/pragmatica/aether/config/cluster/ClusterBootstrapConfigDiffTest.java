@@ -1,12 +1,13 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.config.cluster;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,7 @@ import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class ClusterBootstrapConfigDiffTest {
 
@@ -65,7 +67,7 @@ class ClusterBootstrapConfigDiffTest {
             Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
             infrastructureConfig(NetworkingType.MANUAL),
             defaultOperationsConfig()
-        );
+        , java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig forgeConfig(int coreCount) {
@@ -231,6 +233,28 @@ class ClusterBootstrapConfigDiffTest {
             assertThat(change.field()).isEqualTo("credentials");
         }
 
+        /// #1049 — a ceiling change on an applied config is a real modification, not a no-op plan.
+        @Test
+        void diff_replacementCeilingChange_producesModification() {
+            var stored = configWithSources(Map.of("forge", ceilingSource(none())));
+            var desired = configWithSources(Map.of("forge", ceilingSource(some(timeSpan(7).minutes()))));
+            var plan = diff(stored, desired);
+
+            assertThat(plan.modifications()).hasSize(1);
+            assertThat(plan.modifications().getFirst()).isInstanceOf(DiffAction.SourceFieldChange.class);
+            assertThat(((DiffAction.SourceFieldChange) plan.modifications().getFirst()).field()).isEqualTo("replacementCeiling");
+        }
+
+        private static SourceProfile ceilingSource(Option<TimeSpan> ceiling) {
+            return sourceProfile(
+                sourceNameOrDefault("forge"), SourceType.FORGE, none(), none(), none(), none(), List.of(),
+                none(), none(), none(), LoadBalancerMode.NONE, List.of(), none(),
+                Map.of(),
+                Map.of(NodeRole.CORE, roleSubTable(NodeRole.CORE, some(3), none(), none(), RUNTIME_REF)),
+                List.of(), none(), ceiling
+            );
+        }
+
         @Test
         void diff_versionChange_producesClusterLevel() {
             var stored = forgeConfig(3);
@@ -241,7 +265,7 @@ class ClusterBootstrapConfigDiffTest {
                 Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
                 infrastructureConfig(NetworkingType.MANUAL),
                 defaultOperationsConfig()
-            );
+            , java.util.Map.of());
             var plan = diff(stored, desired);
 
             assertThat(plan.modifications()).hasSize(1);
@@ -266,7 +290,7 @@ class ClusterBootstrapConfigDiffTest {
                 Map.of(RUNTIME_REF, runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), none())),
                 infrastructureConfig(NetworkingType.MANUAL),
                 defaultOperationsConfig()
-            );
+            , java.util.Map.of());
             var plan = diff(stored, desired);
 
             assertThat(plan.hasImmutableChanges()).isTrue();

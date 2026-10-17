@@ -31,9 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// mutation check's target: without the confirm-and-retry, "loses every time" would report success.
 class ClusterTopologyManagerDesiredCountCasTest {
 
+    /// Blank TOML, as a self-bootstrapped seed carries: the scale path now reads the committed TOML's
+    /// `[replication.cluster_events]` (#1564 B1), and the placeholder `"toml"` it used before is not a TOML document.
     private static ClusterConfigValue base() {
-        return ClusterConfigValue.clusterConfigValue("toml",
-                                                     "prod",
+        return ClusterConfigValue.bootstrapSeed("prod",
                                                      "1.0.0",
                                                      List.of(new TopologyEntry("eu", "core", 3)),
                                                      3,
@@ -43,15 +44,25 @@ class ClusterTopologyManagerDesiredCountCasTest {
     }
 
     private static ClusterConfigValue putValue(List<KVCommand<AetherKey>> commands) {
-        return commands.getFirst() instanceof KVCommand.Put<?, ?> put && put.value() instanceof ClusterConfigValue value
-               ? value
-               : null;
+        var transaction = (KVCommand.LeaderTransaction<?, ?>) commands.getFirst();
+        return (ClusterConfigValue) transaction.mutations().getFirst().replacement().unwrap();
+    }
+
+    private static Promise<List<Object>> outcome(List<KVCommand<AetherKey>> commands, boolean accepted) {
+        var transaction = (KVCommand.LeaderTransaction<?, ?>) commands.getFirst();
+        return Promise.success(List.of(new KVCommand.TransactionResult(transaction.transactionId(), accepted)));
     }
 
     /// Store stand-in: the reader sees exactly what the scripted applier committed.
     private record Harness(AtomicReference<ClusterConfigValue> committed, AtomicInteger applies) {
         static Harness harness(ClusterConfigValue initial) {
             return new Harness(new AtomicReference<>(initial), new AtomicInteger());
+        }
+
+        HierarchyStateWriter writer(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> apply) {
+            return HierarchyStateWriter.hierarchyStateWriter(
+                () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(new org.pragmatica.consensus.NodeId("leader"), 1)),
+                _ -> Option.option(committed.get()), apply);
         }
 
         Supplier<Option<ClusterConfigValue>> reader() {
@@ -64,7 +75,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
                 applies.incrementAndGet();
                 committed.set(putValue(commands));
 
-                return Promise.success(List.of());
+                return outcome(commands, true);
             };
         }
 
@@ -79,7 +90,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
                     committed.set(putValue(commands));
                 }
 
-                return Promise.success(List.of());
+                return outcome(commands, applies.get() > 1);
             };
         }
 
@@ -91,9 +102,40 @@ class ClusterTopologyManagerDesiredCountCasTest {
                 applies.incrementAndGet();
                 committed.set(committed.get().withDesiredCount("us", "worker", applies.get()));
 
-                return Promise.success(List.of());
+                return outcome(commands, false);
             };
         }
+    }
+
+    /// #1564 B1: a core scale-down below the committed cluster-events confirmation factor would leave
+    /// `system:cluster-events` unresolvable; it is refused, typed, and nothing is written.
+    @Test
+    void applyDesiredCount_coreScaleBelowClusterEventsConfirmation_isRefusedWithoutApplying() {
+        var fiveCores = ClusterConfigValue.clusterConfigValue("""
+                                                              [replication.cluster_events]
+                                                              confirmation_factor = 5
+                                                              """,
+                                                              "prod",
+                                                              "1.0.0",
+                                                              List.of(new TopologyEntry("eu", "core", 5)),
+                                                              3,
+                                                              9,
+                                                              "hetzner",
+                                                              1);
+        var harness = Harness.harness(fiveCores);
+
+        var result = ClusterTopologyManagerRecord.applyDesiredCount(harness.reader(),
+                                                                    harness.writer(harness.alwaysWins()),
+                                                                    "eu",
+                                                                    "core",
+                                                                    3,
+                                                                    ClusterTopologyManagerRecord.DESIRED_COUNT_CAS_ATTEMPTS)
+                                                 .await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterReplication.ClusterEventsFactorsRefused.class));
+        assertThat(harness.applies().get()).isZero();
+        assertThat(harness.committed().get().desiredCountFor("eu", "core")).isEqualTo(5);
     }
 
     @Test
@@ -101,7 +143,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
         var harness = Harness.harness(base());
 
         var result = ClusterTopologyManagerRecord.applyDesiredCount(harness.reader(),
-                                                                    harness.alwaysWins(),
+                                                                    harness.writer(harness.alwaysWins()),
                                                                     "eu",
                                                                     "core",
                                                                     5,
@@ -122,7 +164,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
         var harness = Harness.harness(base());
 
         var result = ClusterTopologyManagerRecord.applyDesiredCount(harness.reader(),
-                                                                    harness.losesFirstTo(competitor),
+                                                                    harness.writer(harness.losesFirstTo(competitor)),
                                                                     "eu",
                                                                     "core",
                                                                     5,
@@ -144,7 +186,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
         var harness = Harness.harness(base());
 
         var result = ClusterTopologyManagerRecord.applyDesiredCount(harness.reader(),
-                                                                    harness.alwaysLoses(),
+                                                                    harness.writer(harness.alwaysLoses()),
                                                                     "eu",
                                                                     "core",
                                                                     5,
@@ -153,7 +195,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
 
         assertThat(result.isFailure()).isTrue();
         assertThat(harness.applies().get()).isEqualTo(ClusterTopologyManagerRecord.DESIRED_COUNT_CAS_ATTEMPTS);
-        result.onFailure(cause -> assertThat(cause.message()).contains("lost the version race"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("Hierarchy state changed"));
     }
 
     @Test
@@ -161,7 +203,7 @@ class ClusterTopologyManagerDesiredCountCasTest {
         var harness = Harness.harness(null);
 
         var result = ClusterTopologyManagerRecord.applyDesiredCount(harness.reader(),
-                                                                    harness.alwaysWins(),
+                                                                    harness.writer(harness.alwaysWins()),
                                                                     "eu",
                                                                     "core",
                                                                     5,

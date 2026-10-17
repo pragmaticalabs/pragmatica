@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
 import org.pragmatica.lang.Cause;
@@ -23,7 +22,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         }
     }
 
-    record ConnectionFailed(String message, Option<Throwable> cause) implements DatabaseConnectorError {
+    record ConnectionFailed(String message, Option<Throwable> cause) implements DatabaseConnectorError, Cause.Transient {
         public static Result<ConnectionFailed> connectionFailed(String message, Option<Throwable> cause) {
             return success(new ConnectionFailed(message, cause));
         }
@@ -100,7 +99,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return ConstraintViolation.constraintViolation("unknown", message).unwrap();
     }
 
-    record TimedOut(String operation) implements DatabaseConnectorError {
+    record TimedOut(String operation) implements DatabaseConnectorError, Cause.Transient {
         public static Result<TimedOut> timedOut(String operation) {
             return success(new TimedOut(operation));
         }
@@ -115,7 +114,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return TimedOut.timedOut(operation).unwrap();
     }
 
-    record TransactionRolledBack(String reason) implements DatabaseConnectorError {
+    record TransactionRolledBack(String reason) implements DatabaseConnectorError, Cause.Transient {
         public static Result<TransactionRolledBack> transactionRolledBack(String reason) {
             return success(new TransactionRolledBack(reason));
         }
@@ -176,7 +175,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return ConfigurationError.configurationError(reason).unwrap();
     }
 
-    enum PoolExhausted implements DatabaseConnectorError {
+    enum PoolExhausted implements DatabaseConnectorError, Cause.Transient {
         INSTANCE;
         @Override
         public String message() {

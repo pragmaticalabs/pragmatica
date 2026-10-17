@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerAssignment;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerPartition;
@@ -24,23 +25,26 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
-import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.HydrationSnapshot;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
-import org.pragmatica.aether.stream.StreamPartitionManager.StreamHydration;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
+import org.pragmatica.aether.stream.StreamPartitionManager.StreamHydration;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.aether.stream.StreamReadRouter.ReplicaView;
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator.ConsumerInfo;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.PathParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -52,9 +56,14 @@ import org.pragmatica.lang.utils.Causes;
 
 
 public final class StreamRoutes implements RouteSource {
-    private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
+    private static final Cause MISSING_STREAM_NAME = new ManagementServerError.InvalidRequest("Missing stream name");
 
-    private static final Cause SYSTEM_STREAM_NAME_FORBIDDEN = Causes.cause("Cannot create a stream using a reserved system stream name");
+    /// The refusal carries the status the pre-auth path gate answers with (405, see
+    /// `ManagementServer.rejectSystemStreamWrite`): a bare `Causes.cause` is not `HttpStatusAware`
+    /// and `ProblemResponses` renders it as 500, which made the guard's refusal indistinguishable
+    /// by status from an internal failure (#742 review).
+    private static final Cause SYSTEM_STREAM_GROUP_FORBIDDEN = HttpError.httpError(HttpStatus.METHOD_NOT_ALLOWED,
+                                                                                   Causes.cause("Cannot join or leave a consumer group on a reserved system stream"));
 
     private static final int DEFAULT_PARTITIONS = 4;
 
@@ -80,17 +89,34 @@ public final class StreamRoutes implements RouteSource {
                               int partitions,
                               long totalEvents,
                               long totalBytes,
-                              List<PartitionDetail> partitionDetails) {}
+                              List<PartitionDetail> partitionDetails) {
+        /// #1478: `totalEvents` is the sum of the per-partition counts, so the total and the breakdown
+        /// cannot disagree about which node answered for a partition.
+        static StreamInfoResponse streamInfoResponse(StreamInfo info, List<PartitionDetail> details) {
+            return new StreamInfoResponse(info.name(),
+                                          info.partitions(),
+                                          details.stream().mapToLong(PartitionDetail::eventCount).sum(),
+                                          info.totalBytes(),
+                                          details);
+        }
+    }
 
     record PartitionDetail(int partition, long headOffset, long tailOffset, long eventCount) {
         static PartitionDetail fromPartitionInfo(PartitionInfo info) {
             return new PartitionDetail(info.partition(), info.headOffset(), info.tailOffset(), info.eventCount());
         }
+
+        /// #1478: the owner-reported view. `VisibleBounds` carries no count, so it is derived from the
+        /// retained span; an empty partition uses the same `(-1, -1, 0)` encoding as a ring-less one.
+        static PartitionDetail fromBounds(int partition, VisibleBounds bounds) {
+            return bounds.isEmpty()
+                   ? new PartitionDetail(partition, -1L, -1L, 0L)
+                   : new PartitionDetail(partition,
+                                         bounds.visibleHead(),
+                                         bounds.earliestRetained(),
+                                         bounds.visibleHead() - bounds.earliestRetained() + 1);
+        }
     }
-
-    record StreamCreateRequest(String name, Integer partitions) {}
-
-    record StreamCreateResponse(String name, int partitions, String status) {}
 
     record StreamConsumersResponse(String name, List<PartitionInfo> partitions) {}
 
@@ -102,19 +128,17 @@ public final class StreamRoutes implements RouteSource {
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<StreamCreateResponse> route(ManagementRoute.STREAM_CREATE)
-                                         .withBody(StreamCreateRequest.class)
-                                         .toResult(this::createStream)
-                                         .asJson(),
-
         // #742 fold: STREAM_GET/STREAM_PARTITION/STREAM_REPLICAS/STREAM_READ/STREAM_PUBLISH/
         // STREAM_DELETE's flat-name legacy registrations moved to StreamApiRoutes' catalog-form
         // equivalents (STREAM_GET, STREAM_PARTITION, STREAM_REPLICAS, STREAM_READ, STREAMS_PUBLISH,
         // STREAMS_DELETE) — same underlying operations, canonicalized (namespace, stream, version)
-        // addressing. See #742's closing comment for why this file remains: STREAM_CREATE/
-        // STREAM_CONSUMERS/CONSUMER_GROUP_STATUS have no catalog home and CONSUMER_GROUP_JOIN/LEAVE
-        // are excluded from this fold (capability mismatch against their nearest catalog candidates,
-        // tracked separately).
+        // addressing. #968 moved STREAM_CREATE there too: its body-carried name is now parsed as a
+        // catalog address and it shares the catalog-registering create chain with STREAMS_CREATE,
+        // instead of minting rings no catalog read could find. See #742's closing comment for why
+        // this file remains: STREAM_CONSUMERS/CONSUMER_GROUP_STATUS have no catalog home and
+        // CONSUMER_GROUP_JOIN/LEAVE are excluded from this fold (capability mismatch against their
+        // nearest catalog candidates, tracked separately).
+        return Stream.of(
         // #490: LOCAL variant — same handler, but the route target makes the RECEIVING
         // node answer from its own registry (see ManagementRoute.STREAM_REPLICAS_LOCAL).
         ManagementRoutes.<StreamReplicasResponse> route(ManagementRoute.STREAM_REPLICAS_LOCAL)
@@ -125,7 +149,10 @@ public final class StreamRoutes implements RouteSource {
                          ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION).toJson(this::streamHydration),
                          ManagementRoutes.<DeclarativeConsumersResponse> route(ManagementRoute.STREAM_DECLARATIVE_CONSUMERS).toJson(this::declarativeConsumers),
                          ManagementRoutes.<StreamConsumersResponse> route(ManagementRoute.STREAM_CONSUMERS)
-                                         .withPath(PathParameter.aString())
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("consumers"))
                                          .toResult(this::streamConsumers)
                                          .asJson(),
                          ManagementRoutes.<GroupStatusResponse> route(ManagementRoute.CONSUMER_GROUP_JOIN)
@@ -159,6 +186,7 @@ public final class StreamRoutes implements RouteSource {
                                           view.servedByOwner(),
                                           view.ownerHeadOffset(),
                                           view.earliestRetainedOffset(),
+                                          view.ownerActivationBlock().or(""),
                                           view.replicas().stream().map(StreamRoutes::toReplicaStateDetail).toList());
     }
 
@@ -176,10 +204,17 @@ public final class StreamRoutes implements RouteSource {
     /// #488: what this node has actually attached. Pure snapshot read off the consumer manager — no
     /// hot-path cost. An empty `consumers` list means no slice in the cluster declares a `[streams.X]`
     /// consumer, which is itself the honest answer; it never fabricates rows.
-    private DeclarativeConsumersResponse declarativeConsumers() {
+    /// Package-private for the same reason [#toConsumerPartition] is: the risk in this method is a
+    /// SWAPPED mapping, and both node-wide counters are `long`, so only a test that reads distinct
+    /// values through it can tell them apart.
+    DeclarativeConsumersResponse declarativeConsumers() {
         var statuses = nodeSupplier.get().streamConsumerManager().statuses();
 
         return new DeclarativeConsumersResponse(nodeSupplier.get().streamConsumerManager().activeSubscriptionCount(),
+                                                nodeSupplier.get().streamConsumerManager().cursorCommitFailureCount(),
+                                                nodeSupplier.get()
+                                                            .streamConsumerManager()
+                                                            .attachSkippedNoLocalSliceCount(),
                                                 statuses.stream().map(StreamRoutes::toConsumerDetail).toList());
     }
 
@@ -211,8 +246,16 @@ public final class StreamRoutes implements RouteSource {
                                                  assignment.ownerNode().map(NodeId::id));
     }
 
-    private static DeclarativeConsumerPartition toConsumerPartition(PartitionCursor cursor) {
-        return new DeclarativeConsumerPartition(cursor.partition(), cursor.cursor(), cursor.stalled());
+    /// Package-private: the #1266 hold fields and `awaitingCursorFetch` are pinned by
+    /// `StreamRoutesConsumerPartitionTest`.
+    static DeclarativeConsumerPartition toConsumerPartition(PartitionCursor cursor) {
+        return new DeclarativeConsumerPartition(cursor.partition(),
+                                                cursor.cursor(),
+                                                cursor.stalled(),
+                                                cursor.lastCursorCommitFailure().or(""),
+                                                cursor.deadLetterInFlight(),
+                                                cursor.retryInFlight(),
+                                                cursor.awaitingCursorFetch());
     }
 
     private static StreamHydrationResponse toHydrationResponse(HydrationSnapshot snapshot) {
@@ -250,55 +293,14 @@ public final class StreamRoutes implements RouteSource {
                     .intValue();
     }
 
-    /// Package-visible for direct unit coverage of the system-stream-name guard in
-    /// [#createFreshStream] — the entry point a real `POST /streams` request also goes through.
-    Result<StreamCreateResponse> createStream(StreamCreateRequest request) {
-        return Option.option(request.name())
-                     .toResult(MISSING_STREAM_NAME)
-                     .flatMap(name -> createStreamWithConfig(name, request));
-    }
-
-    private Result<StreamCreateResponse> createStreamWithConfig(String name, StreamCreateRequest request) {
-        var partitions = Option.option(request.partitions()).or(DEFAULT_PARTITIONS);
-
-        return streamManager().streamInfo(name)
-                            .map(existing -> Result.success(new StreamCreateResponse(name,
-                                                                                     existing.partitions(),
-                                                                                     "exists")))
-                            .or(() -> createFreshStream(name, partitions));
-    }
-
-    /// [ManagementServer]'s HTTP-path write-gate is pre-auth and reuses the dispatch path's route
-    /// canonicalization (condition 1) — a parallel body parser inside the gate would violate that.
-    /// `STREAM_CREATE`'s target name is body-carried, not path-carried, so the gate structurally
-    /// cannot see it; this method is the sole call site that ever mints a stream
-    /// ([StreamManager#createStream]), so the guard sits here, first, unconditionally, with no
-    /// branch that reaches the mint below it — the handler-level equivalent of the gate's pre-auth
-    /// placement, honest about running post-auth since body-carried identity leaves no earlier hook.
-    /// This closes the narrow window `createStreamWithConfig`'s idempotent "already exists" check
-    /// does not: a create racing ahead of [SystemStreamBootstrap]'s registration at cluster startup
-    /// would otherwise find `streamManager().streamInfo(name)` empty and mint a caller-controlled
-    /// config under a reserved name.
-    private Result<StreamCreateResponse> createFreshStream(String name, int partitions) {
-        if (SystemStreams.isForbiddenEngineKey(name)) {
-            return Result.failure(SYSTEM_STREAM_NAME_FORBIDDEN);
-        }
-
-        var config = StreamConfig.streamConfig(name, partitions, MANAGEMENT_API_RETENTION, "latest");
-
-        return streamManager().createStream(config)
-                            .map(_ -> new StreamCreateResponse(name, partitions, "created"));
-    }
-
     private static final RetentionPolicy MANAGEMENT_API_RETENTION = RetentionPolicy.retentionPolicy(10_000,
                                                                                                     4 * 1024 * 1024L,
                                                                                                     60 * 60 * 1000L);
 
     /// Publish auto-create guard. A stream ALREADY materialized locally carries its own committed
-    /// `StreamConfig` — an app/blueprint-declared stream keeps its `replicas` / `minSyncReplicas`
-    /// durability knobs — so the management publish path must leave it INTACT rather than fabricate and
-    /// commit a `replicas=1/min-sync=0` MANAGEMENT DEFAULT over it (which would disarm the sync barrier
-    /// — `minSyncReplicas` read as 0 — and collapse the replica set to RF=1). `streamInfo` is a LOCAL
+    /// `StreamConfig` — an app/blueprint-declared stream keeps its replication factors — so the management
+    /// publish path must leave it INTACT rather than fabricate and commit a MANAGEMENT DEFAULT over it (which
+    /// would replace its declared factors with the cluster defaults). `streamInfo` is a LOCAL
     /// read of the manager's already-materialized state — NO consensus round-trip on the publish hot
     /// path. When it MISSES (a first publish racing ahead of local materialization of an app config
     /// committed at slice activation), the absent branch still prefers the committed config from applied
@@ -310,46 +312,85 @@ public final class StreamRoutes implements RouteSource {
                             .or(() -> materializeAbsentStream(name));
     }
 
-    /// Absent-locally branch. The app/blueprint stream's committed `StreamConfig` (with its
-    /// `replicas` / `minSyncReplicas` durability knobs) lands in applied KV state at slice activation but
+    /// Absent-locally branch. The app/blueprint stream's committed `StreamConfig` (with its replication
+    /// factors) lands in applied KV state at slice activation but
     /// may not yet be in the manager's local materialized map when a first publish races in. Prefer that
     /// committed config so the auto-create preserves RF; fall back to the management default only for a
-    /// genuinely management-only stream that has no committed entry.
+    /// genuinely management-only stream that has no committed entry — and never under a reserved kind
+    /// prefix (#1282): a committed config for such a name is the real resource's and is adopted, but a
+    /// fabricated default would plant an operator-side config the real resource later finds in place.
     private Result<Unit> materializeAbsentStream(String name) {
-        var config = nodeSupplier.get()
-                                 .kvStore()
-                                 .getTyped(StreamConfigKey.streamConfigKey(name),
-                                           StreamConfigValue.class)
-                                 .map(StreamConfigValue::config)
-                                 .or(() -> StreamConfig.streamConfig(name,
-                                                                     DEFAULT_PARTITIONS,
-                                                                     MANAGEMENT_API_RETENTION,
-                                                                     "latest"));
-
-        return StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config));
+        return nodeSupplier.get()
+                           .kvStore()
+                           .getTyped(StreamConfigKey.streamConfigKey(name),
+                                     StreamConfigValue.class)
+                           .map(value -> Result.success(value.config()))
+                           .or(() -> managementDefaultConfig(name))
+                           .flatMap(config -> StreamCreateOutcome.tolerateAlreadyExists(streamManager().createStream(config)));
     }
 
-    private Result<StreamConsumersResponse> streamConsumers(String name) {
-        return streamManager().allPartitionInfo(name)
-                            .map(partitions -> new StreamConsumersResponse(name, partitions));
+    /// #1564: a management-only stream takes the cluster's replication defaults ([ManagementStreamReplication]).
+    private Result<StreamConfig> managementDefaultConfig(String name) {
+        return ReservedStreamNames.requireUnreserved(name).flatMap(unreserved -> ManagementStreamReplication.withClusterDefaults(nodeSupplier.get()
+                                                                                                                                             .kvStore(),
+                                                                                                                                 StreamConfig.streamConfig(unreserved,
+                                                                                                                                                           DEFAULT_PARTITIONS,
+                                                                                                                                                           MANAGEMENT_API_RETENTION,
+                                                                                                                                                           "latest")));
     }
 
-    private Result<GroupStatusResponse> joinGroup(JoinGroupRequest request) {
-        return coordinator.joinGroup(request.groupId(),
-                                     request.streamName(),
-                                     request.partitionCount(),
-                                     request.consumerId(),
-                                     nodeSupplier.get().self())
-                          .map(_ -> new GroupStatusResponse(request.groupId(),
-                                                            coordinator.groupStatus(request.groupId())));
+    /// `GET /streams/{namespace}/{stream}/{version}/consumers` -- the route's path carries the whole catalog address, so the
+    /// engine is asked by the key that address maps to, the same one the catalog-scoped stream routes use (#1921). `consumersLiteral`
+    /// binds the trailing `spacer("consumers")` segment, which `RequestContext.matchPath` binds positionally like any other slot.
+    private Result<StreamConsumersResponse> streamConsumers(String namespace,
+                                                            String stream,
+                                                            String version,
+                                                            String consumersLiteral) {
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(address -> StreamErrorStatus.typed(streamManager().allPartitionInfo(StreamManager.engineKey(address))).map(partitions -> new StreamConsumersResponse(address.asString(),
+                                                                                                                                                                                                                                                                partitions)));
     }
 
-    private Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
-        return coordinator.leaveGroup(request.groupId(),
-                                      request.streamName(),
-                                      request.consumerId())
-                          .map(_ -> new GroupStatusResponse(request.groupId(),
-                                                            coordinator.groupStatus(request.groupId())));
+    /// #742 — same guard as `StreamApiRoutes#createStream(StreamCreateRequest)`, for the same reason: the target stream name is
+    /// body-carried, so [ManagementServer]'s pre-auth write-gate cannot see it, and the coordinator's
+    /// `joinGroup`/`leaveGroup` both `rebalance` — real, replicated KV assignment records under the
+    /// named stream. First statement, unconditionally, before any coordinator call. Package-visible
+    /// (like `createStream`) so `StreamRoutesGroupSystemStreamTest` can pin it.
+    Result<GroupStatusResponse> joinGroup(JoinGroupRequest request) {
+        if (isBlank(request.streamName())) {
+            return Result.failure(MISSING_STREAM_NAME);
+        }
+
+        if (ReservedStreamNames.namesSystemStream(request.streamName())) {
+            return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
+        }
+
+        return CoordinatorRefusal.typed(coordinator.joinGroup(request.groupId(),
+                                                              request.streamName(),
+                                                              request.partitionCount(),
+                                                              request.consumerId(),
+                                                              nodeSupplier.get().self())).map(_ -> new GroupStatusResponse(request.groupId(),
+                                                                                                                           coordinator.groupStatus(request.groupId())));
+    }
+
+    Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
+        if (isBlank(request.streamName())) {
+            return Result.failure(MISSING_STREAM_NAME);
+        }
+
+        if (ReservedStreamNames.namesSystemStream(request.streamName())) {
+            return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
+        }
+
+        return CoordinatorRefusal.typed(coordinator.leaveGroup(request.groupId(),
+                                                               request.streamName(),
+                                                               request.consumerId())).map(_ -> new GroupStatusResponse(request.groupId(),
+                                                                                                                       coordinator.groupStatus(request.groupId())));
+    }
+
+    private static boolean isBlank(String value) {
+        return Option.option(value)
+                     .filter(v -> !v.isBlank())
+                     .isEmpty();
     }
 
     private Result<GroupStatusResponse> groupStatus(String groupId) {

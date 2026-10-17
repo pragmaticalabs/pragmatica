@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Cause;
@@ -24,6 +23,13 @@ public interface ResourceCapacityExhausted extends Cause {
     /// failure) overrides this to discriminate per-instance.
     default boolean transientCapacity() {
         return true;
+    }
+
+    /// A capacity shortage IS the transient condition [Cause#isTransient] describes, so the marker
+    /// answers for it — per instance, through [#transientCapacity] (#280).
+    @Override
+    default boolean isTransient() {
+        return transientCapacity();
     }
 
     /// Whether `cause` is a transient resource-capacity exhaustion (marker present AND predicate true).

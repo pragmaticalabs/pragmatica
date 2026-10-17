@@ -6,12 +6,20 @@ package org.pragmatica.aether.stream.replication;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 @FunctionalInterface
 public interface ReplicationTransport {
     @Contract
     void send(NodeId target, ReplicationMessage message);
+
+    /// As [#send(NodeId, ReplicationMessage)] for a request whose caller stops waiting after `callerWait` (#1996): a
+    /// transport with an offline buffer drops the frame at the flush once that wait has passed. Default ignores it.
+    @Contract
+    default void send(NodeId target, ReplicationMessage message, TimeSpan callerWait) {
+        send(target, message);
+    }
 
     ReplicationTransport NOOP = (_, _) -> {};
 }

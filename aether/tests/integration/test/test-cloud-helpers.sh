@@ -1,5 +1,6 @@
 #!/bin/bash
-# test-cloud-helpers.sh — manual-run unit tests for cloud_public_ip / cloud_ssh / cloud_node_ip.
+# test-cloud-helpers.sh — manual-run unit tests for cloud_public_ip / cloud_ssh / cloud_node_ip /
+# node_app_endpoints (cloud branch).
 #
 # No external test runner; invoke directly:
 #   bash aether/tests/integration/test/test-cloud-helpers.sh
@@ -16,6 +17,9 @@ FIXTURE="${SCRIPT_DIR}/fixtures/bootstrap-state.json"
 export TARGET_HOST="cloud-helpers-test"
 export ENV_TYPE="cloud"
 export CLOUD_SOURCE_NAME="hetzner-eu"
+# cloud_ssh reads AETHER_SSH_KEY under `set -u`; a CI runner or container has none, so
+# the jvm_unit_* tests (ssh stubbed) must not depend on the caller's environment (#1051).
+export AETHER_SSH_KEY="${AETHER_SSH_KEY:-/nonexistent/cloud-helpers-test-key}"
 
 # Stage the fixture under a throwaway cluster name to avoid clobbering real state.
 TEST_CLUSTER="cloud-helpers-test-$$"
@@ -38,7 +42,7 @@ fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 # Stub api_get for the whole file so the harness never touches the network: return
 # the A1 wire shape for the known CTM-replacement node, rc 1 (no endpoint) for
 # everything else — so unknown ids fail cleanly and instantly.
-CTM_NODE="aether-cloud-test-b-node-01JCTMREPLACEMENT0000000001"
+CTM_NODE="aether-test-b-node-01JCTMREPLACEMENT0000000001"
 api_get() {
     case "$1" in
         "/api/v1/nodes/endpoint/${CTM_NODE}")
@@ -182,7 +186,695 @@ else
     fail "cloud_server_id provider 'aws' expected rc=2, got rc=${rc}"
 fi
 
-unset -f hcloud api_get
+# 15) A lookup MISS is a probe miss, never a counted [FAIL] (cloud run 4: 02-chaos S19 x2, 12-network S05).
+#     log_fail prints on the stdout a caller captures with $(...) AND appends to the fail file that run_test
+#     counts (#1511), so a captured miss was a FAIL with no visible line, and its text became the "address".
+#     The assertion is on the FAIL-FILE DELTA, not on output: `! grep 'no entry'` is vacuous here because that
+#     text is exactly what the old code swallowed into the variable. (The earlier ghost fixtures above pass an
+#     address-shaped check on stdout, so they could not see the count: they shared the premise that a miss may
+#     be a log_fail.)
+miss_probe() {  # <label> <command...>: capture stdout exactly as callers do; report rc, stdout, fail-file delta
+    local label="$1" before after out rc; shift
+    before=$(_harness_fail_lines)
+    out=$("$@" 2>/dev/null); rc=$?
+    after=$(_harness_fail_lines)
+    MISS_RC=$rc; MISS_OUT=$out; MISS_DELTA=$((after - before)); MISS_LABEL=$label
+}
+miss_probe "ghost no entry" cloud_public_ip ghost
+if [ "$MISS_RC" -ne 0 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P1 cloud_public_ip miss: rc!=0, nothing on stdout, fail-file delta 0"
+else fail "P1 cloud_public_ip ghost: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA} (want rc!=0, empty, 0)"; fi
+before=$(_harness_fail_lines)
+out=$(BOOTSTRAP_CLUSTER_NAME="cloud-helpers-test-nonexistent-$$" cloud_public_ip node-1 2>/dev/null); rc=$?
+after=$(_harness_fail_lines)
+if [ "$rc" -ne 0 ] && [ -z "$out" ] && [ "$((after - before))" -eq 0 ]; then
+    ok "P2 cloud_public_ip missing state file: rc!=0, nothing on stdout, fail-file delta 0"
+else fail "P2 missing state file: rc=${rc} stdout='${out}' delta=$((after - before))"; fi
+miss_probe "server id, no server has the IP" cloud_server_id node-1
+if [ "$MISS_RC" -eq 1 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P3 cloud_server_id (address known, no server holds it): rc 1 = GONE, nothing on stdout, fail-file delta 0"
+else fail "P3 cloud_server_id node-1: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+miss_probe "server id, node does not resolve" cloud_server_id ghost
+if [ "$MISS_RC" -eq 3 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P4 cloud_server_id (address unresolvable): rc 3 = UNKNOWN (never rc 1 = gone), nothing on stdout, fail-file delta 0"
+else fail "P4 cloud_server_id ghost: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+# P4b: hcloud itself failing is UNKNOWN too (rc 3), not "no server holds the address" (rc 1).
+p4b=$( hcloud() { return 1; }; miss_probe "server id, hcloud list fails" cloud_server_id node-1; echo "${MISS_RC}|${MISS_OUT}|${MISS_DELTA}" )
+if [ "$p4b" = "3||0" ]; then
+    ok "P4b cloud_server_id (address known, hcloud server list FAILS): rc 3 = UNKNOWN, not rc 1 (gone)"
+else fail "P4b hcloud list failing: got '${p4b}' (want '3||0')"; fi
+# Positive control for the instrument: an argument error is a harness bug and STAYS loud and counted, so the
+# delta measure demonstrably sees a log_fail raised inside a capture.
+miss_probe "argument error (control)" cloud_public_ip
+if [ "$MISS_RC" -eq 2 ] && [ "$MISS_DELTA" -eq 1 ]; then
+    ok "P5 control: an argument error still counts through the fail file (delta 1, rc 2) - the delta measure can see a captured log_fail"
+else fail "P5 control: rc=${MISS_RC} delta=${MISS_DELTA} (want rc=2, delta=1)"; fi
+# resolved ids still print and count nothing
+miss_probe "hit" cloud_public_ip node-1
+if [ "$MISS_RC" -eq 0 ] && [ "$MISS_OUT" = "203.0.113.10" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P6 control: a hit still prints the address, rc 0, delta 0"
+else fail "P6 hit: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+
+# 16) run_test prints a counted [FAIL] it could not show. A [FAIL] raised inside $(...) counts through the fail file
+#     but its text goes into the caller's variable; run_test used to report only "emitted N [FAIL] line(s)" and the
+#     lines themselves were nowhere in the log (S19 x2: found only by reading the run's $TMPDIR fail file).
+swallow_fn() { local v; v=$(log_fail "swallowed-probe-text"); return 0; }
+visible_fn() { log_fail "visible-probe-text" >/dev/null; return 0; }
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Swallow probe (T1)" swallow_fn 2>&1; echo "TESTS_FAILED=${TESTS_FAILED}" )
+if printf '%s' "$rt_out" | grep -qF "counted [FAIL] record for this test (1 counted, 0 printed above)" && printf '%s' "$rt_out" | grep -qF "swallowed-probe-text" \
+   && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1" && ! printf '%s' "$rt_out" | grep -qF "(swallowed)"; then
+    ok "P7 run_test: a [FAIL] swallowed by \$(...) is recorded as FAIL AND the test's fail-file record is printed (no claim about which line was hidden)"
+else fail "P7 run_test swallowed: $(printf '%s' "$rt_out" | tail -6 | tr '\n' '|')"; fi
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Visible probe (T2)" visible_fn 2>&1; echo "TESTS_FAILED=${TESTS_FAILED}" )
+if ! printf '%s' "$rt_out" | grep -qF "counted [FAIL] record" && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1"; then
+    ok "P8 control: an in-process [FAIL] (counted by both latches) prints no extra record"
+else fail "P8 run_test visible: $(printf '%s' "$rt_out" | tail -6 | tr '\n' '|')"; fi
+# P9: interleaved captured / in-process / captured fails: the record is exactly this test's fail-file lines, in order,
+# starting AFTER what earlier tests wrote (the first line used to be omitted and an already-visible one mislabelled).
+mixed_fn() { local v; v=$(log_fail "mix-sw-1"); log_fail "mix-vis-2" >/dev/null; v=$(log_fail "mix-sw-3"); return 0; }
+log_fail "earlier-test-line" >/dev/null
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Mixed probe (T3)" mixed_fn 2>&1 )
+rec=$(printf '%s\n' "$rt_out" | grep -E '^    \| ' | tr '\n' '#')
+case "$rec" in
+    *"mix-sw-1"*"#"*"mix-vis-2"*"#"*"mix-sw-3"*"#") rec_ok=1 ;; *) rec_ok=0 ;;
+esac
+if [ "$rec_ok" = 1 ] && ! printf '%s' "$rec" | grep -qF "earlier-test-line" && printf '%s' "$rt_out" | grep -qF "(3 counted, 1 printed above)"; then
+    ok "P9 interleaved fails: the record holds all 3 of this test's lines in order, none of an earlier test's, header says 3 counted / 1 printed"
+else fail "P9 got '${rec}' hdr=$(printf '%s' "$rt_out" | grep -F 'record for this test')"; fi
+
+# 17) run-level warnings reach the summaries (a membership-gate "seeding anyway" was visible only inline in a long log).
+RW=$(mktemp)
+rw_out=$( RUN_WARNINGS_FILE="$RW"; _RUN_WARN_BASE=0; SUITE_TAG=03-scaling; TEST_TAG=Seed_marker
+          v=$(log_run_warning 'membership not settled within 90s; "seeding" anyway | now' ); print_summary 2>&1 )
+if printf '%s' "$rw_out" | grep -qF "WARNINGS: 1" && printf '%s' "$rw_out" | grep -qF "warning: 03-scaling|Seed_marker|membership not settled within 90s"; then
+    ok "RW1 a log_run_warning raised inside \$(...) is counted and printed by print_summary (WARNINGS: 1 + the text)"
+else fail "RW1 got: $(printf '%s' "$rw_out" | tail -8 | tr '\n' '|')"; fi
+rw_json=$( RUN_WARNINGS_FILE="$RW"; run_warnings_json 03-scaling )
+rw_none=$( RUN_WARNINGS_FILE="$RW"; run_warnings_json 99-other )
+if command -v python3 >/dev/null 2>&1; then
+    rw_ok=$(python3 -c "import json,sys; d=json.loads('{'+sys.argv[1]+'}'); print(d['warnings'], len(d['warning_texts']), 'seeding' in d['warning_texts'][0])" "$rw_json" 2>&1)
+else rw_ok="1 1 True"; fi
+if [ "$rw_ok" = "1 1 True" ] && [ "$rw_none" = '"warnings":0,"warning_texts":[]' ]; then
+    ok "RW2 run_warnings_json is valid JSON with quotes escaped (1 warning, text intact) and empty for a suite with none"
+else fail "RW2 json=[${rw_json}] check=[${rw_ok}] none=[${rw_none}]"; fi
+rw_clean=$( RUN_WARNINGS_FILE="$(mktemp)"; _RUN_WARN_BASE=0; print_summary 2>&1 )
+if ! printf '%s' "$rw_clean" | grep -q "WARNINGS"; then ok "RW3 control: no warnings -> no WARNINGS line"; else fail "RW3 got WARNINGS line"; fi
+if grep -q 'run_warnings_json "\$suite_name"' "${INTEG_DIR}/run-tests.sh" && grep -q 'export RUN_WARNINGS_FILE=' "${INTEG_DIR}/run-tests.sh" \
+   && grep -q 'Warnings: %d' "${INTEG_DIR}/run-tests.sh" && grep -q 'log_run_warning "test_seed_marker: membership not settled' "${INTEG_DIR}/suites/03-scaling/test-03-scale-down.sh"; then
+    ok "RW4 wiring: run-tests.sh exports the file, writes it into each suite's JSON and the end report; the seed gate uses log_run_warning"
+else fail "RW4 wiring missing"; fi
+rm -f "$RW"
+
+# ---------------------------------------------------------------------------
+# H1/H2 (#1051): jvm_unit_show / jvm_unit_field / jvm_unit_is_drain_halt /
+# jvm_unit_assert_drain_halt (lib/common.sh). On --runtime jvm there is no
+# docker daemon on the cloud VM — the node runs as systemd unit `aether-node` —
+# so the self-drain halt reason is read via
+# `systemctl show aether-node --property=...` over SSH instead of
+# `docker inspect`. These tests stub `ssh` (cloud_ssh's underlying command;
+# node-id -> IP resolution reuses the CTM-replacement `api_get` stub above —
+# NOT yet unset, see the combined `unset -f hcloud api_get ssh` below — so no
+# new fixture is needed). Every negative case asserts the failure MESSAGE, so a
+# missing helper (rc 127) cannot satisfy it. The same functions, driven through
+# the suite's own _confirm_survivor_departure and test_survivor_exit_codes_are_two,
+# are covered in test/test-chaos-harness.sh.
+# ---------------------------------------------------------------------------
+
+# Stub `ssh`: cloud_ssh invokes `ssh "${SSH_OPTS[@]}" -i "$KEY" user@ip "$cmd"`
+# — the remote command is always the LAST argument. Branch on which
+# `systemctl show --property=...` was requested and on $STUB_SSH_RC to
+# simulate a transport failure independent of the property set.
+ssh() {
+    local remote_cmd="${@: -1}"
+    if [ -n "${STUB_SSH_RC:-}" ] && [ "${STUB_SSH_RC}" != "0" ]; then
+        return "$STUB_SSH_RC"
+    fi
+    case "$remote_cmd" in
+        *"--property=ExecMainStatus"*)
+            printf 'ExecMainStatus=%s\n' "${STUB_EXEC_MAIN_STATUS:-2}" ;;
+        *"--property=ActiveState,ExecMainStatus"*)
+            printf 'ActiveState=%s\nExecMainStatus=%s\n' \
+                "${STUB_ACTIVE_STATE:-failed}" "${STUB_EXEC_MAIN_STATUS:-2}" ;;
+        *) return 127 ;;   # unrecognized command — "systemctl: command not found" shape
+    esac
+}
+
+# 15) jvm_unit_show + jvm_unit_field: parse a canned systemctl-show reading.
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=2
+show=$(jvm_unit_show "$CTM_NODE" "ActiveState,ExecMainStatus")
+got_active=$(jvm_unit_field "$show" "ActiveState")
+got_exec=$(jvm_unit_field "$show" "ExecMainStatus")
+[ "$got_active" = "failed" ] && [ "$got_exec" = "2" ] \
+    && ok "jvm_unit_show/jvm_unit_field parse ActiveState=failed, ExecMainStatus=2" \
+    || fail "jvm_unit_show/jvm_unit_field expected failed/2, got '${got_active}'/'${got_exec}'"
+
+# 16) jvm_unit_assert_drain_halt: ActiveState=failed, ExecMainStatus=2 -> PASS
+# (the positive control for 17-19: the same call can pass).
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=2
+out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qF "[PASS]" \
+    && printf '%s' "$out" | grep -qF "test-node systemd unit ActiveState=failed ExecMainStatus=2"; then
+    ok "jvm_unit_assert_drain_halt: failed/2 -> PASS"
+else
+    fail "jvm_unit_assert_drain_halt: failed/2 should PASS (rc=${rc}): ${out}"
+fi
+
+# 17) ExecMainStatus=0 (graceful shutdown, NOT a self-drain) -> FAIL, for that reason.
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=failed STUB_EXEC_MAIN_STATUS=0
+out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "got ActiveState='failed' ExecMainStatus='0'" \
+    && [ "${out#*command not found}" = "$out" ]; then
+    ok "jvm_unit_assert_drain_halt: ExecMainStatus=0 -> FAIL naming the value read"
+else
+    fail "jvm_unit_assert_drain_halt: ExecMainStatus=0 should FAIL naming ExecMainStatus='0' (rc=${rc}): ${out}"
+fi
+
+# 18) An SSH/transport error must FAIL as unreadable, never pass on an empty read.
+STUB_SSH_RC=255
+out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "test-node systemd unit unreadable: SSH/systemctl failed (rc=255)"; then
+    ok "jvm_unit_assert_drain_halt: SSH error (rc=255) -> FAIL as unreadable"
+else
+    fail "jvm_unit_assert_drain_halt: SSH error should FAIL as unreadable (rc=${rc}): ${out}"
+fi
+STUB_SSH_RC=0
+
+# 19) ActiveState=active with ExecMainStatus=2 -> FAIL: a still-running unit is never a
+# drain halt, whatever a stale ExecMainStatus reads (the exit-code step and S19 tier 2
+# share this predicate).
+STUB_SSH_RC=0 STUB_ACTIVE_STATE=active STUB_EXEC_MAIN_STATUS=2
+out=$(jvm_unit_assert_drain_halt "$CTM_NODE" "test-node" 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -qF "got ActiveState='active' ExecMainStatus='2'" \
+    && [ "${out#*command not found}" = "$out" ]; then
+    ok "jvm_unit_assert_drain_halt: ActiveState=active, ExecMainStatus=2 -> FAIL naming the state read"
+else
+    fail "jvm_unit_assert_drain_halt: ActiveState=active should FAIL naming ActiveState='active' (rc=${rc}): ${out}"
+fi
+
+# 20) jvm_unit_is_drain_halt truth table: only failed/2 is the drain halt.
+table=""
+for pair in "failed 2" "active 2" "failed 0" "inactive 2" "failed 20" " "; do
+    set -- $pair
+    if jvm_unit_is_drain_halt "${1:-}" "${2:-}"; then table="${table}[${1:-}/${2:-}=halt]"; else table="${table}[${1:-}/${2:-}=no]"; fi
+done
+if [ "$table" = "[failed/2=halt][active/2=no][failed/0=no][inactive/2=no][failed/20=no][/=no]" ]; then
+    ok "jvm_unit_is_drain_halt: only failed/2 is the drain halt"
+else
+    fail "jvm_unit_is_drain_halt truth table wrong: ${table}"
+fi
+set --
+
+
+# --- node_app_endpoints on cloud (2026-09-24): one http://<public-ip>:<app port> per live core ------
+# Uses the REAL cloud_public_ip against this file's fixture: node-1 resolves from bootstrap-state,
+# the CTM replacement resolves via /api/v1/nodes/endpoint, and "ghost" misses — which cloud_public_ip
+# reports as a stderr warning with rc 1 (it used to be a log_fail on STDOUT, which counted a phantom FAIL — see P1).
+app_eps() {  # members... -> "rc|<stdout joined by ,>"
+    ( CLOUD_MODE=true; APP_PORT=8070
+      source "${INTEG_DIR}/lib/cluster.sh" >/dev/null 2>&1
+      api_get() {
+          case "$1" in
+              "/api/v1/nodes/endpoint/${CTM_NODE}")
+                  printf '{"nodeId":"%s","address":"178.105.192.36:7100","reachable":true}' "$CTM_NODE" ;;
+              *) return 1 ;;
+          esac
+      }
+      STUB_MEMBERS="$*"
+      cloud_running_cores() { printf '%s\n' $STUB_MEMBERS; }
+      out=$(node_app_endpoints 2>/dev/null); rc=$?
+      printf '%s|%s' "$rc" "$(printf '%s' "$out" | tr '\n' ',')" )
+}
+got=$(app_eps node-1 "$CTM_NODE" ghost)
+[ "$got" = "0|http://203.0.113.10:8070,http://178.105.192.36:8070" ] \
+    && ok "node_app_endpoints cloud: seed + CTM replacement resolved, unresolvable member skipped" \
+    || fail "node_app_endpoints cloud: expected '0|http://203.0.113.10:8070,http://178.105.192.36:8070', got '${got}'"
+got=$(app_eps ghost other-ghost)
+[ "$got" = "1|" ] \
+    && ok "node_app_endpoints cloud: nothing resolvable -> rc 1, no output (never a [FAIL] line as an endpoint)" \
+    || fail "node_app_endpoints cloud: expected '1|', got '${got}'"
+got=$(app_eps)
+[ "$got" = "1|" ] \
+    && ok "node_app_endpoints cloud: no members -> rc 1, no output" \
+    || fail "node_app_endpoints cloud (no members): expected '1|', got '${got}'"
+
+# --- 02y pick_publish_endpoint: a re-pick must not hand back the endpoint that just failed ---------
+# A killed member stays in the membership (and the endpoint list) until its departure commits, so a
+# plain `head -1` re-pick returned the node that had just been killed.
+pick_ep() {  # exclude -> picked endpoint (or "rc=N")
+    ( log_fail() { :; }
+      node_app_endpoints() { printf 'http://10.0.0.1:8070\nhttp://10.0.0.2:8070\nhttp://10.0.0.3:8070\n'; }
+      eval "$(awk '/^pick_publish_endpoint\(\) \{/,/^\}/' "${INTEG_DIR}/suites/02y-stream-crash/test-stream-crash-durability.sh")"
+      pick_publish_endpoint "$1" && printf '%s' "$STREAM_PUBLISH_ENDPOINT" || printf 'rc=%s' "$?" )
+}
+got=$(pick_ep "")
+[ "$got" = "http://10.0.0.1:8070" ] && ok "02y pick_publish_endpoint: first live endpoint when nothing failed" \
+    || fail "02y pick_publish_endpoint (no exclude): got '${got}'"
+got=$(pick_ep "http://10.0.0.1:8070")
+[ "$got" = "http://10.0.0.2:8070" ] && ok "02y pick_publish_endpoint: re-pick skips the endpoint that just failed" \
+    || fail "02y pick_publish_endpoint (exclude first): got '${got}'"
+
+# --- _resolve_live_endpoint on cloud: dead-pin memory and per-run endpoint state --------------------
+# curl is stubbed to record every probed URL. A URL answers iff it is listed in "$ALIVE" (a file, so
+# liveness can flip between calls). Two calls are made; the result and probes of the SECOND are returned.
+resolve2() {  # retry_s pin_alive_on_2nd sticky_run sticky_ep -> "result2|probes2"
+    ( export TMPDIR="$(mktemp -d)"; ENV_TYPE=cloud; CLUSTER_ID=b; NODE_COUNT=1; CLOUD_PIN_RETRY_S="$1"
+      CLUSTER_ENDPOINT="http://pin:8080"; export AETHER_RUN_ID=r1
+      [ -n "$4" ] && printf '%s' "$4" > "${TMPDIR}/aether-live-endpoint-b-$3"
+      [ "$3" != r1 ] && [ -n "$4" ] && printf '%s' "$4" > "${TMPDIR}/aether-live-endpoint-b"  # pre-scoping name
+      ALIVE="${TMPDIR}/alive"; printf 'http://live:8080/health/live\n' > "$ALIVE"
+      PROBES="${TMPDIR}/probes"; : > "$PROBES"
+      curl() { local u; for u in "$@"; do case "$u" in http*) echo "$u" >> "$PROBES" ;; esac; done
+               local x; for x in "$@"; do case "$x" in http*) grep -qxF "$x" "$ALIVE" && return 0 ;; esac; done; return 7; }
+      to_node_id() { return 1; }
+      _resolve_live_endpoint >/dev/null 2>&1
+      [ "$2" = yes ] && echo "http://pin:8080/health/live" >> "$ALIVE"
+      : > "$PROBES"; out=$(_resolve_live_endpoint 2>/dev/null)
+      printf '%s|%s' "$out" "$(tr '\n' ',' < "$PROBES")"; rm -rf "$TMPDIR" )
+}
+got=$(resolve2 30 no r1 "http://live:8080")
+[ "$got" = "http://live:8080|http://live:8080/health/live," ] \
+    && ok "_resolve_live_endpoint cloud: a dead pin is probed once, then skipped inside the retry window" \
+    || fail "_resolve_live_endpoint cloud (dead-pin memory): got '${got}'"
+got=$(resolve2 0 yes r1 "http://live:8080")
+[ "$got" = "http://pin:8080|http://pin:8080/health/live," ] \
+    && ok "_resolve_live_endpoint cloud: after the window a revived pin is preferred again" \
+    || fail "_resolve_live_endpoint cloud (pin revived): got '${got}'"
+got=$(resolve2 30 no r0 "http://live:8080")
+case "$got" in
+    *"http://live:8080"*) fail "_resolve_live_endpoint cloud: read ANOTHER run's (or the pre-scoping) endpoint file: '${got}'" ;;
+    *) ok "_resolve_live_endpoint cloud: endpoint files from another run, or the pre-scoping name, are never read" ;;
+esac
+got=$(resolve2 30 no r1 "http://dead-sticky:8080")
+case "$got" in
+    *"dead-sticky"*) fail "_resolve_live_endpoint cloud: re-probed a dead remembered endpoint: '${got}'" ;;
+    *) ok "_resolve_live_endpoint cloud: a dead remembered endpoint is forgotten, not re-probed every call" ;;
+esac
+
+# resolve_seq SETUP BETWEEN -> "probes1|out2|probes2|record": SETUP is eval'd before the first call and
+# BETWEEN before the second, so a case can stage files, flip liveness or change the pin. record is the
+# dead-pin record after the second call ("none" if absent).
+resolve_seq() {
+    ( export TMPDIR="$(mktemp -d)"; ENV_TYPE=cloud; CLUSTER_ID=b; NODE_COUNT=1; CLOUD_PIN_RETRY_S=30
+      CLOUD_MGMT_PORT=8080; CLUSTER_ENDPOINT="http://pin:8080"; export AETHER_RUN_ID=r1
+      ALIVE="${TMPDIR}/alive"; printf 'http://live:8080/health/live\n' > "$ALIVE"
+      PROBES="${TMPDIR}/probes"; : > "$PROBES"
+      curl() { local u; for u in "$@"; do case "$u" in http*) echo "$u" >> "$PROBES" ;; esac; done
+               local x; for x in "$@"; do case "$x" in http*) grep -qxF "$x" "$ALIVE" && return 0 ;; esac; done; return 7; }
+      to_node_id() { return 1; }
+      eval "$1"; _resolve_live_endpoint >/dev/null 2>&1; p1=$(tr '\n' ',' < "$PROBES")
+      eval "$2"; : > "$PROBES"; out=$(_resolve_live_endpoint 2>/dev/null); p2=$(tr '\n' ',' < "$PROBES")
+      rec=$(cat "$(_pin_dead_file)" 2>/dev/null || echo none)
+      printf '%s|%s|%s|%s' "$p1" "$out" "$p2" "$rec"; rm -rf "$TMPDIR" )
+}
+PIN_PROBE="http://pin:8080/health/live,"
+got=$(resolve_seq '' 'echo "http://pin:8080/health/live" >> "$ALIVE"; CLOUD_PIN_RETRY_S=0')
+[ "$got" = "${PIN_PROBE}|http://pin:8080|${PIN_PROBE}|none" ] \
+    && ok "_resolve_live_endpoint cloud: a pin that answers again clears its dead-pin record" \
+    || fail "_resolve_live_endpoint cloud (record cleared on pin success): got '${got}'"
+got=$(resolve_seq '' 'CLUSTER_ENDPOINT="http://pin2:8080"')
+case "$got" in
+    *"|http://pin2:8080/health/live,"*) ok "_resolve_live_endpoint cloud: the skip applies only to the pin that died, not a new pin" ;;
+    *) fail "_resolve_live_endpoint cloud (same-pin guard): a new pin was not probed first: '${got}'" ;;
+esac
+STAGE_OTHER='now=$(date +%s); for f in b b- b-r0 b-norun; do printf "%s http://pin:8080\n" "$now" > "${TMPDIR}/aether-pin-dead-$f"; done'
+got=$(resolve_seq "$STAGE_OTHER" '')
+case "$got" in
+    "${PIN_PROBE}"*) ok "_resolve_live_endpoint cloud: another run's dead-pin record (or an unscoped one) never skips this run's pin" ;;
+    *) fail "_resolve_live_endpoint cloud (dead-pin record scoped per run): pin not probed first: '${got}'" ;;
+esac
+for bad in garbage 12abc; do
+    got=$(resolve_seq "printf '%s http://pin:8080\n' $bad > \"\$(_pin_dead_file)\"" '')
+    case "$got" in
+        "${PIN_PROBE}|"*"|"[0-9]*" http://pin:8080") ok "_resolve_live_endpoint cloud: a malformed record ('${bad}') is treated as expired and rewritten" ;;
+        *) fail "_resolve_live_endpoint cloud (malformed record '${bad}'): got '${got}'" ;;
+    esac
+done
+got=$(resolve_seq 'printf "%s http://pin:8080\n" "$(( $(date +%s) - 31 ))" > "$(_pin_dead_file)"' '')
+case "$got" in
+    "${PIN_PROBE}"*) ok "_resolve_live_endpoint cloud: a record older than the window no longer skips the pin" ;;
+    *) fail "_resolve_live_endpoint cloud (expired record): pin not probed: '${got}'" ;;
+esac
+got=$(resolve_seq 'NODE_COUNT=2; to_node_id() { echo "$1"; }; cloud_public_ip() { case "$1" in node-1) echo pin ;; node-2) echo live ;; esac; }' '')
+case "$got" in
+    "${PIN_PROBE}http://live:8080/health/live,|"*) ok "_resolve_live_endpoint cloud: the fallback scan does not re-probe the dead pin under node-1's address" ;;
+    *) fail "_resolve_live_endpoint cloud (scan skips the pin): got '${got}'" ;;
+esac
+got=$(resolve_seq 'NODE_COUNT=2; to_node_id() { echo "$1"; }; cloud_public_ip() { case "$1" in node-1) echo pin ;; node-2) echo dead2 ;; esac; }' \
+                  'echo "http://pin:8080/health/live" >> "$ALIVE"')
+[ "$got" = "${PIN_PROBE}http://dead2:8080/health/live,|http://pin:8080|http://dead2:8080/health/live,${PIN_PROBE}|none" ] \
+    && ok "_resolve_live_endpoint cloud: a pin revived inside the window is still found when every other node is dead" \
+    || fail "_resolve_live_endpoint cloud (revived pin, last resort): got '${got}'"
+got=$(CLOUD_PIN_RETRY_S=abc bash -c 'source "$1/lib/common.sh" 2>&1 >/dev/null; echo "=$CLOUD_PIN_RETRY_S"' _ "$INTEG_DIR" 2>&1)
+case "$got" in
+    *"CLOUD_PIN_RETRY_S='abc'"*"=30") ok "common.sh: a non-numeric CLOUD_PIN_RETRY_S warns and falls back to 30" ;;
+    *) fail "common.sh (CLOUD_PIN_RETRY_S validation): got '${got}'" ;;
+esac
+
+# --- reap_cloud_cluster: a CTM replacement is recognised by `aether-<cluster>-node-*` (#1487) ------
+# Both rows carry ONLY an aether-node-id label (no aether-cluster, no seed IP), so the node-id
+# pattern is the only rule that can admit or refuse them: this cluster's replacement is deleted,
+# another cluster's node is left alone.
+reap_probe() {
+    ( source "${INTEG_DIR}/lib/cluster.sh" >/dev/null 2>&1
+      W="$(mktemp -d)"; : > "$W/deleted"; echo 0 > "$W/lists"
+      sleep() { :; }; _run_with_timeout() { shift; "$@"; }; _cloud_seed_ips() { :; }
+      log_info() { :; }; log_warn() { :; }; log_fail() { echo "FAIL $*"; }
+      hcloud() {
+          case "$1 $2" in
+              "server list")
+                  local n; n=$(cat "$W/lists"); echo $((n + 1)) > "$W/lists"
+                  [ "$n" -eq 0 ] || return 0
+                  printf '%s\n' "301 vm-a running 198.51.100.1 aether-node-id=aether-test-b-node-01REPLACEMENT" \
+                                 "302 vm-b running 198.51.100.2 aether-node-id=aether-other-node-01STRANGER" ;;
+              "server delete") echo "$3" >> "$W/deleted" ;;
+          esac
+      }
+      reap_cloud_cluster test-b; rc=$?
+      printf 'rc=%s deleted=%s' "$rc" "$(tr '\n' ',' < "$W/deleted")"; rm -rf "$W" )
+}
+got=$(reap_probe)
+[ "$got" = "rc=0 deleted=301," ] \
+    && ok "reap_cloud_cluster: deletes this cluster's CTM replacement by node-id, leaves another cluster's node" \
+    || fail "reap_cloud_cluster (node-id pattern): got '${got}'"
+
+unset -f hcloud api_get ssh
+unset STUB_SSH_RC STUB_ACTIVE_STATE STUB_EXEC_MAIN_STATUS
+
+# --- 02w: a transient entity refusal is retried, not classified (#1501) --------------------
+# The suite's own read_amount / entity_post_status / entity_post_any / transient_failure_type are extracted verbatim and
+# driven by a stub `_api_call` that pops one body per call from a queue file (`__DOWN__` = transport
+# failure). The FoldInProgress body is the one captured in the s27 cluster-B run log (line 1428),
+# byte for byte — including its truncation at 200 bytes by the suite's own `head -c 200`.
+W02="${INTEG_DIR}/suites/02w-entity-crash/test-entity-crash-durability.sh"
+FOLD_BODY="$(cat "${SCRIPT_DIR}/fixtures/s27-02w-foldinprogress-body.txt")"
+W_WORK="$(mktemp -d)"
+w_defs() {
+    grep -E '^(KEY_PREFIX|ENTITY_TRANSIENT_FAILURE_TYPES|TRANSIENT_READ_DEADLINE_S|TRANSIENT_READ_BACKOFF_S)=' "$W02"
+    local fn
+    for fn in now_s key_for amount_for entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount \
+              test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
+        awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "$W02"
+    done
+}
+w_defs > "${W_WORK}/defs.sh"
+for fn in now_s entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
+    grep -q "^${fn}() {" "${W_WORK}/defs.sh" || fail "W0 ${fn} not extracted from the 02w suite (examined NOTHING)"
+done
+w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; stderr -> $W_WORK/err
+    local snippet="$1"; shift
+    printf '%s\n' "$@" > "${W_WORK}/queue"; : > "${W_WORK}/calls"
+    ( source "${W_WORK}/defs.sh"
+      ENTITY_APP_ENDPOINTS="http://w-stub:8070"; KILL_CONFIRMED=1
+      TRANSIENT_READ_BACKOFF_S=0
+      [ -n "${W_DEADLINE:-}" ] && TRANSIENT_READ_DEADLINE_S="$W_DEADLINE"
+      # A case that sets W_CLOCK_JUMP_AFTER_CALLS drives time by the number of stub calls made so far: the clock reads 0 until
+      # that many calls have happened and is far past any deadline afterwards. Cases that do not set it keep the real clock.
+      [ -n "${W_CLOCK_JUMP_AFTER_CALLS:-}" ] && now_s() {
+          if [ "$(grep -c . "${W_WORK}/calls")" -ge "$W_CLOCK_JUMP_AFTER_CALLS" ]; then NOW_S=1000000; else NOW_S=0; fi
+      }
+      refresh_app_endpoints() { :; }
+      log_warn() { echo "WARN $*" >&2; }; log_error() { echo "ERROR $*" >&2; }
+      log_fail() { echo "FAIL $*" >&2; }; log_pass() { echo "PASS $*" >&2; }; log_info() { echo "INFO $*" >&2; }
+      _api_call() {
+          local b; printf "%s\n" "$3" >> "${W_WORK}/calls"
+          b=$(head -1 "${W_WORK}/queue"); tail -n +2 "${W_WORK}/queue" > "${W_WORK}/queue.n"; mv "${W_WORK}/queue.n" "${W_WORK}/queue"
+          # Honour want_status ($4) like the real _api_call: the 02w reads keep the status (entity_post_status).
+          if [ "$b" = "__DOWN__" ] || [ -z "$b" ]; then
+              [ -n "${4:-}" ] && printf 'curl failed\n__API_HTTP_STATUS:000__'
+              return 1
+          fi
+          printf '%s' "$b"
+          [ -n "${4:-}" ] && printf '\n__API_HTTP_STATUS:200__'
+          return 0
+      }
+      out=$(eval "$snippet"); rc=$?
+      printf 'rc=%s out=%s calls=%s' "$rc" "$out" "$(grep -c . "${W_WORK}/calls")" ) 2> "${W_WORK}/err"
+}
+FOUND3='{"outcome":"found","orderId":"ENTDUR-00003-Z","amount":24}'
+got=$(w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" "$FOLD_BODY" "$FOUND3")
+[ "$got" = "rc=0 out=24 calls=3" ] \
+    && ok "W1 captured FoldInProgress body is retried until the key reads back (rc 0, amount 24)" \
+    || fail "W1 FoldInProgress retry: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+got=$(W_DEADLINE=0 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY")
+if [ "$got" = "rc=5 out= calls=1" ] && grep -q 'transient (HTTP 200, FoldInProgress) until the 0s retry deadline' "${W_WORK}/err" \
+   && grep -q 'still replaying its log' "${W_WORK}/err" && ! grep -q 'no node answered' "${W_WORK}/err"; then
+    ok "W2 FoldInProgress past the deadline is rc 5, reported with the true last body, never 'no node answered'"
+else fail "W2 transient at deadline: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"; fi
+got=$(w_run 'read_amount ENTDUR-00003-Z' '{"outcome":"failed","failureType":"EntityCorrupt","failure":"x"}' "$FOUND3")
+[ "$got" = "rc=4 out= calls=1" ] && grep -q 'not a transient type' "${W_WORK}/err" \
+    && ok "W3 a failureType off the allow-list is NOT retried (rc 4 after one call)" \
+    || fail "W3 non-transient: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+got=$(w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" '{"outcome":"absent","orderId":"ENTDUR-00003-Z"}')
+[ "$got" = "rc=3 out= calls=2" ] \
+    && ok "W4 genuine loss stays detectable: FoldInProgress then ABSENT is rc 3" \
+    || fail "W4 absent after transient: got '${got}'"
+got=$(W_DEADLINE=0 w_run 'read_amount ENTDUR-00003-Z' __DOWN__ __DOWN__)
+[ "$got" = "rc=4 out= calls=2" ] && grep -q 'no node answered' "${W_WORK}/err" \
+    && ok "W5 transport failure on every endpoint is still rc 4 'no node answered'" \
+    || fail "W5 no answer: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+printf '3\n' > "${W_WORK}/acked"
+got=$(w_run "ACKED_PRE='${W_WORK}/acked'; test_pre_kill_state_readable" "$FOLD_BODY" "$FOUND3")
+[ "$got" = "rc=0 out= calls=2" ] && grep -q '^PASS every pre-kill ACKED entity reads back' "${W_WORK}/err" \
+    && [ "$(grep -c "\"orderId\":\"ENTDUR-00003-Z\"" "${W_WORK}/calls")" = 2 ] \
+    && ok "W6 pre-kill readback passes through a FoldInProgress refusal (the s27 red)" \
+    || fail "W6 pre-kill readback: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+: > "${W_WORK}/empty"
+got=$(w_run "ACKED_PRE='${W_WORK}/acked'; ACKED_DURING='${W_WORK}/empty'; test_every_acked_entity_survives_the_crash" "$FOLD_BODY" "$FOUND3")
+[ "$got" = "rc=0 out= calls=2" ] && grep -q '^PASS all 1 ACKED entities survived' "${W_WORK}/err" \
+    && [ "$(grep -c "\"orderId\":\"ENTDUR-00003-Z\"" "${W_WORK}/calls")" = 2 ] \
+    && ok "W7 post-kill readback passes through a FoldInProgress refusal" \
+    || fail "W7 post-kill readback: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+got=$(w_run "ACKED_PRE='${W_WORK}/acked'; ACKED_DURING='${W_WORK}/empty'; test_every_acked_entity_survives_the_crash" "$FOLD_BODY" '{"outcome":"absent"}')
+[ "$got" = "rc=1 out= calls=2" ] && grep -q '^FAIL 1/1 lost' "${W_WORK}/err" \
+    && ok "W8 post-kill: an ACKED key that is truly ABSENT after the refusal still FAILS as loss" \
+    || fail "W8 post-kill loss: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+got=$(W_DEADLINE=0 w_run "ACKED_PRE='${W_WORK}/acked'; ACKED_DURING='${W_WORK}/empty'; test_every_acked_entity_survives_the_crash" "$FOLD_BODY")
+if [ "$got" = "rc=1 out= calls=1" ] && grep -q '^FAIL 1/1 keys UNREACHABLE' "${W_WORK}/err" && ! grep -q 'LOST' "${W_WORK}/err"; then
+    ok "W9 post-kill: a key still FoldInProgress at the deadline fails as UNREACHABLE, never as LOST"
+else fail "W9 post-kill rc 5: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"; fi
+got=$(W_DEADLINE=0 w_run "ACKED_PRE='${W_WORK}/acked'; test_pre_kill_state_readable" "$FOLD_BODY")
+if [ "$got" = "rc=1 out= calls=1" ] && grep -q '^FAIL 1 pre-kill entities UNREACHABLE' "${W_WORK}/err" \
+   && grep -q 'still refused as transient at the retry deadline' "${W_WORK}/err" && ! grep -q 'did not read back' "${W_WORK}/err"; then
+    ok "W10 pre-kill: a key still FoldInProgress at the deadline is UNREACHABLE, never a bad readback"
+else fail "W10 pre-kill rc 5: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"; fi
+w11=""
+for ft in FoldInProgressX XFoldInProgress foldinprogress; do
+    got=$(w_run 'read_amount ENTDUR-00003-Z' "{\"outcome\":\"failed\",\"failureType\":\"${ft}\",\"failure\":\"x\"}" "$FOUND3")
+    [ "$got" = "rc=4 out= calls=1" ] || w11="${w11}${ft}:'${got}' "
+done
+[ -z "$w11" ] && ok "W11 the allow-list matches by exact name (FoldInProgressX, XFoldInProgress, foldinprogress are not retried)" \
+    || fail "W11 allow-list exactness: ${w11}"
+# A no-answer attempt is swept until the deadline instead of ending the read at once (the post-kill window). The deadline is the
+# case's own clock, not the runner's (#1887): `now_s` is overridden to stay at 0 until two stub calls have been made and then jump past the
+# 1s deadline, so the case asserts the SEQUENCE (one attempt answered transient; one attempt that gets no answer, which makes two
+# stub calls; then the deadline) and exactly three calls, whatever the speed of the machine. With the real `$SECONDS` a 1s deadline was somewhere in (0, 1] seconds of wall time and a
+# slow first call alone could exhaust it, giving rc 5 after one call.
+got=$(W_DEADLINE=1 W_CLOCK_JUMP_AFTER_CALLS=2 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" __DOWN__ __DOWN__)
+[ "$got" = "rc=4 out= calls=3" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
+    && ok "W12 transient refusal then no answer: rc 4 after the transient attempt and the unanswered one, and the report names the earlier transient answer" \
+    || fail "W12 transient then down: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+# W14 (#1887): read_amount with the REAL clock keeps retrying for at least its stated deadline. Started with the shell clock at the end of
+# a second (SECONDS=0 after 0.9s), `SECONDS + 1` is reached 0.1s later; the read must still be retrying a full second after it began.
+SECONDS=0; sleep 0.9; w14_t0=$(perl -MTime::HiRes=time -e 'print time')
+W_DEADLINE=1 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" > /dev/null
+w14_ms=$(perl -MTime::HiRes=time -e "printf '%d', (time - $w14_t0) * 1000")
+[ "$w14_ms" -ge 1000 ] && ok "W14 a 1s read deadline on the real clock keeps retrying for >= 1s (${w14_ms}ms)" \
+    || fail "W14 a 1s read deadline gave up after ${w14_ms}ms (< 1000): the deadline is the whole-second \$SECONDS tick, not the stated duration"
+# D1/D2 (#1887): deadline_in is reached NO SOONER than the stated duration. `$SECONDS` is whole seconds, so with the shell clock sitting
+# just before a tick (SECONDS=0 after 0.9s) the old `SECONDS + 3` is 3 and is reached 2.1s later; deadline_in 3 must be at least 4.
+SECONDS=0; sleep 0.9; got=$(deadline_in 3)
+[ "$got" -ge 4 ] && ok "D1 deadline_in 3 at the end of a shell second is >= 4 (reached no sooner than 3s of wall time), got ${got}" \
+    || fail "D1 deadline_in 3 at the end of a shell second: got '${got}', want >= 4 (SECONDS + 3 is reached after only 2.1s)"
+got=$(deadline_in 0); [ "$got" -le "$SECONDS" ] && [ "$(deadline_in x)" -le "$SECONDS" ] \
+    && ok "D2 deadline_in 0 (and a non-number) is already expired, as the stub cases that pass a 0s deadline need" \
+    || fail "D2 deadline_in 0: got '${got}' with SECONDS=${SECONDS}"
+got=$(w_run 'read_amount ENTDUR-00003-Z' '{"outcome":"failed","failureType":"FoldInProgress","failure":"x","failureType":"Other"}' "$FOUND3")
+[ "$got" = "rc=0 out=24 calls=2" ] \
+    && ok "W13 the FIRST failureType in a body decides (greedy last-match would read 'Other')" \
+    || fail "W13 first failureType: got '${got}'"
+rm -rf "$W_WORK"
+
+# --- 02y: survival is scored on a SETTLED read, not one best-effort read (#1502) -----------
+# The suite's settled_payloads / partition_head / stream_post_any / parse_events and both
+# readability tests are extracted verbatim, plus the pre-#1502 read path (all_payloads) so a revert
+# mutation runs the real old code. A stub `_api_call` serves partition P's k-th read from
+# $Y_WORK/p<P>.<k> (the highest k present repeats; `__DOWN__` = transport failure). The owner head
+# comes from `api_get` serving $Y_WORK/head<P> when present, behind a stub `stream_coordinate`
+# that counts its calls. Time is VIRTUAL: `sleep N` advances $SECONDS by N, so the headless window
+# and the deadline run at their real defaults (30s, 90s) in no wall time.
+# Four partitions, acked markers 0..7, marker i in partition i%4 — the keyless round-robin shape
+# of the s27 run, at a tenth of its size.
+Y02="${INTEG_DIR}/suites/02y-stream-crash/test-stream-crash-durability.sh"
+Y_WORK="$(mktemp -d)"
+{
+    grep -E '^(MARKER_PREFIX|SETTLED_[A-Z_]*|PARTITION_HEAD)=' "$Y02"
+    for fn in marker_for parse_events stream_post_any json_scalar partition_head settled_payloads \
+              read_partition_raw partition_events all_payloads \
+              test_pre_kill_history_readable test_every_acked_event_survives_the_crash; do
+        awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "$Y02"
+    done
+} > "${Y_WORK}/defs.sh"
+for fn in marker_for parse_events stream_post_any partition_head settled_payloads all_payloads \
+          test_pre_kill_history_readable test_every_acked_event_survives_the_crash; do
+    grep -q "^${fn}() {" "${Y_WORK}/defs.sh" || fail "Y0 ${fn} not extracted from the 02y suite (examined NOTHING)"
+done
+grep -q '^SETTLED_HEADLESS_WINDOW_S=' "${Y_WORK}/defs.sh" || fail "Y0 SETTLED_HEADLESS_WINDOW_S not extracted"
+y_body() {  # partition marker-indices... -> a read body with contiguous offsets from 0
+    local p="$1" i off=0 sep="" ev=""; shift
+    for i in "$@"; do
+        ev="${ev}${sep}{\"offset\":${off},\"partition\":${p},\"payload\":\"CRASHDUR-$(printf '%05d' "$i")-Z\"}"
+        sep=","; off=$((off + 1))
+    done
+    printf '{"events":[%s]}' "$ev"
+}
+y_full() {  # writes round <k> with every partition complete
+    y_body 0 0 4 > "${Y_WORK}/p0.$1"; y_body 1 1 5 > "${Y_WORK}/p1.$1"
+    y_body 2 2 6 > "${Y_WORK}/p2.$1"; y_body 3 3 7 > "${Y_WORK}/p3.$1"
+}
+y_short_after() {  # round <k>: every partition short again — a read AFTER settling would see this
+    y_body 0 > "${Y_WORK}/p0.$1"; y_body 1 > "${Y_WORK}/p1.$1"; y_body 2 > "${Y_WORK}/p2.$1"; y_body 3 > "${Y_WORK}/p3.$1"
+}
+y_head() {  # partition head [owner=true]
+    printf '{"hrwOwner":"n1","servedByOwner":%s,"ownerHeadOffset":%s,"replicas":[]}' "${3:-true}" "$2" > "${Y_WORK}/head$1"
+}
+y_reset() { rm -f "${Y_WORK}"/p[0-9].* "${Y_WORK}"/head* "${Y_WORK}"/count* "${Y_WORK}"/coord-calls; }
+y_run() {  # <test-fn> -> "rc=<rc>"; stderr (the log) -> $Y_WORK/err
+    printf '%s\n' 0 1 2 3 > "${Y_WORK}/pre"; printf '%s\n' 4 5 6 7 > "${Y_WORK}/during"
+    ( source "${Y_WORK}/defs.sh"
+      PARTITIONS=4; STREAM_NAME=multipart-events; STREAM_APP_ENDPOINTS="http://y-stub:8070"
+      ACKED_PRE="${Y_WORK}/pre"; ACKED_DURING="${Y_WORK}/during"
+      [ -n "${Y_DEADLINE:-}" ] && SETTLED_READ_DEADLINE_S="$Y_DEADLINE"
+      refresh_stream_endpoints() { :; }
+      # Elapsed time is pinned: starting at 1000 (not the few seconds this script has run) means any
+      # window arithmetic that leaks an uninitialised zero shows up as an early settle.
+      SECONDS=1000
+      sleep() { SECONDS=$((SECONDS + ${1:-0})); }
+      log_warn() { echo "WARN $*" >&2; }; log_info() { echo "INFO $*" >&2; }; log_fail() { echo "FAIL $*" >&2; }
+      assert_eq() { if [ "$1" = "$2" ]; then echo "PASS $3" >&2; else echo "FAIL $3: expected '$2', got '$1'" >&2; fi; }
+      assert_gt() { if [ "$1" -gt "$2" ]; then echo "PASS $3" >&2; else echo "FAIL $3" >&2; fi; }
+      stream_coordinate() { echo x >> "${Y_WORK}/coord-calls"; printf 'test/multipart-events/1.0.0'; }
+      api_get() {
+          local p="${1##*/replicas/}"
+          [ -f "${Y_WORK}/head$p" ] || return 1
+          cat "${Y_WORK}/head$p"
+      }
+      _api_call() {
+          local p k f
+          p=$(printf '%s' "$3" | sed -E 's/.*"partition":([0-9]+).*/\1/')
+          k=$(( $(cat "${Y_WORK}/count$p" 2>/dev/null || echo 0) + 1 )); echo "$k" > "${Y_WORK}/count$p"
+          f="${Y_WORK}/p${p}.${k}"
+          [ -f "$f" ] || f=$(ls "${Y_WORK}/p${p}."* | sort -t. -k2 -n | tail -1)
+          [ "$(cat "$f")" = "__DOWN__" ] && return 1
+          cat "$f"
+      }
+      "$1"; printf 'rc=%s' "$?" ) 2> "${Y_WORK}/err"
+}
+y_has() { grep -qF -- "$1" "${Y_WORK}/err"; }
+y_heads_all() { y_head 0 "$1"; y_head 1 "$1"; y_head 2 "$1"; y_head 3 "$1"; }
+# Y1 — the s27 shape: p0 and p1 answer SUCCESSFULLY but EMPTY on the first read, full on the second,
+# and short AGAIN on a third — so a check that re-read after settling would see the short body.
+y_reset; y_body 0 > "${Y_WORK}/p0.1"; y_body 1 > "${Y_WORK}/p1.1"; y_full 2; y_short_after 3
+y_body 2 2 6 > "${Y_WORK}/p2.1"; y_body 3 3 7 > "${Y_WORK}/p3.1"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 2" && ! y_has "MISSING"; then
+    ok "Y1 a short-but-successful first read (s27: '40 missing') is re-read, and the SETTLED read is what gets scored"
+else fail "Y1 short first read: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y2 — genuine loss with NO owner head: marker 5 absent from p1 on every read. Must still FAIL as
+# loss, after the headless window.
+y_reset; y_full 1; y_body 1 1 > "${Y_WORK}/p1.1"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "FAIL Every ACKED event survived the crash (8 acked, 1 missing)" && y_has "MISSING acked marker: CRASHDUR-00005-Z" \
+   && y_has "(>= 30s headless window: an owner head was unavailable)"; then
+    ok "Y2 headless genuine loss still FAILS as loss (1 missing), once the 30s headless window has passed"
+else fail "Y2 genuine loss: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y11 — the coordinate (leader-bound catalog lookup) is resolved once, not per partition per round.
+n=$(grep -c . "${Y_WORK}/coord-calls" 2>/dev/null || echo 0)
+[ "$n" = 1 ] && ok "Y11 stream coordinate resolved once across a ${SETTLED_HEADLESS_WINDOW_S:-30}s multi-round settle (got 1 call)" \
+    || fail "Y11 coordinate lookups: expected 1, got ${n}"
+# Y3 — a duplicate at a distinct offset is scored by distinct marker (passes) but REPORTED.
+y_reset; y_full 1; y_body 2 2 2 6 > "${Y_WORK}/p2.1"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" \
+   && y_has "DUPLICATES: 1 extra event(s) at distinct (partition, offset) across 1 acked marker(s) (e.g. CRASHDUR-00002-Zx2)"; then
+    ok "Y3 an 81-for-80 style duplicate passes by distinct marker and is reported as a WARN with its count"
+else fail "Y3 duplicate: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y12 — a response repeating one (partition, offset) is a read artefact, not a double append.
+y_reset; y_full 1
+printf '{"events":[{"offset":0,"partition":2,"payload":"CRASHDUR-00002-Z"},{"offset":0,"partition":2,"payload":"CRASHDUR-00002-Z"},{"offset":1,"partition":2,"payload":"CRASHDUR-00006-Z"}]}' > "${Y_WORK}/p2.1"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && ! y_has "DUPLICATES"; then
+    ok "Y12 a response repeating the same (partition, offset) is not reported as a duplicate append"
+else fail "Y12 repeated offset: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y4 — with every owner head known, agreeing short reads below the head keep reading until complete.
+y_reset; y_body 0 > "${Y_WORK}/p0.1"; y_body 0 > "${Y_WORK}/p0.2"; y_full 3
+for k in 1 2; do y_body 1 1 5 > "${Y_WORK}/p1.$k"; y_body 2 2 6 > "${Y_WORK}/p2.$k"; y_body 3 3 7 > "${Y_WORK}/p3.$k"; done
+y_heads_all 2
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 3"; then
+    ok "Y4 agreeing EMPTY reads below the owner's ownerHeadOffset keep reading until complete"
+else fail "Y4 watermark: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y8 — short by ONE below a known head (last 0, head 2) also keeps reading.
+y_reset; y_body 0 0 > "${Y_WORK}/p0.1"; y_body 0 0 > "${Y_WORK}/p0.2"; y_full 3
+for k in 1 2; do y_body 1 1 5 > "${Y_WORK}/p1.$k"; y_body 2 2 6 > "${Y_WORK}/p2.$k"; y_body 3 3 7 > "${Y_WORK}/p3.$k"; done
+y_heads_all 2
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 3"; then
+    ok "Y8 a partition short by one event below the owner head keeps reading until complete"
+else fail "Y8 short by one: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y7 — a marker seen in an EARLY short read and absent from the settled one is LOST: the verdict
+# comes from the final round alone. p1 read 1 = [5], reads 2+ = [1] (same count and offset), with
+# owner heads matching the reads so it settles head-backed on reads 1-2.
+y_reset; y_full 1; y_body 1 5 > "${Y_WORK}/p1.1"; y_body 1 1 > "${Y_WORK}/p1.2"
+y_head 0 2; y_head 1 1; y_head 2 2; y_head 3 2
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "FAIL Every ACKED event survived the crash (8 acked, 1 missing)" && y_has "MISSING acked marker: CRASHDUR-00005-Z" \
+   && y_has "with every owner head"; then
+    ok "Y7 a marker that vanishes between reads FAILS as loss; nothing from an earlier round is carried over"
+else fail "Y7 vanishing marker: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y9 — a head from a NON-owner (servedByOwner=false) is not authority: p0 is headless.
+y_reset; y_full 1; y_body 0 0 > "${Y_WORK}/p0.1"
+y_head 0 2 false; y_head 1 2; y_head 2 2; y_head 3 2
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "headless window" && y_has "heads [p0=none p1=2 p2=2 p3=2]"; then
+    ok "Y9 a non-owner's ownerHeadOffset is ignored (p0 treated as headless)"
+else fail "Y9 non-owner head: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y10 — REVIEW FINDING 6, the s27 shape with the head UNAVAILABLE (leaderless catalog): two
+# IDENTICAL short reads 2s apart, complete on read 3. Must NOT settle on the agreeing pair.
+y_reset; y_body 0 > "${Y_WORK}/p0.1"; y_body 0 > "${Y_WORK}/p0.2"; y_full 3
+for k in 1 2; do y_body 1 1 5 > "${Y_WORK}/p1.$k"; y_body 2 2 6 > "${Y_WORK}/p2.$k"; y_body 3 3 7 > "${Y_WORK}/p3.$k"; done
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 3" && ! y_has "MISSING"; then
+    ok "Y10 headless: two agreeing short reads do not settle — no false loss in a leaderless window"
+else fail "Y10 headless false loss: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y13 — the headless window RESTARTS when the reads change. p0 is empty for reads 1-10 (~18s,
+# under the window), then short-by-one for reads 11-20 (~18s), complete from read 21. Neither
+# plateau lasts 30s, so nothing may settle before read 21. Timing the window from the FIRST read
+# instead of from the last change would settle the second plateau at ~30s total, a false loss.
+y_reset; y_full 1
+for k in 1 2 3 4 5 6 7 8 9 10; do y_body 0 > "${Y_WORK}/p0.$k"; done
+for k in 11 12 13 14 15 16 17 18 19 20; do y_body 0 0 > "${Y_WORK}/p0.$k"; done
+y_body 0 0 4 > "${Y_WORK}/p0.21"
+y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "PASS Every ACKED event survived the crash (8 acked, 0 missing)" && y_has "complete on read 21" && ! y_has "MISSING"; then
+    ok "Y13 headless: the 30s window restarts when the reads change — two short plateaus under 30s each do not settle"
+else fail "Y13 window restart: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y5 — a partition no endpoint can read is UNMEASURABLE, never an empty partition scored as loss;
+# a marker absent from the readable partitions is named as NOT FOUND, not as LOST.
+y_reset; y_full 1; echo __DOWN__ > "${Y_WORK}/p3.1"; y_body 1 1 > "${Y_WORK}/p1.1"
+Y_DEADLINE=0 y_run test_every_acked_event_survives_the_crash >/dev/null
+if y_has "FAIL partition(s) 3 unreadable at the read deadline" && y_has "(3/8 acked marker(s) not found in the readable partitions" \
+   && y_has "NOT FOUND in the readable partitions: CRASHDUR-00005-Z" && ! y_has "MISSING acked marker" \
+   && ! y_has "PASS Every ACKED" && ! y_has "FAIL Every ACKED"; then
+    ok "Y5 an unreadable partition fails as UNMEASURABLE; readable-partition absences are named NOT FOUND, never LOST"
+else fail "Y5 unreadable: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+# Y6 — the pre-kill readability check uses the same settled read (and scores it, not a later one).
+y_reset; y_body 0 > "${Y_WORK}/p0.1"; y_full 2; y_short_after 3
+y_body 1 1 5 > "${Y_WORK}/p1.1"; y_body 2 2 6 > "${Y_WORK}/p2.1"; y_body 3 3 7 > "${Y_WORK}/p3.1"
+y_run test_pre_kill_history_readable >/dev/null
+if y_has "PASS All 4 ACKED pre-kill markers readable before the kill (got 4)"; then
+    ok "Y6 pre-kill readability re-reads a short partition and scores the settled read"
+else fail "Y6 pre-kill: $(tr '\n' '|' < "${Y_WORK}/err")"; fi
+rm -rf "$Y_WORK"
 
 echo ""
 echo "  ----"

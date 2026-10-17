@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
 import java.util.List;
@@ -129,6 +128,20 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #2059: a cloud source lacks `[cloud.credentials]` keys its provider's integration factory requires.
+    /// Caught at compose time so the CLI names the key, instead of the node refusing to boot (#2058).
+    record CredentialsIncomplete(String sourceName, String provider, List<String> missing) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Source '" + sourceName
+                 + "' (provider " + provider
+                 + ") is missing required cloud credential(s): " + String.join(", ", missing)
+                 + ". Set them under [source." + sourceName
+                 + ".node_config.cloud.credentials] (region/zone/location come from the source's own"
+                 + " region/zone).";
+        }
+    }
+
     record ValidationFailed(List<ClusterConfigError> errors) implements ClusterConfigError {
         @Override
         public String message() {
@@ -173,10 +186,14 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
-    record ClusterAlreadyExists(String name) implements ClusterConfigError {
+    record ClusterAlreadyExists(String name, String matched) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Cluster '" + name + "' already exists. Use 'apply' to modify or 'destroy' first.";
+            return "Cluster '" + name
+                 + "' already exists: " + matched
+                 + ". To continue an interrupted bootstrap re-run with --resume; to re-create the cluster run"
+                 + " 'aether cluster destroy --cluster " + name
+                 + "' first.";
         }
 
         @Override
@@ -254,6 +271,137 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
                                               ? "(none)"
                                               : String.join(", ", known))
                  + ". Change the topology with 'aether cluster apply', not with a scale.";
+        }
+    }
+
+    /// #335: `POST /api/cluster/scale` against a cluster with no stored config (e.g. after a
+    /// `docker compose down -v` volume wipe leaves a fresh, unconfigured cluster) cannot bootstrap
+    /// one from the scale request alone. Same class as the #290 formation-bootstrap work, but that
+    /// path derives the cluster name, semver version, distribution strategy, zones, and deployment
+    /// settings a `ClusterConfigValue` requires from a full TOML document — a `ScaleRequest` carries
+    /// only source/role/count/expectedVersion, none of that. Guessing the rest would fabricate a
+    /// cluster identity nobody declared, so this names the actual recovery instead of 500ing or
+    /// inventing defaults.
+    record NoConfigToScale(String scaleSource, String role, int count) implements ClusterConfigError {
+        @Override
+        public String message() {
+            var sourceFlag = scaleSource.isBlank()
+                             ? ""
+                             : "--source " + scaleSource + " ";
+
+            return "No cluster configuration stored. A scale request cannot create one — it carries "
+                 + "only source/role/count, not the cluster name, version, or deployment settings a "
+                 + "config requires. Run 'aether cluster bootstrap <aether-cluster.toml>' first, then "
+                 + "retry 'aether cluster scale " + sourceFlag
+                 + "--role " + role
+                 + " --count " + count
+                 + "'.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1543 F2: an upgrade target must be a SemVer 2.0 version with an optional pre-release (`1.0.0`, `1.0.0-rc5`); anything else
+    /// is refused before any read or write. Our own release versions carry a pre-release part, so a strict `X.Y.Z` rule refused them.
+    record InvalidUpgradeVersion(String version) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Invalid upgrade version '" + version
+                 + "': expected SemVer MAJOR.MINOR.PATCH with an optional pre-release, e.g. 1.0.0 or 1.0.0-rc5 (no build metadata: the version becomes an image tag)";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
+    /// #837: `POST /api/cluster/upgrade` against a cluster with no stored config (same
+    /// post-volume-wipe state #335/#835 fixed for scale) used to route through
+    /// `ClusterConfigRoutes.lookupClusterConfig()`, which folded absence into the bare,
+    /// statusless `ConfigNotFoundError` — a 500 that read like server failure. An
+    /// `UpgradeRequest` carries only a target version: none of the cluster name, distribution
+    /// strategy, zones, or deployment settings a `ClusterConfigValue` requires, so there is no
+    /// more an honest bootstrap-on-upgrade here than there was a bootstrap-on-scale. Same fix
+    /// shape as `NoConfigToScale`: name the actual recovery instead of guessing or 500ing.
+    record NoConfigToUpgrade(String targetVersion) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "No cluster configuration stored. An upgrade request cannot create one — it "
+                 + "carries only a target version, not the cluster name, topology, or deployment "
+                 + "settings a config requires. Run 'aether cluster bootstrap <aether-cluster.toml>' "
+                 + "first, then retry 'aether cluster upgrade --version " + targetVersion
+                 + "'.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1543 part C: an upgrade rewrites the committed `[cluster] version`, which replacements render into
+    /// their image tag / jar URL — unless a role's runtime profile pins `image` (container) or `jar_url`
+    /// (JVM), in which case the new version would be recorded and silently ignored. Refused, naming the
+    /// profiles to edit.
+    record UpgradeVersionPinned(String targetVersion, List<String> profiles) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Refusing to upgrade to " + targetVersion
+                 + ": runtime profile(s) " + profiles
+                 + " pin image/jar_url literally, so replacements would keep booting the pinned artifact and ignore the "
+                 + "version. Use {version} in the pin (image = \"registry/aether-node:{version}\") to let it follow upgrades. "
+                 + "The pin must be declared that way in the config the cluster was bootstrapped with: 'aether cluster apply' "
+                 + "does not currently change runtime-profile content";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1543 F2 (ruling 7f2f9d772): a DOCKER source replaces a node with a container of the image its runtime profile pins at the
+    /// committed version. A docker role whose profile pins no image, or one without `{version}`, would be replaced by the provider's one
+    /// configured image, so a rolling upgrade would replace every node with the SAME image. Refused at the upgrade start, before any
+    /// node is touched, naming the sources and the fix; never rolled back node by node.
+    record UpgradeDockerImageUnversioned(String targetVersion, List<String> sources) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Refusing to upgrade to " + targetVersion
+                 + ": docker source(s) " + sources
+                 + " have a role whose runtime profile pins no image carrying {version}, so replacements would boot the same image and the "
+                 + "upgrade would change nothing. Declare the image with the placeholder in the config the cluster was bootstrapped with "
+                 + "(runtime = \"app\" on the role, [runtime.app] type = \"docker\", image = \"registry/aether-node:{version}\"). "
+                 + "'aether cluster apply' does not currently change runtime-profile content";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1543 part C: a changed `[cluster] version` on `apply` used to be answered 501 "escalate rather than retry"
+    /// (the generic unsupported-action refusal) while the CLI merely logged it. The version is the one replacements
+    /// provision, so it has exactly one writer — the upgrade route, which rewrites the committed TOML and refuses a
+    /// pinned image/jar_url. Apply refuses with a pointer to it.
+    record VersionChangeViaApply(String from, String to) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "cluster.version change " + from
+                 + " -> " + to
+                 + " is not applied through 'aether cluster apply'. Use 'aether cluster upgrade --version " + to
+                 + "' (it commits the version replacements are provisioned from), or keep version = \"" + from
+                 + "\" in the file you apply.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 
@@ -388,7 +536,7 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
     record UnsupportedApplyAction(DiffAction action) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Config action not supported for live apply on POST /api/cluster/config in this release: " + action.symbol()
+            return "Config action not supported for live apply on POST /api/v1/cluster/config in this release: " + action.symbol()
                  + " " + action.description()
                  + ". No verified recovery is available through this endpoint yet — escalate rather than retry.";
         }

@@ -5,31 +5,49 @@
 package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.parse.Number;
 
 import static org.pragmatica.aether.api.routes.SchemaRouteError.InvalidVersionParameter.invalidVersionParameter;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyPending.schemaAlreadyPending;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaStatusUndecodable.schemaStatusUndecodable;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaAlreadyServing.schemaAlreadyServing;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotFailed.schemaNotFailed;
+import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaNotLeader.schemaNotLeader;
 import static org.pragmatica.aether.api.routes.SchemaRouteError.SchemaRecordNotFound.schemaRecordNotFound;
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.lang.Result.success;
+import static org.pragmatica.lang.Unit.unit;
 
 
 public final class SchemaRoutes implements RouteSource {
@@ -52,17 +70,22 @@ public final class SchemaRoutes implements RouteSource {
         return new SchemaRoutes(nodeSupplier);
     }
 
+    /// `heldSlices` names every slice this record currently blocks (#760) — visible on the
+    /// management API without reaching for DEBUG logs. Empty whenever the status is not blocking,
+    /// even if some slice happens to share the owning blueprint.
     record SchemaStatusResponse(String datasource,
                                 int currentVersion,
                                 String lastMigration,
                                 String status,
-                                String owningBlueprint) {
-        static SchemaStatusResponse schemaStatusResponse(SchemaVersionValue v) {
+                                String owningBlueprint,
+                                List<String> heldSlices) {
+        static SchemaStatusResponse schemaStatusResponse(SchemaVersionValue v, List<String> heldSlices) {
             return new SchemaStatusResponse(v.datasourceName(),
                                             v.currentVersion(),
                                             v.lastMigration(),
                                             v.status().name(),
-                                            v.owningBlueprint().asString());
+                                            v.owningBlueprint().asString(),
+                                            heldSlices);
         }
     }
 
@@ -96,7 +119,8 @@ public final class SchemaRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<SchemaMigrateResponse> route(ManagementRoute.SCHEMA_BASELINE)
                                          .withPath(aString())
-                                         .withQuery(QueryParameter.aString("version"))
+                                         .withQuery(QueryParameter.aString("version"),
+                                                    QueryParameter.aBoolean("force"))
                                          .to(this::baselineDatasource)
                                          .asJson(),
                          ManagementRoutes.<SchemaMigrateResponse> route(ManagementRoute.SCHEMA_RETRY)
@@ -112,21 +136,151 @@ public final class SchemaRoutes implements RouteSource {
                     .kvStore()
                     .forEach(SchemaVersionKey.class,
                              SchemaVersionValue.class,
-                             (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value)));
+                             (_, value) -> entries.add(SchemaStatusResponse.schemaStatusResponse(value,
+                                                                                                 heldSlices(value))));
 
         return new SchemaStatusListResponse(entries);
     }
 
     private Promise<SchemaStatusResponse> singleSchemaStatus(String datasource) {
-        return lookupSchemaVersion(datasource).map(SchemaStatusResponse::schemaStatusResponse);
+        return lookupSchemaVersion(datasource).map(this::toSchemaStatusResponse);
     }
 
     private Promise<SchemaStatusResponse> schemaHistory(String datasource) {
-        return lookupSchemaVersion(datasource).map(SchemaStatusResponse::schemaStatusResponse);
+        return lookupSchemaVersion(datasource).map(this::toSchemaStatusResponse);
     }
 
+    private SchemaStatusResponse toSchemaStatusResponse(SchemaVersionValue value) {
+        return SchemaStatusResponse.schemaStatusResponse(value, heldSlices(value));
+    }
+
+    /// Scans `SliceNodeKey`/`SliceNodeValue` — the LIVE per-node runtime state, not the
+    /// ownership-only `SliceTargetKey`/`SliceTargetValue` this used to scan — and delegates to the
+    /// SAME predicate ([ClusterDeploymentState#blocksSliceActivation]) the activation gate itself
+    /// uses (#760 review BLOCKING 1). The prior version matched ownership alone with no state
+    /// check at all, so a slice already ACTIVE (which passed the gate and has no transition path
+    /// back through it) was reported as held whenever its record was re-armed to MIGRATING —
+    /// exactly the false positive this rewrite eliminates. Deduped by artifact base: several node
+    /// instances of the same artifact each contribute a `SliceNodeKey`, and the reported shape is
+    /// one entry per held artifact, not one per instance.
+    private List<String> heldSlices(SchemaVersionValue schema) {
+        if (!ClusterDeploymentState.BLOCKING_SCHEMA_STATUSES.contains(schema.status())) {
+            return List.of();
+        }
+
+        var held = new LinkedHashSet<String>();
+        var kvStore = nodeSupplier.get().kvStore();
+
+        kvStore.forEach(SliceNodeKey.class,
+                        SliceNodeValue.class,
+                        (key, value) -> collectIfHeldBySchema(schema, key, value, kvStore, held));
+
+        return List.copyOf(held);
+    }
+
+    private void collectIfHeldBySchema(SchemaVersionValue schema,
+                                       SliceNodeKey key,
+                                       SliceNodeValue value,
+                                       KVStore<AetherKey, AetherValue> kvStore,
+                                       Set<String> held) {
+        if (ClusterDeploymentState.blocksSliceActivation(value.state(), sliceOwner(key.artifact()), schema, kvStore)) {
+            held.add(key.artifact().base().asString());
+        }
+    }
+
+    /// `SliceNodeValue` carries no ownership — that lives on `SliceTargetKey`/`SliceTargetValue`
+    /// (the same desired/ownership record `ClusterDeploymentState.Active.blueprints` mirrors), so
+    /// live state and ownership are joined here per slice, one KV read per artifact.
+    ///
+    /// #805 item 1: delegates to [ClusterDeploymentState#resolveSliceOwner(KVStore, Artifact)] — the
+    /// SAME static the activation gate now calls. The route already read the committed record; it
+    /// was the gate that read the node-local `blueprints` mirror, so this delegation is what makes
+    /// the shared source a fact rather than a coincidence of two identical bodies.
+    private Option<BlueprintId> sliceOwner(Artifact artifact) {
+        return ClusterDeploymentState.resolveSliceOwner(nodeSupplier.get().kvStore(),
+                                                        artifact);
+    }
+
+    /// #760 review BLOCKING 1: `/migrate` writing MIGRATING has no orchestrator effect by itself —
+    /// only a PENDING record's Put drives `SchemaOrchestratorService.migrateIfNeeded`
+    /// (`ClusterDeploymentState.processSchemaVersionPut`'s MIGRATING branch only logs at DEBUG).
+    /// Re-arming a COMPLETED record whose owning blueprint has live ACTIVE slices therefore has no
+    /// functional benefit and one real hazard: MIGRATING stays a blocking status, so the next slice
+    /// instance to reach LOADED (a scale-up, a rolling redeploy, a rejoining node) is held there
+    /// with no automatic path back — nothing but another manual write ever resolves a directly-set
+    /// MIGRATING record. Refused (409) rather than allowed, since the only way out of that
+    /// self-inflicted hold is an operator noticing a stuck LOADED slice and clearing the record
+    /// they themselves re-armed. A COMPLETED record with zero live ACTIVE slices (nothing yet
+    /// deployed, or a prior deploy never reached ACTIVE) has nothing to protect and is unaffected.
+    ///
+    /// #760/#724 review round 2 item l: a PENDING record hit the same hazard through the `else`
+    /// fallthrough — the guard above special-cased only COMPLETED, so `/migrate` on PENDING silently
+    /// rewrote it to MIGRATING with no dispatch effect and the same missing clearing path. Refused
+    /// (409, [SchemaRouteError.SchemaAlreadyPending]) alongside COMPLETED-with-active-slices; a
+    /// PENDING record already dispatches on its own and gains nothing from being re-armed.
     private Promise<SchemaMigrateResponse> triggerMigration(String datasource) {
-        return lookupSchemaVersion(datasource).flatMap(current -> writeMigratingStatus(current, datasource));
+        return lookupSchemaVersion(datasource).flatMap(current -> guardReactivation(current, datasource));
+    }
+
+    private Promise<SchemaMigrateResponse> guardReactivation(SchemaVersionValue current, String datasource) {
+        return switch (current.status()) {
+            case COMPLETED -> refuseIfActiveSlicesPresent(current, datasource);
+            case PENDING -> schemaAlreadyPending(datasource).promise();
+            case MIGRATING, FAILED -> writeMigratingStatus(current, datasource);
+            // #964: the `default` arm this replaces STARTED A MIGRATION for anything it did not
+            // recognise, so a status decoded as UNKNOWN would have armed one on a record this node
+            // cannot read. Enumerating the arms also makes the next SchemaStatus constant a compile
+            // error here rather than a silent migration.
+            case UNKNOWN -> schemaStatusUndecodable(datasource).promise();
+        };
+    }
+
+    private Promise<SchemaMigrateResponse> refuseIfActiveSlicesPresent(SchemaVersionValue current, String datasource) {
+        var activeCount = activeSliceCount(current.owningBlueprint());
+
+        return activeCount == 0
+               ? writeMigratingStatus(current, datasource)
+               : schemaAlreadyServing(datasource, activeCount).promise();
+    }
+
+    /// #760 review round 2 item b: a slice mid-activation (ACTIVATING/ROUTING) is already occupying
+    /// the datasource it will serve from once it reaches ACTIVE — refusing to count it would let a
+    /// re-arm race a slice that is seconds from going live. Counting ACTIVATING/ROUTING/ACTIVE alike
+    /// is deliberately over-inclusive rather than under: a false-positive refusal costs the operator a
+    /// retry, a false-negative would strand the very migration this guard exists to protect.
+    ///
+    /// This count is a snapshot read against a live KV store with no lock spanning it and the
+    /// subsequent status Put — a slice can transition into a serving state, or a brand-new one can be
+    /// targeted, in the window between this read and `writeMigratingStatus`'s write. That window is a
+    /// known, accepted race: closing it would need the count and the Put to share a single
+    /// consensus-replicated transaction, which this guard does not attempt. Documented here rather
+    /// than fixed, since the guard's purpose is to catch the common case (a schema re-armed onto an
+    /// already-serving version), not to provide a linearizable barrier.
+    private int activeSliceCount(BlueprintId owner) {
+        var count = new AtomicInteger();
+
+        nodeSupplier.get()
+                    .kvStore()
+                    .forEach(SliceNodeKey.class,
+                             SliceNodeValue.class,
+                             (key, value) -> countIfActiveAndOwnedBy(owner, key, value, count));
+
+        return count.get();
+    }
+
+    private static final Set<SliceState> SERVING_STATES = Set.of(SliceState.ACTIVATING,
+                                                                 SliceState.ROUTING,
+                                                                 SliceState.ACTIVE);
+
+    private void countIfActiveAndOwnedBy(BlueprintId owner,
+                                         SliceNodeKey key,
+                                         SliceNodeValue value,
+                                         AtomicInteger count) {
+        if (SERVING_STATES.contains(value.state()) && sliceOwner(key.artifact()).map(actualOwner -> actualOwner.base()
+                                                                                                               .equals(owner.base()))
+                                                                .or(false)) {
+            count.incrementAndGet();
+        }
     }
 
     private Promise<SchemaMigrateResponse> undoMigration(String datasource, Option<String> targetVersionOpt) {
@@ -134,8 +288,23 @@ public final class SchemaRoutes implements RouteSource {
                                .flatMap(targetVersion -> undoToVersion(datasource, targetVersion));
     }
 
-    private Promise<SchemaMigrateResponse> undoToVersion(String datasource, int targetVersion) {
-        return lookupSchemaVersion(datasource).flatMap(current -> writeUndoStatus(current, datasource, targetVersion));
+    /// #543 ("schema undo is unreachable"): this used to write a bare KV status (PENDING) and
+    /// report success without ever calling the schema manager's `undo` operation — see
+    /// `SchemaOrchestratorService.undoTo`'s header for why that was actively wrong, not merely
+    /// inert. Now: confirm the record exists (404), confirm this node is the leader (409 —
+    /// condition 2), delegate to the real orchestrator SYNCHRONOUSLY, then report what actually
+    /// happened by re-reading KV (condition 3) rather than echoing the request back.
+    ///
+    /// Package-visible so the undo contract can be exercised directly against a REAL
+    /// `SchemaOrchestratorServiceInstance` (matching [#baselineDatasource]'s precedent): review
+    /// round 1 BLOCKING 1 found every existing undo test substituting a stub orchestrator, so
+    /// nothing failed when this method's delegation to the real manager was reverted to a stub.
+    Promise<SchemaMigrateResponse> undoToVersion(String datasource, int targetVersion) {
+        return lookupSchemaVersion(datasource).flatMap(_ -> requireLeader(datasource, "undo"))
+                                  .flatMap(_ -> nodeSupplier.get()
+                                                            .schemaOrchestrator()
+                                                            .undoTo(datasource, targetVersion))
+                                  .flatMap(_ -> reportOutcome(datasource, "Undo"));
     }
 
     /// Package-visible so the baseline contract can be exercised directly (matching
@@ -143,12 +312,108 @@ public final class SchemaRoutes implements RouteSource {
     /// record's artifact coordinates and owning blueprint, and must fail rather than fabricate an
     /// unowned record for a datasource that has none.
     Promise<SchemaMigrateResponse> baselineDatasource(String datasource, Option<String> versionOpt) {
-        return versionParameter(versionOpt, VERSION_PARAMETER, DEFAULT_BASELINE_VERSION).async()
-                               .flatMap(version -> baselineAtVersion(datasource, version));
+        return baselineDatasource(datasource, versionOpt, Option.none());
     }
 
-    private Promise<SchemaMigrateResponse> baselineAtVersion(String datasource, int version) {
-        return lookupSchemaVersion(datasource).flatMap(current -> writeBaselineStatus(current, datasource, version));
+    /// #217: `force` overrides [#guardBaseline] only; it never bypasses the leader binding or the
+    /// manager's own `BaselineConflict` (history already applied past the requested version).
+    Promise<SchemaMigrateResponse> baselineDatasource(String datasource,
+                                                      Option<String> versionOpt,
+                                                      Option<Boolean> force) {
+        return versionParameter(versionOpt, VERSION_PARAMETER, DEFAULT_BASELINE_VERSION).async()
+                               .flatMap(version -> baselineAtVersion(datasource,
+                                                                     version,
+                                                                     force.or(false)));
+    }
+
+    /// #543: this used to write a fabricated COMPLETED status directly, with zero database
+    /// interaction — see `SchemaOrchestratorService.baseline`'s header. Same shape as
+    /// [#undoToVersion]: existence check, leader-bind, real orchestrator call, re-read for the
+    /// response.
+    private Promise<SchemaMigrateResponse> baselineAtVersion(String datasource, int version, boolean force) {
+        return lookupSchemaVersion(datasource).flatMap(current -> guardBaseline(current, datasource, version, force))
+                                  .flatMap(_ -> requireLeader(datasource, "baseline"))
+                                  .flatMap(_ -> nodeSupplier.get()
+                                                            .schemaOrchestrator()
+                                                            .baseline(datasource, version, force))
+                                  .flatMap(_ -> reportOutcome(datasource, "Baseline"));
+    }
+
+    /// #217: a baseline over a PENDING or MIGRATING record replaces the in-flight migration's record with
+    /// COMPLETED, and `migrateIfNeeded` (PENDING only) then never runs that migration: the operator's
+    /// baseline silently cancels it. The 2026-05-10 RC1 parallel-suite race was exactly this (a default
+    /// `version=1` baseline landing on a PENDING record). Refused with a 409 naming the status; an UNKNOWN
+    /// status is refused too, since this node cannot tell whether a migration is in flight. `?force=true`
+    /// overrides, and the override is written to the audit log with the status it overrode.
+    ///
+    /// Like [#activeSliceCount] this is a snapshot read with no lock spanning it and the orchestrator
+    /// call: a migration armed in between is not caught. It catches the common case, an operator
+    /// baselining over a migration that is visibly in flight; it is not a linearizable barrier.
+    private Promise<SchemaVersionValue> guardBaseline(SchemaVersionValue current,
+                                                      String datasource,
+                                                      int version,
+                                                      boolean force) {
+        var inFlight = switch (current.status()) {
+            case PENDING, MIGRATING, UNKNOWN -> true;
+            case COMPLETED, FAILED -> false;
+        };
+
+        if (!inFlight) {
+            return Promise.success(current);
+        }
+
+        if (force) {
+            AuditLog.schemaBaselineForced(datasource,
+                                          version,
+                                          current.status().name());
+
+            return Promise.success(current);
+        }
+
+        return SchemaError.BaselineOverInFlightMigration.baselineOverInFlightMigration(datasource,
+                                                                                       current.status(),
+                                                                                       "route check")
+                                                        .promise();
+    }
+
+    /// #543 condition 2: `SchemaOrchestratorServiceInstance`'s single-flight fence is an
+    /// in-process `ConcurrentHashMap`, not a KV-transactional lock — it serializes calls on ONE
+    /// node and does nothing for a second node mutating the same schema row concurrently.
+    /// Leader-binding closes that gap without a distributed lock of its own, the same way AB-test
+    /// mutations already rely on exactly one node ever running at a time
+    /// (`AbTestRoutes.requireLeader`) — not reused directly: that helper raises a bare `Cause`,
+    /// which `ProblemResponses` cannot distinguish from a genuine server fault and answers 500 for.
+    /// This uses the [HttpStatusAware]-typed [SchemaRouteError.SchemaNotLeader] (409) instead, so
+    /// the caller can tell "retry the leader" from "the cluster broke".
+    ///
+    /// review round 1 SHOULD-FIX 5: this check is itself check-then-act, undisclosed until now.
+    /// `node.isLeader()` is read once, here; the manager call it guards runs afterward with no
+    /// re-check, so leadership can change between this read and that call's completion. Same
+    /// missing-compare-and-set shape as #766's lock race, one layer up at the leader gate rather
+    /// than at `acquireLock`'s KV lock — tracked under #766 rather than separately (see
+    /// management-api.md's `acquireLock` callout).
+    private Promise<Unit> requireLeader(String datasource, String operation) {
+        var node = nodeSupplier.get();
+
+        return node.isLeader()
+               ? Promise.success(unit())
+               : schemaNotLeader(datasource, operation, node.leader()).promise();
+    }
+
+    /// #543 condition 3: reports what [AetherSchemaManager] actually did by re-reading the KV
+    /// record `SchemaOrchestratorService.undoTo`/`.baseline` just wrote from its own real
+    /// `SchemaResult.currentVersion()` — never the caller's requested version. Keeping
+    /// `SchemaOrchestratorService`'s interface as `Promise<Unit>` (12 unrelated FSM/deployment
+    /// tests fake it as a no-op) means this re-read, not a richer return type, is how the route
+    /// learns the outcome.
+    private Promise<SchemaMigrateResponse> reportOutcome(String datasource, String operation) {
+        return lookupSchemaVersion(datasource).map(value -> SchemaMigrateResponse.schemaMigrateResponse(true,
+                                                                                                        operation
+                                                                                                       + " complete for '" + datasource
+                                                                                                       + "' — now at version " + value.currentVersion()
+                                                                                                       + " (" + value.status()
+                                                                                                                     .name()
+                                                                                                       + ")"));
     }
 
     /// An absent parameter takes the documented default; a present one must parse, so a typo is a
@@ -185,43 +450,6 @@ public final class SchemaRoutes implements RouteSource {
                                                                                                            "Migration triggered for " + datasource));
     }
 
-    private Promise<SchemaMigrateResponse> writeUndoStatus(SchemaVersionValue current,
-                                                           String datasource,
-                                                           int targetVersion) {
-        var updated = SchemaVersionValue.schemaVersionValue(datasource,
-                                                            targetVersion,
-                                                            current.lastMigration(),
-                                                            SchemaStatus.PENDING,
-                                                            current.artifactCoords(),
-                                                            current.owningBlueprint());
-
-        return applySchemaUpdate(datasource, updated).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
-                                                                                                           "Undo to version " + targetVersion
-                                                                                                          + " initiated for " + datasource));
-    }
-
-    /// Baselining rewrites only the version, the marker migration name and the status. The artifact
-    /// coordinates and the owning blueprint are carried over from the existing record: dropping the
-    /// coordinates breaks `SchemaOrchestratorService.resolveAndParseMigrations` on any later
-    /// migrate, and dropping the owner detaches the record from the blueprint whose activation gate
-    /// consults it. A datasource with no record cannot be baselined — there is no owner to inherit,
-    /// and inventing an unowned record would produce exactly the orphan the required-ownership
-    /// component exists to make unrepresentable.
-    private Promise<SchemaMigrateResponse> writeBaselineStatus(SchemaVersionValue current,
-                                                               String datasource,
-                                                               int version) {
-        var baselined = SchemaVersionValue.schemaVersionValue(datasource,
-                                                              version,
-                                                              "V" + String.format("%03d", version) + "__baseline",
-                                                              SchemaStatus.COMPLETED,
-                                                              current.artifactCoords(),
-                                                              current.owningBlueprint());
-
-        return applySchemaUpdate(datasource, baselined).map(_ -> SchemaMigrateResponse.schemaMigrateResponse(true,
-                                                                                                             "Baselined " + datasource
-                                                                                                            + " at version " + version));
-    }
-
     private Promise<List<Long>> applySchemaUpdate(String datasource, SchemaVersionValue value) {
         var key = SchemaVersionKey.schemaVersionKey(datasource);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
@@ -235,8 +463,12 @@ public final class SchemaRoutes implements RouteSource {
                                   .onSuccess(_ -> AuditLog.schemaManualRetry(datasource));
     }
 
+    /// Accepts FAILED (the original contract: a permanently failed migration) and PENDING (#724: a
+    /// migration that never ran — the operator has no other lever to re-trigger dispatch without a
+    /// redeploy). MIGRATING and COMPLETED remain refused: MIGRATING already has a runner in flight,
+    /// and re-arming a COMPLETED record would replay a migration nothing marked failed.
     private Promise<SchemaMigrateResponse> writeRetryStatus(SchemaVersionValue current, String datasource) {
-        if (current.status() != SchemaStatus.FAILED) {
+        if (current.status() != SchemaStatus.FAILED && current.status() != SchemaStatus.PENDING) {
             return schemaNotFailed(datasource, current.status()).promise();
         }
 

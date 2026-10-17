@@ -83,10 +83,42 @@ class ClusterTopologyManagerRenderUserDataTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
             count = 3
+            """;
+
+    private static final String CLOUD_TOML_WITH_BACKUP = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [operations.ports]
+            cluster = 6000
+            management = 5160
+            app_http = 8070
+
+            [runtime.containers]
+            type = "container"
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "eu-central"
+
+            [source.eu-1.core]
+            count = 3
+            runtime = "containers"
+
+            [source.eu-1.node_config.backup]
+            enabled = true
+            path = "/var/aether/backups"
+            remote = "git@backups.example.com:ops/cluster.git"
             """;
 
     private static final String CLOUD_TOML_WITH_AUTHORIZED_KEYS = """
@@ -104,6 +136,7 @@ class ClusterTopologyManagerRenderUserDataTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
@@ -130,13 +163,7 @@ class ClusterTopologyManagerRenderUserDataTest {
         observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
         lifecycleManager = new RecordingLifecycleManager();
         clusterStore = new RecordingClusterStore();
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                     timeSpan(1).millis(),
-                                                     AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                     AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                     AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                                     timeSpan(0).millis())
-                                     .unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
         ctm = ClusterTopologyManager.clusterTopologyManager(observer,
                                                             lifecycleManager,
                                                             autoHeal,
@@ -175,6 +202,22 @@ class ClusterTopologyManagerRenderUserDataTest {
                 .doesNotContain("node-dead");
     }
 
+    /// #1968: the CTM's own replacement path renders the committed `[backup]` (from the persisted cluster TOML) and the volume it
+    /// needs. A replacement that boots without it, once elected leader, runs no backup.
+    @Test
+    void provisionReplacement_clusterConfigWithBackup_replacementCarriesBackupAndItsVolume() {
+        clusterStore.seedToml(CLOUD_TOML_WITH_BACKUP);
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-backup").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var script = lifecycleManager.lastSpec().userData().or("");
+
+        assertThat(script).contains("[backup]").contains("remote = \"git@backups.example.com:ops/cluster.git\"");
+        assertThat(script).contains("-v /opt/aether/backups:/var/aether/backups");
+    }
+
     /// #442 — a replacement can later be elected leader and provision ITS OWN replacements. For that
     /// to resolve keys from config (no API lookup), the replacement's composed `aether.toml` must
     /// carry the leader's ssh_key_ids. The CTM reads them from the leader's own resolved
@@ -184,7 +227,8 @@ class ClusterTopologyManagerRenderUserDataTest {
     @Test
     void provisionReplacement_threadsLeaderSshKeyIdsIntoReplacementConfig() {
         clusterStore.seedToml(CLOUD_TOML);
-        var leaderResolved = TomlDocument.EMPTY.with("cloud.compute", "ssh_key_ids", "113681412");
+        var leaderResolved = TomlDocument.EMPTY.with("cloud.sources.eu-1", "provider", "hetzner")
+                                             .with("cloud.sources.eu-1.compute", "ssh_key_ids", "113681412");
         var ctmWithKeys = ClusterTopologyManager.clusterTopologyManager(observer,
                                                                         lifecycleManager,
                                                                         renderTestAutoHeal(),
@@ -195,7 +239,9 @@ class ClusterTopologyManagerRenderUserDataTest {
                                                                         () -> ClusterPhase.NORMAL,
                                                                         ignored -> {},
                                                                         ignored -> {},
-                                                                        () -> Option.some(leaderResolved));
+                                                                        () -> Option.some(leaderResolved),
+                                                                        Option::none,
+                                                                        MembershipLiveness.UNWIRED);
         ctmWithKeys.activate();
 
         var result = ctmWithKeys.provisionReplacement(nodeId("node-r3").unwrap(),
@@ -211,14 +257,24 @@ class ClusterTopologyManagerRenderUserDataTest {
                 .contains("ssh_key_ids = \"113681412\"");
     }
 
+    /// #1526: a replacement joins the formed electorate through a Rabia §4 add command, and a cold
+    /// restart forms a fresh genesis, so a replacement's rendered config must not carry a genesis roster.
+    @Test
+    void provisionReplacement_cloudConfig_rendersNoGenesisVoters() {
+        clusterStore.seedToml(CLOUD_TOML);
+        ctm.setGenesisVoters(() -> List.of(SELF, PEER_A, PEER_B));
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-r5").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var userData = lifecycleManager.lastSpec().userData().or("");
+        assertThat(userData).as("the replacement's user data must be rendered").isNotBlank();
+        assertThat(userData).doesNotContain("genesis_voters");
+    }
+
     private static AutoHealConfig renderTestAutoHeal() {
-        return AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                             timeSpan(1).millis(),
-                                             AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                             AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                             AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                             timeSpan(0).millis())
-                             .unwrap();
+        return AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
     }
 
     /// The cluster secret and dev-mode posture are sourced from the running (leader) node's env,
@@ -247,7 +303,7 @@ class ClusterTopologyManagerRenderUserDataTest {
         if (secret != null && !secret.isBlank()) {
             assertThat(script)
                     .as("cluster secret is baked from the leader env when present")
-                    .contains("AETHER_CLUSTER_SECRET=\"" + secret + "\"");
+                    .contains("printf '%s' '" + secret + "' > /opt/aether/config/cluster-secret");
         }
     }
 
@@ -263,7 +319,9 @@ class ClusterTopologyManagerRenderUserDataTest {
         var config = ClusterBootstrapConfigParser.parse(CLOUD_TOML).unwrap();
         var source = config.sources().get("eu-1");
         var secret = Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank());
-        var composed = ReplacementNodeConfigComposer.compose(config, source, secret).unwrap();
+        var composed = ReplacementNodeConfigComposer.compose(config, source, secret)
+            .flatMap(document -> org.pragmatica.aether.config.cluster.SourceCloudBindings.resolveOverlayFromConfig(document,
+                config, source.name(), NodeRole.CORE)).unwrap();
         var peers = lifecycleManager.lastSpec().context().peers().or("");
         var expected = NodeUserDataRenderer.render(config,
                                                    source,
@@ -282,8 +340,8 @@ class ClusterTopologyManagerRenderUserDataTest {
     }
 
     @Test
-    void provisionReplacement_blankToml_attachesNoUserData_provingProviderFallbackPreserved() {
-        clusterStore.seedToml("");
+    void provisionReplacement_bootstrapSeed_attachesNoUserData_provingProviderFallbackPreserved() {
+        clusterStore.seedBootstrapSeed();
         ctm.activate();
 
         var result = ctm.provisionReplacement(nodeId("node-r4").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
@@ -373,6 +431,14 @@ class ClusterTopologyManagerRenderUserDataTest {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
 
         void seedToml(String toml) {
+            seed(Option.some(toml));
+        }
+
+        void seedBootstrapSeed() {
+            seed(Option.none());
+        }
+
+        private void seed(Option<String> toml) {
             current.set(Option.some(new ClusterConfigValue(toml, "prod-cluster", "1.0.0", coreTopology(5), 3, 9, "cloud", 1L, System.currentTimeMillis())));
         }
 
@@ -408,10 +474,6 @@ class ClusterTopologyManagerRenderUserDataTest {
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
-            return Promise.success(Unit.unit());
-        }
-
-        @Override public Promise<Unit> restartNode(NodeId nodeId) {
             return Promise.success(Unit.unit());
         }
 

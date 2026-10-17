@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.jbct.slice.topic;
 
@@ -60,8 +59,8 @@ class TopicDurabilityLoaderTest {
                 topic_name = "order-events"
                 durability = "durable"
                 partitions = 4
-                replicas = 2
-                min_sync_replicas = 2
+                replication_factor = 3
+                confirmation_factor = 3
                 """);
 
             assertThat(loadIndex(path).isDurable("order-events")).isTrue();
@@ -108,8 +107,8 @@ class TopicDurabilityLoaderTest {
                 [messaging.order-events]
                 topic_name = "order-events"
                 durability = "durable"
-                replicas = 2
-                min_sync_replicas = 2
+                replication_factor = 3
+                confirmation_factor = 3
                 """);
 
             assertThat(loadIndex(path).isDurable("messaging.order-events")).isTrue();
@@ -145,8 +144,8 @@ class TopicDurabilityLoaderTest {
             var path = writeResources("""
                 [order-events]
                 durability = "durable"
-                replicas = 2
-                min_sync_replicas = 2
+                replication_factor = 3
+                confirmation_factor = 3
 
                 [click-events]
                 durability = "ephemeral"

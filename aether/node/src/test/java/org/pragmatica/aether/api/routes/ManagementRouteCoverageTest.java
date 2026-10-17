@@ -62,6 +62,7 @@ class ManagementRouteCoverageTest {
                                                                           ManagementRoute.ARTIFACT_PUT,
                                                                           ManagementRoute.ARTIFACT_POST,
                                                                           ManagementRoute.ARTIFACT_DELETE,
+                                                                          ManagementRoute.ARTIFACT_INFO,
                                                                           ManagementRoute.MAVEN_METADATA,
                                                                           ManagementRoute.REPOSITORY_ARTIFACTS_LIST);
 

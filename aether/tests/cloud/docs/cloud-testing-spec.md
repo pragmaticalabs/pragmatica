@@ -33,8 +33,8 @@
 > **2026-08-27 update:** the decision is now final for this release. `aether/docker/aether-lb/`
 > (the orphaned, unbuildable Dockerfile referencing a nonexistent `aether/lb` module) has been
 > deleted. There is no plan to reintroduce a standalone `aether-lb` deployable. Whether an LB
-> should return as a *mode* of `aether-node` built on `PassiveNode` (currently dead code, never
-> instantiated anywhere in the runtime) remains an open question, but only if the owner
+> should return as a *mode* of `aether-node` built on a passive node (the former `PassiveNode`, dead code, was removed in rc4, #2033;
+> nothing in the runtime was ever instantiating it) remains an open question, but only if the owner
 > confirms ingress AB/canary routing is actually roadmapped — deploy-side canary
 > (`aether deploy --canary`) already ships today and does not require it. See #560.
 
@@ -82,6 +82,11 @@ Validate the Aether distributed runtime in a production-like cloud environment o
 ```
 
 **7 cx22 VMs** (2 vCPU / 4 GB RAM each) in `fsn1` (Falkenstein, Germany).
+
+> **The instance types and regions below are EXAMPLES.** Providers retire instance types and
+> vary availability by location, and the region decides where your data resides — check your
+> provider's current catalogue and choose the location deliberately.
+
 **1 Hetzner managed load balancer** -- public entry point.
 **1 private network** `10.0.1.0/24` -- all inter-node traffic.
 
@@ -131,6 +136,7 @@ startup_cooldown = "15s"
 type = "hetzner"
 
 [deployment.instances]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 core = "cx22"
 
 [deployment.runtime]
@@ -138,6 +144,7 @@ type = "container"
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc1"
 
 [deployment.zones]
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone-1 = "fsn1-dc14"
 
 [deployment.ports]
@@ -156,10 +163,10 @@ cert_ttl = "720h"
 | TOML Path | Java Type | Value | Notes |
 |-----------|-----------|-------|-------|
 | `deployment.type` | `DeploymentType` | `hetzner` | Triggers `BootstrapOrchestrator.bootstrapHetzner()` |
-| `deployment.instances.core` | `Map<String,String>` | `cx22` | Passed to `provisionSingleNode()`, also used by `UserDataTemplate.deriveHeap()` to set JVM heap to `2g` |
+| `deployment.instances.core` | `Map<String,String>` | `cx22` (an EXAMPLE — providers retire instance types, check the current catalogue) | Passed to `provisionSingleNode()`, also used by `UserDataTemplate.deriveHeap()` to set JVM heap to `2g` |
 | `deployment.runtime.type` | `RuntimeType` | `container` | Triggers Docker install in cloud-init |
 | `deployment.runtime.image` | `Option<String>` | `ghcr.io/...` | If absent, defaults to `ghcr.io/pragmaticalabs/aether-node:<version>` |
-| `deployment.zones.zone-1` | `Map<String,String>` | `fsn1-dc14` | `firstZoneLocation()` extracts `fsn1` as the location |
+| `deployment.zones.zone-1` | `Map<String,String>` | `fsn1-dc14` (an EXAMPLE — the region decides where your data resides) | `firstZoneLocation()` extracts `fsn1` as the location |
 | `deployment.ports.*` | `PortMapping` | See above | Default SWIM port = cluster + 100 if not specified |
 | `deployment.tls.auto_generate` | `boolean` | `true` | Self-signed certs sufficient for testing |
 | `deployment.tls.cluster_secret` | `Option<String>` | (auto-generated) | If absent, `resolveClusterSecret()` generates a random 32-byte Base64 secret |
@@ -271,7 +278,8 @@ Decision: **Option A** -- keep public IPs initially for bootstrap health checks.
 > bastion / Docker host — no Aether container), but skips REQ-D20/D21 entirely.
 
 ```
-REQ-D18: Create LB VM: hcloud server create --name cloud-test-lb --type cx22 --image ubuntu-24.04
+REQ-D18: Create LB VM (type and location are EXAMPLES — check Hetzner's current catalogue):
+         hcloud server create --name cloud-test-lb --type cx22 --image ubuntu-24.04
          --location fsn1 --ssh-key cloud-test-key --label aether-cluster=cloud-test --label aether-role=lb
 REQ-D19: Attach to network: hcloud server attach-to-network cloud-test-lb --network cloud-test-net --ip 10.0.1.20
 REQ-D20: SSH into LB VM, install Docker, build/pull Aether LB image.
@@ -288,7 +296,8 @@ REQ-D22: The LB VM's public IP serves as SSH bastion for all other nodes.
 #### Phase 7: Provision Postgres VM
 
 ```
-REQ-D23: Create postgres VM: hcloud server create --name cloud-test-postgres --type cx22 --image ubuntu-24.04
+REQ-D23: Create postgres VM (type and location are EXAMPLES — check Hetzner's current catalogue):
+         hcloud server create --name cloud-test-postgres --type cx22 --image ubuntu-24.04
          --location fsn1 --ssh-key cloud-test-key --label aether-cluster=cloud-test --label aether-role=db
 REQ-D24: Attach to network: hcloud server attach-to-network cloud-test-postgres --network cloud-test-net --ip 10.0.1.30
 REQ-D25: SSH into postgres VM (via bastion), install Docker, run:
@@ -374,10 +383,10 @@ Management traffic goes directly to the Aether LB VM's public IP on port 8081.
 
 ```
 REQ-D35: Poll cluster health via management endpoint:
-         curl -sf http://<aether-lb-public-ip>:8081/api/health
+         curl -sf http://<aether-lb-public-ip>:8081/api/v1/health
          Wait up to 300 seconds.
 REQ-D36: Verify 5 core nodes visible:
-         curl -sf http://<aether-lb-public-ip>:8081/api/cluster/topology | jq '.coreCount'
+         curl -sf http://<aether-lb-public-ip>:8081/api/v1/cluster/topology | jq '.coreCount'
 REQ-D37: Verify leader elected:
          aether -c <aether-lb-public-ip>:8081 status --format value --field cluster.leaderId
 ```
@@ -386,10 +395,10 @@ REQ-D37: Verify leader elected:
 
 ```
 REQ-D38: Push example blueprint artifacts (url-shortener v1 and v2) via CLI:
-         aether -c <aether-lb-public-ip>:8081 artifact push org.pragmatica.aether.example:url-shortener:1.0.0
-         aether -c <aether-lb-public-ip>:8081 artifact push org.pragmatica.aether.example:url-shortener:1.0.1
+         aether -c <aether-lb-public-ip>:8081 artifacts push org.pragmatica.aether.example:url-shortener:1.0.0
+         aether -c <aether-lb-public-ip>:8081 artifacts push org.pragmatica.aether.example:url-shortener:1.0.1
 REQ-D39: Deploy v1 as baseline:
-         aether -c <core-node-public-ip>:8080 blueprint deploy org.pragmatica.aether.example:url-shortener:1.0.0
+         aether -c <core-node-public-ip>:8080 blueprints deploy org.pragmatica.aether.example:url-shortener:1.0.0
 REQ-D40: Wait for slices to become active (at least 1 instance running).
 REQ-D41: Export environment for test runner:
          echo "CLUSTER_ENDPOINT=http://<core-node-public-ip>:8080"
@@ -469,7 +478,7 @@ REQ-T08: On suite failure, continue to next suite (do not abort).
 |-------|-----------------|---------------------|
 | `00-smoke` | Yes | None -- uses CLI and HTTP helpers which work via CLUSTER_ENDPOINT |
 | `01-stability` | Partial | Soak tests skipped by default; streaming soak works if timeouts increased |
-| `02-chaos` | Yes | `kill_node` / `start_node` must use SSH-to-bastion-to-private-IP (see section 5) |
+| `02-chaos` | Yes | `kill_node` must use SSH-to-bastion-to-private-IP (see section 5) |
 | `03-scaling` | Yes | Same SSH adaptation for node operations |
 | `04-streaming` | Yes | None |
 | `05-security` | Yes | None -- cert rotation tests work since TLS is enabled |
@@ -519,14 +528,15 @@ REQ-A02: The BASTION_IP is the Aether LB VM's public IP (from .cloud-env).
 **Adaptation in `lib/cluster.sh`:**
 
 ```
-REQ-A03: kill_node() in cloud mode:
+REQ-A03: kill_node() in cloud mode (note, #1543, 2026-10-09: a killed node is never restarted under its old id; it is replaced under a fresh id by CTM auto-heal, see REQ-A04):
          Map node-1..5 to private IPs 10.0.1.11..15.
          SSH via bastion: ssh -J root@${BASTION_IP} root@10.0.1.1${node_num} "docker kill aether-node"
          Note: container name is "aether-node" (not "aether-node-1") because each VM runs a single container.
-REQ-A04: start_node() in cloud mode:
-         ssh -J root@${BASTION_IP} root@10.0.1.1${node_num} "docker start aether-node"
+REQ-A04: (withdrawn, #1543) start_node() no longer exists: a killed node is replaced under a fresh id by
+         CTM auto-heal, never relaunched under its old id.
 REQ-A05: restart_all_nodes() in cloud mode:
-         For each node 1..5: SSH via bastion and restart the container.
+         waits on CTM auto-heal and the mgmt-API readiness barriers; it no longer restarts or powers on
+         any node.
 REQ-A06: Provide a node_id_to_ip() mapping function:
          node-1 -> 10.0.1.11, node-2 -> 10.0.1.12, ..., node-5 -> 10.0.1.15
 ```

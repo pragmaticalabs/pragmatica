@@ -55,6 +55,16 @@ document.addEventListener('alpine:init', function() {
             var self = this;
             this.refreshAll();
             this.refreshTimer = setInterval(function() {
+                // #294: skip this tick while the cluster health probe reports not-healthy — don't
+                // hammer a degraded backend every 3s.
+                var cluster = Alpine.store('cluster');
+                if (cluster.degraded) return;
+                // #294 (three states, corrected after #846 review): a genuinely UNREACHABLE server
+                // (network error on both health paths) backs this timer off to the same shared slow
+                // 10s retry as app.js's pollers, rather than continuing to hammer a dead backend
+                // every 3s — coordinated via cluster.unknownRetryDue() so only one timer's tick
+                // actually fires per outage window.
+                if (cluster.healthUnknown && !cluster.unknownRetryDue()) return;
                 self.refreshAll();
             }, 3000);
         },

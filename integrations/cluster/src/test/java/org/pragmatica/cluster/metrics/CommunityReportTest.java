@@ -1,6 +1,4 @@
-// SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.cluster.metrics;
 
@@ -19,6 +17,7 @@ class CommunityReportTest {
 
         var report = new CommunityReport("pool-a",
                                          3L,
+                                         0L,
                                          7L,
                                          42L,
                                          governor,
@@ -46,7 +45,7 @@ class CommunityReportTest {
     void construct_nullPartitions_normalizesToEmpty() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = new CommunityReport("pool-a", 0L, 0L, 0L, governor, 0, 0, 0, 0, null, 0L);
+        var report = new CommunityReport("pool-a", 0L, 0L, 0L, 0L, governor, 0, 0, 0, 0, null, 0L);
 
         assertThat(report.partitionsHeld()).isEmpty();
     }
@@ -55,7 +54,7 @@ class CommunityReportTest {
     void construct_nullCommunityId_normalizesToEmpty() {
         var governor = NodeId.nodeId("gov-1").unwrap();
 
-        var report = new CommunityReport(null, 0L, 0L, 0L, governor, 0, 0, 0, 0, Set.of(), 0L);
+        var report = new CommunityReport(null, 0L, 0L, 0L, 0L, governor, 0, 0, 0, 0, Set.of(), 0L);
 
         assertThat(report.communityId()).isEmpty();
     }

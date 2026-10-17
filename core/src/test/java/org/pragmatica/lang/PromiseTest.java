@@ -106,15 +106,24 @@ public class PromiseTest {
                .onSuccess(_ -> fail("Promise should be cancelled"));
     }
 
+    /// #1605 contract guard, not a race fix: under the current implementation, actions attached BEFORE resolution
+    /// run in attach order within one task (`PromiseImpl.processActions` → `runAll`), so the former trailing
+    /// `onSuccessRun(latch::countDown)` never raced. The Promise contract does not promise that order for
+    /// independent actions, so each action now releases the latch after its own effect.
     @Test
     void successActionsAreExecutedAfterResolutionWithSuccess() throws InterruptedException {
-        var latch = new CountDownLatch(1);
+        var latch = new CountDownLatch(2);
         var ref1 = new AtomicInteger();
         var ref2 = new AtomicBoolean(false);
         var promise = Promise.<Integer>promise()
-                             .onSuccess(ref1::set)
-                             .onSuccessRun(() -> ref2.set(true))
-                             .onSuccessRun(latch::countDown);
+                             .onSuccess(value -> {
+                                 ref1.set(value);
+                                 latch.countDown();
+                             })
+                             .onSuccessRun(() -> {
+                                 ref2.set(true);
+                                 latch.countDown();
+                             });
 
         assertEquals(0, ref1.get());
         assertFalse(ref2.get());
@@ -325,7 +334,47 @@ public class PromiseTest {
 
         assertEquals(Result.success(1), ref1.get());
         assertTrue(ref2.get());
-        assertTrue(lastPromise.isResolved());
+        // #1605: `withResult`'s action counts down BEFORE its derived promise resolves, so `isResolved()` read
+        // right after the latch opens can be false; await it instead.
+        assertEquals(Result.success(1), lastPromise.await(timeSpan(1).seconds()));
+    }
+
+    /// #1188 — `withResult` is a DEPENDENT step: its action runs BEFORE the returned promise resolves. This
+    /// is the guarantee (and the reason a latch released by the action cannot imply `isResolved()`); it is
+    /// read deterministically from inside the action. Mutation that reddens it: implement `withResult` as
+    /// the independent `onResult` (the returned promise is then the already-resolved source).
+    @Test
+    void withResult_runsTheActionBeforeTheReturnedPromiseResolves() {
+        var source = Promise.<Integer>promise();
+        var derived = new AtomicReference<Promise<Integer>>();
+        var resolvedWhenActionRan = new AtomicReference<Boolean>();
+
+        derived.set(source.withResult(_ -> resolvedWhenActionRan.set(derived.get().isResolved())));
+        source.succeed(1);
+
+        assertEquals(Result.success(1), derived.get().await(timeSpan(1).seconds()));
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
+        while (resolvedWhenActionRan.get() == null && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertNotNull(resolvedWhenActionRan.get(), "control: the action ran");
+        assertEquals(Boolean.FALSE, resolvedWhenActionRan.get(), "the action runs before the returned promise resolves");
+    }
+
+    /// #1188 — the consequence callers rely on: a step chained on `withResult`'s promise always observes the
+    /// action's effect. Under the `onResult` mutation the action runs on another thread and the chained step
+    /// reads the value before it is set.
+    @Test
+    void withResult_chainedStepAlwaysObservesTheActionsEffect() {
+        for (int i = 0; i < 2_000; i++) {
+            var source = Promise.<Integer>promise();
+            var effect = new AtomicInteger();
+            var observed = source.withResult(result -> result.onSuccess(effect::set))
+                                 .map(_ -> effect.get());
+
+            source.succeed(i + 1);
+            assertEquals(Result.success(i + 1), observed.await(timeSpan(1).seconds()), "iteration " + i);
+        }
     }
 
     @Test
@@ -794,12 +843,17 @@ public class PromiseTest {
                   .onFailureRun(Assertions::fail);
     }
 
+    /// #1605: the value is set and the latch released by ONE action. Two independent actions (`onSuccess` +
+    /// `onSuccessRun`) have no mutual order, so the latch could open before the value was set.
     @Test
     void promiseCanBeConfiguredAsynchronously() throws InterruptedException {
         var ref = new AtomicInteger(0);
         var latch = new CountDownLatch(1);
 
-        var promise = Promise.<Integer>promise(p -> p.onSuccess(ref::set).onSuccessRun(latch::countDown));
+        var promise = Promise.<Integer>promise(p -> p.onSuccess(value -> {
+            ref.set(value);
+            latch.countDown();
+        }));
 
         promise.succeed(1);
         latch.await();

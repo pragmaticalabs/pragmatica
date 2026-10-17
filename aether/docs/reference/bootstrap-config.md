@@ -1,6 +1,6 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko -->
-<!-- Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0. -->
+<!-- Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms. -->
 
 # Bootstrap Config Reference
 
@@ -12,6 +12,8 @@ reads the bootstrap-config once per phase and, among other things, generates the
 `[cloud.credentials]` / `[cloud.discovery]` sections of each provisioned node's `aether.toml` from it.
 You never hand-write `[cloud.*]` when using `aether cluster bootstrap`; see
 ["Bootstrap-config vs. composed node config"](#bootstrap-config-vs-composed-node-config) below.
+
+> **`name` must not belong to a live cluster.** A fresh `aether cluster bootstrap` (without `--resume`) refuses when the registry holds the name, a local bootstrap state exists for it, or a `cloud` source's provider lists an instance labelled `aether-cluster=<name>`, and it names the check that matched. SSH and Docker hosts are not listed, and a later `destroy` of a name removes every machine labelled `aether-cluster=<name>` on a Hetzner source. Use `--resume` to continue, or `destroy` first. See [known limitations](known-limitations.md#re-running-bootstrap-with-a-live-clusters-name).
 
 Every field below is verified against the parser
 (`aether-config/src/main/java/org/pragmatica/aether/config/cluster/ClusterBootstrapConfigParser.java`);
@@ -38,6 +40,7 @@ max_unavailable = 1
 [source.hetzner-eu]
 type        = "cloud"
 provider    = "hetzner"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zones       = ["fsn1", "nbg1", "hel1"]
 region      = "fsn1"
 credentials = "${env:HCLOUD_TOKEN}"
@@ -45,6 +48,7 @@ load_balancer = "none"
 
 [source.hetzner-eu.core]
 count         = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cpx32"
 image         = "ubuntu-22.04"
 
@@ -62,10 +66,9 @@ swim       = 6100
 
 [operations.auto_heal]
 enabled          = true
-# retry_interval / startup_cooldown shown for illustration only — parsed but currently
-# discarded at runtime. See "[operations.auto_heal] is bootstrap-only" trap below (#675).
-retry_interval   = "30s"
-startup_cooldown = "15s"
+# No other key is accepted here (#675): auto-heal settings live in the NODE config, under
+# node_config — [timeouts.scaling] auto_heal_startup_cooldown / auto_heal_provisioning_timeout /
+# auto_heal_swim_hints_ttl, and [cluster] max_nodes.
 
 # --- Cost guardrail (#298): refuse provisioning past 12 nodes for this cluster.
 # Opt-in — omit it and provisioning stays unbounded, as it always has. See "Fleet cap" below.
@@ -116,8 +119,9 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | Field | Type | Default | Required | Notes |
 |---|---|---|---|---|
 | `type` | string | — | **yes** | `cloud` \| `ssh` \| `forge` \| `docker`. |
-| `provider` | string | — | no | `hetzner` \| `aws` \| `gcp` \| `azure`. **Silently discarded if unrecognized** — see Gaps/silent-wrong-state below. |
-| `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. |
+| (docker network) | — | — | — | A `docker` source puts every node on one Docker network (default `aether-network`; `AETHER_DOCKER_NETWORK` or the provider setting `network_name` overrides it). Bootstrap reuses the network when it exists and creates it (labelled `aether.created-by-cluster=<cluster>`) when it does not. A network carrying this cluster's own label is treated as its own again, so a re-run over a network left in place does not leak it; a network with no label, or another cluster's, is never owned. `aether cluster destroy` removes exactly the network it recorded, only while it still carries the label and is empty. Known limit: when two clusters share one network, the one that created it records it, and if that cluster is destroyed while the other still has containers attached, the network stays in place and is not removed later; leaking is the safe direction. Label contract: any network carrying `aether.created-by-cluster=<this cluster>` is treated as owned, recorded and, when empty, removed, so a user who deliberately puts our label on their own network hands it to us (#2131). |
+| `provider` | string | — | no | `hetzner` \| `aws` \| `gcp` \| `azure`. **Rejected loudly if unrecognized** — `ClusterBootstrapConfigParser.parseProvider` (`ClusterBootstrapConfigParser.java:242-250`) returns a `ParseFailed` naming the bad value and the valid provider names; parsing aborts rather than silently dropping the field. |
+| `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. Hetzner: the API token (`api_token`). aws, gcp and azure need several keys, which one string cannot carry: write them under `[source.<name>.node_config.cloud.credentials]` (aws `access_key_id`, `secret_access_key`; gcp `project_id`, `service_account_email`, `private_key_pem`; azure `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group`). `region` (aws), `zone` (gcp) and `region` as azure `location` come from the source's own fields. A missing key is refused at validate time (`PF-28`), naming it. |
 | `region` | string | — | no | Provider-specific. |
 | `zone` | string | — | no | Single zone; mutually informative with `zones`. |
 | `zones` | string list | `[]` | no | Multi-zone spread, e.g. `["fsn1","nbg1","hel1"]`. |
@@ -127,8 +131,15 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | `load_balancer` | string | type-dependent | no | `none` \| `external` \| `elected`. |
 | `load_balancer_ips` | string list | `[]` | no | Used with `external` mode. |
 | `load_balancer_endpoint` | string | — | no | Used with `external` mode. |
+| `replacement_ceiling` | duration string | `"10m"` | no | Cloud sources only (rejected on any other type — PF-26). The longest an auto-heal replacement from this source may stay in flight while the provider still reports it provisioning or running, reports a status it cannot state, or cannot report at all; past it, the leader re-dispatches. A replacement is re-dispatched sooner, after the deficit debounce, when the provider reports it stopped, terminated or failed; when an instance the provider has listed is no longer listed; when an instance the provider has never listed is omitted by twelve consecutive successful listings spanning at least three minutes since its create call resolved; or when the provider's readiness check fails the provision (on a cloud, after 5 minutes still provisioning). A replacement the leader gives up on is terminated (#1111): the leader looks the instance up by its node-id label, WARNs with the source, node id and instance id, terminates it and confirms by listing, retrying 12 times; a termination it cannot confirm raises `instance-termination-unconfirmed` (recovery: verify at the provider and terminate by hand, or find it by the `auto-heal PROVISIONED a billable instance` WARN line's `instanceId`). A create that failed is looked up too, unless the provider refused it for capacity; if twelve listings show no instance it is confirmed absent and nothing is raised. A replacement that has joined is never terminated. Two bounds apply to a create that failed: it is confirmed absent only by 12 consecutive successful empty listings spaced a sixth of the provisioning window apart (about 110 s at the default window), so an instance first listed later than that is not reaped by this path and is left to the next leader activation's orphan replay; and a listing that fails is retried, not read as absent, until 12 consecutive failures, which end in `instance-termination-unconfirmed`. Must exceed `5m` (the three-minute first-listing floor plus a two-minute join allowance); a shorter value is refused at load. Read at runtime by the leader from the persisted cluster config (#1049). |
 | `databases.<name> = "url"` (inline) or `[source.<name>.databases]` (subtable) | string map | `{}` | no | Maps to composed **`[database.<name>]`** (nested), never flat `[database]` — see Trap (c). |
 | `[source.<name>.node_config.<section>]` | raw TOML overlay | — | no | Merged verbatim as `[<section>]` into the composed per-node `aether.toml`, prefix-stripped. Escape hatch for any node-level setting not otherwise modeled (used above for `[app-http]`). |
+
+**`[source.<name>.node_config.backup] path` is validated at load (#1968).** It must be an absolute path: it is bind-mounted into the node's container
+or created on its host, and a relative one renders a mount Docker refuses. For a **`docker` source** it must also be `/data` or under `/data/`: the node's
+repository lives on a per-node named volume, Docker creates that volume root-owned for every mount point except under `/data` (where the image's `aether`
+user owns it), and a root-owned repository path cannot be written. A cloud or SSH source accepts any absolute path (its host directory is created and
+owned by uid 1000 by the renderer). A disabled `[backup]` is not validated. The load fails with a message that names the field and the rule.
 | `[source.<name>.firewall] allow_ingress` | table array | `[]` | no | Each entry: `port` (int, required), `protocol` (default `"tcp"`, may be `"tcp+udp"`), `source_cidr` (default `"0.0.0.0/0"`), `description` (optional). **Hetzner only** — see below. |
 
 #### Ingress firewall (`[source.<name>.firewall]`)
@@ -210,13 +221,17 @@ At least one role sub-table per source is expected in practice (`core` in the ex
 |---|---|---|---|---|
 | `count` | int | — | **count XOR hosts** | Number of nodes to provision (cloud/forge/docker sources). |
 | `hosts` | string list | — | **count XOR hosts** | Explicit host list (ssh sources). |
-| `instance_type` | string | — | no (cloud sources need it) | e.g. `cpx32`. |
+| `instance_type` | string | — | no (cloud sources need it) | An EXAMPLE, e.g. `cpx32`. Providers retire instance types — take the value from your provider's current catalogue. |
 | `image` | string | — | no | VM image, e.g. `ubuntu-22.04`. |
 | `runtime` | string | source-type default | no | References a `[runtime.<name>]` profile. Must satisfy the source/runtime compatibility matrix below. |
 
 **Source/runtime compatibility** (validator codes `PF-19`..`PF-22`): `forge` sources require `EMBER`
 runtime; `docker` sources require `DOCKER`; `cloud` sources require `CONTAINER` or `JVM`; `ssh` sources
-allow `CONTAINER`, `JVM`, or `EMBER`. A mismatch fails validation before provisioning starts.
+require `CONTAINER` — the deploy phase can launch only a container over SSH in this release, so a
+`JVM` or `EMBER` profile on an `ssh` source is refused at config load (`PF-22`), before any other
+source provisions (#1090); the deploy phase refuses it by name again as a backstop. A mismatch fails
+validation before provisioning starts. A host may be declared by at most one `ssh` source (`PF-27`);
+`PF-09` covers the same host twice within one source.
 
 ### `[infrastructure.networking]` / `[infrastructure.ssh]`
 
@@ -233,16 +248,8 @@ allow `CONTAINER`, `JVM`, or `EMBER`. A mismatch fails validation before provisi
 |---|---|---|---|
 | `[operations] auto_heal` | bool | `true` | Cluster-wide auto-heal master switch. |
 | `[operations.auto_heal] enabled` | bool | `true` | `false` is **rejected at bootstrap** (error PF-25) — it has no runtime effect, so the parser refuses to accept a value that would silently lie. Use `aether cluster topology auto-heal disable` on a running cluster instead. See warning below. |
-| `[operations.auto_heal] retry_interval` | duration string | `"60s"` | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] startup_cooldown` | duration string | `"15s"` | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] stale_observation_ttl` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] quic_miss_promotion_threshold` | int | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] provisioning_timeout` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] provision_stability_window` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] decommissioned_retention` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.auto_heal] swim_hints_ttl` | duration string | parser default | **Parsed, discarded** — see warning below (#675). |
-| `[operations.tls] auto_generate` | bool | `true` | Set `false` when providing `cluster_secret` externally. |
-| `[operations.tls] cluster_secret` | string | — | |
+| `[operations.auto_heal] retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`, `provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`, `swim_hints_ttl` | — | — | **Rejected at bootstrap** (error PF-26, #675). They parsed into `AutoHealSpec` and reached no node; see warning below. |
+| `[operations.tls] auto_generate` | bool | `true` | When `false`, the management API listener uses plain HTTP instead of an auto-generated self-signed cert. |
 | `[operations.tls] cert_ttl` | duration string | `"720h"` | |
 | `[operations.timeouts] health_check` | duration string | `"300s"` | |
 | `[operations.timeouts] quorum_formation` | duration string | `"600s"` | |
@@ -251,6 +258,187 @@ allow `CONTAINER`, `JVM`, or `EMBER`. A mismatch fails validation before provisi
 | `[operations.ports] management` | int | `8080` | Management API port. |
 | `[operations.ports] app_http` | int | `8070` | Slice app-HTTP port. |
 | `[operations.ports] swim` | int | `8190` | SWIM membership port. |
+
+### `[rollback]` — automatic rollback policy (cluster-wide)
+
+Automatic rollback is **ON by default**. It is cluster-wide policy, read by the leader from the committed
+cluster TOML at every decision, so a change applied to a running cluster takes effect without a restart.
+A blank or seed cluster TOML, or a document without this section, gets the defaults below.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | `false` turns automatic rollback off. The SliceFailure event and alert still fire. |
+| `trigger_on_all_instances_failed` | bool | `true` | Roll back when every live instance of a version is broken (the trigger below). |
+| `cooldown` | duration | `"5m"` | Minimum time between two automatic rollbacks of one slice. |
+| `max_rollbacks` | non-negative int | `2` | Automatic rollbacks per slice before a human must act. |
+| `bake_window` | positive duration | `"15m"` | Only a version that became the target less than this long ago is rolled back; an older one failing is an incident and only alerts. |
+
+**The trigger.** Every hosting node of one version reports at least 3 bridge-level defects (the method
+threw, a request or response codec failed, or the method is missing) and no success within 30 s. A
+failure the slice returns itself, and a timeout, never count. See the deploy guide for the full rule and
+its limits.
+
+**To turn it off:**
+
+```toml
+[rollback]
+enabled = false
+```
+
+Every key is typed and validated when the TOML is applied; a mistyped value, a negative count, a
+non-positive bake window or an unknown key refuses the apply.
+
+### `[replication]` — default replication factors (cluster-wide, #1564)
+
+The defaults a stream, durable topic or durable entity takes for a replication factor it does not declare
+itself (`guarantees.md` §4a). Cluster-wide, read from the committed cluster TOML, so every node resolves
+an undeclared value to the same default; it is not a per-node `aether.toml` key. A blank or seed cluster
+TOML, or a document without this section, gets the built-in defaults below.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `replication_factor` | int | `3` | RF: copies of each partition, the owner included. At least 3 — a lower RF is declared on the resource itself (with a LOUD warning), never taken from a default. |
+| `confirmation_factor` | int | `2` | CF: copies, the owner included, that hold a write before it is acknowledged. `1 <= confirmation_factor <= replication_factor`. |
+| `tombstone_retention` | duration (`"1h"`, `"90m"`; a bare number is seconds) | `"1h"` | How long the DHT keeps a removed key's tombstone (#1777). At least `"6m30s"`: a node drops its stray copies of a partition it stopped replicating after the retention less 90 s, which must leave catch-up at least five minutes to read them. While a `[replication]` change is unsettled, strays are kept and tombstones wait until it settles (#1777 R1b). A change applies live. |
+| `[replication.cluster_events] confirmation_factor` | int | `1` | CF of the `system:cluster-events` stream (its RF is the desired core count, so the CF may not exceed it). At CF 1 an event is acknowledged on the owner's append, so events acknowledged after the last peer-acked offset are lost when the owner dies. |
+
+```toml
+[replication]
+replication_factor = 3
+confirmation_factor = 2
+tombstone_retention = "1h"
+
+[replication.cluster_events]
+confirmation_factor = 1
+```
+
+**How a resource resolves:** an undeclared RF takes `replication_factor`; an undeclared CF takes
+`min(confirmation_factor, RF)`. Resolution happens once, when the resource's config is committed, so a
+change applied here affects only resources declared afterwards; a live resource keeps the factors it
+resolved (redeclaring it with different factors is refused at slice activation, `ChangedOnLiveResource`; the
+blueprint itself still publishes). Whether a factor fits
+is checked per resource at deploy and activation: an RF above the cluster's desired core count is refused,
+so a cluster with fewer than three desired cores cannot use the built-in default and its resources declare
+their own factors.
+
+**Changing a live stream's factors:** `confirmation_factor` can be raised online; lowering it is not applied to an existing stream online (durability only increases: `StreamPartitionManager#adoptIfMoreDurable` adopts a committed config only when its replication factor or confirmation factor is strictly higher), and a stall caused by a confirmation-factor raise is relieved by restoring replicas or by re-creating the stream, not by lowering the factor. A committed config that is not applied (a lowering, or a different partition count, which an existing stream cannot take) raises `STREAM_CONFIG_CHANGE_NOT_APPLIED`.
+
+Every key is typed and validated when the TOML is applied; a mistyped value, an RF below 3, a CF outside
+`1..RF`, a `tombstone_retention` that is not a duration or is below `"6m30s"`, a `cluster_events` CF below 1 or
+above the desired core count, or an unknown key refuses the apply,
+naming the key. A core scale that would drop the desired core count below the `cluster_events` CF is refused
+the same way (`ClusterEventsFactorsRefused`).
+
+**The DHT (#1777 track 1).** The DHT takes its factors from this same section: a write is acknowledged by
+`confirmation_factor` replicas and a read asks `replication_factor - confirmation_factor + 1`, so every read meets
+at least one replica that acknowledged the last write when the replica set has not changed
+[mechanism: R + W = RF + 1 > RF]. A ring smaller than `replication_factor` holds every key on every node, with the
+quorums capped at the ring size. Unlike a stream, the DHT applies a changed value **live**:
+- **Gate:** ANY change of `replication_factor` or `confirmation_factor` re-opens the catch-up gate on every partition a
+  node replicates.
+- **Transitional quorums:** every node, workers included, writes to max(old, new) and reads from max(old, new)
+  replicas, capped at the new factor, until the cluster COMMITS that the change has settled. No node switches on its
+  own.
+- **When it settles:** the leader commits three stages in one consensus record. First every member reports that it
+  applied the change. The members are the cores, the workers the leader's membership view counts, and anyone who
+  reported; the leader's view drops a member it holds `Dead`. Then every core runs a fresh catch-up pass, which copies
+  any write a slower node made at the old quorum before it applied the change. When every core reports that pass
+  complete, the change is settled and the new quorums apply.
+- **Write fence:** every put carries the replication change its writer had applied when it started. A replica that has
+  applied a newer change refuses the put with the retryable `ReplicationChangeStale`, and the writer retries once it
+  has applied the change too. A put that was in flight across the whole change, or a writer the roster missed, can
+  therefore never land an old-quorum write after the settle
+  [verified: DHTReplicationChangeTest `straddlingPut_…`, `writerExcludedFromTheSettle_…`, `writerTaughtTheOldChange_…`, in-JVM].
+  The fence is keyed on the change a replica has APPLIED, not on the writers-switched stage: every old-quorum write a
+  replica accepts then predates its report, so every core's writers-switched pass pulls it
+  [verified: `wOldWriteLandingBetweenAReplicasApplyAndItsWritersSwitched_isRefused`].
+  A writer that is itself a replica cannot satisfy an old quorum with its own copy: the local slot is not fenced, so a
+  put is acknowledged only on remote EVIDENCE: a success, or a refusal as stale (which fails it). Any other reply — fence
+  unknown, an owner-epoch fence, a dispatch failure — is not evidence and the put keeps waiting; a `ReplicationChangeStale`
+  refusal seen before the acknowledgement fails the put. The writer's OWN slot is applied only AFTER that evidence arrives
+  (a success, or no evidence within the wait): a put refused as stale never writes it, so there is nothing to undo, and a
+  concurrent current writer's ack can never rest on a copy that is later rolled back. Cost: a writer that is a replica
+  applies its own copy one round trip later than before
+  [verified: DHTReplicationChangeTest `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold`,
+  `v1882r10_orderA_…`, `v1882r10_orderB_…`, `v1882r10_probeS_…`, in-JVM]. A refusal that arrives AFTER the acknowledgement cannot revoke it; it starts the stale-writer
+  clock, and the copies other replicas accepted are pulled by the writers-switched pass
+  [verified: `v1882r7_orderC_ackThenLateStale_ackStands_andTheRecordIsKept`].
+  The wait for that evidence is bounded at one tenth of the operation timeout (3 s by default): one intra-cluster round
+  trip plus a GC pause, an order of magnitude below the caller-visible timeout, so a partitioned or down replica set does
+  not stall every W=1 write for the whole timeout [verified: `v1882r9b_allRemotesSilent_acksWithinTheEvidenceWait_notTheOperationTimeout`].
+  A refusal by the owner-epoch fence (a replica that has advanced past the writer's epoch) is evidence too, and failure
+  evidence — a stale or an epoch-fence refusal — ends the operation AT ONCE with its typed failure (ReplicationChangeStale,
+  or WriteIndeterminate for an epoch fence), without waiting for a silent replica and without applying the writer's own slot
+  [verified: `v1882r11_probeU_…`, `DHTDeposedWriterRollbackTest.deposedOwnerWrite_oneFencedReplicaPlusOneSilent_…`,
+  `DHTDeposedWriterSameEpochTest.sameEpochTwoWriters_aDeposedReplicaNeverCountsAWriteItWouldRollBack`]. The gate is released
+  once every REMOTE slot has replied, not every slot.
+  [limit: inside the no-evidence window (every remote silent for the wait) two writers can each apply their own slot, and a
+  fence refusal that arrives only afterwards sinks one of them and rolls its copy back (#1818); an acknowledged write that
+  counted that copy as "superseded" is then left on one replica. Pinned as an enabled tripwire:
+  `DHTDeposedWriterSameEpochTest.residual_noEvidenceWindow_…`; #1683-class]
+  [limit: with NO evidence — every remote silent, down, or fence-unknown (a success, a stale refusal and an epoch-fence
+  refusal all count as evidence) until every remote has replied or the wait runs out — the put is acknowledged on the writer's own slot and sets no stale record; a replica on the newer
+  change that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it
+  (`v1882r7_orderD_totalSilence_acksPerTheLimit_andSetsNoStaleRecord`,
+  `v1882r9_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord`); #1683-class]
+  A put refused as stale leaves the writer's own copy untouched [verified: `v1882r10_stalePut_neverTouchesTheWritersOnlyLocalCopy`].
+  The rollback that remains is the #1818 one, for a put that lost its quorum to owner-epoch fences: it restores the entry the
+  write displaced (read in the same step as the write) instead of deleting it
+  [verified: `DHTDeposedWriterRollbackTest.deposedOwnerWrite_overwritingALocalPrior_isRestoredToThePrior_notDeleted`].
+- **Restarted replicas:** a replica refuses writes (retryable, `ReplicationFenceUnknown`) until its state is restored AND
+  consensus reports no catch-up pending (`isPendingCatchUp` false). Before that, an unknown fence never accepts
+  [verified: DHTReplicationChangeTest `restartedReplica_refusesWrites_untilItHasAdoptedTheCommittedChange`,
+  DhtReplicationFenceRestoreTest]. Such a refusal says nothing about the writer and never counts toward `DHT_WRITER_STALE`.
+  The bound is what `isPendingCatchUp` can see: it compares against log positions the node has been TOLD about, so a
+  committed change in a log tail the node has not yet received is invisible to it, and the fence can still be too old
+  once it is confirmed (`confirmFence` runs synchronously when the state is restored).
+  [unverified: mutation M7 — the consensus-caught-up wiring in `AetherNode` replaced by a constant `true` — stays green over
+  all 2325 `aether/node` tests, and no boot route reaches "restored AND consensus pending"; the wiring is not pinned. The
+  unsafe direction is a replica that is "never pending" and so confirms its fence early, which is the restore-prefix
+  residual below [limit: #1683].]
+  [unverified: no run shows a restarted replica confirming a fence older than the committed change; the window is the one
+  recorded for #1683 (the signal can report "caught up" for up to one consensus sync-retry interval on a replica that
+  missed all traffic, `RabiaEngine.probeQuietSlot`).] [limit: #1683]
+- **Stale writer event:** a node whose writes stay refused this way for over 5 minutes without adopting the change emits
+  `DHT_WRITER_STALE`, and `DHT_WRITER_STALE_RESOLVED` once it adopts it (at most once each).
+- **The roster is the leader's membership view, not a committed fact.** A wrong roster only delays the settle (a member
+  that is gone but still counted) or hastens it (a live writer held `Dead`); the write fence keeps both safe.
+- **What a read returns while unsettled:** a value acknowledged under the old factors reads as the value or a
+  retryable `NotCaughtUp`, never "absent". This includes a value written at the old quorum by a node that had not
+  applied the change yet
+  [verified: integrations/dht/src/test/java/org/pragmatica/dht/DHTReplicationChangeTest.java, in-JVM].
+  A partition that is catching up refuses reads until it has caught up, and the catch-up runs twice per change.
+- **Liveness cost:** a member that never reports keeps the change unsettled. Reads then stay at the stricter
+  transitional quorum: they fail sooner when replicas are down, but they never return a false "absent". A member stops
+  being waited for once the leader's membership view holds it `Dead`. During the change, a put from a writer that has
+  not applied it yet is refused (retryable) by replicas that have.
+- **Operator event:** a change still unsettled after 5 minutes emits `DHT_REPLICATION_UNSETTLED` (WARNING). When it
+  settles, or a newer change replaces it, `DHT_REPLICATION_SETTLED` (INFO) follows. Each is published at most once: it
+  is missed if the cluster-events owner cannot publish at that moment. See the management API event list.
+
+Idempotency's dedup records live in this replicated DHT; only the cache uses `[cache]`. A node refuses DHT operations
+(retryable `ReplicationUnresolved`) until it
+has read the committed value after its consensus state is restored. The node-local `[dht.replication] target_rf`
+is removed; a node config that still sets it is refused.
+
+### `[cache]` — DHT cache replication (cluster-wide, #1777)
+
+The DHT cache namespace declares its own, lower factors; it holds recomputable data.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `replication_factor` | int | `1` | Copies of each cache entry. At least 1. |
+| `confirmation_factor` | int | `1` | Copies that hold a cache write before it is acknowledged. `1 <= confirmation_factor <= replication_factor`; a read asks `replication_factor - confirmation_factor + 1`. |
+
+```toml
+[cache]
+replication_factor = 1
+confirmation_factor = 1
+```
+
+Validated on apply like `[replication]`: a mistyped value, a factor out of range or an unknown key refuses the
+apply, naming the key. A change takes effect on every node without a restart; cache entries placed under the old
+factors may then miss and be recomputed.
 
 ### `[runtime.<name>]`
 
@@ -306,15 +494,16 @@ it, so an unreachable provider API cannot silently disable the guard.
 the cap. Provisioning resumes on the next reconcile pass with no further action. The refusal is logged at
 WARN naming the cluster, the cap, and the observed count.
 
-> **Of the nine `[operations.auto_heal]` fields, only `enabled` and the fleet cap above are live.**
-> `retry_interval`, `startup_cooldown`, `stale_observation_ttl`, `quic_miss_promotion_threshold`,
-> `provisioning_timeout`, `provision_stability_window`, `decommissioned_retention`, and `swim_hints_ttl`
-> all parse and validate into `AutoHealSpec`, but `Main.resolveAutoHeal` builds every running node's
-> `AutoHealConfig` from `AutoHealConfig.DEFAULT`, overriding only `maxNodes` — sourced from `[cluster]
-> max_nodes` above, a different key entirely, not from this section. Nothing renders the other eight
-> fields into the composed per-node `aether.toml`; they are validated and then discarded. Do not use
-> this section to try to set the fleet cap — use `node_config.cluster` as above. (Recorded 2026-08-12
-> while wiring #298.)
+> **`[operations.auto_heal]` carries `enabled` and nothing else (#675).** The eight tunables that used
+> to be accepted here parsed into `AutoHealSpec` and reached no node: every running node builds its
+> `AutoHealConfig` from its OWN config — `[cluster] max_nodes` (the fleet cap, via `node_config.cluster`)
+> and, under `node_config.timeouts.scaling`, `auto_heal_startup_cooldown` (the formation-check delay, 15s),
+> `auto_heal_provisioning_timeout` (the replacement boot window, circuit backoff and drain grace, 60s) and
+> `auto_heal_swim_hints_ttl` (the SUSPECTED-hint decay, 15s). The parser now refuses any of the eight with
+> PF-26 — naming every stale key in the file and, for the three that named a live timing, the node key
+> that sets it — rather than parse and discard; the runtime record itself dropped the five fields nothing
+> read (retry interval, stale-observation TTL, QUIC miss threshold, provision stability window,
+> decommissioned retention).
 >
 > `enabled = false` is **rejected at bootstrap** (error PF-25) rather than silently accepted and ignored
 > — the parsed value is never read by the provisioning path, so a `false` here would falsely promise
@@ -322,8 +511,9 @@ WARN naming the cluster, the cap, and the observed count.
 > live operator toggle instead: `aether cluster topology auto-heal disable`, which actually suppresses
 > replacement provisioning for the current leader term.
 >
-> **Tracked as #675**: one open decision — wire every field or reject it PF-25-style, per surface — not
-> yet made. This warning describes current behavior, not a promise about future wiring.
+> #675 made that decision: the node config is the one live surface; every key here that could not reach
+> a node is refused (PF-26), and `[timeouts.scaling] auto_heal_retry` was removed from the node config
+> for the same reason.
 
 ### (a) `security_mode = "NONE"` — why dev/eval bootstrap needs it
 

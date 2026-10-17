@@ -25,8 +25,8 @@ import org.pragmatica.lang.Contract;
 /// these to keep stability windows aligned with the transport's view, even when membership
 /// notifications are debounced.
 ///
-/// Distinct from [`QuicDisconnectListener`] — that listener fires on teardown only, never on
-/// join/reconnect, and currently has no consumer installed. This listener fires on every QUIC
+/// Distinct from the [`PeerConnectivityReporter`] path — that reports teardown/attach as
+/// connectivity observations for the leader's fold. This listener fires on every QUIC
 /// peer-state change so CTM-style stability bookkeeping can remain consistent with the
 /// transport.
 @Contract
@@ -41,6 +41,11 @@ public interface QuicPeerStateListener {
     void onPeerReconnected(NodeId nodeId);
     /// Peer authoritatively left (REMOVED) or QUIC view-change emitted REMOVE.
     void onPeerLeft(NodeId nodeId);
+
+    /// A dial to `dialed` completed a handshake whose Hello came from `claimant`, and was rejected
+    /// (#1830): the dialed address now belongs to another node. Evidence against `dialed` only.
+    /// Default no-op, so listeners that track attach/leave alone need not implement it.
+    default void onPeerIdentityRefuted(NodeId dialed, NodeId claimant) {}
 
     static QuicPeerStateListener noop() {
         return new QuicPeerStateListener() {

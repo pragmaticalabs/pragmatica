@@ -531,10 +531,10 @@ For deployment to a running Aether cluster, use the CLI or Management API:
 
 ```bash
 # Push artifact from local Maven repo to the cluster's artifact repository
-aether artifact push com.example:order-processor:1.0.0
+aether artifacts push com.example:order-processor:1.0.0
 
 # Apply a blueprint that includes the slice
-aether blueprint apply order-system.toml
+aether blueprints apply order-system.toml
 ```
 
 The blueprint file declares the slices and their instance counts:
@@ -552,13 +552,13 @@ Verify the deployment:
 
 ```bash
 # Check blueprint status
-aether blueprint status order-system:1.0.0
+aether blueprints status order-system:1.0.0
 
 # Or use the Management API directly
-curl http://localhost:5150/api/blueprint/order-system:1.0.0/status
+curl http://localhost:5150/api/v1/blueprints/status/order-system:1.0.0
 
 # Or use the CLI:
-aether -c localhost:5150 blueprint status order-system:1.0.0
+aether -c localhost:5150 blueprints status order-system:1.0.0
 ```
 
 ## Step 5: Route Traffic
@@ -627,7 +627,7 @@ Now you can scale the extracted slice using the CLI or Management API:
 aether scale com.example:order-processor:1.0.0 -n 5
 
 # Or scale via Management API
-curl -X POST http://localhost:5150/api/scale \
+curl -X POST http://localhost:5150/api/v1/scale \
   -H "Content-Type: application/json" \
   -d '{"artifact": "com.example:order-processor:1.0.0", "instances": 5}'
 
@@ -642,8 +642,8 @@ Check cluster status:
 aether status
 
 # Via Management API
-curl http://localhost:5150/api/status
-curl http://localhost:5150/api/slices/status
+curl http://localhost:5150/api/v1/nodes/status
+curl http://localhost:5150/api/v1/slices/status
 
 # Or use the CLI:
 aether -c localhost:5150 status
@@ -822,22 +822,13 @@ Start Forge for local testing with simulated cluster conditions. Forge requires 
 
 ## Rollback Strategy
 
-If something goes wrong, scale the slice down via CLI or Management API:
+If something goes wrong, take the slice out by removing its blueprint. Scaling cannot do it: `aether scale`
+refuses any count below the slice's `minAvailable` (2 by default for the minimum of 3 instances), and never
+accepts 0.
 
 ```bash
-# Scale to zero instances via CLI
-aether scale com.example:order-processor:1.0.0 -n 0
-
-# Or via Management API
-curl -X POST http://localhost:5150/api/scale \
-  -H "Content-Type: application/json" \
-  -d '{"artifact": "com.example:order-processor:1.0.0", "instances": 0}'
-
-# Or use the CLI:
-aether -c localhost:5150 scale com.example:order-processor:1.0.0 -n 0
-
-# Or remove the blueprint entirely
-aether blueprint delete order-system:1.0.0
+# Remove the blueprint; its slices are undeployed
+aether -c localhost:5150 blueprints delete order-system:1.0.0
 
 # Traffic automatically falls back to monolith
 # (if you kept the feature flag or fallback logic)

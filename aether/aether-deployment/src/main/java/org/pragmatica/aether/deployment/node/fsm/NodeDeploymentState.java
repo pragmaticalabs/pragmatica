@@ -8,21 +8,30 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.stream.Stream;
+import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.deployment.config.ConfigNotificationManager;
 import org.pragmatica.aether.deployment.drain.DrainReason;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SliceDeployment;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager.SuspendedSlice;
 import org.pragmatica.aether.deployment.node.RoutingEpochAckTracker;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.LeavingRequested;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeRoutesPutReceived;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.SliceTargetPutReceived;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.http.HttpRoutePublisher;
+import org.pragmatica.aether.invoke.CronExpression;
+import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentCompleted;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.StateTransition;
@@ -32,9 +41,13 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Intermittent.SliceNotInStore;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -42,6 +55,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintStreamBindingsKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
@@ -57,6 +71,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.resource.ScheduleConfig;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -64,6 +79,7 @@ import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.config.ConfigError;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.ProviderBasedConfigService;
@@ -75,6 +91,7 @@ import org.pragmatica.consensus.fsm.ClusterFsmEvent.Shutdown;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -84,6 +101,8 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -94,11 +113,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
     Logger LOG = LoggerFactory.getLogger(NodeDeploymentState.class);
     NodeDeploymentContext ctx();
 
-    record Dormant(NodeDeploymentContext ctx, List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
+    /// `deferredStarts` (#1068) rides the quorum cycle with the suspended slices: an ACTIVATE or ACTIVE
+    /// claim refused for want of a target before quorum was lost has no other route back — the leader
+    /// never re-issues either, and only LOAD keys are rescanned on re-entry.
+    record Dormant(NodeDeploymentContext ctx,
+                   List<SuspendedSlice> suspendedSlices,
+                   Map<SliceNodeKey, SliceState> deferredStarts) implements NodeDeploymentState {
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
             switch (event) {
-                case QuorumEstablished _ -> tx.transitionTo(ctx.newActive(suspendedSlices));
+                case QuorumEstablished _ -> tx.transitionTo(ctx.newActive(suspendedSlices, deferredStarts));
                 case Shutdown _ -> tx.transitionTo(ctx.stopped());
                 default -> tx.ignore();
             }
@@ -121,7 +145,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                   ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments,
                   ConfigNotificationManager configNotificationManager,
                   RoutingEpochAckTracker routingEpochAckTracker,
-                  List<SuspendedSlice> pendingReactivation) implements NodeDeploymentState {
+                  List<SuspendedSlice> pendingReactivation,
+                  // #1068: starts refused for want of a committed target, keyed by slice, holding the
+                  // state that was refused. Re-evaluated on the next SliceTargetPut/VersionRoutingPut
+                  // for the same artifact base; dropped when a newer put or a removal for the key arrives.
+                  ConcurrentHashMap<SliceNodeKey, SliceState> deferredStarts) implements NodeDeploymentState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final TimeSpan CONSENSUS_OPERATION_TIMEOUT = TimeSpan.timeSpan(30).seconds();
         private static final int CONSENSUS_MAX_RETRIES = 2;
@@ -133,9 +161,30 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED = Causes.forOneValue("Failed to unload slice %s");
 
-        private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = Causes.forOneValue("Slice %s state is ACTIVATE but not found in SliceStore");
+        /// #916: typed `Intermittent`, NOT a plain `Causes.forOneValue`. Untyped it fell through
+        /// what was then `SliceLoadingFailure.classify`'s permanent catch-all, so an ACTIVATE that
+        /// merely crossed an in-flight unload of the same artifact was reported `fatal`, and the
+        /// leader rolled the blueprint back under `ALL_OR_NOTHING`. Non-fatal routes it to the
+        /// cluster's existing bounded retry (`ClusterDeploymentState.Active.handleTransientFailure`,
+        /// 5 attempts). #930 removed that catch-all — [#handleSliceNotFoundForActivation] now
+        /// declares `Unrecognised.RETRY` — but typing the cause here still matters, because it makes
+        /// the classification a property of the cause rather than of whichever site raises it.
+        private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_ACTIVATION = artifact -> SliceNotInStore.sliceNotInStore(artifact,
+                                                                                                                             "activation");
 
-        private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: %s");
+        /// #916: the second store-absence cause on the same activation chain
+        /// ([#registerSliceForInvocation]), typed for the same reason and reachable through the same
+        /// unload/activate crossing — the slice can be evicted between `handleActivating`'s lookup
+        /// and this one.
+        private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = artifact -> SliceNotInStore.sliceNotInStore(artifact,
+                                                                                                                                "invocation registration");
+
+        private static final Fn1<Cause, String> SLICE_NOT_FOUND_FOR_REACTIVATION = artifact -> SliceNotInStore.sliceNotInStore(artifact,
+                                                                                                                               "reactivation after quorum restore");
+
+        /// #1660: an untyped cause on purpose — classified under `Unrecognised.RETRY` it can only ever be
+        /// non-fatal, see [#handleReactivationFailure].
+        private static final Fn1<Cause, String> REACTIVATION_FAILED = Causes.forOneValue("Reactivation after quorum restore failed: %s");
 
         @Override
         public void onEntry() {
@@ -143,6 +192,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                      ctx.self().id());
             ctx.activeOnEntryCallback().onPresent(Runnable::run);
             seedEpochAckExpectationsFromKvStore();
+            dropStaleDeferredStarts();
             processPendingLoadCommands();
             if (!pendingReactivation.isEmpty()) {
                 log.info("Node {} has {} suspended slices to reactivate",
@@ -160,6 +210,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 case NodeArtifactRemoveReceived(ValueRemove<NodeArtifactKey, NodeArtifactValue> valueRemove) -> handleNodeArtifactRemove(valueRemove,
                                                                                                                                          tx);
                 case NodeRoutesPutReceived(var valuePut) -> handleNodeRoutesPut(valuePut, tx);
+                case ConfigChanged(String changedKey) -> handleConfigChanged(changedKey, tx);
+                case SliceTargetPutReceived(var valuePut) -> tx.handle(() -> redriveDeferredStarts(valuePut.cause()
+                                                                                                           .key()
+                                                                                                           .artifactBase()));
+                case VersionRoutingPutReceived(var valuePut) -> tx.handle(() -> redriveDeferredStarts(valuePut.cause()
+                                                                                                              .key()
+                                                                                                              .artifactBase()));
                 case LeavingRequested(DrainReason reason) -> tx.transitionTo(ctx.newLeaving(reason));
                 case QuorumDisappeared _ -> handleQuorumDisappeared(tx);
                 case Shutdown _ -> handleShutdown(tx);
@@ -173,7 +230,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
                      ctx.self().id(),
                      suspended.size());
-            tx.transitionTo(ctx.newDormantWithSuspended(suspended));
+            tx.transitionTo(ctx.newDormantWithSuspended(suspended, Map.copyOf(deferredStarts)));
         }
 
         private void handleShutdown(TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
@@ -222,6 +279,14 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var sliceKey = SliceNodeKey.sliceNodeKey(key.artifact(), key.nodeId());
 
             tx.handle(() -> handleSliceValueRemove(sliceKey));
+        }
+
+        /// #381 — a committed `ConfigKey` change (cluster-wide or scoped to this node) is pushed to every
+        /// registered slice whose declared section the key falls under; each slice reads through its own
+        /// composite facade, which already layers the KV overlay the change landed in.
+        private void handleConfigChanged(String changedKey,
+                                         TransitionRequest<NodeDeploymentState, ClusterFsmEvent> tx) {
+            tx.handle(() -> configNotificationManager.notifyChange(changedKey, this::buildConfigFacade));
         }
 
         private void handleNodeRoutesPut(ValuePut<AetherKey.NodeRoutesKey, org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue> valuePut,
@@ -300,6 +365,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             log.debug("ValueRemove received for key: {}", sliceKey);
             var deployment = Option.option(deployments.remove(sliceKey));
 
+            unpark(sliceKey, "the entry was removed");
             routingEpochAckTracker.clear(sliceKey);
             if (shouldForceCleanup(deployment)) {
                 forceCleanupSlice(sliceKey);
@@ -309,6 +375,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private void recordDeployment(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
             var state = sliceNodeValue.state();
             var timestamp = ctx.nowMs();
+
+            unpark(sliceKey, "a newer state for the entry was committed");
             var previousDeployment = Option.option(deployments.get(sliceKey));
             var previousState = previousDeployment.map(SliceDeployment::state);
             var deployment = SliceDeployment.sliceDeployment(sliceKey, state, timestamp);
@@ -340,17 +408,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void forceCleanupSlice(SliceNodeKey sliceKey) {
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishStreamSubscriptions)
-                              .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
-                              .flatMap(this::unpublishScheduledTasks)
-                              .flatMap(this::unpublishHttpRoutes)
-                              .withSuccess(this::unregisterSliceFromInvocation)
-                              .flatMap(key -> ctx.sliceStore()
-                                                 .deactivateSlice(key.artifact()))
-                              .flatMap(_ -> ctx.sliceStore()
-                                               .unloadSlice(sliceKey.artifact()))
-                              .onFailure(cause -> logCleanupFailure(sliceKey, cause));
+            unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishStreamSubscriptions)
+                                       .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
+                                       .flatMap(this::unpublishScheduledTasks)
+                                       .flatMap(this::unpublishHttpRoutes)
+                                       .withSuccess(this::unregisterSliceFromInvocation)
+                                       .flatMap(key -> ctx.sliceStore()
+                                                          .deactivateSlice(key.artifact()))
+                                       .flatMap(_ -> ctx.sliceStore()
+                                                        .unloadSlice(sliceKey.artifact()))
+                                       .onFailure(cause -> logCleanupFailure(sliceKey, cause));
         }
 
         private void logCleanupFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -372,13 +439,32 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 case FAILED -> handleFailed(sliceKey);
                 case UNLOAD -> handleUnloading(sliceKey);
                 case UNLOADING -> {}
+                // #964: a slice state written by a node running a newer SliceState. Driving the local
+                // FSM on a state this node cannot name would act on evidence it does not have, so
+                // nothing is driven -- but it is said out loud, because an empty arm here is exactly
+                // the silence this ticket exists to remove.
+                case UNKNOWN -> log.warn("Slice {} carries a state this node cannot decode — the writer is running a" + " newer SliceState (#964). No transition is driven for it.",
+                                         sliceKey);
             }
         }
 
         private void handleLoading(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
-                        .flatMap(key -> transitionTo(key, SliceState.LOADED))
-                        .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
+            if (!committedTargetPermits(sliceKey, SliceState.LOAD)) {
+                return;
+            }
+
+            transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
+                             .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
+                             .withFailure(cause -> handleLoadingFailure(sliceKey, cause));
+        }
+
+        /// The LOADING and LOADED consensus writes of the load chains. Their exhausted retries are an infrastructure
+        /// fault, not a verdict on the artifact: the cause is typed `Intermittent`, so `handleLoadingFailure`'s
+        /// PERMANENT disposition (#930, which is for a load that fails on the artifact itself) does not condemn a
+        /// healthy artifact as fatal (#2163). Deliberately not done inside the shared `updateSliceStateWithRetry`.
+        private Promise<SliceNodeKey> transitionForLoad(SliceNodeKey sliceKey, SliceState newState) {
+            return transitionTo(sliceKey, newState).mapError(cause -> new SliceLoadingFailure.Intermittent.Timeout("consensus write of " + newState,
+                                                                                                                   cause));
         }
 
         private Promise<SliceNodeKey> loadSliceWithTimeout(SliceNodeKey sliceKey) {
@@ -391,9 +477,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .map(_ -> sliceKey);
         }
 
+        /// #930 — PERMANENT. A load that failed for a reason the classifier does not recognise is
+        /// most often the artifact itself: a bad or unresolvable coordinate, a malformed manifest,
+        /// an envelope this runtime cannot read. Retrying those on the same node re-runs the same
+        /// deterministic work. The genuinely retryable load failures are typed at their own raise
+        /// sites — `Intermittent.ArtifactNotFound` and `Intermittent.NetworkError` — and are
+        /// returned unchanged by `classify` regardless of what this site declares.
         private void handleLoadingFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Failed to load slice {}: {}", sliceKey.artifact(), cause.message());
-            transitionToFailed(sliceKey, cause);
+            transitionToFailed(sliceKey, cause, Unrecognised.PERMANENT);
         }
 
         private void handleLoaded(SliceNodeKey sliceKey) {
@@ -401,15 +493,27 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void handleActivating(SliceNodeKey sliceKey) {
+            if (!committedTargetPermits(sliceKey, SliceState.ACTIVATE)) {
+                return;
+            }
+
             findLoadedSlice(sliceKey.artifact()).onEmpty(() -> handleSliceNotFoundForActivation(sliceKey))
                            .onPresent(_ -> performActivation(sliceKey));
         }
 
         private void handleSliceNotFoundForActivation(SliceNodeKey sliceKey) {
             var cause = SLICE_NOT_FOUND_FOR_ACTIVATION.apply(sliceKey.artifact().asString());
-
-            log.error("Slice {} state is ACTIVATE but not found in SliceStore", sliceKey.artifact());
-            transitionToFailed(sliceKey, cause);
+            // #916: WARN, not ERROR. This is now a retryable crossing the cluster recovers from on
+            // its own; logging it at ERROR trained operators to treat a self-healing condition as an
+            // incident.
+            //
+            // #930: the declared disposition is RETRY, and it is unreachable here — the cause is
+            // already typed `Intermittent.SliceNotInStore`, so `classify` returns it unchanged. It
+            // is stated rather than defaulted because nothing prevents a future edit from raising an
+            // untyped cause at this site, and this is the intent that would then apply.
+            log.warn("Slice {} state is ACTIVATE but not found in SliceStore — reporting intermittent, cluster will retry",
+                     sliceKey.artifact());
+            transitionToFailed(sliceKey, cause, Unrecognised.RETRY);
         }
 
         private void performActivation(SliceNodeKey sliceKey) {
@@ -421,7 +525,6 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                         .flatMap(this::registerAndNotifyConfig)
                         .flatMap(this::publishRoutesIfPresent)
                         .flatMap(this::transitionToActiveWithStreamRefs)
-                        .flatMap(this::publishEndpoints)
                         .timeout(ctx.activationChainTimeout())
                         .withFailure(cause -> handleActivationFailure(sliceKey, cause));
         }
@@ -454,7 +557,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// in ROUTING indefinitely (the 2/3-active signature). This arm schedules a single one-shot
         /// at [`SliceState#ROUTING`]'s own timeout; if the slice is STILL ROUTING when it fires, the
         /// routes are already published and serving locally, so the cross-node ack is a confirmation
-        /// optimization — NOT a local-serving correctness gate. Force ROUTING → ACTIVE rather than
+        /// optimization — NOT a local-serving correctness gate. Reconcile ROUTING → ACTIVE with the committed state rather than
         /// leaving the cluster-side stuck-remediator to UNLOAD-and-redeploy (which re-enters the same
         /// ack wait and can wedge again). Idempotent: the fire is guarded on the slice still being in
         /// ROUTING, and an ack that lands first clears the tracker and transitions to ACTIVE, so the
@@ -466,7 +569,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         /// ROUTING-timeout fire: if the slice is still ROUTING (no ack-driven transition happened),
-        /// force it to ACTIVE and clear the now-moot ack expectation. No-op when the slice already
+        /// clear the now-moot ack expectation and reconcile with the committed state ([#reconcileWithCommitted]:
+        /// adopt a committed ACTIVE, else re-drive the chain's last write). No-op when the slice already
         /// left ROUTING (acked through, failed, or was removed). Package-private so the
         /// remediation contract is unit-testable without waiting out the real routing timeout
         /// (mirrors the package-private [#routingEpochAckTracker] test accessor on this record).
@@ -478,11 +582,136 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return;
             }
 
-            log.warn("Slice {} still ROUTING after the routing timeout — cross-node acks not received; "
-                    + "force-transitioning ROUTING → ACTIVE (routes are published and serving locally)",
-                     sliceKey.artifact());
             routingEpochAckTracker.clear(sliceKey);
-            transitionTo(sliceKey, SliceState.ACTIVE);
+            reconcileWithCommitted(sliceKey, SliceState.ROUTING, "the routing timeout");
+        }
+
+        /// #1117 — what BOTH remediation timers do once they have decided the slice is stuck. They used to write a
+        /// bare ACTIVE on the local view alone, and the local view moves only when this node's own apply delivers
+        /// its notification. So a node whose last write had COMMITTED but whose local state still read ROUTING or
+        /// ACTIVATING wrote a second ACTIVE over the committed one, and the extra put is what moved a durable
+        /// group's assignee (#1333, #1385: 7-19 events redelivered).
+        ///
+        /// "Committed" here is this node's APPLIED mirror of its own `NodeArtifactKey` (`ctx.kvStore()`), NOT a
+        /// consensus read. It removes the case "applied but the notification never reached the FSM"; it does not
+        /// remove "committed by consensus but not yet applied here", where the mirror is as stale as the local view and
+        /// the re-drive still happens. The read, the adopt and the write are not atomic against the notification path:
+        /// a notification landing in between runs the ACTIVE handler twice, which is idempotent.
+        ///
+        /// Decision by the mirror's value for this node's deployment of the artifact:
+        ///  - ACTIVE: adopt it into local state exactly as the missed notification would (record, then drive the
+        ///    handler). No write.
+        ///  - EARLIER in the activation chain (LOAD through ROUTING): the chain's last write was never answered, so
+        ///    re-drive it IN FULL ([#transitionToActiveWithStreamRefs]: ACTIVE with its endpoints plus the stream-ref
+        ///    commands), never a bare ACTIVE, which would leave the stream refcounts unacquired; but only while a
+        ///    committed `SliceTarget` still names this version, because a rolled-back or replaced version must not be
+        ///    started again (#1068). The stream-ref commands are rebuilt from the CURRENT applied mirror: `acquireCommand` is
+        ///    an absolute Put (refCount = mirror + 1), so replaying the original's snapshot could overwrite another holder's
+        ///    acquire and let a later release delete the entry under it. Rebuilt, the failure direction flips: if the
+        ///    original write also lands late, this instance holds one reference too many and the stream outlives its
+        ///    holders (a leak, the safe direction). Per-holder reference entries would remove both cases (rc5).
+        ///  - anything else (DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN, or no entry): the slice has
+        ///    left the activation chain, so ACTIVE is never written over it. The mirror's value is adopted into local
+        ///    state as its own notification would have been (an absent entry is handled as the removal it is), and the
+        ///    remediation stops.
+        /// Every line names the node, the local state and the committed state, because the lines carried none and
+        /// four reports could not say which node was stuck.
+        @Contract
+        private void reconcileWithCommitted(SliceNodeKey sliceKey, SliceState localState, String timer) {
+            var committed = committedStateOf(sliceKey);
+
+            committed.onEmpty(() -> adoptAbsentEntry(sliceKey, localState, timer))
+                     .onPresent(state -> reconcileWithPresent(sliceKey, localState, timer, state));
+        }
+
+        private void reconcileWithPresent(SliceNodeKey sliceKey,
+                                          SliceState localState,
+                                          String timer,
+                                          SliceState committed) {
+            if (committed == SliceState.ACTIVE) {
+                log.warn("Node {} slice {} still {} locally after {}, but its COMMITTED state is ACTIVE — adopting the "
+                        + "committed ACTIVE into local state, no write (the local view missed its own notification)",
+                         ctx.self().id(),
+                         sliceKey.artifact(),
+                         localState,
+                         timer);
+                adoptCommitted(sliceKey, committed);
+
+                return;
+            }
+
+            if (isEarlierInActivationChain(committed)) {
+                redriveLastWrite(sliceKey, localState, timer, committed);
+
+                return;
+            }
+
+            log.warn("Node {} slice {} still {} locally after {}, but its COMMITTED state is {}, which is not earlier in "
+                    + "the activation chain — NOT writing ACTIVE over it; adopting the committed state into local state",
+                     ctx.self().id(),
+                     sliceKey.artifact(),
+                     localState,
+                     timer,
+                     committed);
+            adoptCommitted(sliceKey, committed);
+        }
+
+        private void redriveLastWrite(SliceNodeKey sliceKey,
+                                      SliceState localState,
+                                      String timer,
+                                      SliceState committed) {
+            if (!CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                log.warn("Node {} slice {} still {} locally after {}; committed state is {}, but no committed SliceTarget "
+                        + "names this version any more (#1068) — NOT re-driving ACTIVE",
+                         ctx.self().id(),
+                         sliceKey.artifact(),
+                         localState,
+                         timer,
+                         committed);
+
+                return;
+            }
+
+            log.warn("Node {} slice {} still {} locally after {}; committed state is {} — re-driving the chain's last "
+                    + "write (ACTIVE with its stream refs). The remaining chain steps are publication and "
+                    + "confirmation, not local-serving correctness gates.",
+                     ctx.self().id(),
+                     sliceKey.artifact(),
+                     localState,
+                     timer,
+                     committed);
+            transitionToActiveWithStreamRefs(sliceKey);
+        }
+
+        private void adoptAbsentEntry(SliceNodeKey sliceKey, SliceState localState, String timer) {
+            log.warn("Node {} slice {} still {} locally after {}, but its committed entry is ABSENT — the slice was removed; "
+                    + "NOT writing ACTIVE, handling it as the removal it is",
+                     ctx.self().id(),
+                     sliceKey.artifact(),
+                     localState,
+                     timer);
+            handleSliceValueRemove(sliceKey);
+        }
+
+        /// What this node's own notification would have done for `state`: record it, then drive its handler.
+        private void adoptCommitted(SliceNodeKey sliceKey, SliceState state) {
+            recordDeployment(sliceKey, SliceNodeValue.sliceNodeValue(state));
+            processStateTransition(sliceKey, state);
+        }
+
+        private static boolean isEarlierInActivationChain(SliceState state) {
+            return switch (state) {
+                case LOAD, LOADING, LOADED, ACTIVATE, ACTIVATING, ROUTING -> true;
+                case ACTIVE, DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN -> false;
+            };
+        }
+
+        private Option<SliceState> committedStateOf(SliceNodeKey sliceKey) {
+            return ctx.kvStore()
+                      .getTyped(NodeArtifactKey.nodeArtifactKey(ctx.self(),
+                                                                sliceKey.artifact()),
+                                NodeArtifactValue.class)
+                      .map(NodeArtifactValue::state);
         }
 
         /// #601 — ACTIVATING had no node-local remediation at all, only a `case ACTIVATING -> {}` no-op
@@ -491,7 +720,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// which judges by a projection and, until `d9b37e180`, force-UNLOADed a slice that had been
         /// serving traffic 35 seconds earlier.
         ///
-        /// Mirrors [#scheduleRoutingRemediation], with ONE deliberate difference: forcing ACTIVE is gated
+        /// Mirrors [#scheduleRoutingRemediation], with ONE deliberate difference: progressing to ACTIVE is gated
         /// on positive local proof that the slice can actually serve.
         @Contract
         private void scheduleActivationRemediation(SliceNodeKey sliceKey) {
@@ -527,21 +756,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             ctx.invocationHandler()
                .localSlice(sliceKey.artifact())
-               .onPresent(_ -> forceActivatingToActive(sliceKey))
-               .onEmpty(() -> log.warn("Slice {} still ACTIVATING after the activation timeout and is NOT registered for "
-                                      + "invocation — NOT forcing ACTIVE, because a slice the cluster routes to but which "
-                                      + "cannot serve is worse than one stuck activating. Leaving it to the activation "
-                                      + "chain's own timeout and the cluster-side remediator.",
-                                       sliceKey.artifact()));
-        }
-
-        @Contract
-        private void forceActivatingToActive(SliceNodeKey sliceKey) {
-            log.warn("Slice {} still ACTIVATING after the activation timeout but IS registered for invocation and serving "
-                    + "locally — force-transitioning ACTIVATING → ACTIVE. The remaining chain steps are publication and "
-                    + "confirmation, not local-serving correctness gates.",
-                     sliceKey.artifact());
-            transitionTo(sliceKey, SliceState.ACTIVE);
+               .onPresent(_ -> reconcileWithCommitted(sliceKey, SliceState.ACTIVATING, "the activation timeout"))
+               .onEmpty(() -> log.warn("Node {} slice {} still ACTIVATING locally after the activation timeout (committed "
+                                      + "state {}) and is NOT registered for invocation — NOT forcing ACTIVE, because a "
+                                      + "slice the cluster routes to but which cannot serve is worse than one stuck "
+                                      + "activating. Leaving it to the activation chain's own timeout and the "
+                                      + "cluster-side remediator.",
+                                       ctx.self().id(),
+                                       sliceKey.artifact(),
+                                       committedStateOf(sliceKey).map(SliceState::name).or("absent")));
         }
 
         private Set<NodeId> collectTargetNodesForArtifact(SliceNodeKey sliceKey) {
@@ -624,17 +847,32 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .map(_ -> sliceKey);
         }
 
+        /// #930 — RETRY, and this is the site that closes #923.
+        ///
+        /// Activation is the step that touches everything outside the slice: consensus (every
+        /// `publish*` leg goes through [#applyWithRetry], which raises an UNTYPED
+        /// `Causes.cause("Consensus batch timed out after N retries")` after
+        /// `CONSENSUS_MAX_RETRIES` attempts of `CONSENSUS_OPERATION_TIMEOUT` each), resource
+        /// creation, endpoint and route publication. Those failures are properties of the cluster's
+        /// current health, not of the artifact, and they are exactly the population the old
+        /// permanent catch-all condemned: a consensus outage during activation reached
+        /// `Fatal.UnexpectedError` and rolled the whole blueprint back under `ALL_OR_NOTHING`.
+        ///
+        /// Declaring RETRY does not weaken that atomicity, because #922 gave the retry budget a
+        /// terminal: a cause that keeps failing spends the budget and then, if the owning
+        /// blueprint's apply is still outstanding, settles permanently WITH a rollback and a
+        /// durable `DeploymentOutcomeValue`. The bound moved from the cause's Java type to the
+        /// apply's own record; it did not disappear.
         private void handleActivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Activation failed for {}: {}", sliceKey.artifact(), cause.message());
             unregisterSliceFromInvocation(sliceKey);
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishHttpRoutes)
-                              .flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishStreamSubscriptions)
-                              .flatMap(this::unpublishScheduledTasks)
-                              .withFailure(partialCause -> log.warn("Partial unpublish during activation-failure cleanup for {}: {}",
-                                                                    sliceKey.artifact(),
-                                                                    partialCause.message()))
-                              .withResult(_ -> transitionToFailed(sliceKey, cause));
+            unpublishHttpRoutes(sliceKey).flatMap(this::unpublishTopicSubscriptions)
+                               .flatMap(this::unpublishStreamSubscriptions)
+                               .flatMap(this::unpublishScheduledTasks)
+                               .withFailure(partialCause -> log.warn("Partial unpublish during activation-failure cleanup for {}: {}",
+                                                                     sliceKey.artifact(),
+                                                                     partialCause.message()))
+                               .withResult(_ -> transitionToFailed(sliceKey, cause, Unrecognised.RETRY));
         }
 
         private void handleActive(SliceNodeKey sliceKey) {
@@ -657,14 +895,151 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// post-activation action-log replay of pre-activation `NodeArtifactKey` events (§5.8)
         /// or any live ACTIVE put observed without a locally loaded slice; a load failure lands
         /// in FAILED through the regular `handleLoadingFailure` path (CDM-visible).
+        ///
+        /// #1068: "the KV desired state" is the committed `SliceTargetKey`, not the ACTIVE claim on
+        /// its own. A rollback whose UNLOAD timed out leaves exactly such a claim behind, and healing
+        /// it resurrected a slice with no owning blueprint (measured in CI run 34772700962). The
+        /// gate below is what makes the claim's absence of a target decisive.
         private void redeployClaimedActiveSlice(SliceNodeKey sliceKey) {
+            if (!committedTargetPermits(sliceKey, SliceState.ACTIVE)) {
+                return;
+            }
+
             log.info("Node {} KV claims ACTIVE for {} but the slice is not loaded locally — redeploying (KV convergence)",
                      ctx.self().id(),
                      sliceKey.artifact());
-            transitionTo(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
-                        .flatMap(key -> transitionTo(key, SliceState.LOADED))
-                        .onSuccess(key -> processStateTransition(key, SliceState.ACTIVATE))
-                        .onFailure(cause -> handleLoadingFailure(sliceKey, cause));
+            transitionForLoad(sliceKey, SliceState.LOADING).flatMap(this::loadSliceWithTimeout)
+                             .flatMap(key -> transitionForLoad(key, SliceState.LOADED))
+                             .onSuccess(key -> processStateTransition(key, SliceState.ACTIVATE))
+                             .onFailure(cause -> handleLoadingFailure(sliceKey, cause));
+        }
+
+        /// #1068 — the node-side half of "a rolled-back version never starts again". Every path that
+        /// starts a slice (LOAD, ACTIVATE, the KV-convergence redeploy) first asks the COMMITTED store
+        /// whether it still targets this version ([CommittedSliceTarget]). The store read here is the
+        /// one the consensus applier writes into — the same `KVStore` instance `RabiaNode` drives — so
+        /// a node that applied the rollback's `SliceTargetKey` removal refuses every later start.
+        ///
+        /// A refusal is DEFERRED, never final. Measured in CI run 34785390505 (`SliceMediaTypeTest`):
+        /// follower smt-3 applied a LOAD 4 ms before it applied the `SliceTargetKey` put the leader had
+        /// already acted on, refused, and nothing re-checked — the slice never loaded. Whether that
+        /// follower applied out of order or caught up through a snapshot install, the store CAN lack an
+        /// earlier put when a later command runs. So the refused state is parked in `deferredStarts`
+        /// and re-driven by [#redriveDeferredStarts] when a target or routing entry for the base
+        /// arrives; a rollback leftover (target REMOVED, nothing arrives) stays parked and writes
+        /// nothing — the leader's orphan sweep (`StaleEntryCleaner.cleanupOrphanedSliceEntries`) owns
+        /// that key and re-issues UNLOAD until it is gone, and the UNLOAD put clears the deferral.
+        private boolean committedTargetPermits(SliceNodeKey sliceKey, SliceState refusedState) {
+            if (CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                unpark(sliceKey, "the committed target arrived");
+
+                return true;
+            }
+
+            deferredStarts.put(sliceKey, refusedState);
+            if (ctx.parkStart(sliceKey, refusedState)) {
+                SharedScheduler.schedule(() -> escalateParkedStart(sliceKey), ctx.parkedStartBound());
+            }
+
+            log.warn("Node {} defers {} of {}: no committed SliceTarget names this version (#1068) — "
+                    + "re-evaluated when a target arrives; if the blueprint was rolled back the leader's orphan sweep removes the entry",
+                     ctx.self().id(),
+                     refusedState,
+                     sliceKey.artifact());
+
+            return false;
+        }
+
+        /// #1068 — `Dormant` ignores every put and removal, so a deferral carried across a quorum cycle can
+        /// outlive its key (the leader's sweep removed the leftover meanwhile) or the state it was refused
+        /// at. Re-driving such an entry would load a slice the leader never allocated. Keep only the
+        /// deferrals the committed store still shows at the deferred state; the rest are dropped here on
+        /// entry, before the LOAD rescan.
+        private void dropStaleDeferredStarts() {
+            deferredStarts.entrySet()
+                          .stream()
+                          .filter(this::deferralIsStale)
+                          .map(Map.Entry::getKey)
+                          .toList()
+                          .forEach(sliceKey -> unpark(sliceKey, "the entry no longer holds the parked state"));
+        }
+
+        private static String parkSubject(SliceNodeKey sliceKey) {
+            return sliceKey.artifact() + "@" + sliceKey.nodeId()
+                                                       .id();
+        }
+
+        /// Ends a park (target arrived, entry superseded or removed). The recovery event is raised only when the warning was.
+        /// The parked state is not touched while it is still parked: [#escalateParkedStart] never removes it.
+        private void unpark(SliceNodeKey sliceKey, String why) {
+            deferredStarts.remove(sliceKey);
+            ctx.unparkStart(sliceKey)
+               .filter(NodeDeploymentContext.ParkedStart::warned)
+               .onPresent(parked -> OperatorWarnings.raise(log,
+                                                           ctx.operatorWarnings(),
+                                                           OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
+                                                           parkSubject(sliceKey),
+                                                           "Node {} no longer holds the deferred {} of {}: {}",
+                                                           ctx.self().id(),
+                                                           parked.state(),
+                                                           sliceKey.artifact(),
+                                                           why));
+        }
+
+        /// Fires `parkedStartBound` after the first refusal. Silent while the bound has not elapsed on the node's clock, while the
+        /// committed store no longer shows the parked state (the park resolved some other way), and after the warning was raised once.
+        /// It only raises: the park stays in `deferredStarts` and is re-driven by the next target exactly as before.
+        /// Package-private so the contract is testable with an injected clock instead of waiting out the real bound.
+        @Contract
+        void escalateParkedStart(SliceNodeKey sliceKey) {
+            ctx.parkedStart(sliceKey)
+               .filter(parked -> ctx.nowMs() - parked.since() >= ctx.parkedStartBound()
+                                                                    .millis())
+               .filter(parked -> !deferralIsStale(Map.entry(sliceKey,
+                                                            parked.state())))
+               .filter(_ -> ctx.markParkWarned(sliceKey))
+               .onPresent(parked -> OperatorWarnings.raise(log,
+                                                           ctx.operatorWarnings(),
+                                                           OperatorWarningCode.SLICE_START_AWAITING_TARGET,
+                                                           parkSubject(sliceKey),
+                                                           "Node {} has held the {} of {} for {} ms: no committed SliceTarget names this version (#1109). "
+                                                          + "The start stays parked and is re-driven when the target arrives; if the blueprint was rolled back, "
+                                                          + "the leader's orphan sweep removes the entry",
+                                                           ctx.self().id(),
+                                                           parked.state(),
+                                                           sliceKey.artifact(),
+                                                           ctx.nowMs() - parked.since()));
+        }
+
+        private boolean deferralIsStale(Map.Entry<SliceNodeKey, SliceState> deferred) {
+            var key = NodeArtifactKey.nodeArtifactKey(ctx.self(),
+                                                      deferred.getKey().artifact());
+
+            return ctx.kvStore()
+                      .getTyped(key, NodeArtifactValue.class)
+                      .map(value -> value.state() != deferred.getValue())
+                      .or(true);
+        }
+
+        /// #1068 — a committed `SliceTargetKey` or `VersionRoutingKey` for `base` just arrived: every
+        /// start this node deferred for that base is re-driven through the same gate. Not permitted
+        /// still (a different version) parks it again.
+        private void redriveDeferredStarts(ArtifactBase base) {
+            var matching = deferredStarts.keySet()
+                                         .stream()
+                                         .filter(sliceKey -> base.matches(sliceKey.artifact()))
+                                         .toList();
+
+            matching.forEach(this::redriveDeferredStart);
+        }
+
+        private void redriveDeferredStart(SliceNodeKey sliceKey) {
+            Option.option(deferredStarts.remove(sliceKey))
+                  .onPresent(state -> log.info("Node {} re-evaluating deferred {} of {} after a committed target arrived (#1068)",
+                                               ctx.self().id(),
+                                               state,
+                                               sliceKey.artifact()))
+                  .onPresent(state -> processStateTransition(sliceKey, state));
         }
 
         private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {
@@ -745,12 +1120,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return Promise.unitPromise();
             }
 
-            int instanceNumber = Math.abs(ctx.self().id().hashCode());
-            var methodNames = methods.stream().map(m -> m.name()
-                                                         .name()).toList();
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact);
-            var nodeArtifactValue = NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
-            KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
+            KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, endpointBearingActive(slice));
 
             return applyWithRetry(List.of(command),
                                   0).onSuccess(_ -> log.debug("Published {} endpoints for slice {}",
@@ -759,6 +1130,49 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                  .onFailure(cause -> log.error("Failed to publish endpoints for {}: {}",
                                                                artifact,
                                                                cause.message()));
+        }
+
+        /// The ACTIVE value that carries this node's endpoints for `slice`: `instanceNumber` is derived
+        /// from the node id, `methods` from the slice. Written by [#publishEndpointsForSlice] and by
+        /// every ACTIVE state transition ([#nodeArtifactValueFor]).
+        private NodeArtifactValue endpointBearingActive(Slice slice) {
+            int instanceNumber = Math.abs(ctx.self().id().hashCode());
+            var methodNames = slice.methods().stream().map(m -> m.name()
+                                                                 .name()).toList();
+
+            return NodeArtifactValue.activeNodeArtifactValue(instanceNumber, methodNames);
+        }
+
+        /// #771: an ACTIVE transition carries the slice's endpoints IN THE SAME PUT. The leader
+        /// activates dependents on the first ACTIVE it observes for this key
+        /// (`ClusterDeploymentState.handleSliceActive`), and every node's `EndpointRegistry` learns
+        /// the endpoints from the same key's `methods` — so an ACTIVE written first and the endpoints
+        /// published in a later put left a window in which a dependent was told to activate before
+        /// the endpoint it invokes at activation (`SliceInvoker.verifyEndpointExists`) existed
+        /// anywhere. The retry classification that #771's mitigation added covered the symptom; this
+        /// closes the order. Every ACTIVE write goes through here — the activation chain, the ROUTING
+        /// ack fast path and the stuck-ACTIVATING/ROUTING remediations all reach it via `transitionTo`
+        /// — so no path can announce ACTIVE without its endpoints. A slice with no methods, or one no
+        /// longer in the store, writes the plain value as before.
+        private NodeArtifactValue nodeArtifactValueFor(Artifact artifact, SliceNodeValue value) {
+            var state = value.state();
+
+            if (state == SliceState.FAILED) {
+                return new NodeArtifactValue(SliceState.FAILED, value.failureReason(), value.fatal(), 0, List.of(), 0L);
+            }
+
+            if (state == SliceState.ACTIVE) {
+                return findLoadedSlice(artifact).filter(ls -> !ls.slice()
+                                                                 .methods()
+                                                                 .isEmpty())
+                                      .map(ls -> endpointBearingActive(ls.slice()))
+                                      .or(() -> NodeArtifactValue.nodeArtifactValue(state, 0L));
+            }
+
+            return NodeArtifactValue.nodeArtifactValue(state,
+                                                       state.isTransitional()
+                                                       ? ctx.nowMs()
+                                                       : 0L);
         }
 
         private void handleDeactivating(SliceNodeKey sliceKey) {
@@ -772,8 +1186,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void performDeactivation(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishEndpoints)
-                        .flatMap(this::unpublishTopicSubscriptions)
+            transitionTo(sliceKey, SliceState.DEACTIVATING).flatMap(this::unpublishTopicSubscriptions)
                         .flatMap(this::unpublishStreamSubscriptions)
                         .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
                         .flatMap(this::unpublishScheduledTasks)
@@ -795,9 +1208,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .map(_ -> sliceKey);
         }
 
+        /// #930 — RETRY. A slice that cannot be DEACTIVATED says nothing about whether the artifact
+        /// can be deployed; the failure is in teardown, and the states this transition feeds are
+        /// the same ones an unload re-drives. Declaring PERMANENT here would let a failed teardown
+        /// condemn the artifact and roll back a blueprint that had already applied.
         private void handleDeactivationFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("Deactivation failed for {}: {}", sliceKey.artifact(), cause.message());
-            transitionToFailed(sliceKey, cause);
+            transitionToFailed(sliceKey, cause, Unrecognised.RETRY);
         }
 
         private Promise<SliceNodeKey> unpublishHttpRoutes(SliceNodeKey sliceKey) {
@@ -807,35 +1224,14 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       .map(_ -> sliceKey);
         }
 
-        private Promise<SliceNodeKey> unpublishEndpoints(SliceNodeKey sliceKey) {
-            var artifact = sliceKey.artifact();
-
-            return findLoadedSlice(artifact).map(ls -> unpublishEndpointsForSlice(artifact,
-                                                                                  ls.slice()))
-                                  .or(Promise.unitPromise())
-                                  .map(_ -> sliceKey);
-        }
-
-        private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
-            var methods = slice.methods();
-
-            if (methods.isEmpty()) {
-                return Promise.unitPromise();
-            }
-
-            var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), artifact);
-            var nodeArtifactValue = NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE);
-            KVCommand<AetherKey> command = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
-
-            return applyWithRetry(List.of(command),
-                                  0).onSuccess(_ -> log.debug("Unpublished {} endpoints for slice {}",
-                                                              methods.size(),
-                                                              artifact))
-                                 .onFailure(cause -> log.error("Failed to unpublish endpoints for {}: {}",
-                                                               artifact,
-                                                               cause.message()));
-        }
-
+        // #1068: there is deliberately no `unpublishEndpoints` mirror of `publishEndpoints`. The one
+        // that existed wrote `NodeArtifactValue(ACTIVE, methods=[])` into every teardown chain —
+        // between the UNLOADING put and the key removal, between DEACTIVATING and LOADED, and after a
+        // key had already been removed. `EndpointRegistry` ignores empty-method puts, so it
+        // unpublished nothing; the transitional put before it already carries an empty method list
+        // and the unload's Remove unregisters. What the write DID do was claim ACTIVE for a slice
+        // being torn down, and one such claim committing after the local unload is the resurrection
+        // measured in CI run 34772700962.
         private Promise<SliceNodeKey> publishTopicSubscriptions(SliceNodeKey sliceKey) {
             var artifact = sliceKey.artifact();
 
@@ -864,9 +1260,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                cause.message()));
         }
 
+        /// #1448: the key is node-scoped, so this node's subscription record is its own row. Before the
+        /// node component existed, every instance of the slice wrote ONE shared row and the matching
+        /// [#buildTopicSubscriptionRemoveCommand] deleted it for the whole cluster.
         private KVCommand<AetherKey> buildTopicSubscriptionPutCommand(Artifact artifact,
                                                                       SubscriptionManifestEntry entry) {
-            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(), artifact, entry.methodName());
+            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(),
+                                                                artifact,
+                                                                entry.methodName(),
+                                                                ctx.self());
             var value = TopicSubscriptionValue.topicSubscriptionValue(ctx.self());
 
             return new KVCommand.Put<>(key, value);
@@ -901,9 +1303,16 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                cause.message()));
         }
 
+        /// #1448: scoped to `ctx.self()`, so an unload removes THIS node's subscription row and leaves
+        /// every other instance's row — and therefore the durable group's declaration — standing. The
+        /// node component must match [#buildTopicSubscriptionPutCommand] exactly or the unload silently
+        /// removes nothing and the record outlives the instance.
         private KVCommand<AetherKey> buildTopicSubscriptionRemoveCommand(Artifact artifact,
                                                                          SubscriptionManifestEntry entry) {
-            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(), artifact, entry.methodName());
+            var key = TopicSubscriptionKey.topicSubscriptionKey(entry.address(),
+                                                                artifact,
+                                                                entry.methodName(),
+                                                                ctx.self());
 
             return new KVCommand.Remove<>(key);
         }
@@ -923,7 +1332,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private List<ReactiveManifestEntry> readReactiveBindingsFromManifest(Slice slice) {
+        private List<ReactiveManifestEntry> readReactiveBindingsFromManifest(Artifact artifact, Slice slice) {
             var result = new ArrayList<ReactiveManifestEntry>();
             var classLoader = slice.getClass().getClassLoader();
 
@@ -934,14 +1343,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
 
-                readReactiveEntriesFromManifest(classLoader, manifestPath, result);
+                readReactiveEntriesFromManifest(artifact, classLoader, manifestPath, result);
             }
 
             return result;
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private void readReactiveEntriesFromManifest(ClassLoader classLoader,
+        private void readReactiveEntriesFromManifest(Artifact artifact,
+                                                     ClassLoader classLoader,
                                                      String manifestPath,
                                                      List<ReactiveManifestEntry> result) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
@@ -963,13 +1373,13 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     result.add(new ReactiveManifestEntry(category, method, config, props, prefix));
                 }
             } catch (Exception e) {
-                log.debug("Could not read reactive manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read reactive manifest {} of {}: {}", manifestPath, artifact, e.toString());
             }
         }
 
         @SuppressWarnings("JBCT-EX-01")
         private List<SubscriptionManifestEntry> readSubscriptionsFromManifest(Artifact artifact, Slice slice) {
-            var reactive = readReactiveBindingsFromManifest(slice);
+            var reactive = readReactiveBindingsFromManifest(artifact, slice);
             var result = new ArrayList<SubscriptionManifestEntry>();
 
             for (var entry : reactive) {
@@ -994,7 +1404,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             return manifestTopicName.isEmpty()
                    ? resolveTopicAddress(artifact, entry.config())
-                   : TopicAddressResolver.resolve(artifact, manifestTopicName);
+                   : TopicAddressResolver.resolve(owningBlueprintOf(artifact), artifact, manifestTopicName);
         }
 
         /// Resolve a subscription's declared topic config to a canonical [ResourceAddress].
@@ -1011,7 +1421,19 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private Result<ResourceAddress> resolveTopicAddress(Artifact artifact, TopicConfig config) {
-            return TopicAddressResolver.resolve(artifact, config.topicName());
+            return TopicAddressResolver.resolve(owningBlueprintOf(artifact), artifact, config.topicName());
+        }
+
+        /// The blueprint owning `sliceArtifact`, which is what a bare topic name is scoped to (#1216).
+        ///
+        /// Reads the SAME `SliceTargetValue.owningBlueprint` the publisher side reaches through its
+        /// node-supplied [OwningBlueprintResolver] extension, and the same field
+        /// [#lookupOwningBlueprintId] already resolves for stream refcounting — one committed fact,
+        /// two readers, so the two ends of a co-deployed pair cannot derive different namespaces.
+        /// [Option#none] (no deployment behind this runtime) scopes to the slice's own coordinates,
+        /// which the publisher does too.
+        private Option<Artifact> owningBlueprintOf(Artifact sliceArtifact) {
+            return OwningBlueprintResolver.owningBlueprintOf(ctx.kvStore(), sliceArtifact);
         }
 
         private Promise<SliceNodeKey> publishScheduledTasks(SliceNodeKey sliceKey) {
@@ -1023,56 +1445,72 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                   .map(_ -> sliceKey);
         }
 
+        /// The interval/cron STRING is node-local config, resolved here — at activation time — not
+        /// visible to `BlueprintService.validate` (blueprint DSL parsing happens strictly earlier and
+        /// has no access to per-node `ScheduleConfig`). This is therefore the earliest point an invalid
+        /// schedule string CAN be rejected. Rejection must be observable, not a log line: an invalid
+        /// entry fails [#buildValidatedScheduledTaskPutCommand] with a named [Cause]; [Result#allOf]
+        /// aggregates every invalid entry into one composite cause; the failed [Promise] propagates
+        /// through [#performActivation]'s `.withFailure` into [#handleActivationFailure] /
+        /// `transitionToFailed`, landing in [NodeArtifactValue#failureReason] — which
+        /// `ClusterEventAggregator.handleDeploymentFailed` already surfaces as a WARNING-severity
+        /// `DeploymentFailed` event naming the task, the offending string, and the parser's message.
         private Promise<Unit> doPublishScheduledTasks(Artifact artifact, Slice slice) {
-            var entries = readScheduledTasksFromManifest(slice);
+            var entries = readScheduledTasksFromManifest(artifact, slice);
 
             if (entries.isEmpty()) {
                 return Promise.unitPromise();
             }
 
-            var commands = new ArrayList<KVCommand<AetherKey>>();
+            var results = new ArrayList<Result<KVCommand<AetherKey>>>();
 
             for (var entry : entries) {
-                resolveScheduleConfig(artifact, entry.configSection()).onPresent(config -> commands.add(buildScheduledTaskPutCommand(artifact,
-                                                                                                                                     entry,
-                                                                                                                                     config)));
+                resolveScheduleConfig(artifact, entry.configSection()).onPresent(config -> results.add(buildValidatedScheduledTaskPutCommand(artifact,
+                                                                                                                                             entry,
+                                                                                                                                             config)));
             }
 
-            if (commands.isEmpty()) {
+            if (results.isEmpty()) {
                 return Promise.unitPromise();
             }
 
-            return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
-                                                                        commands.size(),
-                                                                        artifact))
-                                 .onFailure(cause -> log.error("Failed to publish scheduled tasks for {}: {}",
-                                                               artifact,
-                                                               cause.message()));
+            return Promise.resolved(Result.allOf(results))
+                          .flatMap(commands -> applyWithRetry(commands, 0))
+                          .onSuccess(_ -> log.debug("Published {} scheduled tasks for {}",
+                                                    results.size(),
+                                                    artifact))
+                          .onFailure(cause -> log.error("Failed to publish scheduled tasks for {}: {}",
+                                                        artifact,
+                                                        cause.message()));
         }
 
-        private KVCommand<AetherKey> buildScheduledTaskPutCommand(Artifact artifact,
-                                                                  ScheduledTaskManifestEntry entry,
-                                                                  ScheduleConfig config) {
+        private static final Fn3<Cause, String, String, String> INVALID_SCHEDULE_STRING = Causes.forThreeValues("Scheduled task '%s' has an invalid schedule '%s': %s");
+
+        /// Validates the schedule string BEFORE building the [ScheduledTaskValue] — an invalid
+        /// interval/cron string must never reach the KV Put. See [#doPublishScheduledTasks] for why
+        /// this is the earliest real validation gate and how the rejection reaches the operator.
+        private Result<KVCommand<AetherKey>> buildValidatedScheduledTaskPutCommand(Artifact artifact,
+                                                                                   ScheduledTaskManifestEntry entry,
+                                                                                   ScheduleConfig config) {
             var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
-            var value = config.interval().isEmpty()
-                        ? ScheduledTaskValue.cronTask(ctx.self(), config.cron(), config.executionMode())
-                        : ScheduledTaskValue.intervalTask(ctx.self(), config.interval(), config.executionMode());
+            var taskName = entry.configSection() + "." + entry.methodName().name();
+            Result<ScheduledTaskValue> validated = config.interval().isEmpty()
+                                                   ? CronExpression.parse(config.cron())
+                                                                   .map(_ -> ScheduledTaskValue.cronTask(ctx.self(),
+                                                                                                         config.cron(),
+                                                                                                         config.executionMode()))
+                                                                   .mapError(cause -> INVALID_SCHEDULE_STRING.apply(taskName,
+                                                                                                                    config.cron(),
+                                                                                                                    cause.message()))
+                                                   : ScheduledTaskManager.IntervalParser.parse(config.interval())
+                                                                                        .map(_ -> ScheduledTaskValue.intervalTask(ctx.self(),
+                                                                                                                                  config.interval(),
+                                                                                                                                  config.executionMode()))
+                                                                                        .mapError(cause -> INVALID_SCHEDULE_STRING.apply(taskName,
+                                                                                                                                         config.interval(),
+                                                                                                                                         cause.message()));
 
-            return new KVCommand.Put<>(key, value.withPaused(existingPausedFlag(key)));
-        }
-
-        /// Operator pause (set via the management API into [ScheduledTaskValue#paused]) lives only on
-        /// this cluster-scoped KV entry. Slice (re)activation republishes the SAME key — on rebalance,
-        /// leader-failover republish, or node-wipe convergence — so the freshly built value MUST carry
-        /// over the existing `paused` flag, or an unrelated deploy would silently resume a paused task.
-        /// Absent prior value → `false` (the historical default for a brand-new registration).
-        boolean existingPausedFlag(ScheduledTaskKey key) {
-            return ctx.kvStore()
-                      .get(key)
-                      .filter(ScheduledTaskValue.class::isInstance)
-                      .map(ScheduledTaskValue.class::cast)
-                      .map(ScheduledTaskValue::paused)
-                      .or(false);
+            return validated.map(value -> new KVCommand.Put<>(key, value));
         }
 
         private Promise<SliceNodeKey> unpublishScheduledTasks(SliceNodeKey sliceKey) {
@@ -1085,7 +1523,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private Promise<Unit> doUnpublishScheduledTasks(Artifact artifact, Slice slice) {
-            var entries = readScheduledTasksFromManifest(slice);
+            var entries = readScheduledTasksFromManifest(artifact, slice);
 
             if (entries.isEmpty()) {
                 return Promise.unitPromise();
@@ -1094,7 +1532,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             // NodeId — see AetherKey.ScheduledTaskKey): all replicas hosting the task share one entry.
             // A single replica's deactivate (CDM rebalance, drain) must NOT Remove it while another
             // replica still hosts the task — that would destroy the live registration AND the operator
-            // pause. Remove only when this node is the LAST hosting replica.
+            // pause. Remove only when this node is the LAST hosting replica. The operator pause is its
+            // own key (ScheduledTaskPauseKey, which republishing never touches); it goes with the task
+            // when the task itself goes, so a later redeploy starts unpaused as before.
             if (artifactHostedElsewhere(artifact)) {
                 log.debug("Skipping scheduled-task unpublish for {} — still hosted on other nodes", artifact);
 
@@ -1102,7 +1542,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             var commands = entries.stream()
-                                  .<KVCommand<AetherKey>> map(entry -> buildScheduledTaskRemoveCommand(artifact, entry))
+                                  .flatMap(entry -> buildScheduledTaskRemoveCommands(artifact, entry))
                                   .toList();
 
             return applyWithRetry(commands, 0).onSuccess(_ -> log.debug("Unpublished {} scheduled tasks for {}",
@@ -1121,11 +1561,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return ! collectTargetNodesForArtifact(SliceNodeKey.sliceNodeKey(artifact, ctx.self())).isEmpty();
         }
 
-        private KVCommand<AetherKey> buildScheduledTaskRemoveCommand(Artifact artifact,
-                                                                     ScheduledTaskManifestEntry entry) {
+        private Stream<KVCommand<AetherKey>> buildScheduledTaskRemoveCommands(Artifact artifact,
+                                                                              ScheduledTaskManifestEntry entry) {
             var key = ScheduledTaskKey.scheduledTaskKey(entry.configSection(), artifact, entry.methodName());
 
-            return new KVCommand.Remove<>(key);
+            return Stream.<KVCommand<AetherKey>> of(new KVCommand.Remove<>(key),
+                                                    new KVCommand.Remove<>(ScheduledTaskPauseKey.scheduledTaskPauseKey(key)));
         }
 
         private record ConfigUpdateManifestEntry(String configSection, String factoryClassName) {}
@@ -1139,7 +1580,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void registerSliceForConfigUpdates(Artifact artifact, Slice slice) {
-            var entries = readConfigUpdateEntriesFromManifest(slice);
+            var entries = readConfigUpdateEntriesFromManifest(artifact, slice);
 
             if (entries.isEmpty()) {
                 return;
@@ -1148,10 +1589,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var classLoader = slice.getClass().getClassLoader();
             var factoryClassName = entries.getFirst().factoryClassName();
             var sliceInstance = extractSliceInstance(slice);
-
-            configNotificationManager.register(artifact, sliceInstance, classLoader, factoryClassName);
             var sections = entries.stream().map(ConfigUpdateManifestEntry::configSection).toList();
 
+            configNotificationManager.register(artifact, sliceInstance, classLoader, factoryClassName, sections);
             configNotificationManager.notifyInitial(artifact, sections, buildConfigFacade(artifact));
             log.debug("Registered slice {} for config updates on sections: {}", artifact, sections);
         }
@@ -1171,7 +1611,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private List<ConfigUpdateManifestEntry> readConfigUpdateEntriesFromManifest(Slice slice) {
+        private List<ConfigUpdateManifestEntry> readConfigUpdateEntriesFromManifest(Artifact artifact, Slice slice) {
             var result = new ArrayList<ConfigUpdateManifestEntry>();
             var classLoader = slice.getClass().getClassLoader();
 
@@ -1182,14 +1622,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
                 var manifestPath = "META-INF/slice/" + iface.getSimpleName() + ".manifest";
 
-                readConfigUpdateEntries(classLoader, manifestPath, result);
+                readConfigUpdateEntries(artifact, classLoader, manifestPath, result);
             }
 
             return result;
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private void readConfigUpdateEntries(ClassLoader classLoader,
+        private void readConfigUpdateEntries(Artifact artifact,
+                                             ClassLoader classLoader,
                                              String manifestPath,
                                              List<ConfigUpdateManifestEntry> result) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
@@ -1221,7 +1662,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     }
                 }
             } catch (Exception e) {
-                log.debug("Could not read config update manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read config update manifest {} of {}: {}", manifestPath, artifact, e.toString());
             }
         }
 
@@ -1232,8 +1673,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Slice slice) {
-            var reactive = readReactiveBindingsFromManifest(slice);
+        private List<ScheduledTaskManifestEntry> readScheduledTasksFromManifest(Artifact artifact, Slice slice) {
+            var reactive = readReactiveBindingsFromManifest(artifact, slice);
             var result = new ArrayList<ScheduledTaskManifestEntry>();
 
             for (var entry : reactive) {
@@ -1313,9 +1754,18 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private Promise<Unit> doUnpublishStreamSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readStreamSubscriptionsFromManifest(artifact, slice);
+            var entries = readStreamSubscriptions(artifact,
+                                                  slice,
+                                                  (entry, cause) -> logUnresolvedOnRemoval(artifact, entry, cause),
+                                                  entry -> {});
 
             if (entries.isEmpty()) {
+                return Promise.unitPromise();
+            }
+
+            if (artifactHostedElsewhere(artifact)) {
+                log.debug("Skipping stream-subscription unpublish for {} — still hosted on other nodes", artifact);
+
                 return Promise.unitPromise();
             }
 
@@ -1349,10 +1799,33 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                        boolean batchMode,
                                                        String eventType) {}
 
-        @SuppressWarnings("JBCT-EX-01")
+        /// The registering read: a consumer that cannot be resolved here is one that will receive nothing, so it is raised
+        /// (#1935). Only the publish path may use it; removal re-reads the same manifest for a slice that is going away.
         private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Artifact artifact,
                                                                                           Slice slice) {
-            var reactive = readReactiveBindingsFromManifest(slice);
+            return readStreamSubscriptions(artifact,
+                                           slice,
+                                           (entry, cause) -> raiseConsumerNotRegistered(artifact, entry, cause),
+                                           entry -> raiseConsumerRegisteredAgain(artifact, entry));
+        }
+
+        /// Removal of a consumer that never resolved has nothing to remove and nothing for an operator to do: raising
+        /// "could NOT be registered" there would be a false CRITICAL on every deactivation of the slice.
+        private void logUnresolvedOnRemoval(Artifact artifact, ReactiveManifestEntry entry, Cause cause) {
+            ctx.clearUnregisteredConsumer(consumerSubject(artifact, entry));
+            log.debug("Declarative stream consumer {}.{} on section [{}] was never resolved, nothing to unpublish: {}",
+                      artifact,
+                      entry.method(),
+                      entry.config(),
+                      cause.message());
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private List<StreamSubscriptionManifestEntry> readStreamSubscriptions(Artifact artifact,
+                                                                              Slice slice,
+                                                                              java.util.function.BiConsumer<ReactiveManifestEntry, Cause> onUnresolved,
+                                                                              java.util.function.Consumer<ReactiveManifestEntry> onResolved) {
+            var reactive = readReactiveBindingsFromManifest(artifact, slice);
             var result = new ArrayList<StreamSubscriptionManifestEntry>();
 
             for (var entry : reactive) {
@@ -1366,11 +1839,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                                                     method,
                                                                                                                                                                     batchMode,
                                                                                                                                                                     eventType)))
-                                     .onFailure(cause -> log.error("Declarative stream consumer {}.{} on section [{}] could NOT be registered — it will receive nothing: {}",
-                                                                   artifact,
-                                                                   entry.method(),
-                                                                   entry.config(),
-                                                                   cause.message()))
+                                     .onSuccess(_ -> onResolved.accept(entry))
+                                     .onFailure(cause -> onUnresolved.accept(entry, cause))
                                      .option()
                                      .onPresent(result::add);
                 }
@@ -1381,19 +1851,99 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         /// Resolve the stream a `[streams.X]` consumer subscribes to.
         ///
-        /// Binds [StreamConfig] — the SAME type the stream resource itself is provisioned with — and takes
-        /// its `name`, so a consumer always resolves to exactly the stream its publisher writes to.
+        /// Takes the stream name from the section suffix (`[streams.orders]` → `orders`) — the same alias the
+        /// stream resource factories' own section binder (#1549, `StreamConfigParser.parseStreamConfig`)
+        /// assigns, so a consumer resolves to exactly the stream its publisher writes to. Nothing else of the
+        /// section is read (since #1549 the record binder is NOT what provisions the stream); it no longer binds
+        /// [StreamConfig] at all (#822, see below).
         ///
         /// This previously bound a dedicated `StreamNameConfig(String streamName)`, which required a
         /// `stream-name` key that no `resources.toml` carries (the stream's name comes from the config
         /// section, e.g. `[streams.orders]` → `orders`). Resolution therefore always failed and every
         /// declarative registration was silently dropped by the `.option()` below — a consumer that
         /// declared correctly still received nothing, with no diagnostic anywhere. Part of #488.
+        ///
+        /// #1040: the bound name is then qualified to the engine key, because the shared alias is only half
+        /// the guarantee — the resource factories
+        /// rewrite that name to the blueprint's declared address, and a subscriber left on the bare
+        /// alias would register against a ring no publisher writes to. Both sides derive through
+        /// [BlueprintStreamAddresses#engineKeyFor] against the same bindings map, so the property this
+        /// method was written to hold — a consumer resolves to exactly the stream its publisher writes
+        /// to — survives the change rather than being re-established by coincidence.
+        /// #1935: a declared consumer that cannot be registered receives nothing, and the slice activates anyway,
+        /// so the log line alone left an operator with a healthy-looking slice and a silent consumer. It is now also
+        /// an operator warning (CRITICAL `stream-consumer-not-registered`) naming the slice, method, stream section
+        /// and cause, raised on this node's event log; the aggregator throttles it per (code, subject).
+        ///
+        /// The slice still ACTIVATES: that is a choice. One unregistered consumer must not take down the slice's
+        /// other entry points (routes, other consumers, scheduled tasks), the failure is per-entry and the cause is
+        /// usually configuration the operator can correct without redeploying code, and failing activation would
+        /// put the whole slice into the retry loop for a condition a retry cannot fix. The cost, accepted here, is a
+        /// slice that reports healthy while a consumer is dead; the warning is what makes that visible. There is no
+        /// slice-status field for an activated-with-caveat condition, so none is added.
+        private void raiseConsumerNotRegistered(Artifact artifact, ReactiveManifestEntry entry, Cause cause) {
+            ctx.markUnregisteredConsumer(consumerSubject(artifact, entry));
+            OperatorWarnings.raise(log,
+                                   ctx.operatorWarnings(),
+                                   OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                                   consumerSubject(artifact, entry),
+                                   "Declarative stream consumer {}.{} on section [{}] could NOT be registered, it will receive nothing: {}",
+                                   artifact,
+                                   entry.method(),
+                                   entry.config(),
+                                   cause.message());
+        }
+
+        private static String consumerSubject(Artifact artifact, ReactiveManifestEntry entry) {
+            return artifact + "." + entry.method() + "[" + entry.config() + "]";
+        }
+
+        /// The resolved counterpart (#1935): raised only when `stream-consumer-not-registered` was raised for this same
+        /// consumer and it now registers, so an operator who saw the CRITICAL also sees it end. A consumer that always
+        /// registered, or one whose slice was removed in between, raises nothing.
+        private void raiseConsumerRegisteredAgain(Artifact artifact, ReactiveManifestEntry entry) {
+            var subject = consumerSubject(artifact, entry);
+
+            if (ctx.clearUnregisteredConsumer(subject)) {
+                OperatorWarnings.raise(log,
+                                       ctx.operatorWarnings(),
+                                       OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
+                                       subject,
+                                       "Declarative stream consumer {}.{} on section [{}] is registered again",
+                                       artifact,
+                                       entry.method(),
+                                       entry.config());
+            }
+        }
+
+        /// The consumer needs only the stream's NAME, which is the section's last segment: `StreamConfigParser`
+        /// accepts no `name` key, so the name never came from the section's contents. It used to bind the whole
+        /// `StreamConfig` through the generic record binder just to read `name` back, which refuses a documented
+        /// section (`retention = "time"` is a scalar where `StreamConfig.retention` is a record) and had no business
+        /// interpreting the stream's other keys; that is the parser's job (#822). The section must still exist: a
+        /// consumer on a section nobody declared is not registered.
         private Result<String> resolveStreamName(Artifact artifact, String configSection) {
             return sliceConfigService(artifact).orElse(ConfigService::instance)
                                      .toResult(Causes.cause("ConfigService not available for stream name resolution"))
-                                     .flatMap(svc -> svc.config(configSection, StreamConfig.class))
-                                     .map(StreamConfig::name);
+                                     .flatMap(svc -> requireSection(svc, configSection))
+                                     .flatMap(_ -> streamNameOf(configSection))
+                                     .flatMap(alias -> BlueprintStreamAddresses.engineKeyFor(ctx.kvStore(),
+                                                                                             artifact,
+                                                                                             alias));
+        }
+
+        private static Result<ConfigService> requireSection(ConfigService svc, String configSection) {
+            return svc.hasSection(configSection)
+                   ? Result.success(svc)
+                   : ConfigError.sectionNotFound(configSection).result();
+        }
+
+        private static Result<String> streamNameOf(String configSection) {
+            var lastDot = configSection.lastIndexOf('.');
+
+            return lastDot < 0 || lastDot == configSection.length() - 1
+                   ? Causes.cause("Stream section '" + configSection + "' has no stream name segment").result()
+                   : Result.success(configSection.substring(lastDot + 1));
         }
 
         private void handleFailed(SliceNodeKey sliceKey) {
@@ -1401,8 +1951,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void handleUnloading(SliceNodeKey sliceKey) {
-            transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishEndpoints)
-                        .flatMap(this::unpublishTopicSubscriptions)
+            transitionTo(sliceKey, SliceState.UNLOADING).flatMap(this::unpublishTopicSubscriptions)
                         .flatMap(this::unpublishStreamSubscriptions)
                         .flatMap(key -> releaseStreamReferences(key).map(_ -> key))
                         .flatMap(this::unpublishScheduledTasks)
@@ -1495,7 +2044,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return List.of();
             }
 
-            var declarations = readStreamRoleDeclarationsFromManifest(loaded.unwrap().slice());
+            var declarations = readStreamRoleDeclarationsFromManifest(sliceKey.artifact(),
+                                                                      loaded.unwrap().slice());
 
             if (declarations.isEmpty()) {
                 return List.of();
@@ -1564,7 +2114,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         private record StreamRoleDeclaration(String alias, @SuppressWarnings("unused") String role) {}
 
         @SuppressWarnings("JBCT-EX-01")
-        private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Slice slice) {
+        private List<StreamRoleDeclaration> readStreamRoleDeclarationsFromManifest(Artifact artifact, Slice slice) {
             var result = new ArrayList<StreamRoleDeclaration>();
             var classLoader = slice.getClass().getClassLoader();
 
@@ -1573,7 +2123,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                     continue;
                 }
 
-                appendStreamRoleDeclarations(classLoader,
+                appendStreamRoleDeclarations(artifact,
+                                             classLoader,
                                              "META-INF/slice/" + iface.getSimpleName() + ".manifest",
                                              result);
             }
@@ -1582,7 +2133,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         @SuppressWarnings("JBCT-EX-01")
-        private void appendStreamRoleDeclarations(ClassLoader classLoader,
+        private void appendStreamRoleDeclarations(Artifact artifact,
+                                                  ClassLoader classLoader,
                                                   String manifestPath,
                                                   List<StreamRoleDeclaration> sink) {
             try (var is = classLoader.getResourceAsStream(manifestPath)) {
@@ -1596,7 +2148,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 appendRoleEntries(props, "stream.publisher.", "stream.publishers.count", "producer", sink);
                 appendRoleEntries(props, "stream.access.", "stream.access.count", "consumer", sink);
             } catch (Exception e) {
-                log.debug("Could not read stream role declarations from manifest {}: {}", manifestPath, e.getMessage());
+                log.warn("Could not read stream role declarations from manifest {} of {}: {}",
+                         manifestPath,
+                         artifact,
+                         e.toString());
             }
         }
 
@@ -1663,17 +2218,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       attempt,
                       extraCommands.size());
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
-            var transitionedAt = value.state().isTransitional()
-                                 ? ctx.nowMs()
-                                 : 0L;
-            var nodeArtifactValue = value.state() == SliceState.FAILED
-                                    ? new NodeArtifactValue(SliceState.FAILED,
-                                                            value.failureReason(),
-                                                            value.fatal(),
-                                                            0,
-                                                            List.of(),
-                                                            0L)
-                                    : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
+            var nodeArtifactValue = nodeArtifactValueFor(sliceKey.artifact(), value);
             var commands = new ArrayList<KVCommand<AetherKey>>();
 
             commands.add(new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue));
@@ -1706,21 +2251,30 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             return updateSliceStateWithExtraCommandsAndRetry(sliceKey, value, extraCommands, attempt + 1);
         }
 
-        private Promise<SliceNodeKey> transitionToFailed(SliceNodeKey sliceKey, Cause cause) {
-            return transitionToFailedWithRetry(sliceKey, cause, 0);
+        /// #930 — every caller states the permanence of an unrecognised cause. The value written
+        /// here carries a `fatal` flag across consensus to the cluster leader, which branches a
+        /// blueprint rollback on it, so the disposition is an input to this operation rather than
+        /// something read off the cause's Java type on arrival.
+        private Promise<SliceNodeKey> transitionToFailed(SliceNodeKey sliceKey,
+                                                         Cause cause,
+                                                         Unrecognised unrecognised) {
+            return transitionToFailedWithRetry(sliceKey, cause, unrecognised, 0);
         }
 
         private Promise<SliceNodeKey> transitionToFailedWithRetry(SliceNodeKey sliceKey,
                                                                   Cause originalCause,
+                                                                  Unrecognised unrecognised,
                                                                   int attempt) {
-            return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(originalCause)).onFailure(writeCause -> handleFailedTransitionRetry(sliceKey,
-                                                                                                                                                      originalCause,
-                                                                                                                                                      writeCause,
-                                                                                                                                                      attempt));
+            return updateSliceState(sliceKey, SliceNodeValue.failedSliceNodeValue(originalCause, unrecognised)).onFailure(writeCause -> handleFailedTransitionRetry(sliceKey,
+                                                                                                                                                                    originalCause,
+                                                                                                                                                                    unrecognised,
+                                                                                                                                                                    writeCause,
+                                                                                                                                                                    attempt));
         }
 
         private void handleFailedTransitionRetry(SliceNodeKey sliceKey,
                                                  Cause originalCause,
+                                                 Unrecognised unrecognised,
                                                  Cause writeCause,
                                                  int attempt) {
             if (attempt < MAX_TRANSITION_RETRIES) {
@@ -1730,7 +2284,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                          MAX_TRANSITION_RETRIES,
                          ctx.transitionRetryDelay().millis(),
                          writeCause.message());
-                SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey, originalCause, attempt + 1),
+                SharedScheduler.schedule(() -> transitionToFailedWithRetry(sliceKey,
+                                                                           originalCause,
+                                                                           unrecognised,
+                                                                           attempt + 1),
                                          ctx.transitionRetryDelay());
             } else {
                 log.error("CRITICAL: Failed to write FAILED state for {} after {} attempts. Slice stuck in transitional state.",
@@ -1755,17 +2312,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       value.state(),
                       attempt);
             var nodeArtifactKey = NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact());
-            var transitionedAt = value.state().isTransitional()
-                                 ? ctx.nowMs()
-                                 : 0L;
-            var nodeArtifactValue = value.state() == SliceState.FAILED
-                                    ? new NodeArtifactValue(SliceState.FAILED,
-                                                            value.failureReason(),
-                                                            value.fatal(),
-                                                            0,
-                                                            List.of(),
-                                                            0L)
-                                    : NodeArtifactValue.nodeArtifactValue(value.state(), transitionedAt);
+            var nodeArtifactValue = nodeArtifactValueFor(sliceKey.artifact(), value);
             KVCommand<AetherKey> putArtifact = new KVCommand.Put<>(nodeArtifactKey, nodeArtifactValue);
 
             return ctx.cluster()
@@ -1826,6 +2373,12 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       cause.message());
         }
 
+        /// #1452: deliberately writes NO transition. It runs on `QuorumDisappeared`, when
+        /// `RabiaEngine.validateSubmission` rejects every `apply` with `QuorumPaused` / `NodeInactive`, so
+        /// a write here could not commit. The committed ACTIVE therefore means "ACTIVE at this node's last
+        /// committed write" for the length of the outage, and the suspension is bounded by the quorum
+        /// return: [#reactivateSuspendedSlices] either restores the bridge, making the claim true again,
+        /// or reaches [#handleReactivationFailure], which writes FAILED.
         public List<SuspendedSlice> suspendSlices() {
             log.warn("Suspending {} slices due to quorum loss (keeping loaded in memory)", deployments.size());
             var suspended = new ArrayList<SuspendedSlice>();
@@ -1880,8 +2433,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var loadedSlice = findLoadedSlice(sliceKey.artifact());
 
             if (loadedSlice.isEmpty()) {
-                log.warn("Suspended slice {} no longer in SliceStore, skipping reactivation", sliceKey.artifact());
-                deployments.remove(sliceKey);
+                handleReactivationFailure(sliceKey,
+                                          SLICE_NOT_FOUND_FOR_REACTIVATION.apply(sliceKey.artifact().asString()));
 
                 return;
             }
@@ -1891,19 +2444,40 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                       .flatMap(key -> publishEndpoints(key).map(_ -> key))
                                       .flatMap(this::publishTopicSubscriptions)
                                       .flatMap(this::publishScheduledTasks)
+                                      .flatMap(this::registerAndNotifyConfig)
                                       .onSuccess(_ -> log.debug("Reactivated slice {}",
                                                                 sliceKey.artifact()))
                                       .onFailure(cause -> handleReactivationFailure(sliceKey, cause));
         }
 
+        /// #1660 / #1452: a failed reactivation leaves this node NOT hosting a slice the cluster KV still
+        /// lists ACTIVE here — the suspension wrote nothing (it cannot, see [#suspendSlices]), so the
+        /// committed `NodeArtifactKey` is the last ACTIVE this node wrote. Unregistering locally and
+        /// forgetting the deployment, as this did before, left that claim standing: no reconcile saw a
+        /// missing instance, nothing redeployed, and every reader of committed placement kept routing to
+        /// a node with no bridge.
+        ///
+        /// Quorum is back (reactivation runs from `Active.onEntry`), so the true state is WRITTEN: FAILED,
+        /// never fatal. The leader's `handleSliceFailure` then issues the unload and its transient-retry
+        /// path re-drives the instance, and the committed FAILED put is what `ClusterEventAggregator`
+        /// surfaces as a WARNING `DeploymentFailed` event — one per committed transition. Never fatal,
+        /// whatever the cause's type: a slice that was ACTIVE before the quorum flap says nothing about
+        /// whether the artifact can deploy, and a fatal flag would let the leader condemn the artifact.
+        ///
+        /// The deployment stays in the map until the leader's unload removes it. If quorum goes again
+        /// before the FAILED write commits, the next [#suspendSlices] still finds it ACTIVE and the next
+        /// quorum return re-drives the reactivation, rather than the node silently forgetting the slice.
         @Contract
         private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
-            log.error("Failed to reactivate slice {}: {}", sliceKey.artifact(), cause.message());
+            log.error("Failed to reactivate slice {}: {} — recording FAILED so the cluster redeploys it",
+                      sliceKey.artifact(),
+                      cause.message());
             unregisterSliceFromInvocation(sliceKey);
-            unpublishEndpoints(sliceKey).flatMap(this::unpublishTopicSubscriptions)
-                              .flatMap(this::unpublishScheduledTasks)
-                              .flatMap(this::unpublishHttpRoutes);
-            deployments.remove(sliceKey);
+            transitionToFailed(sliceKey,
+                               REACTIVATION_FAILED.apply(cause.message()),
+                               Unrecognised.RETRY);
+            unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishScheduledTasks)
+                                       .flatMap(this::unpublishHttpRoutes);
         }
 
         @Contract

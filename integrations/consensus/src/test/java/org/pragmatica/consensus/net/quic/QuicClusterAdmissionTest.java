@@ -27,7 +27,9 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetCodecs;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -77,6 +79,14 @@ class QuicClusterAdmissionTest {
     private static final NodeAddress SERVER_ADDRESS = new NodeAddress("127.0.0.1", 9100);
     private static final NodeAddress CLIENT_ADDRESS = new NodeAddress("127.0.0.1", 9101);
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(8).seconds();
+    /// #807 — the client bounds every connect itself: its Hello wait is 15 s (`HELLO_TIMEOUT_MS` in
+    /// `QuicClusterClientInstance`, private, so mirrored here as an assumption). This test used to give up
+    /// after 8 s, so under reactor load a slow but legitimate handshake — one the client would still have
+    /// accepted — was scored "not admitted". The wait is now on the client's own completion, with the
+    /// bound plus a margin as the budget; the budget only expires if the client's bound does not hold,
+    /// and the assertions then say so rather than reporting a rejection.
+    private static final TimeSpan CLIENT_HELLO_BOUND = TimeSpan.timeSpan(15).seconds();
+    private static final TimeSpan CONNECT_AWAIT = TimeSpan.timeSpan(CLIENT_HELLO_BOUND.millis() + 5_000).millis();
 
     private static final String CLUSTER_SECRET = "admission-test-cluster-secret";
     private static final String FOREIGN_SECRET = "a-different-clusters-secret";
@@ -164,7 +174,7 @@ class QuicClusterAdmissionTest {
 
     private int startServer(QuicSslContext serverSsl) {
         server = QuicClusterServer.quicClusterServer(SERVER_NODE, SERVER_ADDRESS, Map.of(), codec, codec,
-                                                     serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
+                                                     QuicTransportMetrics.quicTransportMetrics(), serverSsl, Option.empty(), (_, _, _) -> {}, (_, _) -> {});
         server.start(0)
               .await(AWAIT_TIMEOUT)
               .onFailure(cause -> fail("server start: " + cause.message()));
@@ -172,13 +182,36 @@ class QuicClusterAdmissionTest {
         return server.boundPort().fold(() -> fail("server not bound"), port -> port);
     }
 
-    private boolean connects(QuicSslContext clientSsl, int port) {
+    /// The connect OUTCOME, cause included (#807: the boolean this used to return discarded it, so the
+    /// one observed red could not tell a timeout from a refusal).
+    private Result<QuicPeerConnection> connect(QuicSslContext clientSsl, int port) {
         client = QuicClusterClient.quicClusterClient(CLIENT_NODE, CLIENT_ADDRESS, Map.of(), codec, codec,
-                                                     clientSsl, Option.empty(), (_, _) -> {});
+                                                     QuicTransportMetrics.quicTransportMetrics(), clientSsl, Option.empty(), (_, _) -> {});
 
         return client.connect(SERVER_NODE, new InetSocketAddress("127.0.0.1", port))
-                     .await(AWAIT_TIMEOUT)
-                     .fold(_ -> false, _ -> true);
+                     .await(CONNECT_AWAIT);
+    }
+
+    private static void assertAdmitted(Result<QuicPeerConnection> outcome, String why) {
+        assertThat(outcome.isSuccess()).as("%s — outcome: %s", why, outcome).isTrue();
+    }
+
+    /// A rejection must be the CLIENT's verdict, never this test's budget running out: a budget expiry
+    /// means the client's own bound did not hold, which is a different finding from a refusal.
+    private static void assertRejected(Result<QuicPeerConnection> outcome, String why) {
+        assertThat(outcome.isFailure()).as("%s — outcome: %s", why, outcome).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).as("the client did not settle within %s, past its own Hello bound: %s",
+                                                       CONNECT_AWAIT, cause)
+                                                   .isNotInstanceOf(CoreError.Timeout.class));
+    }
+
+    /// #1694 — a server that refuses the client certificate closes the connection before answering the Hello. The
+    /// dial must settle promptly with THAT cause, not after the 15 s Hello bound as `HELLO_TIMEOUT` (which is what
+    /// the timeout path alone would report). Before #1694 it never settled at all.
+    private static void assertRejectedByPeerClose(Result<QuicPeerConnection> outcome, String why) {
+        assertRejected(outcome, why);
+        outcome.onFailure(cause -> assertThat(cause.message()).as("#1694: the refusal is reported as the peer's close, not a timeout")
+                                                              .contains("closed the connection before answering the Hello"));
     }
 
     @Nested
@@ -188,10 +221,9 @@ class QuicClusterAdmissionTest {
         void clientWithClusterCertificate_isAdmitted() {
             var port = startServer(clusterServerSsl());
 
-            assertThat(connects(clientSsl(clusterTls("admission-client", CLUSTER_SECRET)), port))
-                .as("a peer holding a certificate from the cluster CA must be admitted — this is the "
-                    + "control that makes the rejections below meaningful")
-                .isTrue();
+            assertAdmitted(connect(clientSsl(clusterTls("admission-client", CLUSTER_SECRET)), port),
+                "a peer holding a certificate from the cluster CA must be admitted — this is the "
+                    + "control that makes the rejections below meaningful");
         }
 
         /// The defect itself: this connection SUCCEEDED before #715.
@@ -199,10 +231,9 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isRejected() {
             var port = startServer(clusterServerSsl());
 
-            assertThat(connects(certificatelessClientSsl(), port))
-                .as("#715: a peer presenting no certificate must not be admitted to the cluster — "
-                    + "before the fix this succeeded, and the peer was then counted by the CTM")
-                .isFalse();
+            assertRejectedByPeerClose(connect(certificatelessClientSsl(), port),
+                "#715: a peer presenting no certificate must not be admitted to the cluster — "
+                    + "before the fix this succeeded, and the peer was then counted by the CTM");
         }
 
         /// The cross-cluster case that #715's incident actually was: a real, well-formed node whose
@@ -211,9 +242,8 @@ class QuicClusterAdmissionTest {
         void clientFromForeignCluster_isRejected() {
             var port = startServer(clusterServerSsl());
 
-            assertThat(connects(clientSsl(clusterTls("foreign-node", FOREIGN_SECRET)), port))
-                .as("a node from another cluster must not be admitted, however well-formed it is")
-                .isFalse();
+            assertRejected(connect(clientSsl(clusterTls("foreign-node", FOREIGN_SECRET)), port),
+                "a node from another cluster must not be admitted, however well-formed it is");
         }
     }
 
@@ -225,18 +255,16 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isRejected_againstRotatedContext() {
             var port = startServer(rotatedClusterServerSsl());
 
-            assertThat(connects(certificatelessClientSsl(), port))
-                .as("the rotated context must enforce the same admission policy as the initial one")
-                .isFalse();
+            assertRejectedByPeerClose(connect(certificatelessClientSsl(), port),
+                "the rotated context must enforce the same admission policy as the initial one");
         }
 
         @Test
         void clientWithClusterCertificate_isAdmitted_againstRotatedContext() {
             var port = startServer(rotatedClusterServerSsl());
 
-            assertThat(connects(clientSsl(clusterTls("admission-client", CLUSTER_SECRET)), port))
-                .as("control for the rotated path — rejection above must not be a broken context")
-                .isTrue();
+            assertAdmitted(connect(clientSsl(clusterTls("admission-client", CLUSTER_SECRET)), port),
+                "control for the rotated path — rejection above must not be a broken context");
         }
     }
 
@@ -250,10 +278,9 @@ class QuicClusterAdmissionTest {
         void certificatelessClient_isAccepted_whenPolicyIsNotRequested() {
             var port = startServer(operatorServerSsl());
 
-            assertThat(connects(certificatelessClientSsl(), port))
-                .as("operator-facing surfaces must still accept clients that hold no cluster "
-                    + "certificate — they authenticate by API key, not by mTLS")
-                .isTrue();
+            assertAdmitted(connect(certificatelessClientSsl(), port),
+                "operator-facing surfaces must still accept clients that hold no cluster "
+                    + "certificate — they authenticate by API key, not by mTLS");
         }
     }
 }

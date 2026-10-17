@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.resource.interceptor;
 
@@ -20,7 +19,7 @@ class RateGuardTest {
     class Guard {
         @Test
         void guard_succeeds_withinLimit() {
-            var guard = DefaultRateGuard.defaultRateGuard(RateGuardConfig.rateGuardConfig(10, 0).unwrap());
+            var guard = DefaultRateGuard.defaultRateGuard(RateGuardConfig.rateGuardConfig(10, 0).unwrap()).unwrap();
             var result = guard.guard(() -> Promise.success("ok")).await();
             assertThat(result.isSuccess()).isTrue();
             assertThat(result.unwrap()).isEqualTo("ok");
@@ -28,7 +27,7 @@ class RateGuardTest {
 
         @Test
         void guard_fails_whenLimitExceeded() {
-            var guard = DefaultRateGuard.defaultRateGuard(RateGuardConfig.rateGuardConfig(1, 0).unwrap());
+            var guard = DefaultRateGuard.defaultRateGuard(RateGuardConfig.rateGuardConfig(1, 0).unwrap()).unwrap();
             guard.guard(() -> Promise.success("ok")).await()
                  .onFailure(_ -> fail("First request should succeed"));
             var result = guard.guard(() -> Promise.success("should fail")).await();
@@ -37,7 +36,7 @@ class RateGuardTest {
 
         @Test
         void guard_returnsMetadata_whenLimitExceeded() {
-            var guard = DefaultRateGuard.defaultRateGuard(RateGuardConfig.rateGuardConfig(1, 0).unwrap());
+            var guard = DefaultRateGuard.defaultRateGuard(RateGuardConfig.rateGuardConfig(1, 0).unwrap()).unwrap();
             guard.guard(() -> Promise.success("ok")).await();
             var result = guard.guard(() -> Promise.success("fail")).await();
             result.onSuccessRun(() -> fail("Expected failure"))
@@ -46,7 +45,7 @@ class RateGuardTest {
 
         @Test
         void guard_succeeds_withBurstCapacity() {
-            var guard = DefaultRateGuard.defaultRateGuard(RateGuardConfig.rateGuardConfig(1, 2).unwrap());
+            var guard = DefaultRateGuard.defaultRateGuard(RateGuardConfig.rateGuardConfig(1, 2).unwrap()).unwrap();
             assertThat(guard.guard(() -> Promise.success(1)).await().isSuccess()).isTrue();
             assertThat(guard.guard(() -> Promise.success(2)).await().isSuccess()).isTrue();
             assertThat(guard.guard(() -> Promise.success(3)).await().isSuccess()).isTrue();

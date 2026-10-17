@@ -26,9 +26,11 @@ import org.pragmatica.aether.slice.generation.Epoch;
 /// advances it — so the fence is inert until real ownership epochs are wired (1d-iii driver).
 @FunctionalInterface
 public interface StreamOwnerEpochSource {
-    /// This node's current ownership [Epoch] for `(stream, partition)` — the token stamped onto an
-    /// append. The unfenced floor ([Epoch#ZERO]) for an arc this node does not own / has no committed
-    /// ownership record for.
+    /// The current committed ownership [Epoch] for `(stream, partition)` — the token stamped onto an
+    /// append. It is the arc's epoch regardless of which node owns it (the production source does not
+    /// compare the record's owner with self; owner identity is enforced by
+    /// `StreamPartitionManager.OwnerWriteAdmission`, #1230). The unfenced floor ([Epoch#ZERO]) for an arc
+    /// with no committed ownership record.
     Epoch currentOwnerEpoch(String stream, int partition);
 
     /// The unfenced floor source ([Epoch#ZERO] → `0:0`) for non-cluster stream paths, legacy callers,

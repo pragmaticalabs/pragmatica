@@ -46,7 +46,7 @@ test_quorum_established() {
 }
 
 test_liveness_probe() {
-    assert_http_status "${CLUSTER_ENDPOINT}/health/live" "200" "Liveness probe returns 200"
+    assert_http_status "$(_resolve_live_endpoint)/health/live" "200" "Liveness probe returns 200"
 }
 
 test_all_nodes_visible() {

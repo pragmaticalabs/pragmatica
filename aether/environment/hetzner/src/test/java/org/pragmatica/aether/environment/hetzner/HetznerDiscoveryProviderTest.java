@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.environment.hetzner;
 
@@ -209,18 +208,18 @@ class HetznerDiscoveryProviderTest {
 
     private static Server serverWithPrivateIpAndLabels(long id, String privateIp, Map<String, String> labels) {
         return new Server(id, "server-" + id, "running", serverType(), image(),
-                          null, List.of(new Server.PrivateNet(1L, privateIp)), labels);
+                          null, List.of(new Server.PrivateNet(1L, privateIp)), labels, null);
     }
 
     private static Server serverWithBothAddresses(long id, String publicIp, String privateIp,
                                                    Map<String, String> labels) {
         return new Server(id, "server-" + id, "running", serverType(), image(),
-                          publicNet(publicIp), List.of(new Server.PrivateNet(1L, privateIp)), labels);
+                          publicNet(publicIp), List.of(new Server.PrivateNet(1L, privateIp)), labels, null);
     }
 
     private static Server serverWithPublicOnly(long id, String publicIp, Map<String, String> labels) {
         return new Server(id, "server-" + id, "running", serverType(), image(),
-                          publicNet(publicIp), List.of(), labels);
+                          publicNet(publicIp), List.of(), labels, null);
     }
 
     private static Server.ServerType serverType() {

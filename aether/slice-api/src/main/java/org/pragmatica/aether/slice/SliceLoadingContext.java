@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import java.util.List;
@@ -29,6 +28,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
 
 
 public final class SliceLoadingContext implements SliceCreationContext {
+    private static final String UNNAMED_SLICE = "<unnamed slice>";
+
     private final SliceCreationContext delegate;
     private final BufferingInvokerFacade bufferingInvoker;
     private final AtomicBoolean materialized = new AtomicBoolean(false);
@@ -60,8 +61,7 @@ public final class SliceLoadingContext implements SliceCreationContext {
         this.delegate = delegate;
         this.bufferingInvoker = new BufferingInvokerFacade(delegate.invoker());
         this.nodeCodec = nodeCodec;
-        this.sliceCodec = nodeCodec.map(_ -> DeferredSliceCodec.deferredSliceCodec(delegate.sliceId()
-                                                                                           .or("<unnamed slice>")));
+        this.sliceCodec = nodeCodec.map(_ -> DeferredSliceCodec.deferredSliceCodec(delegate.sliceId().or(UNNAMED_SLICE)));
     }
 
     public static SliceLoadingContext sliceLoadingContext(SliceCreationContext delegate) {
@@ -116,9 +116,66 @@ public final class SliceLoadingContext implements SliceCreationContext {
         return delegate.sliceId();
     }
 
+    /// The deployed slice's configuration, served from the materialized slice-composite
+    /// (`slice.toml` under the node-composite's operator KV overlay and node.toml) rather than from
+    /// the delegate's [NoOpConfigFacade] (#889).
+    ///
+    /// This is the seam the defect lived in. Every production path reaches slice creation through
+    /// the two- or three-argument `SliceCreationContext` factory, both of which pass the no-op, so
+    /// `ctx.config()` inside a deployed slice could never return a value and a slice declaring
+    /// `@ResourceQualifier(type = ConfigurationSection.class)` could not be created.
+    ///
+    /// Serving it HERE rather than threading a `ConfigFacade` in through
+    /// `DependencyResolver#resolveWithContext` is not a shortcut, it is the only placement that can
+    /// carry the right config: the slice-composite is LATE-BOUND — it cannot exist until the slice
+    /// classloader does, which is why the caller supplies a builder and not a value — so a facade
+    /// constructed at resolve time could only ever carry the node composite, silently missing the
+    /// slice's own `resources.toml` and every operator override layered onto it.
+    ///
+    /// Read through the [java.util.concurrent.atomic.AtomicReference] on each call for the same
+    /// reason: a facade captured at construction time would latch the pre-materialization absence.
+    /// `DependencyResolver#materializeThenResolve` attaches the composite strictly before the
+    /// generated factory runs — synchronously, deliberately — and that factory is the first reader.
+    ///
+    /// When no composite is attached the result is a REFUSAL that names itself, not a degradation:
+    /// see [#configWithoutComposite].
     @Override
     public ConfigFacade config() {
-        return delegate.config();
+        return sliceComposite.get()
+                             .<ConfigFacade> map(composite -> ConfigProviderFacade.configProviderFacade(sliceName(),
+                                                                                                        composite))
+                             .or(this::configWithoutComposite);
+    }
+
+    private String sliceName() {
+        return delegate.sliceId()
+                       .or(UNNAMED_SLICE);
+    }
+
+    /// No composite attached — decide between an explicitly supplied facade and a named refusal.
+    ///
+    /// A caller that built its context through the config-carrying `SliceCreationContext` overload
+    /// supplied a real facade on purpose, and that must win; the test kit and the deployment path
+    /// both leave the delegate at [NoOpConfigFacade] instead, and identity against that constant is
+    /// what separates the two cases.
+    ///
+    /// For the no-op case this deliberately does NOT fall through to the delegate. Doing so is the
+    /// obvious implementation and it degrades silently: `NoOpConfigFacade` fails with "Config
+    /// service not available", so a slice that needed configuration surfaced as a chain of
+    /// missing-KEY errors and sent the reader to their `resources.toml` when the real fault was that
+    /// the node had no configuration provider at all. [AbsentCompositeConfigFacade] says which of
+    /// two layers is missing, lists the load-time conditions that leave it missing, and names the
+    /// slice that asked.
+    ///
+    /// Slices declaring no config section are unaffected either way: they never call `config()`.
+    private ConfigFacade configWithoutComposite() {
+        var supplied = delegate.config();
+
+        if (supplied != NoOpConfigFacade.INSTANCE) {
+            return supplied;
+        }
+
+        return AbsentCompositeConfigFacade.absentCompositeConfigFacade(sliceName());
     }
 
     @Override
@@ -289,9 +346,11 @@ public final class SliceLoadingContext implements SliceCreationContext {
             this.sliceCodec = sliceCodec;
         }
 
-        /// Deliberately NOT upgraded to the context overload. The no-context overload is the cached
-        /// path in `SpiResourceProvider` (one shared promise per type+section); upgrading it here
-        /// would silently drop that caching. Nothing is lost: every resource that encodes values —
+        /// Deliberately NOT upgraded to the context overload. Both overloads are cached in
+        /// `SpiResourceProvider` (#268): the no-context one under a single shared scope that no
+        /// slice's unload releases, the context one per slice. Upgrading here would move every
+        /// plain caller into the per-slice scope and have this slice's unload close a resource the
+        /// caller never attributed to it. Nothing is lost: every resource that encodes values —
         /// streams, publishers, interceptors — is provisioned through the context overload by
         /// generated code, and the stream factories reject a context-less provisioning outright.
         @Override
@@ -374,9 +433,104 @@ public final class SliceLoadingContext implements SliceCreationContext {
             return delegate.provide(resourceType, configSection, context.withExtension(String.class, sliceId));
         }
 
+        /// Release under the id this wrapper PROVISIONS under, reporting the caller's (#892).
+        ///
+        /// The two sides used to compute the identity independently and could never agree. This
+        /// wrapper scopes every provisioning to `sliceId`, which `DependencyResolver` sets from
+        /// `artifact.asString()` — `groupId:artifactId:version`, three segments. The caller is a
+        /// slice's generated `stop()`, which passes a compile-time literal from
+        /// `FactoryClassGenerator.computeSliceArtifactCoordinate`:
+        /// `groupId:artifactId-kebab(SliceName)` — two segments, no version. `releaseAll` compares
+        /// scope strings for equality, so NO emitted literal can ever equal any scope, for any
+        /// slice, in any build, and no provisioned resource was ever closed on any slice unload.
+        ///
+        /// That is structural, not a census: this side emits exactly ONE colon unconditionally,
+        /// `Artifact.asString()` exactly two, and a Maven coordinate cannot contain a colon. A
+        /// count of emitted `stop()` bodies is a function of which modules happen to be built when
+        /// it is taken — it varies by tree and goes stale — so no number is quoted here.
+        ///
+        /// The processor cannot be fixed into agreement: it has no version option to emit
+        /// (`SliceProcessor`'s `@SupportedOptions` carries `slice.groupId` and `slice.artifactId`
+        /// only), and compile-time code cannot know the version a slice is deployed under. So the
+        /// identity is taken from the one place that holds the deployed `Artifact`, and the two
+        /// strings are no longer two — a design-out rather than a reconciliation.
+        ///
+        /// WHY THE PARAMETER IS NOT REMOVED, and why it is not silently ignored either. Removing it
+        /// would be the cleaner signature, and it is ruled out by the property that makes this fix
+        /// the correct one: every ALREADY-COMPILED slice jar calls `releaseAll(String)` from its
+        /// generated `stop()`, so deleting the parameter turns each of them into a
+        /// `NoSuchMethodError` at unload. Substituting at runtime repairs those jars without a
+        /// rebuild; changing the signature would break exactly the jars it exists to repair.
+        ///
+        /// So the value is kept and REPORTED rather than discarded, because a parameter that looks
+        /// meaningful and is silently dropped is the same shape as the defect being fixed. What is
+        /// reported depends on what disagreement means — see [#ReleaseIdAgreement].
         @Override
         public Promise<Unit> releaseAll(String releaseSliceId) {
-            return delegate.releaseAll(releaseSliceId);
+            reportAgreement(releaseSliceId);
+
+            return delegate.releaseAll(sliceId);
+        }
+
+        private void reportAgreement(String releaseSliceId) {
+            switch (ReleaseIdAgreement.between(releaseSliceId, sliceId)) {
+                case EXACT -> {}
+                case GENERATED_BASE -> logger().log(System.Logger.Level.DEBUG,
+                                                    "Slice " + sliceId + " released under its deployed artifact; its generated stop() passed the" + " version-less base coordinate " + releaseSliceId + " (expected — the annotation processor has no version to emit)");
+                case FOREIGN -> logger().log(System.Logger.Level.WARNING,
+                                             "Slice " + sliceId + " asked to release " + releaseSliceId + ", which is not its own deployed artifact; releasing " + sliceId + " instead. A slice can only release what it provisioned.");
+            }
+        }
+
+        private static System.Logger logger() {
+            return System.getLogger(SliceLoadingContext.class.getName());
+        }
+    }
+
+    /// How a caller-supplied release id relates to the authoritative one (#892).
+    ///
+    /// The three cases carry different news, which is why they are not one message. A blanket
+    /// warning would fire on EVERY unload of EVERY slice built by the current processor — the
+    /// universal expected state — and a warning for the normal case trains readers to ignore the
+    /// one that matters. `ResourceFactory`'s close dispatch records the same reasoning for its own
+    /// DEBUG choice.
+    enum ReleaseIdAgreement {
+        /// Caller and context name the same artifact. Nothing to report; this is what a processor
+        /// that could emit a version would produce.
+        EXACT,
+        /// The caller passed the version-less base of THIS artifact — the shape every generated
+        /// `stop()` emits today. Expected, logged at DEBUG so the 34 stale coordinates are visible
+        /// on demand rather than invisible.
+        GENERATED_BASE,
+        /// The caller named something that is not this slice at all. Worth a WARNING.
+        ///
+        /// Before the substitution this id was forwarded UNCHANGED down the chain — a real
+        /// isolation weakness — but it could not actually have released another slice's resources,
+        /// because the only route to the node-wide provider was the node facade, which at that
+        /// point dropped every release (#892's other cause). The hole was MASKED by that defect,
+        /// and fixing the facade alone would have ARMED it. Both shipped together, so the
+        /// capability was never live for a single release.
+        FOREIGN;
+        static ReleaseIdAgreement between(String callerId, String authoritativeId) {
+            return authoritativeId.equals(callerId)
+                   ? EXACT
+                   : isGeneratedBaseOf(callerId, authoritativeId)
+                     ? GENERATED_BASE
+                     : FOREIGN;
+        }
+        /// The generator emits `groupId:artifactId-kebab` — EXACTLY one colon — and a deployed
+        /// artifact is always `groupId:artifactId:version`. Requiring that one colon is what keeps
+        /// this classification narrow.
+        ///
+        /// Without it the test is "any proper colon-prefix", and since the deployed artifact has
+        /// exactly three segments the only OTHER such prefix is the bare `groupId` — a genuinely
+        /// foreign id, which would then be reported at DEBUG instead of the WARNING it deserves.
+        /// That is precisely the case this grading exists to catch, so it may not be the one it
+        /// silences (v892 SHOULD-FIX B).
+        private static boolean isGeneratedBaseOf(String callerId, String authoritativeId) {
+            return callerId.indexOf(':') >= 0
+                   && callerId.indexOf(':') == callerId.lastIndexOf(':')
+                   && authoritativeId.startsWith(callerId + ":");
         }
     }
 
@@ -391,6 +545,13 @@ public final class SliceLoadingContext implements SliceCreationContext {
         @Override
         public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
             return NOT_CONFIGURED.promise();
+        }
+
+        /// Deliberate no-op, not an inherited one (#892): this provider refuses every provisioning,
+        /// so there is provably nothing for a release to close.
+        @Override
+        public Promise<Unit> releaseAll(String sliceId) {
+            return Promise.unitPromise();
         }
     }
 

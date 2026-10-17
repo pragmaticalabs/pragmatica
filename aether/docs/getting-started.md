@@ -25,7 +25,7 @@ edge, this tutorial says so rather than skip it.
 | Tool | Version | Why |
 |------|---------|-----|
 | JDK | 25+ | `jbct`'s installer requires a local JDK (no bundled-JRE path exists for it yet); your project is built with Maven |
-| Maven | 3.8+ | Builds the generated project |
+| Maven | 3.9+ | Builds the generated project |
 | curl | any | Fetches the installers and release archives |
 
 You do **not** need a cloud account or credentials for stages 1–3 — those are
@@ -65,7 +65,7 @@ Step 2 either way.
 ### Pinning a version
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh -s -- --version 1.0.0-rc3
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh -s -- --version 1.0.0-rc4
 ```
 
 `--version` pins both tools to the same release. JBCT and Aether are
@@ -73,7 +73,7 @@ versioned independently, though, so use `--jbct-version` / `--aether-version`
 if you need them to diverge (each overrides `--version` for its own tool):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh -s -- --jbct-version 1.0.0-rc3 --aether-version 1.0.0-rc3
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh -s -- --jbct-version 1.0.0-rc4 --aether-version 1.0.0-rc4
 ```
 
 Unpinned installs resolve to the newest **published** release, correctly
@@ -81,25 +81,25 @@ ranking GA over `rc-N` over `beta` over `alpha` and always excluding the
 moving `*-candidate` tag — an explicit version fails loudly with a link to the
 releases page rather than silently downloading nothing. (Confirmed
 end-to-end: with a `-candidate` tag for the next release present, an
-unpinned install still resolves to `1.0.0-rc3`, the newest
+unpinned install still resolves to the newest
 actually-published release.)
 
 > **Pinning to a `-candidate` tag** — used internally to validate a release
 > before it's tagged GA, most readers won't need this — works the same way
-> as pinning any other version (`--version 1.0.0-rc3-candidate`), but has one
+> as pinning any other version (`--version 1.0.0-rc4-candidate`), but has one
 > sharp edge: a `jbct` binary *built from* a `-candidate` version bakes that
 > exact version string into the `pragmatica-lite.version` / `aether.version`
 > / `jbct.version` properties of every `pom.xml` it generates. Candidate
 > versions are deliberately never published to Maven Central, so
 > `mvn clean verify` on a project scaffolded by a candidate-pinned `jbct`
 > fails immediately with `Plugin
-> org.pragmatica-lite:jbct-maven-plugin:1.0.0-rc3-candidate or one of its
+> org.pragmatica-lite:jbct-maven-plugin:1.0.0-rc4-candidate or one of its
 > dependencies could not be resolved`. Work around it by pointing `jbct init`
 > at the underlying numbered version explicitly:
 >
 > ```bash
 > jbct init -g org.example hello \
->   --jbct-version 1.0.0-rc3 --aether-version 1.0.0-rc3 --pragmatica-version 1.0.0-rc3
+>   --jbct-version 1.0.0-rc4 --aether-version 1.0.0-rc4 --pragmatica-version 1.0.0-rc4
 > ```
 
 ### Verify
@@ -132,7 +132,7 @@ slice project** — a working slice, its config, and a local dev-server script �
 not a bare Maven skeleton. (If you want the bare skeleton instead — 3 files,
 no Aether wiring — pass `--no-slice`.)
 
-You'll get:
+You'll get (plus AI-assistant tool files, unless you pass `--no-ai`):
 
 ```
 hello/
@@ -244,6 +244,49 @@ curl http://localhost:8070/api/hello/World
 # {"greeting":"Hello, World!"}
 ```
 
+### Where Forge keeps its data
+
+Forge writes durable cluster state — the artifact disk tier and each node's
+stream write-ahead log — to a directory on disk. It prints the absolute path
+as it starts, and you should read that line rather than assume a location:
+
+```
+Forge data dir: /path/to/hello/.aether/forge-data (empty; chosen by this project ...)
+```
+
+By default that directory is **inside your project**, next to the `forge.toml`
+you passed to `--config`. Two projects on one machine therefore keep separate
+state, and running Forge in one cannot affect the other. Add `.aether/` to
+your `.gitignore` — the generated scaffold already does.
+
+Stopping and restarting Forge in the same project **reuses** that state; that
+is deliberate, and it is what makes the stream WAL crash-durable across a
+restart. Forge says so when it happens, naming how many entries it inherited:
+
+```
+Forge data dir: /path/to/hello/.aether/forge-data (REUSING 42 existing entries
+owned by this project ...). Nodes resume from this state; it is not cleared.
+```
+
+If you want a clean slate, delete the directory yourself before starting.
+Forge never deletes it for you.
+
+Two cases make Forge **refuse to start** rather than run:
+
+- the directory holds state belonging to a *different* project, or
+- it holds state with no record of which project owns it.
+
+Both refusals exit non-zero, name both projects, and tell you that nothing has
+been written or deleted yet. This is a guard, not a nuisance: an unrelated
+run that silently adopts another project's durable state is how that state
+gets destroyed.
+
+To put the directory somewhere else, set `AETHER_FORGE_DATA` to an absolute
+path. (`AETHER_HOME` also still selects it, but only for a Forge started
+*without* `--config` — it is the installer's variable, meaning the install
+directory, and scoping run data on it would re-share state across every
+project on the machine.)
+
 ### Look at the cluster
 
 Point the `aether` CLI at Forge's management port:
@@ -256,14 +299,21 @@ This returns the cluster's live state as clean JSON — node roster, leader,
 generation. It's the same command you'll run against a real cloud cluster in
 Stage 4, just against a different `-c host:port`.
 
-Open the dashboard at `http://localhost:8888` for the visual view: node
-roster, per-slice instance counts, request metrics.
+Open the dashboard at `http://localhost:8888` for the cluster header, node
+roster and uptime. **rc4 limitation:** on Forge only the `/ws/status` feed has a
+publisher and Forge serves only a subset of the dashboard's unversioned
+`/api/...` REST calls, so several panels (governors, strategies, streams,
+schema, storage, among others) are empty. See
+[Known Limitations](reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty);
+use the CLI or the `/api/v1` REST API for the rest.
 
 ### A note on security
 
-By default, Forge runs your slice's `app-http` server with no
-authentication (`security_mode` `NONE`) — no scaffold file sets this, it's
-Forge's own compiled-in default for local dev. That's correct for local
+When the project's `aether.toml` declares no `[app-http]` API keys — the
+scaffold declares none — Forge runs your slice's `app-http` server with no
+authentication (`security_mode` `NONE`); no scaffold file sets this, it's
+Forge's own compiled-in default for local dev. If you declare API keys under
+`[app-http]`, Forge applies them to the app-http server it starts. That's correct for local
 iteration and this tutorial, and wrong for anything reachable outside your
 laptop. Security-mode values are parsed case-insensitively, so `none`,
 `NONE`, and `None` are all the same setting — you'll see both cases used
@@ -289,17 +339,22 @@ shell) needs `--yes` to skip the prompt; without it the prompt reads EOF and
 the run aborts, exiting non-zero so a scripted caller notices rather than
 sailing on believing a cluster exists.
 
-Bootstrap runs seven phases (validate → upload SSH keys → provision → collect
-addresses → deploy runtime → cluster formation → post-bootstrap), persisting
+Bootstrap runs eight phases (validate → upload SSH keys → create firewall →
+provision → collect addresses → deploy runtime → cluster formation →
+post-bootstrap), persisting
 state to `~/.aether/clusters/<name>/bootstrap-state.json` after each one so a
 failed run can `--resume`. By default, if any phase fails, everything it
 provisioned is torn down automatically; pass `--keep-on-failure` if you want
 to SSH in and look before it's gone.
 
-Live-run confirmed (2026-07-24, 5×cpx32 across fsn1/nbg1/hel1, ~12-15 minutes
-wall clock end-to-end, ~€0.10 total): all seven phases green, quorum 3/5, all
+Live-run record (rc3 build, 2026-07-24, 5×cpx32 across fsn1/nbg1/hel1, ~12-15 minutes
+wall clock end-to-end; not re-run on rc4): all phases green, quorum 3/5, all
 nodes READY, an API key auto-minted and persisted to
 `~/.aether/clusters/<name>/api-key`.
+
+> **The instance types named in these run records are EXAMPLES**, not a recommendation. Providers
+> retire instance types and vary availability by location — check your provider's current catalogue
+> before copying them.
 
 ### The config file
 
@@ -324,11 +379,19 @@ them for you, once, when it provisions each node. Two things worth knowing
 before you open it, because they're the two ways a bootstrap silently fails
 validation rather than teaching you the fix:
 
-- **`security_mode = "NONE"`** is required under each source's
-  `node_config.app-http` block for a cluster you're standing up without a
-  pre-existing auth setup — omit it and the bootstrap's cluster-config write
-  is rejected with 401/403, with no pointer back to this setting as the
-  cause.
+- **`security_mode = "NONE"`** is needed under each source's
+  `node_config.app-http` block unless you pre-provision an API key — omit
+  both and the bootstrap's cluster-config write is rejected with 401/403,
+  with no pointer back to this setting as the cause. **Warning: `NONE` is a
+  dev/eval posture that disables authentication on the node's app-http server
+  and leaves the cluster unauthenticated, on VMs that are addressable from the
+  internet.** Use it only for a short-lived test cluster that you destroy
+  promptly. For anything else, keep the secure `API_KEY` default and
+  pre-provision a credential — an `AETHER_API_KEYS` value in the node's
+  cloud-init, or an `[app-http.api-keys.<key>]` table under
+  `node_config.app-http` — as described in
+  [Bootstrap Configuration Reference](reference/bootstrap-config.md), section
+  "(a) `security_mode = "NONE"`".
 - **`jar_url`** under `[runtime.jvm]` needs to be hand-pinned whenever the
   cluster version you're bootstrapping doesn't match a real published release
   tag (for example, testing against a release candidate).
@@ -347,7 +410,7 @@ aether -c <a-node-ip>:8080 status
 
 Same command as Stage 3, pointed at a real node's management port instead of
 `localhost:5150`. Port 8080 is `PortsConfig.DEFAULT_MANAGEMENT_PORT` —
-live-confirmed against a real bootstrapped node (2026-07-24, 5×cpx32 across
+live-confirmed against a real bootstrapped node (rc3 build, 2026-07-24, 5×cpx32 across
 fsn1/nbg1/hel1): `status` returns clean JSON, all 5 nodes READY, a leader,
 and `quorate: true`.
 
@@ -366,17 +429,25 @@ export AETHER_ENDPOINT=<a-node-ip>:8080
 ./deploy-prod.sh
 ```
 
-Under the hood that's two CLI calls, confirmed from the generated script,
-which you can also run by hand:
+Under the hood that's two CLI calls. The cluster's artifact repository is **write-once and takes no
+SNAPSHOT**, so the scaffold's `1.0.0-SNAPSHOT` is never pushed as it is: `deploy-prod.sh` reads the project
+version from the pom, **refuses a SNAPSHOT** with a message before it asks for confirmation or builds anything,
+and pushes the release version you set (for example `mvn versions:set -DnewVersion=1.0.0`, committed). The
+generated `deploy-test.sh` stamps a unique release version for every push instead, `<base>-<short git sha>` from
+a clean git checkout and `<base>-<UTC timestamp>` otherwise (`DEPLOY_STAMP` overrides it), and restores the pom
+afterwards. The generated pom pins `project.build.outputTimestamp`, so one commit builds byte-identical jars and
+running the script again on it is an idempotent re-push (`200 already-present`); if the sources changed under the same
+version the repository answers `409`: commit them, or set `DEPLOY_STAMP`. By hand, with a release version:
 
 ```bash
-aether -c <a-node-ip>:8080 artifacts push org.example:hello:1.0.0-SNAPSHOT
-aether -c <a-node-ip>:8080 blueprints deploy org.example:hello:1.0.0-SNAPSHOT --wait
+aether -c <a-node-ip>:8080 artifacts push org.example:hello:1.0.0
+aether -c <a-node-ip>:8080 blueprints deploy org.example:hello:1.0.0 --wait
 ```
 
 `artifacts push` reads the blueprint jar from your local `~/.m2/repository`,
 discovers every slice artifact it references, and pushes all of them to the
-cluster's artifact repository in one shot.
+cluster's artifact repository in one shot. Forge and local development are unaffected: they resolve from your
+local Maven repository, where SNAPSHOTs stay. See [Artifact Repository](operators/artifact-repository.md).
 
 Then call it, exactly like you did against Forge — only the address changes:
 
@@ -389,18 +460,11 @@ That is the same slice, the same code, and the same request you ran on your
 laptop in Stage 3, now answered by a five-node cluster in a German datacenter.
 Nothing about the slice changed to get here.
 
-> **If you are on an rc3 build older than the #522 fix**
-> ([#522](https://github.com/pragmaticalabs/pragmatica/issues/522)):
-> `blueprints deploy --wait` kept reporting `PENDING` and then declared a 300s
-> timeout even when the deployment had in fact completed — it matched the
-> blueprint coordinates against the slice list, which only ever carries the
-> derived slice artifacts, so it could never observe completion. If you hit
-> that, don't assume the deploy failed — check
-> `aether -c <a-node-ip>:8080 slices status`; if the slice reads `ACTIVE` /
-> `HEALTHY`, it deployed and the `curl` above will answer.
-
-For zero-downtime updates to an already-running slice, see `aether deploy`
-(canary/blue-green/rolling) in the [CLI reference](reference/cli.md#deploy).
+To update an already-running slice with canary, blue-green or rolling
+strategies, see `aether deploy` in the [CLI reference](reference/cli.md#deploy);
+what each strategy guarantees, and what it does not, is in
+[Guarantees](reference/guarantees.md) and
+[Known Limitations](reference/known-limitations.md).
 
 ### Tear it down
 
@@ -434,113 +498,3 @@ label-driven safety net that finds anything a failed teardown left behind.
   credential model, auto-scaling, multi-cloud
 - **[CLI Reference](reference/cli.md)** — every `aether`/`jbct` command
 - **[Troubleshooting](slice-developers/troubleshooting.md)** — common errors
-
-<!--
-CHECKPOINT (gs-writer, phase 2 COMPLETE incl. leg 4, 2026-07-24) — not part
-of the published tutorial.
-
-STATUS: All 8 VERIFY-P2 markers dispositioned, all removed from the body.
-Legs 1-3 (gs-writer, sandboxed) + leg 4 (team-lead, live Hetzner) both
-executed for real. Tutorial ready for the wrap-up commit batch.
-
-FINAL MARKER TABLE:
-1. Top-level jbct/aether --version + jbct init --help unaffected by the
-   picocli collision — CLEARED (exit 0, collision confirmed fixed, --slice
-   no longer advertised).
-2. #511 scaffold format-check — CLEARED (BUILD SUCCESS, format-check clean,
-   lint 0/0/0; 2 non-fatal compiler warnings noted as template-quality
-   observation, not a build failure).
-3. #513 run-forge.sh blueprint coordinates — CLEARED
-   (org.example:hello:1.0.0-SNAPSHOT:blueprint confirmed via source read +
-   live successful run).
-4. Root install.sh --version/--jbct-version/--aether-version passthrough —
-   CLEARED (unpinned resolves 1.0.0-rc2; pinned-to-candidate installs both
-   tools; exactly 1 PATH block across 2 runs).
-5. #515 deploy-prod.sh replacement — CLEARED (regenerated script confirmed:
-   artifacts push + blueprints deploy --wait, -c/AETHER_ENDPOINT-driven, no
-   hardcoded address).
-6. security_mode default/casing — CLEARED (case-insensitive parser;
-   Forge/Ember hardcodes NONE; scaffold sets nothing — no discrepancy).
-7. Stage-4 management port 8080 — CLEARED (was code-confirmed only; now
-   live-confirmed by team-lead's leg-4 run against a real bootstrapped node,
-   2026-07-24, 5×cpx32 fsn1/nbg1/hel1: status returns clean JSON, quorate:
-   true).
-8. Leg-4 live Hetzner run — CLEARED (team-lead, 2026-07-24, full 7-phase
-   bootstrap green, quorum 3/5, all nodes READY, ~12-15 min wall clock,
-   ~€0.10 total; cleaned up via tools/cloud-reaper.sh).
-
-NEW FINDINGS FROM THE LIVE LEG-4 RUN — both were filed, FIXED, and re-verified
-live the same day (2026-07-24); the tutorial text now describes the fixed
-behavior, and this note records the history:
-- #520 (filed, FIXED, CLOSED): under security_mode = "NONE" (this tutorial's
-  own default cluster config), `artifacts push` 401'd — NONE ignores API keys
-  entirely (whoami with a valid key still comes back anonymous/VIEWER/
-  authenticated:false) while artifact publication hard-required OPERATOR/ADMIN,
-  a role structurally unholdable in that mode. Root cause: two half-overlapping
-  dev switches (security_mode vs AETHER_INSECURE_DEV_MODE); the publication
-  gate consulted only the latter. Fixed by unifying them — NONE now implies the
-  dev-mode posture for that gate, loudly (a WARN per unauthenticated publish).
-  RE-VERIFIED LIVE on cluster gs-revalidate: push succeeded, slice went
-  ACTIVE/HEALTHY on 3 nodes, and `curl /api/hello/World` returned
-  {"greeting":"Hello, World!"} — so the "call it" step in Stage 4 is now a real
-  executed command, not a reconstruction.
-- #521 (filed, FIXED, CLOSED): `aether cluster destroy` failed VM cleanup while
-  exiting 0 and dropping the registry entry. Root cause: the CLI mined the
-  bootstrap TOML for a PLURAL `[sources.X]` header while the canonical section
-  is SINGULAR `[source.X]`, so every persisted cleanup handle carried an empty
-  credential map (all five clusters on the dev machine, back to 2026-07-11).
-  Fixed at three levels; RE-VERIFIED LIVE: fresh state file carries
-  "api_token": "HCLOUD_TOKEN", destroy exited 0 having actually terminated all
-  5 VMs, registry entry removed, zero fallback warnings.
-- Bootstrap's interactive `Continue? [y/N]` abort also exited 0 (same #521
-  batch) — now exits non-zero; the tutorial's bootstrap note reflects that.
-- #522 (filed, FIXED — live re-verification still pending): `blueprints deploy
-  --wait` reported a 300s PENDING timeout while the deployment had actually
-  completed (slice ACTIVE/HEALTHY, DEPLOYMENT_COMPLETED events, endpoint
-  serving). Root cause: the wait gate never queried a deployment-status
-  surface at all — it fetched the slice list and substring-matched the
-  BLUEPRINT coordinates against it, which cannot match the derived SLICE
-  artifacts, so it emitted a hardcoded "PENDING" forever. Fixed by polling
-  `GET /api/blueprints/status/{id}` (`overallStatus`), which the node derives
-  from the same replicated DeploymentMap that backs `slices status`. Covered
-  by unit tests in both directions; NOT yet re-run against a live cluster, so
-  Stage 4 keeps the caveat scoped to pre-fix builds.
-- #523 (filed, OPEN): `aether artifacts list` returns HTTP 400; not referenced
-  in the tutorial since the tutorial never needs it.
-
-WHAT WAS ACTUALLY RUN, LEGS 1-3 (gs-writer, sandbox: scratchpad/p2-home,
-HOME override; real ~/.m2 shared on purpose — rc3 artifacts aren't on Maven
-Central yet, same accepted scope as the phase-1 dry-run):
-- Install, unpinned: resolved 1.0.0-rc2 (correct — candidates excluded).
-- Install, pinned --version 1.0.0-rc3-candidate (both tools, via a locally
-  patched copy of root install.sh pointed at origin/release-1.0.0-rc3
-  instead of /main, since the fix branch hadn't merged to main this
-  session — disclosed test-methodology substitution, not a product change):
-  exactly one PATH block added across two installer runs (dedup guard
-  confirmed).
-- `jbct init -g org.example hello` then `mvn clean verify`: FAILED on first
-  try with the candidate-pinned CLI — `Plugin
-  org.pragmatica-lite:jbct-maven-plugin:1.0.0-rc3-candidate ... could not be
-  resolved` (candidate versions are never published to Central; documented
-  gotcha-ledger edge, not a regression). Re-ran with
-  --jbct-version/--aether-version/--pragmatica-version 1.0.0-rc3 → BUILD
-  SUCCESS. Added a callout for this in the tutorial's pinning section.
-- Real file listing captured twice (jbct init's own console output +
-  `find .`): no `generate-blueprint.sh` (tutorial previously listed one
-  that doesn't exist — fixed), scaffold does include `README.md` and
-  `.gitignore` (previously missing from the tutorial's tree — fixed).
-- ./run-forge.sh (after fixing my own sandbox's PATH — HOME override alone
-  doesn't isolate PATH, and `command -v aether-forge` picked up a stale
-  real install on the dev machine until PATH was explicitly prepended with
-  the sandbox bin dirs; test-rig mistake, not a product bug): hello 200,
-  status clean JSON, dashboard 200. Confirmed forge data lands under
-  $AETHER_HOME/forge-data with the new crash-durable log line (not the old
-  WARN wall) — not written into the tutorial body since it wasn't a prior
-  claim there. The optional "broken --blueprint gives a loud non-zero exit"
-  arm was NOT attempted — judged non-essential given time/cost.
-
-CARRIED FORWARD FROM PHASE 1 (still accurate, not re-derived here):
-placement decision (top-level, not under slice-developers/), BSL-header
-omission rationale, the cloud-bootstrap-TOML vs. running-node-aether.toml
-schema distinction (#514), ports 8888/8070/5150 for Forge.
--->

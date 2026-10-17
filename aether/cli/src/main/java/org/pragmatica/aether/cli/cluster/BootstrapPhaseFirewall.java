@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.LinkedHashSet;
@@ -169,7 +168,7 @@ public sealed interface BootstrapPhaseFirewall {
         warnIfAutoCreated(source, appHttpPort);
 
         return computeResolver.resolve(source,
-                                       ctx.sshKeyIdsFor(HETZNER_PROVIDER),
+                                       ctx.sshKeyIdsFor(source.name().value()),
                                        "",
                                        ctx.config().cluster().name())
                               .flatMap(compute -> openAll(ctx, source, compute, rules));

@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
+/// Counts are interval deltas; errorRate is total failed / total completed invocations.
+/// Latency quantiles describe interval means, not individual requests.
 public record MinuteAggregate(long minuteTimestamp,
                               double avgCpuUsage,
                               double avgHeapUsage,
@@ -11,9 +12,9 @@ public record MinuteAggregate(long minuteTimestamp,
                               double avgLatencyMs,
                               long totalInvocations,
                               long totalGcPauseMs,
-                              double latencyP50,
-                              double latencyP95,
-                              double latencyP99,
+                              double intervalMeanLatencyP50,
+                              double intervalMeanLatencyP95,
+                              double intervalMeanLatencyP99,
                               double errorRate,
                               int eventCount,
                               int sampleCount) {
@@ -38,9 +39,9 @@ public record MinuteAggregate(long minuteTimestamp,
                                                   double avgLatencyMs,
                                                   long totalInvocations,
                                                   long totalGcPauseMs,
-                                                  double latencyP50,
-                                                  double latencyP95,
-                                                  double latencyP99,
+                                                  double intervalMeanLatencyP50,
+                                                  double intervalMeanLatencyP95,
+                                                  double intervalMeanLatencyP99,
                                                   double errorRate,
                                                   int eventCount,
                                                   int sampleCount) {
@@ -51,9 +52,9 @@ public record MinuteAggregate(long minuteTimestamp,
                                    avgLatencyMs,
                                    totalInvocations,
                                    totalGcPauseMs,
-                                   latencyP50,
-                                   latencyP95,
-                                   latencyP99,
+                                   intervalMeanLatencyP50,
+                                   intervalMeanLatencyP95,
+                                   intervalMeanLatencyP99,
                                    errorRate,
                                    eventCount,
                                    sampleCount);
@@ -74,10 +75,10 @@ public record MinuteAggregate(long minuteTimestamp,
     }
 
     public float[] toFeatureArray() {
-        return new float[]{(float) avgCpuUsage, (float) avgHeapUsage, (float) avgEventLoopLagMs, (float) avgLatencyMs, (float) totalInvocations, (float) totalGcPauseMs, (float) latencyP50, (float) latencyP95, (float) latencyP99, (float) errorRate, (float) eventCount};
+        return new float[]{(float) avgCpuUsage, (float) avgHeapUsage, (float) avgEventLoopLagMs, (float) avgLatencyMs, (float) totalInvocations, (float) totalGcPauseMs, (float) intervalMeanLatencyP50, (float) intervalMeanLatencyP95, (float) intervalMeanLatencyP99, (float) errorRate, (float) eventCount};
     }
 
     public static String[] featureNames() {
-        return new String[]{"cpu_usage", "heap_usage", "event_loop_lag_ms", "latency_ms", "invocations", "gc_pause_ms", "latency_p50", "latency_p95", "latency_p99", "error_rate", "event_count"};
+        return new String[]{"cpu_usage", "heap_usage", "event_loop_lag_ms", "latency_ms", "invocations", "gc_pause_ms", "interval_mean_latency_p50", "interval_mean_latency_p95", "interval_mean_latency_p99", "error_rate", "event_count"};
     }
 }

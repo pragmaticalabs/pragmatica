@@ -10,7 +10,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -29,7 +28,6 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,9 +54,6 @@ public interface BootstrapModule {
     @Contract
     void retryIfNeeded();
 
-    @Contract
-    BootstrapModule onBootstrapCommitted(Runnable callback);
-
     /// RC1 Step 2: tail `MembershipDecision` events from `TopologyObserver` so the
     /// bootstrap module retries its core-partition seeding whenever the membership
     /// changes. The per-node `MembershipFsm` counted-members supplier (plus KV) is the
@@ -68,7 +63,7 @@ public interface BootstrapModule {
     void onMembershipDecision(MembershipDecision decision);
 
     static BootstrapModule bootstrapModule(BooleanSupplier isLeaderSupplier,
-                                           Supplier<Long> rabiaTermSupplier,
+                                           Supplier<Epoch> generationEpochSupplier,
                                            Supplier<Option<Long>> leaderEpochSupplier,
                                            HlcClock hlcClock,
                                            Supplier<Set<NodeId>> coreMembersSupplier,
@@ -77,7 +72,7 @@ public interface BootstrapModule {
                                            Supplier<ClusterConfigBaseline> configBaselineSupplier,
                                            ClusterNode<KVCommand<AetherKey>> cluster) {
         return new BootstrapModuleRecord(isLeaderSupplier,
-                                         rabiaTermSupplier,
+                                         generationEpochSupplier,
                                          leaderEpochSupplier,
                                          hlcClock,
                                          coreMembersSupplier,
@@ -86,13 +81,12 @@ public interface BootstrapModule {
                                          configBaselineSupplier,
                                          Option.some(cluster),
                                          new AtomicBoolean(false),
-                                         new AtomicInteger(),
-                                         new AtomicReference<>());
+                                         new AtomicInteger());
     }
 }
 
 record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
-                             Supplier<Long> rabiaTermSupplier,
+                             Supplier<Epoch> generationEpochSupplier,
                              Supplier<Option<Long>> leaderEpochSupplier,
                              HlcClock hlcClock,
                              Supplier<Set<NodeId>> coreMembersSupplier,
@@ -101,8 +95,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
                              Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier,
                              Option<ClusterNode<KVCommand<AetherKey>>> cluster,
                              AtomicBoolean bootstrapComplete,
-                             AtomicInteger bootstrapAttempts,
-                             AtomicReference<Runnable> bootstrapCommittedCallback) implements BootstrapModule {
+                             AtomicInteger bootstrapAttempts) implements BootstrapModule {
     private static final Logger log = LoggerFactory.getLogger(BootstrapModuleRecord.class);
     private static final int SEED_CORE_MIN = 3;
     private static final int SEED_CORE_MAX = 15;
@@ -132,14 +125,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     @Contract
     @Override
-    public BootstrapModule onBootstrapCommitted(Runnable callback) {
-        bootstrapCommittedCallback.set(callback);
-
-        return this;
-    }
-
-    @Contract
-    @Override
     public void onMembershipDecision(MembershipDecision decision) {
         log.debug("BootstrapModule received {}", decision);
         retryIfNeeded();
@@ -148,9 +133,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     @Contract
     private void performLeaderChangeBootstrap(Set<NodeId> coreMembers) {
         cluster.onPresent(clusterNode -> applyLeaderChangeBootstrapBatch(clusterNode, coreMembers));
-        if (cluster.isEmpty()) {
-            fireBootstrapCommitted();
-        }
     }
 
     @Contract
@@ -162,10 +144,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         var configPlan = planClusterConfigSeed();
 
         corePlan.onPresent(plan -> batch.add(plan.command()));
-        configPlan.onPresent(plan -> batch.add(plan.command()));
-        if (batch.isEmpty()) {
-            fireBootstrapCommitted();
-
+        if (batch.isEmpty() && configPlan.isEmpty()) {
             return;
         }
 
@@ -176,9 +155,15 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
             return;
         }
+        // #1533: the config seed is a cluster-state write, which a backup-enabled node refuses until its
+        // restore decision commits; submitted apart from the runtime core-partition write so that refusal
+        // never holds the DHT core bootstrap back. The decision's commit re-drives it via retryIfNeeded.
+        configPlan.onPresent(plan -> seedClusterConfig(clusterNode, plan));
+        if (batch.isEmpty()) {
+            return;
+        }
 
         corePlan.onPresent(this::logCoreBootstrap);
-        configPlan.onPresent(this::logClusterConfigSeed);
         var hasCore = corePlan.isPresent();
 
         if (hasCore) {
@@ -218,18 +203,6 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         }
 
         log.info("Leader-change bootstrap committed: {} commands", commandCount);
-        fireBootstrapCommitted();
-    }
-
-    @Contract
-    private void fireBootstrapCommitted() {
-        var callback = bootstrapCommittedCallback.get();
-
-        if (callback == null) {
-            return;
-        }
-
-        Result.lift(callback::run).onFailure(cause -> log.warn("Bootstrap-committed callback threw: {}", cause.message()));
     }
 
     @Contract
@@ -285,14 +258,13 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
         // The self-bootstrap seed predates any source definition, so the topology entry carries an
         // empty source name. Bootstrap replaces it with the real per-source spec at formation.
         var seedTopology = List.of(new AetherValue.TopologyEntry("", AetherValue.TopologyEntry.CORE_ROLE, coreCount));
-        var seed = ClusterConfigValue.clusterConfigValue("",
-                                                         seedClusterName,
-                                                         "1.0.0",
-                                                         seedTopology,
-                                                         coreMin,
-                                                         coreMax,
-                                                         "bootstrap-seed",
-                                                         1L);
+        var seed = ClusterConfigValue.bootstrapSeed(seedClusterName,
+                                                    "1.0.0",
+                                                    seedTopology,
+                                                    coreMin,
+                                                    coreMax,
+                                                    "bootstrap-seed",
+                                                    1L);
         KVCommand<AetherKey> command = new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT, seed);
 
         return Option.some(new ClusterConfigSeedPlan(command, coreCount, coreMin, coreMax));
@@ -354,13 +326,16 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
 
     @Contract
     private void retryConfigSeedIfNeeded() {
-        cluster.onPresent(clusterNode -> planClusterConfigSeed().onPresent(plan -> {
-            logClusterConfigSeed(plan);
-            clusterNode.apply(List.of(plan.command()))
-                       .onFailure(cause -> log.warn("Config seed retry failed: {}",
-                                                    cause.message()))
-                       .onSuccess(_ -> log.info("Config seed applied on retry"));
-        }));
+        cluster.onPresent(clusterNode -> planClusterConfigSeed().onPresent(plan -> seedClusterConfig(clusterNode, plan)));
+    }
+
+    @Contract
+    private void seedClusterConfig(ClusterNode<KVCommand<AetherKey>> clusterNode, ClusterConfigSeedPlan plan) {
+        logClusterConfigSeed(plan);
+        clusterNode.apply(List.of(plan.command()))
+                   .onFailure(cause -> log.warn("Config seed failed (retried on the next membership or restore-decision event): {}",
+                                                cause.message()))
+                   .onSuccess(_ -> log.info("Config seed applied"));
     }
 
     private Option<KVCommand<AetherKey>> decideCoreOwnership(Option<DhtPartitionOwnershipValue> existing,
@@ -401,7 +376,7 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     }
 
     private Epoch currentEpoch() {
-        return Epoch.epoch(rabiaTermSupplier.get(), 0L);
+        return generationEpochSupplier.get();
     }
 
     private KVCommand<AetherKey> buildCorePartitionCommand(NodeId owner, Epoch committedEpoch, long ownershipTerm) {
@@ -423,13 +398,13 @@ record BootstrapModuleRecord(BooleanSupplier isLeaderSupplier,
     /// `ownerEpoch.localCounter == ownershipTerm`, so a deposed-but-alive core owner — whose
     /// committed epoch carried the OLD `ownershipTerm` — is strictly dominated by its successor's
     /// epoch and is fenced, even when no leader change occurred (the same-term gap that minting
-    /// `Epoch.epoch(rabiaTerm, 0)` left open). Still a pure function of committed state (committed
+    /// `Epoch.epoch(incarnation, rabiaTerm, 0)` left open). Still a pure function of committed state (committed
     /// generation term + the takeover counter derived from the committed record), so two replicas
     /// presented identical committed state mint the IDENTICAL value. `ownershipTerm` (NOT
     /// `generationCounter`) is the local counter by design: it is committed state, whereas the
     /// generation counter is a per-node time-based value that would break determinism.
     private static Epoch ownerEpoch(Epoch committedEpoch, long ownershipTerm) {
-        return Epoch.epoch(committedEpoch.rabiaTerm(), ownershipTerm);
+        return committedEpoch.withCounter(ownershipTerm);
     }
 
     @Contract

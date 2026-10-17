@@ -123,7 +123,7 @@ class TierManagementIntegrationTest {
             var gracePeriodMs = 100L;
             var expired = System.currentTimeMillis() - gracePeriodMs - 50;
             metadataStore.computeLifecycle(id, lc -> new BlockLifecycle(
-                lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt(), lc.accessCount()));
+                lc.blockId(), lc.presentIn(), 0, expired, lc.createdAt(), lc.accessCount(), expired));
 
             var gc = storageGarbageCollector(instance, metadataStore, garbageCollectorConfig(gracePeriodMs, 500));
             gc.activate();

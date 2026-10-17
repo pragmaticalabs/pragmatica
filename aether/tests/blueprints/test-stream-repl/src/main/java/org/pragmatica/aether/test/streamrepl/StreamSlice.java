@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.test.streamrepl;
 
 import java.util.List;
@@ -19,9 +18,9 @@ import static org.pragmatica.lang.Result.success;
 /// Minimal stream-only slice (no database) for the 02-chaos replica-failover test.
 ///
 /// Injects a [StreamPublisher] and [StreamAccess] both qualified to the `streams.repl-failover-events`
-/// resource (declared in `resources.toml` with partitions=1, min-sync-replicas=2 and count-based
-/// retention so a slow consumer is never evicted). The RF=2 / synchronous-replication config makes
-/// each publish AWAIT a replica ack, so the log survives loss of the primary replica. Exposes two
+/// resource (declared in `resources.toml` with partitions=1, replication_factor=3, confirmation_factor=2 and
+/// count-based retention so a slow consumer is never evicted). The declared confirmation_factor=2 makes each
+/// publish await one replica ack. Exposes two
 /// app-HTTP routes:
 ///
 ///   - `POST /api/stream-repl/publish` — append one payload to the log (partition 0).

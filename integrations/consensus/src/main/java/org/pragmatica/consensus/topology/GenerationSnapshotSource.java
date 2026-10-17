@@ -51,6 +51,13 @@ public interface GenerationSnapshotSource {
         return observedRabiaTerm();
     }
 
+    /// Cluster incarnation (#1529) of the observed epoch: the dominant epoch component, minted at
+    /// genesis and incremented by every restore. Default `0` (no incarnation known) for sources that
+    /// do not track one.
+    default long observedEpochIncarnation() {
+        return 0L;
+    }
+
     /// No-op source used where snapshot wiring is not yet available (legacy factory
     /// overloads, unit tests that focus on non-snapshot behaviour).
     static GenerationSnapshotSource noop() {

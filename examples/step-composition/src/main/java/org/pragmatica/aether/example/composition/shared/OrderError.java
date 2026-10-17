@@ -14,7 +14,6 @@ import org.pragmatica.lang.Cause;
 /// - InvalidAmount — monetary parsing/validation errors (HTTP 400)
 /// - PersistenceFailed — database/IO errors (HTTP 500)
 public sealed interface OrderError extends Cause {
-
     record ValidationFailed(String detail) implements OrderError {
         @Override
         public String message() {

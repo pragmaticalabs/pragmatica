@@ -17,6 +17,7 @@
 package org.pragmatica.cloud.azure.api;
 
 import java.util.Map;
+import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
@@ -28,4 +29,5 @@ public record ResourceRow(String id,
                           String type,
                           String location,
                           Map<String, String> tags,
-                          Map<String, Object> properties) {}
+                          Map<String, Object> properties,
+                          List<String> zones) {}

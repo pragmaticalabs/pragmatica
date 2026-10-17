@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.lang.Cause;
@@ -34,8 +33,9 @@ public sealed interface EntityLogError extends Cause {
         }
     }
 
-    /// The log refused an append because this node's owner epoch for the partition is older than the
-    /// partition's committed high-water — i.e. the writer is a DEPOSED owner.
+    /// The log refused an append because this node is a DEPOSED owner: its owner epoch for the partition is
+    /// older than the partition's committed high-water, or (#1230) the committed ownership record already
+    /// names another node.
     ///
     /// This is the write fence firing, and it exists in this vocabulary so the entity module can
     /// recognise it without depending on the stream module's error types. The entity translates it to
@@ -72,12 +72,25 @@ public sealed interface EntityLogError extends Cause {
     /// wait because a fold over a long log can take real time, and a caller blocked with no explanation
     /// is indistinguishable from a wedged cluster — the #593 lesson, where a status that never advanced
     /// read exactly like a broken one.
-    record FoldInProgress(String keyspace, int partition) implements EntityLogError {
+    record FoldInProgress(String keyspace, int partition) implements EntityLogError, Cause.Transient {
         @Override
         public String message() {
             return "Entity keyspace '" + keyspace
                  + "' partition " + partition
                  + " is still replaying its log — retry; this clears when the fold completes";
+        }
+    }
+
+    /// A client read of a key whose newest record is not committed yet (#2087): the record is applied on this node but the log has
+    /// not acknowledged it, and a failover could still replace it. TRANSIENT: the read clears when the record commits (a later
+    /// acknowledgement) or the lineage replaces it. Distinct from [FoldInProgress], where the whole partition is being rebuilt.
+    record NotYetCommitted(String keyspace, int partition, long offset) implements EntityLogError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Entity keyspace '" + keyspace
+                 + "' partition " + partition
+                 + " holds an unacknowledged write at offset " + offset
+                 + " for this key — a read serves committed state only; retry once it is acknowledged";
         }
     }
 

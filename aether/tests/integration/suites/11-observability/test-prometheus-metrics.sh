@@ -13,7 +13,7 @@ test_cluster_ready() {
 
 test_prometheus_endpoint_responds() {
     local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/metrics/prometheus" -H "X-API-Key: ${API_KEY}")
+    status=$(http_status "$(_resolve_live_endpoint)/api/v1/metrics/prometheus" -H "X-API-Key: ${API_KEY}")
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "Prometheus endpoint returns ${status}"
         return 0

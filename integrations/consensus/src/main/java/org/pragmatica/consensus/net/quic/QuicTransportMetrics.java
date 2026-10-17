@@ -31,10 +31,15 @@ public final class QuicTransportMetrics {
     private final AtomicInteger activeConnections = new AtomicInteger(0);
     private final LongAdder handshakeTotal = new LongAdder();
     private final LongAdder handshakeFailures = new LongAdder();
+    /// #1489: every failed dial, whatever the stage. `handshakeFailures` counts only TLS handshake failures.
+    private final LongAdder dialFailures = new LongAdder();
+    /// #1578: dials abandoned before their QUIC handshake because the peer went CONNECTED over another link.
+    private final LongAdder dialsAbandoned = new LongAdder();
     private final LongAdder messagesSent = new LongAdder();
     private final LongAdder messagesReceived = new LongAdder();
     private final LongAdder writeFailures = new LongAdder();
     private final LongAdder backpressureDrops = new LongAdder();
+    private final LongAdder offlineExpired = new LongAdder();
     private final LongAdder backpressureQueued = new LongAdder();
     private final LongAdder backpressureRetries = new LongAdder();
     private final AtomicInteger backpressureQueueDepth = new AtomicInteger(0);
@@ -45,10 +50,49 @@ public final class QuicTransportMetrics {
     /// Count of stream-zombie BACKSTOP evictions: a write found a CONNECTED peer with no usable
     /// stream AND the lazy open could not heal it, so the connection was evicted for a clean re-dial.
     private final LongAdder streamZombieEvictions = new LongAdder();
+    /// #718: count of writes that joined a lazy lane open ALREADY in flight instead of starting their
+    /// own. This is the deduplication's yield, and reading it against [#streamZombieLazyOpens] is how
+    /// the fix is observed in a live cluster: before #718 every one of these was its own stream, and
+    /// past the 64-stream credit every one became a `STREAM_LIMIT_ERROR`.
+    private final LongAdder streamZombieLazyOpenCoalesced = new LongAdder();
+    /// #718: count of pending messages DROPPED because the per-(peer, lane) queue was already at
+    /// `QuicPeerConnection.PENDING_LANE_WRITES_MAX` when another message arrived during the open
+    /// window. Counted rather than warned — the log line is DEBUG, because an unbounded WARN on a hot
+    /// send path is the defect #718 exists to remove. A persistently non-zero value here means the
+    /// bound is too small for the offered load, not that the dedup is misbehaving.
+    private final LongAdder streamZombieLazyOpenDrops = new LongAdder();
+    /// #1578: writes re-sent once on the stream their lane resolves to now, because the stream or
+    /// connection they were written to was retired under them — the lane moved to the stream
+    /// `QuicPeerConnection.registerStream` kept, or a duplicate dial replaced the connection. Non-zero
+    /// is expected around a lane-ownership change or a dual dial; each one is a message that would
+    /// otherwise have been lost with only a write-failure line to show for it.
+    private final LongAdder retiredStreamResends = new LongAdder();
     /// #487: count of sends DROPPED to a peer with no PeerState (dead or never-connected). Counts EVERY
     /// drop, not just the rate-limited WARNs, so ops see true drop volume (the invisibility of this class
     /// hid the #467/#457 self-send drops for months).
     private final LongAdder dropToUnknownPeer = new LongAdder();
+    /// #726: PAYLOAD bytes handed to the channel on send — the serialized frame passed to
+    /// `writeAndFlush`, before QUIC adds framing, TLS encryption overhead, or retransmits. Not a
+    /// wire-byte or bandwidth figure; do not treat it as one.
+    private final LongAdder bytesSent = new LongAdder();
+    /// #726: PAYLOAD bytes decoded from the buffer on receive — the frame read out of the QUIC
+    /// stream lane after the pipeline has already stripped QUIC/TLS overhead. Symmetric with
+    /// [#bytesSent] on the same honesty boundary.
+    private final LongAdder bytesReceived = new LongAdder();
+    /// #964: inbound messages DROPPED because their type tag names no codec on this node — the
+    /// signature of a peer running a codec version this node does not have. Counted separately from
+    /// every other decode failure because the two call for opposite operator actions: this one means
+    /// "finish the rolling upgrade", a decode failure on a KNOWN tag means "a frame or a codec is
+    /// broken". Before this counter the two shared one log line and neither had a number at all.
+    private final LongAdder unknownTypeTagDrops = new LongAdder();
+    /// Inbound messages dropped because their connection peer or claimed sender is a NodeId retired by
+    /// a boot-token conflict (terminal removal) — non-zero means a refused process is still sending.
+    private final LongAdder bootTokenDrops = new LongAdder();
+    /// #1727: connections closed at once because a fresh handshake superseded them, and the lane streams
+    /// (unflushed or recently written) that close put at risk of discarding writes. Decides whether a
+    /// drain-before-close is worth building.
+    private final LongAdder supersededCloses = new LongAdder();
+    private final LongAdder supersededLaneStreamsAtRisk = new LongAdder();
 
     private QuicTransportMetrics() {}
 
@@ -68,9 +112,21 @@ public final class QuicTransportMetrics {
         activeConnections.decrementAndGet();
     }
 
+    /// #1489: a QUIC connect that failed in its TLS handshake ([QuicTransportError.HandshakeFailed]) only.
     @Contract
     public void onHandshakeFailure() {
         handshakeFailures.increment();
+    }
+
+    /// #1489: any failed dial — unreachable, refused, timed out, identity or boot-token rejection, TLS.
+    @Contract
+    public void onDialFailure() {
+        dialFailures.increment();
+    }
+
+    @Contract
+    public void onDialAbandoned() {
+        dialsAbandoned.increment();
     }
 
     @Contract
@@ -91,6 +147,12 @@ public final class QuicTransportMetrics {
     @Contract
     public void onBackpressureDrop() {
         backpressureDrops.increment();
+    }
+
+    /// Records request frames dropped at the offline-buffer flush because their caller had already given up (#1996).
+    @Contract
+    public void onOfflineExpired(long frames) {
+        offlineExpired.add(frames);
     }
 
     /// Records that a CONSENSUS send hit the write high-watermark and was handed to the
@@ -131,11 +193,75 @@ public final class QuicTransportMetrics {
         streamZombieEvictions.increment();
     }
 
+    /// #718: records a write that joined a lazy lane open already in flight rather than opening a
+    /// second stream for the same lane.
+    @Contract
+    public void onStreamZombieLazyOpenCoalesced() {
+        streamZombieLazyOpenCoalesced.increment();
+    }
+
+    /// #718: records a pending message dropped because the per-(peer, lane) queue was full while the
+    /// lane open was in flight. Drop-oldest, mirroring the offline buffer.
+    @Contract
+    public void onStreamZombieLazyOpenDrop() {
+        streamZombieLazyOpenDrops.increment();
+    }
+
+    /// #1578: records a write re-sent on the stream its lane resolves to now, after its own stream or
+    /// connection was retired.
+    @Contract
+    public void onRetiredStreamResend() {
+        retiredStreamResends.increment();
+    }
+
     /// #487: records a send DROPPED to a peer with no PeerState. Every drop is counted, whether or not
     /// the accompanying WARN was rate-limited.
     @Contract
     public void onDropToUnknownPeer() {
         dropToUnknownPeer.increment();
+    }
+
+    /// #726: records PAYLOAD bytes handed to the channel on send, at the lane boundary — before
+    /// QUIC framing, TLS overhead, or retransmits. Never call the resulting counter "bandwidth".
+    @Contract
+    public void onBytesSent(long byteCount) {
+        bytesSent.add(byteCount);
+    }
+
+    /// #726: records PAYLOAD bytes decoded from the buffer on receive, at the lane boundary —
+    /// after the pipeline has already stripped QUIC/TLS overhead. Never call the resulting
+    /// counter "bandwidth".
+    @Contract
+    public void onBytesReceived(long byteCount) {
+        bytesReceived.add(byteCount);
+    }
+
+    /// #1727: a superseded connection was closed at once with `lanesAtRisk` lane streams holding unflushed or
+    /// recent writes.
+    @Contract
+    public void onSupersededClose(int lanesAtRisk) {
+        supersededCloses.increment();
+        supersededLaneStreamsAtRisk.add(lanesAtRisk);
+    }
+
+    public long supersededCloseCount() {
+        return supersededCloses.sum();
+    }
+
+    public long supersededLaneStreamsAtRiskCount() {
+        return supersededLaneStreamsAtRisk.sum();
+    }
+
+    /// #964: records an inbound message dropped because its type tag names no codec here.
+    @Contract
+    public void onUnknownTypeTagDrop() {
+        unknownTypeTagDrops.increment();
+    }
+
+    /// Records an inbound message dropped because it came from a retired (boot-token) identity.
+    @Contract
+    public void onBootTokenDrop() {
+        bootTokenDrops.increment();
     }
 
     // --- Snapshot ---
@@ -148,16 +274,33 @@ public final class QuicTransportMetrics {
         metrics.put("quic_active_connections", activeConnections.get());
         metrics.put("quic_handshake_total", handshakeTotal.sum());
         metrics.put("quic_handshake_failures_total", handshakeFailures.sum());
+        metrics.put("quic_dial_failures_total", dialFailures.sum());
+        metrics.put("quic_dial_abandoned_total", dialsAbandoned.sum());
         metrics.put("quic_messages_sent_total", messagesSent.sum());
         metrics.put("quic_messages_received_total", messagesReceived.sum());
         metrics.put("quic_write_failures_total", writeFailures.sum());
         metrics.put("quic_backpressure_drops_total", backpressureDrops.sum());
+        metrics.put("quic_offline_expired_total", offlineExpired.sum());
         metrics.put("quic_backpressure_queued_total", backpressureQueued.sum());
         metrics.put("quic_backpressure_retries_total", backpressureRetries.sum());
         metrics.put("quic_backpressure_queue_depth", backpressureQueueDepth.get());
         metrics.put("quic_stream_zombie_lazy_opens_total", streamZombieLazyOpens.sum());
         metrics.put("quic_stream_zombie_evictions_total", streamZombieEvictions.sum());
+        // #718: the dedup's yield and its overflow. Coalesced writes would each have been a separate
+        // stream before the fix; drops mean the pending bound was reached inside one open window.
+        metrics.put("quic_stream_zombie_lazy_open_coalesced_total", streamZombieLazyOpenCoalesced.sum());
+        metrics.put("quic_stream_zombie_lazy_open_drops_total", streamZombieLazyOpenDrops.sum());
         metrics.put("quic_drop_to_unknown_peer_total", dropToUnknownPeer.sum());
+        // #726: payload bytes at the lane boundary (no QUIC framing/TLS overhead/retransmits) —
+        // not a wire-byte or bandwidth figure.
+        metrics.put("quic_bytes_sent_total", bytesSent.sum());
+        metrics.put("quic_bytes_received_total", bytesReceived.sum());
+        // #964: messages dropped for an unknown type tag — non-zero means mixed codec versions.
+        metrics.put("quic_unknown_type_tag_drops_total", unknownTypeTagDrops.sum());
+        metrics.put("quic_boot_token_drops_total", bootTokenDrops.sum());
+        // #1727: superseded closes and the lane streams they put at risk (unflushed or written in the last 2 s).
+        metrics.put("quic_superseded_closes_total", supersededCloses.sum());
+        metrics.put("quic_superseded_lane_streams_at_risk_total", supersededLaneStreamsAtRisk.sum());
 
         return Map.copyOf(metrics);
     }
@@ -174,6 +317,14 @@ public final class QuicTransportMetrics {
         return handshakeFailures.sum();
     }
 
+    public long dialFailureCount() {
+        return dialFailures.sum();
+    }
+
+    public long dialAbandonedCount() {
+        return dialsAbandoned.sum();
+    }
+
     public long messagesSentCount() {
         return messagesSent.sum();
     }
@@ -184,6 +335,10 @@ public final class QuicTransportMetrics {
 
     public long writeFailureCount() {
         return writeFailures.sum();
+    }
+
+    public long offlineExpiredCount() {
+        return offlineExpired.sum();
     }
 
     public long backpressureDropCount() {
@@ -210,7 +365,44 @@ public final class QuicTransportMetrics {
         return streamZombieEvictions.sum();
     }
 
+    /// #718: writes that joined a lazy lane open already in flight, cumulative.
+    public long streamZombieLazyOpenCoalescedCount() {
+        return streamZombieLazyOpenCoalesced.sum();
+    }
+
+    /// #718: pending messages dropped on per-(peer, lane) queue overflow during an open, cumulative.
+    public long streamZombieLazyOpenDropCount() {
+        return streamZombieLazyOpenDrops.sum();
+    }
+
+    /// #1578: writes re-sent on the kept stream after their own stream was retired, cumulative.
+    public long retiredStreamResendCount() {
+        return retiredStreamResends.sum();
+    }
+
     public long dropToUnknownPeerCount() {
         return dropToUnknownPeer.sum();
+    }
+
+    /// #726: PAYLOAD bytes handed to the channel on send, cumulative. See [#onBytesSent] for the
+    /// exact boundary this counts at.
+    public long bytesSentCount() {
+        return bytesSent.sum();
+    }
+
+    /// #726: PAYLOAD bytes decoded from the buffer on receive, cumulative. See [#onBytesReceived]
+    /// for the exact boundary this counts at.
+    public long bytesReceivedCount() {
+        return bytesReceived.sum();
+    }
+
+    /// #964: inbound messages dropped for a type tag with no codec on this node, cumulative.
+    public long unknownTypeTagDropCount() {
+        return unknownTypeTagDrops.sum();
+    }
+
+    /// Inbound messages dropped from retired (boot-token) identities, cumulative.
+    public long bootTokenDropCount() {
+        return bootTokenDrops.sum();
     }
 }

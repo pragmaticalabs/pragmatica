@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
 import java.util.*;
@@ -187,7 +186,10 @@ public interface BlueprintExpander {
                                                              Map<Artifact, Set<Artifact>> allDeps) {
         var deps = allDeps.getOrDefault(artifact, Set.of());
 
-        return option(explicitSlices.get(artifact)).fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true, deps),
+        return option(explicitSlices.get(artifact)).fold(() -> ResolvedSlice.resolvedSlice(artifact,
+                                                                                           SliceSpec.DEFAULT_INSTANCES,
+                                                                                           true,
+                                                                                           deps),
                                                          spec -> ResolvedSlice.resolvedSlice(artifact,
                                                                                              spec.instances(),
                                                                                              spec.minAvailable(),

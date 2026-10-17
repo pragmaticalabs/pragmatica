@@ -6,10 +6,10 @@ Status: **Development/Staging Ready**
 
 Aether includes Docker infrastructure for local development and staging environments. This document describes the current setup and how to use it.
 
-**Note:** In 1.0.0-rc3, a single node is not operational beyond `/health/live` — it reaches
-quorum but never elects a leader, so management routes return 503 and the bootstrap admin key is
-never printed (#782). This is why the compose file below runs three nodes; don't reduce it to
-one until rc4.
+**Note:** A cluster is at least three nodes — there is no supported single-node topology; a node
+started with a smaller expected cluster size refuses to boot (#782). This is why the compose file
+below runs three nodes; see "Single machine (three containers)" in
+[Docker Deployment Guide](docker-deployment.md) for the quick start.
 
 ---
 
@@ -17,20 +17,20 @@ one until rc4.
 
 ### Dockerfiles
 
-#### `docker/aether-node/Dockerfile`
+#### `aether/docker/aether-node/Dockerfile`
 
 Node container based on `eclipse-temurin:25-noble`:
 - Multi-stage build for smaller images
 - Proper Java options for containers
 - Health check endpoint
 
-#### `docker/aether-forge/Dockerfile`
+#### `aether/docker/aether-forge/Dockerfile`
 
 Forge simulator container for load testing and chaos experiments.
 
 ### Docker Compose
 
-#### `docker/docker-compose.yml`
+#### `aether/docker/docker-compose.yml`
 
 3-node cluster configuration:
 
@@ -61,18 +61,19 @@ services:
 
 ## Usage
 
-### Start 3-Node Cluster
+### Single machine (three containers)
 
 ```bash
-cd docker
+cd aether/docker                             # from the repository root
 export AETHER_CLUSTER_SECRET=<your-secret>   # required, no default is shipped
+export AETHER_VERSION=<image-tag>            # required, no default; for --build use the checkout's pom version
 docker compose up --build
 ```
 
 ### Start with Forge Simulator
 
 ```bash
-cd docker
+cd aether/docker                             # needs AETHER_CLUSTER_SECRET and AETHER_VERSION exported, as above
 docker compose --profile forge up --build
 ```
 
@@ -97,6 +98,8 @@ curl http://localhost:8080/health
 ### Dashboard
 
 Open http://localhost:8080/dashboard in browser.
+
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
 
 ---
 

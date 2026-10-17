@@ -35,4 +35,13 @@ package org.pragmatica.cluster.state.kvstore;
 public interface EpochBearing<E extends Comparable<E>> {
     /// The monotonic ownership/governance epoch this value is fenced by.
     E fenceEpoch();
+
+    /// Whether this write MINTS its epoch (#1333): a write that claims a NEW epoch — a projection
+    /// rebuild's cursor rewind — must be STRICTLY newer than the committed one, so two minters that both
+    /// derived the same next epoch from the same committed state cannot both succeed: the second is
+    /// refused and can see it did not commit. Ordinary writes at an equal epoch (a consumer's checkpoint
+    /// under the epoch it resumed with, a governor reannouncement) keep the equal-or-newer rule.
+    default boolean mintsEpoch() {
+        return false;
+    }
 }

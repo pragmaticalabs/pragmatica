@@ -17,6 +17,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.metrics.MinuteAggregate;
 import org.pragmatica.aether.api.BuildInfo;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
@@ -45,6 +46,7 @@ import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.node.lifecycle.NodeState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -194,7 +196,13 @@ public final class StatusRoutes implements RouteSource {
         var derived = node.snapshotCollector().derivedMetrics();
         var metrics = new MetricsSummary(derived.requestRate(),
                                          100.0 - derived.errorRate() * 100.0,
-                                         derived.latencyP50());
+                                         node.snapshotCollector()
+                                             .minuteAggregator()
+                                             .recent(1)
+                                             .stream()
+                                             .mapToDouble(MinuteAggregate::avgLatencyMs)
+                                             .findFirst()
+                                             .orElse(0));
 
         return new StatusResponse(uptimeSeconds,
                                   cluster,
@@ -219,7 +227,8 @@ public final class StatusRoutes implements RouteSource {
                                   node.isLeader(),
                                   leaderId,
                                   BuildInfo.buildInfo().buildTimestamp(),
-                                  BuildInfo.buildInfo().buildVersion());
+                                  BuildInfo.buildInfo().buildVersion(),
+                                  node.voterReconfigurationStatus());
     }
 
     private static NodeInfo toNodeInfo(MembershipView view, NodeId nodeId, Option<NodeId> leader, String kvState) {
@@ -306,7 +315,7 @@ public final class StatusRoutes implements RouteSource {
     /// includes every core the boot seed promoted from CONFIGURATION at wiring time, so this
     /// surface — and therefore `/health/ready` — reported quorum held before a single peer had
     /// connected. The detector path above is narrowed to the same observed projection at its feed
-    /// (`AetherNode.propagateMemberCount`), so both paths now answer from reachability and the
+    /// (`AetherNode.derivedMemberCount`), so both paths now answer from reachability and the
     /// three surfaces still cannot disagree with each other or with the consensus layer.
     static QuorumStatus quorumStatus(ManageableNode node) {
         return node.quorumLossSnapshot()
@@ -514,6 +523,7 @@ public final class StatusRoutes implements RouteSource {
         components.add(buildConsensusHealth(node));
         components.add(buildRoutesHealth());
         components.add(buildQuorumHealth(node));
+        components.add(buildDhtAdmissionHealth(StorageFactory.pendingDhtAdmissions(node.storageSetups())));
         var status = state.isReady()
                      ? "UP"
                      : "DOWN";
@@ -551,6 +561,20 @@ public final class StatusRoutes implements RouteSource {
                                    routesReady
                                    ? "Route sync received"
                                    : "Awaiting initial route sync");
+    }
+
+    /// #1052: names the DHT-backed storage instances whose post-formation encryption-marker check has
+    /// not completed. That check retries while the DHT cannot answer, and the node stays `JOINING`
+    /// meanwhile. This component says why, so a node that never verifies is visibly not-ready rather
+    /// than silently half-up.
+    static ComponentHealth buildDhtAdmissionHealth(List<String> pending) {
+        return new ComponentHealth("dht-admission",
+                                   pending.isEmpty()
+                                   ? "UP"
+                                   : "DOWN",
+                                   pending.isEmpty()
+                                   ? "No DHT-backed storage instance awaiting its encryption-marker check"
+                                   : "Encryption-marker check pending for: " + String.join(", ", pending));
     }
 
     private CertificateStatusResponse buildCertificateStatusResponse() {

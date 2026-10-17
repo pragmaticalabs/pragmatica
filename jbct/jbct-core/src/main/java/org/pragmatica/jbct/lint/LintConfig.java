@@ -58,6 +58,11 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     Map.entry("JBCT-EX-02", DiagnosticSeverity.ERROR),
 
     // orElseThrow
+    Map.entry("JBCT-EX-03", DiagnosticSeverity.WARNING),
+
+    // catch outside a marked JDK boundary (#1247). WARNING, not ERROR, until the corpus is marked or
+    // lifted: at introduction it hit 330 catch clauses across 50 main-source modules (131 in 26 aether
+    // modules, all inside the gated scope). Raise to ERROR once that count is zero.
     // Naming
     Map.entry("JBCT-NAM-01", DiagnosticSeverity.WARNING),
 

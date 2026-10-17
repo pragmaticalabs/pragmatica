@@ -10,7 +10,7 @@
 - Core value objects added to core module
 
 ### Methodology
-All features follow the [Evolutionary Implementation Protocol](../contributors/evolutionary-implementation.md):
+All features follow the [Evolutionary Implementation Protocol](../../contributors/evolutionary-implementation.md):
 decompose into layers, hard correctness gate per layer, no layer starts until the previous is green.
 
 ### Release Cadence
@@ -89,7 +89,7 @@ Provides the programming model and core runtime. Consumer groups, CDC, persisten
 | 3 | Annotation processor: detect stream resources, generate manifest, bump envelope version | 1.5 days | Processor unit tests, generated code compiles |
 | 4 | `StreamPartitionManager` + KV types, governor-local produce/consume, CDM lifecycle | 2 days | Forge integration: produce 1000 events, consume all, verify order |
 | 5 | REST endpoints (`/api/streams/*`), CLI (`aether stream`), docs | 1 day | REST round-trip, CLI output |
-| 6 | Consumer error handling (retry/skip/stall), dead-letter, co-located zero-copy | 1.5 days | Failure injection test |
+| 6 | Consumer error handling (retry/skip/stall), dead-letter, co-located zero-copy (not implemented at `ccba0dba5`; #1248) | 1.5 days | Failure injection test |
 
 **Total: 9 days**
 
@@ -184,7 +184,7 @@ Loan Processing Application — same spec implemented in JBCT slice and Spring B
 | Streaming Phase 3: PostgreSQL + exactly-once | High | Production streaming |
 | Secret rotation provider implementations | High | watchRotation SPI exists, zero providers implement it |
 | Capacity planning guide | High | Sizing guidance for operators |
-| Upgrade path automated test (0.x → 1.0) | High | rolling-aether-upgrade.sh exists, needs CI automation |
+| Upgrade path automated test (0.x → 1.0) | High | `rolling-aether-upgrade.sh` removed (#1543); replaced by `aether cluster upgrade --wait`, needs CI automation |
 | Consumer groups + CDC adapter | Medium | Streaming Phase 1+ |
 | Log aggregation documentation | Medium | Guidance, not code |
 | Error message actionability audit | Medium | Pass through all Cause messages |

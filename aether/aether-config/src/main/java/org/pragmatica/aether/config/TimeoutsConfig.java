@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
+import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -22,7 +22,8 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                              WorkerTimeouts worker,
                              SecurityTimeouts security,
                              RepositoryTimeouts repository,
-                             ScalingTimeouts scaling) {
+                             ScalingTimeouts scaling,
+                             StorageMaintenanceTimeouts storageMaintenance) {
     public static TimeoutsConfig timeoutsConfig() {
         return new TimeoutsConfig(InvocationTimeouts.invocationTimeouts(),
                                   ForwardingTimeouts.forwardingTimeouts(),
@@ -37,7 +38,28 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
                                   WorkerTimeouts.workerTimeouts(),
                                   SecurityTimeouts.securityTimeouts(),
                                   RepositoryTimeouts.repositoryTimeouts(),
-                                  ScalingTimeouts.scalingTimeouts());
+                                  ScalingTimeouts.scalingTimeouts(),
+                                  StorageMaintenanceTimeouts.storageMaintenanceTimeouts());
+    }
+
+    /// #420 — the DHT timeouts replaced, the rest kept; lets a boot test shorten
+    /// `anti_entropy_interval` without restating fourteen sibling records.
+    public TimeoutsConfig withDht(DhtTimeouts dht) {
+        return new TimeoutsConfig(invocation,
+                                  forwarding,
+                                  deployment,
+                                  rollingUpdate,
+                                  cluster,
+                                  consensus,
+                                  election,
+                                  swim,
+                                  observability,
+                                  dht,
+                                  worker,
+                                  security,
+                                  repository,
+                                  scaling,
+                                  storageMaintenance);
     }
 
     public record InvocationTimeouts(TimeSpan timeout,
@@ -96,15 +118,9 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
-    public record RollingUpdateTimeouts(TimeSpan kvOperation,
-                                        TimeSpan terminalRetention,
-                                        TimeSpan cleanupGracePeriod,
-                                        TimeSpan rollbackCooldown) {
+    public record RollingUpdateTimeouts(TimeSpan kvOperation, TimeSpan terminalRetention, TimeSpan cleanupGracePeriod) {
         public static RollingUpdateTimeouts rollingUpdateTimeouts() {
-            return new RollingUpdateTimeouts(timeSpan(30).seconds(),
-                                             timeSpan(1).hours(),
-                                             timeSpan(5).minutes(),
-                                             timeSpan(5).minutes());
+            return new RollingUpdateTimeouts(timeSpan(30).seconds(), timeSpan(1).hours(), timeSpan(5).minutes());
         }
     }
 
@@ -127,19 +143,27 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
     /// has a second floor to clear — pings originate from the leader, so a leader election is a
     /// legitimate ping gap, and a value below worst-case election time dissolves healthy communities
     /// during a routine election.
+    ///
+    /// `offlineBufferCap` (#1996) is the longest ANY frame may be held in a peer's offline buffer while the peer is
+    /// unreachable; nothing is held for ever. A request with a caller deadline (an invocation, a forward, a stream or
+    /// replication request, a command forward) is dropped at the flush once that deadline has passed, and never held longer
+    /// than this; every other frame (consensus, DHT, responses, a fire-and-forget invocation) is bounded by the cap alone.
+    /// A policy default matching the longest caller wait the cluster ships with, not a measured value.
     public record ClusterTimeouts(TimeSpan hello,
                                   TimeSpan reconciliationInterval,
                                   TimeSpan pingInterval,
                                   TimeSpan channelProtection,
                                   TimeSpan coreAbsence,
-                                  TimeSpan communityAbsence) {
+                                  TimeSpan communityAbsence,
+                                  TimeSpan offlineBufferCap) {
         public static ClusterTimeouts clusterTimeouts() {
             return new ClusterTimeouts(timeSpan(5).seconds(),
                                        timeSpan(5).seconds(),
                                        timeSpan(1).seconds(),
                                        timeSpan(15).seconds(),
                                        timeSpan(10).seconds(),
-                                       timeSpan(20).seconds());
+                                       timeSpan(20).seconds(),
+                                       timeSpan(30).seconds());
         }
 
         /// The #590 ordering invariant as a predicate, so the one comparison that matters lives beside
@@ -224,19 +248,37 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
         }
     }
 
+    /// #675: the three `auto_heal_*` keys are the operator surface of the three auto-heal timings the
+    /// runtime reads (`AutoHealConfig`); `Main.resolveAutoHeal` carries them across. Their defaults ARE
+    /// `AutoHealConfig`'s, so an absent key and `AutoHealConfig.DEFAULT` cannot disagree.
     public record ScalingTimeouts(TimeSpan evaluationInterval,
                                   TimeSpan warmupPeriod,
                                   TimeSpan sliceCooldown,
                                   TimeSpan communityCooldown,
-                                  TimeSpan autoHealRetry,
-                                  TimeSpan autoHealStartupCooldown) {
+                                  TimeSpan autoHealStartupCooldown,
+                                  TimeSpan autoHealProvisioningTimeout,
+                                  TimeSpan autoHealSwimHintsTtl) {
         public static ScalingTimeouts scalingTimeouts() {
             return new ScalingTimeouts(timeSpan(1).seconds(),
                                        timeSpan(30).seconds(),
                                        timeSpan(10).seconds(),
                                        timeSpan(60).seconds(),
-                                       timeSpan(10).seconds(),
-                                       timeSpan(15).seconds());
+                                       AutoHealConfig.DEFAULT_STARTUP_COOLDOWN,
+                                       AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
+                                       AutoHealConfig.DEFAULT_SWIM_HINTS_TTL);
+        }
+    }
+
+    /// #250: single tick interval driving BOTH `DemotionManager.demote()` and
+    /// `StorageGarbageCollector.collectGarbage()` across every storage setup. One shared cadence is
+    /// sufficient because each operation is already internally self-limiting regardless of how often
+    /// it is ticked -- demotion only acts once a tier crosses its high watermark, GC only collects
+    /// blocks already past their grace period -- so a conservative 5-minute tick costs nothing when
+    /// neither is due. This is a maintenance cadence, not a request-path deadline, hence the wider
+    /// scale than [ClusterTimeouts] / [DhtTimeouts].
+    public record StorageMaintenanceTimeouts(TimeSpan interval) {
+        public static StorageMaintenanceTimeouts storageMaintenanceTimeouts() {
+            return new StorageMaintenanceTimeouts(timeSpan(5).minutes());
         }
     }
 }

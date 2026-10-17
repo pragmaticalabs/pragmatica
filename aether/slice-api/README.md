@@ -4,7 +4,7 @@ Core slice interface definitions for the Aether distributed runtime.
 
 ## Overview
 
-Provides the foundational interfaces for building slices -- deployable units in the Aether runtime. Key interfaces: `Slice` (base with lifecycle methods), `SliceMethod<R, T>` (typed method definition), `MethodName` (type-safe method identifier), `SliceRuntime` (runtime access), `SliceInvokerFacade` (inter-slice invocation), and `Aspect` (method interception).
+Provides the foundational interfaces for building slices -- deployable units in the Aether runtime. Key interfaces: `Slice` (base with lifecycle methods), `SliceMethod<R, T>` (typed method definition), `MethodName` (type-safe method identifier), `SliceRuntime` (runtime access), `SliceInvokerFacade` (inter-slice invocation), and `MethodInterceptor` (method interception).
 
 ## Usage
 
@@ -38,9 +38,14 @@ public interface Slice {
     default Promise<Unit> start() { return Promise.unitPromise(); }
     default Promise<Unit> stop() { return Promise.unitPromise(); }
     List<SliceMethod<?, ?>> methods();
+    default SliceCodec codec(SliceCodec parent) { return parent; }
 }
 ```
 
 ## Dependencies
 
-- `pragmatica-lite-core`
+Artifact: `org.pragmatica-lite.aether:slice-api:1.0.0-rc4`. Depends on (from `pom.xml`):
+
+- `org.pragmatica-lite:core`
+- `org.pragmatica-lite:serialization-api`
+- `org.pragmatica-lite:config-service`

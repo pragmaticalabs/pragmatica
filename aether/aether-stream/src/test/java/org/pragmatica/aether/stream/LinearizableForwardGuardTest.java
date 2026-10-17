@@ -74,8 +74,8 @@ class LinearizableForwardGuardTest {
         void serveForwarded_rejectsStaleEpochRead_whenOwnerDeposed() {
             publish("e0");
             markSelfCaughtUp(0L);
-            var highWater = highWaterAt(Epoch.epoch(5, 0));
-            var ownerServe = ownerServe(committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater));
+            var highWater = highWaterAt(Epoch.epoch(0L, 5, 0));
+            var ownerServe = ownerServe(committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater));
 
             ownerServe.serveForwarded(STREAM, PARTITION, 0, 10)
                       .await()
@@ -135,9 +135,9 @@ class LinearizableForwardGuardTest {
         void onReadForward_linearizable_rejectsStaleEpochRead_whenOwnerDeposed() {
             publish("e0");
             markSelfCaughtUp(0L);
-            var highWater = highWaterAt(Epoch.epoch(5, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 5, 0));
             var sent = new ArrayList<StreamForwardMessage>();
-            var handler = handler(sent, ownerServe(committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater)));
+            var handler = handler(sent, ownerServe(committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater)));
 
             handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, true));
 
@@ -153,9 +153,9 @@ class LinearizableForwardGuardTest {
         void onReadForward_nonLinearizable_readsLocalAndSucceeds() {
             publish("e0");
             markSelfCaughtUp(0L);
-            var highWater = highWaterAt(Epoch.epoch(5, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 5, 0));
             var sent = new ArrayList<StreamForwardMessage>();
-            var handler = handler(sent, ownerServe(committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater)));
+            var handler = handler(sent, ownerServe(committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater)));
 
             handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false));
 

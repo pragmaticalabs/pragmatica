@@ -68,6 +68,23 @@ public interface ConsensusMetrics {
     /// @param count  Current number of pending batches
     void updatePendingBatches(NodeId nodeId, int count);
 
+    /// Record one `RabiaEngine.apply` that was never answered within `ProtocolConfig.applyTimeout` (#1117). A batch
+    /// the cluster never decided looks, from the caller, like a slow commit; this counter is what tells the two apart.
+    ///
+    /// @param nodeId The node whose submission timed out
+    default void recordApplyTimeout(NodeId nodeId) {}
+
+    /// Hand the metrics sink a probe for the age, in milliseconds, of the OLDEST batch still awaiting a decision
+    /// on this node, `0` when none is pending (#1117). A probe rather than a pushed value: the age grows with no
+    /// event to push it, so a gauge fed only on batch arrival and commit would read stale exactly when a batch is
+    /// stuck. The age counts from this node's LOCAL receipt of the batch (its own submission or a peer's), never from the
+    /// batch's creation stamp, which is the originator's `nanoTime` and meaningless on another JVM. Called once, at engine
+    /// construction; the sink calls the probe when it is read.
+    ///
+    /// @param nodeId The node
+    /// @param ageMs  Age of the oldest pending batch in milliseconds, 0 when nothing is pending
+    default void registerOldestPendingBatchAgeProbe(NodeId nodeId, java.util.function.LongSupplier ageMs) {}
+
     /// Records when fast path optimization is used.
     ///
     /// @param nodeId The node using fast path

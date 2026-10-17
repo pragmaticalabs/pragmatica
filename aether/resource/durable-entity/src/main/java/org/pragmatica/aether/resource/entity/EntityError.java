@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.lang.Cause;
@@ -93,22 +92,6 @@ public sealed interface EntityError extends Cause {
         }
     }
 
-    /// A timer operation reached a backing that has no durable log to hold a pending timer in — the
-    /// HA-only in-memory cut ([InMemoryDurableEntity], [FencedDurableEntity]). It declines with this typed
-    /// cause rather than silently no-op'ing, because a timer that is accepted and never fires is worse than
-    /// one that is refused.
-    ///
-    /// **A running node never answers this.** [DurableEntityFactory] provisions only the fenced-log
-    /// [PartitionFencedDurableEntity], where [DurableEntity#scheduleTimer] and
-    /// [DurableEntity#cancelTimer] are ordinary fenced writes (#345 I4). This is the answer of the
-    /// in-memory backings alone, which unit tests and harnesses construct directly.
-    record TimerNotSupported(String key) implements EntityError {
-        @Override
-        public String message() {
-            return "Durable entity timers are not yet supported for key: " + key;
-        }
-    }
-
     /// A due timer could not be applied: its command did not decode, the mutator threw, or the key it was
     /// scheduled on no longer holds state. Carries the TOKEN for the same reason [TimerNotFound] does —
     /// a key may hold several timers and only the token says which one.
@@ -128,7 +111,7 @@ public sealed interface EntityError extends Cause {
     /// A fenced write was rejected because this node's owner epoch is stale — it has been deposed
     /// as owner of the entity's ownership arc since the operation began (split-brain handover; spec
     /// §4.2, §6). The write committed nowhere; the caller must re-resolve the current owner and
-    /// retry there. `presentedEpoch` renders the rejected stamp (`term:counter`), carried straight
+    /// retry there. `presentedEpoch` renders the rejected stamp (`incarnation:term:counter`), carried straight
     /// from the underlying [org.pragmatica.dht.DHTError.StaleEpochWrite]; the committed high-water
     /// that out-ranked it is strictly newer and is observable via the ownership triad endpoint.
     record StaleOwnerEpoch(String key, String presentedEpoch) implements EntityError {
@@ -148,6 +131,22 @@ public sealed interface EntityError extends Cause {
         @Override
         public String message() {
             return "Durable entity storage operation failed for key '" + key + "': " + cause.message();
+        }
+    }
+
+    /// A fenced write failed because the durable backing is not READY, not because it is broken: the
+    /// underlying cause declares itself [Cause.Transient] (e.g. a stream partition whose new owner has not
+    /// finished promotion after a failover). Nothing reached the log and the condition clears by itself, so
+    /// the caller retries.
+    ///
+    /// Distinct from [StorageFailed], which is a genuine storage fault nobody's retry changes: folding the
+    /// two made a "not ready yet" indistinguishable from a permanent fault, and the owner-forward wire then
+    /// flattened both to the same non-transient carrier. Wraps the originating [Cause] so its message
+    /// survives; being [Cause.Transient] it is what a transport boundary maps to "unavailable, retry".
+    record StorageUnavailable(String key, Cause cause) implements EntityError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Durable entity storage for key '" + key + "' is temporarily unavailable, retry: " + cause.message();
         }
     }
 
@@ -183,7 +182,7 @@ public sealed interface EntityError extends Cause {
     /// through that window would reopen exactly the hole the owner check closes — and at the check the
     /// window is indistinguishable from an arc that will never have an owner, so admitting on absence
     /// admits both. The caller retries; a fixture waits for ownership to converge rather than sleeping.
-    record OwnershipNotYetCommitted(String key, String keyspace, int partition) implements EntityError {
+    record OwnershipNotYetCommitted(String key, String keyspace, int partition) implements EntityError, Cause.Transient {
         @Override
         public String message() {
             return "Durable entity write for key '" + key
@@ -193,13 +192,36 @@ public sealed interface EntityError extends Cause {
         }
     }
 
+    /// The request reached a node that the COMMITTED state names as the owner (or a host) of the entity
+    /// key's keyspace, but that cannot serve it right now: either the keyspace's slice has unloaded there and
+    /// ownership has not yet been re-minted elsewhere (the handoff window of a rebalance), or it is still
+    /// loading — declared as a host before its forward target or partition ring is in place.
+    ///
+    /// **This is TRANSIENT and self-clearing**, and it is the answer that replaces a terminal
+    /// "no entity registered for keyspace" for that window. Unloading retracts the node's hosting
+    /// declaration and unregisters its forward target at once, but the committed owner record leaves the
+    /// node only when the leader re-mints it over the remaining hosts — so for that interval the committed
+    /// owner has nothing to answer with. Answering terminally there made a healthy rebalance read as a
+    /// permanent refusal to every caller; the caller retries, and the retry reaches the new owner.
+    ///
+    /// Distinct from [OwnershipNotYetCommitted], where NOBODY owns the arc yet, and from [NotCurrentOwner],
+    /// a stable "someone else owns this". `reason` carries the owner's own wording verbatim, so a
+    /// not-ready answer that crossed the forward wire under another name (e.g. `FoldInProgress`) keeps it.
+    record OwnerTransitioning(String key, String reason) implements EntityError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Durable entity operation for key '" + key
+                 + "' reached an owner that is transitioning (loading or handing off) — transient, retry: " + reason;
+        }
+    }
+
     /// A [ReadConsistency#LINEARIZABLE] read at the committed owner found the committed owner epoch
     /// STRICTLY older than the entity key's `(keyspace, partition)` ownership-arc high-water — self is a
     /// deposed owner whose committed record is now stale (a newer owner took over, possibly during the
     /// no-op round). The read-side sibling of [StaleOwnerEpoch] and the stream's `StreamError.StaleEpochRead`:
     /// the read is rejected rather than served stale, so the caller re-resolves the current owner.
     /// `presentedEpoch` is the stale committed stamp; `highWaterEpoch` the committed high-water that
-    /// out-ranked it (both `term:counter`).
+    /// out-ranked it (both `incarnation:term:counter`).
     record StaleEpochRead(String key, String presentedEpoch, String highWaterEpoch) implements EntityError {
         @Override
         public String message() {
@@ -217,7 +239,7 @@ public sealed interface EntityError extends Cause {
     /// those report that an OPERATION was refused, this reports that a requested GUARANTEE is
     /// unavailable on this node. [ReadConsistency#BOUNDED_STALE] reads of the same key are unaffected,
     /// so the caller either accepts bounded staleness or retries where the barrier is wired.
-    record LinearizableUnavailable(String key) implements EntityError {
+    record LinearizableUnavailable(String key) implements EntityError, Cause.Transient {
         @Override
         public String message() {
             return "Linearizable read for durable entity key '" + key

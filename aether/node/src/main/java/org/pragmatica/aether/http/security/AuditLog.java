@@ -67,14 +67,6 @@ public final class AuditLog {
         AUDIT.info("CONFIG_REMOVED key={} scope={}", key, scope);
     }
 
-    public static void backupCreated(boolean success, String message) {
-        AUDIT.info("BACKUP_CREATED success={} message={}", success, message);
-    }
-
-    public static void backupRestored(boolean success, String commitId, String message) {
-        AUDIT.info("BACKUP_RESTORED success={} commitId={} message={}", success, commitId, message);
-    }
-
     public static void nodeLifecycleTransition(String nodeId, String targetState, boolean success, String message) {
         AUDIT.info("NODE_LIFECYCLE_TRANSITION nodeId={} targetState={} success={} message={}",
                    nodeId,
@@ -89,6 +81,14 @@ public final class AuditLog {
 
     public static void blueprintDeleted(String blueprintId) {
         AUDIT.info("BLUEPRINT_DELETED blueprintId={}", blueprintId);
+    }
+
+    /// #217: an operator baselined over a migration that was in flight, overriding the route's refusal.
+    public static void schemaBaselineForced(String datasource, int version, String overriddenStatus) {
+        AUDIT.warn("SCHEMA_BASELINE_FORCED datasource={} version={} overriddenStatus={}",
+                   datasource,
+                   version,
+                   overriddenStatus);
     }
 
     public static void schemaManualRetry(String datasource) {

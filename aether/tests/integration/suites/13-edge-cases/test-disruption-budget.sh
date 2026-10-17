@@ -1,5 +1,14 @@
 #!/bin/bash
-# test-disruption-budget.sh — Drain beyond budget, verify rejection
+# test-disruption-budget.sh — Drain beyond the quorum budget, verify rejection
+#
+# Drain admission order is quorum budget -> readiness -> slice floor (#1720); `force=true`
+# reaches only the slice-floor guard (NodeLifecycleRoutes). Every drain here passes
+# force=true so ONLY the quorum budget is exercised: a 409 from the slice floor (which
+# depends on where slices happen to be placed) can then never stand in for a budget
+# rejection. Expected: 200, 200, 409 with the "Disruption budget exceeded" body.
+# The unforced slice-floor 409 ("minAvailable") is deliberately not asserted here: it needs
+# a hosted slice on the drained node, which this suite does not deploy, so it is not
+# deterministic.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,6 +21,15 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 # suite (02-chaos/12-network) terminal-removes those seeds and CTM replaces them with ULID
 # nodes, so the drain endpoint 404'd ("Node lifecycle not found") on names that were gone.
 DRAIN_NODES_FILE="${TMPDIR:-/tmp}/aether-13-drain-nodes-$$.txt"
+
+# POST a forced drain (quorum budget only; see header). Prints the HTTP status; the response
+# body is left in <body_file> so callers can tell the budget 409 from any other 409.
+_forced_drain() {
+    local node="$1" body_file="$2"
+    curl -sk -o "$body_file" -w "%{http_code}" -m 10 \
+         -X POST -H "X-API-Key: ${API_KEY}" \
+         "${CLUSTER_ENDPOINT}/api/v1/nodes/drain/${node}?force=true"
+}
 
 test_cluster_ready() {
     wait_for_cluster_ready 60
@@ -87,9 +105,7 @@ test_drain_first_node_allowed() {
 
     local status body_file
     body_file=$(mktemp)
-    status=$(curl -sk -o "$body_file" -w "%{http_code}" -m 10 \
-             -X POST -H "X-API-Key: ${API_KEY}" \
-             "${CLUSTER_ENDPOINT}/api/v1/nodes/drain/${node1}")
+    status=$(_forced_drain "$node1" "$body_file")
 
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
         log_pass "First drain accepted (${status})"
@@ -114,19 +130,19 @@ test_drain_second_node_allowed() {
     log_info "Draining second node: ${node2}"
     # Re-resolve to a live node — see test_drain_first_node_allowed.
     _refresh_mgmt_entry_point || log_warn "no live mgmt endpoint — proceeding with pinned ${CLUSTER_ENDPOINT}"
-    local status
-    status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/nodes/drain/${node2}" -X POST -H "X-API-Key: ${API_KEY}")
+    local status body_file body
+    body_file=$(mktemp)
+    status=$(_forced_drain "$node2" "$body_file")
+    body=$(head -c 500 < "$body_file" | tr '\n' ' ')
+    rm -f "$body_file"
     log_info "Second drain response: ${status}"
-    # Race-tolerant: 200 = within budget; 409 = budget rejected because CTM auto-heal
-    # transitioned node-5 through DECOMMISSIONED and the replacement is still JOINING,
-    # so live ON_DUTY=3 already and a second drain would drop operational below quorum.
-    # Both outcomes prove the budget is enforced against live capacity.
+    # Auto-heal is disabled (see test_cluster_ready) and force=true bypasses the slice floor, so
+    # the quorum budget alone decides: 5 core nodes minus 2 drained leaves 3 = quorum, still
+    # admitted. Any 409 here is a real budget miscount, not a race with auto-heal.
     if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
-        log_pass "Second drain accepted (${status}) — within budget"
-    elif [ "$status" -eq 409 ] 2>/dev/null; then
-        log_pass "Second drain rejected (${status}) — auto-heal raced; budget guarded quorum"
+        log_pass "Second drain accepted (${status}) — within budget (3 of 5 remain)"
     else
-        log_fail "Second drain unexpected status ${status}"
+        log_fail "Second drain returned ${status} — expected 2xx (3 of 5 cores remain, auto-heal disabled, slice floor forced past); body=${body}"
         return 1
     fi
 }
@@ -137,25 +153,24 @@ test_drain_beyond_budget_rejected() {
     log_info "Attempting to drain third node: ${node3}"
     # Re-resolve to a live node — see test_drain_first_node_allowed.
     _refresh_mgmt_entry_point || log_warn "no live mgmt endpoint — proceeding with pinned ${CLUSTER_ENDPOINT}"
-    # Capture status AND body so a non-409 surface includes a debuggable payload —
-    # http_status_with_body warns and prints the body to the log when the response
-    # is non-2xx (note 409 is non-2xx → its body will be surfaced too, which is what
-    # we want here).
-    local status
-    status=$(http_status_with_body "${CLUSTER_ENDPOINT}/api/v1/nodes/drain/${node3}" -X POST -H "X-API-Key: ${API_KEY}")
-    log_info "Third drain response: ${status}"
+    local status body_file body
+    body_file=$(mktemp)
+    status=$(_forced_drain "$node3" "$body_file")
+    body=$(head -c 500 < "$body_file" | tr '\n' ' ')
+    rm -f "$body_file"
+    log_info "Third drain response: ${status} body=${body}"
 
-    # Auto-heal is disabled (see test_cluster_ready). With two nodes already DRAINING
-    # and no replacement provisioning, the READY count is at 3-of-5 — draining a third
-    # would drop operational capacity to 2 < quorum. The disruption-budget guard MUST
-    # reject this with HTTP 409. Any other status indicates either (a) the budget
-    # enforcement is broken (200 returned despite live READY count below threshold) or
-    # (b) the drain endpoint mis-routed (5xx). Either is a real product regression.
-    if [ "$status" -eq 409 ] 2>/dev/null; then
-        log_pass "Third drain rejected with 409 — disruption budget enforced against live READY cores"
+    # Auto-heal is disabled (see test_cluster_ready). With two nodes already DRAINING and no
+    # replacement provisioning, a third drain would leave 2 core nodes < quorum 3, so the quorum
+    # budget MUST refuse it with 409. force=true bypasses the slice floor, so the 409 can only
+    # be the budget — and the body proves it: a status-only check cannot tell it from the
+    # placement-dependent slice-floor 409 ("minAvailable").
+    if [ "$status" -eq 409 ] 2>/dev/null && printf '%s' "$body" | grep -qF "Disruption budget exceeded" \
+        && printf '%s' "$body" | grep -qF "minimum is 3"; then
+        log_pass "Third drain rejected with 409 — quorum budget enforced (Disruption budget exceeded, minimum is 3)"
         return 0
     fi
-    log_fail "Third drain returned ${status} — expected 409 (budget exhausted). With CTM auto-heal disabled and 2 prior drains in DRAINING, a third drain MUST be refused."
+    log_fail "Third drain returned ${status} body=${body} — expected 409 with the quorum-budget body ('Disruption budget exceeded ... minimum is 3'). With auto-heal disabled and 2 prior drains in DRAINING, a forced third drain MUST be refused by the budget, not the slice floor."
     return 1
 }
 
@@ -238,7 +253,7 @@ test_reactivate_nodes() {
 run_test "Cluster ready (5 nodes)" test_cluster_ready
 run_test "First drain allowed" test_drain_first_node_allowed
 run_test "Second drain allowed" test_drain_second_node_allowed
-run_test "Third drain rejected (budget)" test_drain_beyond_budget_rejected
+run_test "Third drain rejected (quorum budget)" test_drain_beyond_budget_rejected
 run_test "Quorum preserved" test_quorum_preserved
 run_test "Reactivate nodes" test_reactivate_nodes
 print_summary

@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.membership.fsm;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainUnacknowledged;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.JoinGraceExpiredNeverHealthy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.LivenessGone;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.PeerConnected;
@@ -46,6 +47,9 @@ import org.pragmatica.statemachine.TransitionRequest;
 /// last incarnation the cluster ever attributed to this identity. Rejoin fencing (spec §4 bug #2):
 /// a `SwimHealthy(inc)` arriving in DEAD reopens the identity (→ OBSERVED) only when
 /// `inc > terminalIncarnation`; a same-or-lower incarnation is a stale gossip echo and is ignored.
+/// Governor/admission evidence uses a separate durable process-epoch high-water and terminal
+/// fence. A SWIM refutation cannot advance that epoch, and a process restart cannot rewrite SWIM
+/// history. Each evidence path compares only values from its own domain.
 public sealed interface MembershipState extends FsmState<MembershipState, MembershipEvent> permits MembershipState.Observed, MembershipState.Member, MembershipState.Suspect, MembershipState.Departing, MembershipState.Dead {
     MembershipContext ctx();
     /// Whether this member contributes to the effective on-duty count. The flap-resistant cure:
@@ -65,6 +69,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
+                case MembershipEvent.GovernorHealthy _ -> tx.ignore();
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.ignore();
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.transitionTo(ctx.memberState());
                 case SwimSuspect e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
@@ -76,6 +82,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimUnknown _ -> tx.ignore();
                 case DrainRequested _ -> tx.transitionTo(ctx.departing());
                 case Stopped _ -> tx.transitionTo(ctx.dead());
+                case DrainUnacknowledged _ -> tx.ignore();
                 case JoinGraceExpiredNeverHealthy _ -> tx.transitionTo(ctx.dead());
             }
         }
@@ -93,6 +100,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
+                case MembershipEvent.GovernorHealthy _ -> tx.ignore();
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.ignore();
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.ignore();
                 case SwimSuspect e -> doubtToSuspect(ctx, e.incarnation(), tx);
@@ -104,6 +113,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimUnknown _ -> tx.ignore();
                 case DrainRequested _ -> tx.transitionTo(ctx.departing());
                 case Stopped _ -> tx.transitionTo(ctx.dead());
+                case DrainUnacknowledged _ -> tx.ignore();
                 case JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
@@ -123,6 +133,8 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> recoverToMember(ctx, e.incarnation(), tx);
+                case MembershipEvent.GovernorHealthy _ -> tx.transitionTo(ctx.memberState());
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.transitionTo(ctx.memberState());
                 // Death-ward boundary rule (Wave 7, ratified): transport may report DEATH, never
                 // LIFE. A transport connection must not revive a SWIM-suspected member — recovery
                 // goes ONLY through SwimHealthy (SWIM probe-ack authority) or UpHysteresisMet
@@ -139,6 +151,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimUnknown _ -> tx.ignore();
                 case DrainRequested _ -> tx.transitionTo(ctx.departing());
                 case Stopped _ -> tx.transitionTo(ctx.dead());
+                case DrainUnacknowledged _ -> tx.ignore();
                 case JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
@@ -149,8 +162,11 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
     /// edge, a `SwimHealthy` carrying a STRICTLY HIGHER incarnation than the high-water mark
     /// recovers the member back to MEMBER (it refuted / restarted mid-drain — mere liveness at the
     /// known incarnation does NOT cancel a drain), and the manager-armed DEPARTING timeout
-    /// ([`MembershipFsm`]) terminalizes a drainer that goes silent via a delayed `Stopped`. All
-    /// other signals are absorbed.
+    /// ([`MembershipFsm`]) terminalizes a drainer that goes silent via a delayed `Stopped`. When
+    /// that timeout finds a drain-initiated departure the target never acknowledged and no death
+    /// evidence corroborates, the manager dispatches `DrainUnacknowledged` instead, which withdraws
+    /// the drain back to MEMBER (#1054 — the DRAIN never reached a live target). All other signals
+    /// are absorbed.
     record Departing(MembershipContext ctx) implements MembershipState {
         @Override
         public boolean countsTowardEffective() {
@@ -162,8 +178,12 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case Stopped _ -> tx.transitionTo(ctx.dead());
+                case DrainUnacknowledged _ -> tx.transitionTo(ctx.memberState());
                 case SwimDeparted e -> tx.handle(() -> ctx.observeIncarnation(e.incarnation()));
                 case SwimHealthy e -> recoverFromDepartingIfNewer(ctx, e.incarnation(), tx);
+                // Process evidence never cancels a departure: a departing identity only goes forward.
+                case MembershipEvent.GovernorHealthy _ -> tx.ignore();
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.ignore();
                 case PeerConnected _, UpHysteresisMet _, SwimSuspect _, SwimFaulty _, PeerDisconnected _, LivenessGone _, DownHysteresisMet _, SwimUnknown _, DrainRequested _, JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }
@@ -183,6 +203,10 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
         public void handle(MembershipEvent event, TransitionRequest<MembershipState, MembershipEvent> tx) {
             switch (event) {
                 case SwimHealthy e -> rejoinIfNewer(ctx, this, e.incarnation(), tx);
+                // Terminal removal (owner ruling, session 28): process evidence never reopens a dead
+                // identity. A recovered worker is a new node with a fresh NodeId.
+                case MembershipEvent.GovernorHealthy _ -> tx.ignore();
+                case MembershipEvent.WorkerAdmissionHealthy _ -> tx.ignore();
                 case PeerConnected _ -> tx.ignore();
                 case UpHysteresisMet _ -> tx.ignore();
                 case SwimSuspect _ -> tx.ignore();
@@ -194,6 +218,7 @@ public sealed interface MembershipState extends FsmState<MembershipState, Member
                 case SwimUnknown _ -> tx.ignore();
                 case DrainRequested _ -> tx.ignore();
                 case Stopped _ -> tx.ignore();
+                case DrainUnacknowledged _ -> tx.ignore();
                 case JoinGraceExpiredNeverHealthy _ -> tx.ignore();
             }
         }

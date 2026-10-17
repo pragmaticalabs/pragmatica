@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.ntt;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -13,22 +14,31 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
+import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
+import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal;
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -81,13 +91,35 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// reconcile completes, the flag is cleared and if `rescheduleRequested` was set, one
 /// follow-up reconcile is scheduled.
 ///
-/// **In-flight provisioning bookkeeping.** Per reconcile pass, entries past
-/// `nttDepartureTimeout × 3` are evicted (assumed failed) so they no longer mask the
-/// "underprovisioned" signal. This expiry is decoupled from — and intentionally longer than —
-/// the `× 1.5` leader-activation quiesce delay: it must exceed a provisioned node's worst-case
-/// time-to-stable-membership (container boot + JVM + SWIM up-hysteresis) so the reconciler
-/// does not forget an in-flight node and re-provision a phantom replacement (the auto-heal
-/// provisioning storm). The map is internal — exposed only via observability accessors.
+/// **In-flight provisioning bookkeeping — tracked by provider instance state, not a timer (#1049).**
+/// A dispatched replacement stays in-flight (counted toward effective capacity, so its deficit is not
+/// dispatched twice) for as long as the compute provider reports its instance existing or booting. A
+/// self-rescheduling status poll asks the provider through
+/// [`ClusterTopologyManager#replacementInstanceState`] — one listing per entry per `nttDepartureTimeout`,
+/// single-flight per entry, leader-only, never from a reconcile pass — and drops the entry on a
+/// provider-reported failure, or on the deletion of an instance: one it has already seen, or one it has
+/// never seen once enough successful listings have omitted it for long enough (see
+/// [`#computeRequiredAbsentListings`]). Every entry is bounded by a hard per-source ceiling
+/// ([`ClusterTopologyManager#replacementCeiling`], ten minutes by default), which is also the only bound
+/// on an entry whose provider cannot answer. The former `nttDepartureTimeout × 3` expiry (45s at the
+/// default) is gone: cloud replacements take 50–63s from mint to membership, so it expired first and
+/// the leader minted a duplicate it then drained as surplus. A new leader inherits the prior leader's
+/// entries and asks the provider about them the same way; their ceiling keeps running from the mint time
+/// each node id's ULID carries, so a leader change does not restart it, while their absence count starts
+/// afresh at inheritance (see [`#inheritedEntry`]). The map is internal — exposed only via observability
+/// accessors.
+///
+/// **Join grace (#1783).** An entry the provider has CONFIRMED (listed) that has still not joined membership
+/// once [`#joinGraceWindow`] has passed since its mint stops counting toward effective capacity, so the
+/// deficit it was masking re-opens and the next pass re-dispatches, well before the ceiling. The entry itself
+/// is kept (polled, bounded by the ceiling): if the late node then joins, the identity-match clear removes it
+/// and the existing surplus path ([`#computePeersToDrain`], the surplus follow-up) converges the cluster back
+/// to the configured count. A provision dispatched while a discounted entry exists is a substitute (generation 1)
+/// and is never itself discounted, so one missing slot has at most two in flight per ceiling window (#1786). The
+/// generation survives a leader handover by inference from the inherited ids' mint times (see
+/// [`#inheritedGeneration`]). The grace runs from the entry's
+/// `sinceNanos` — dispatch, or the ULID mint time for an inherited entry — so a leader change neither restarts
+/// nor shortens it.
 ///
 /// **Reached-full-membership latch (safety-critical — Bug C).** The reconciler must NEVER
 /// provision a replacement for a configured core peer that has not yet joined (initial
@@ -136,6 +168,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @SuppressWarnings("JBCT-RET-08")
 public final class LeaderReconciler {
     private static final Logger log = LoggerFactory.getLogger(LeaderReconciler.class);
+    /// One availability-guard refusal as rendered in the deferred-surplus-drain WARN.
+    private static final String REFUSAL_FORMAT = "owner=%s, artifact=%s, remainingActive=%d, minAvailable=%d";
 
     private static final Consumer<ReconcileIntent> NOOP_LISTENER = intent -> {};
 
@@ -144,6 +178,15 @@ public final class LeaderReconciler {
     /// timestamps below. `Long.MIN_VALUE` is unreachable by any real `timeSource.nanoTime()`
     /// observation, so a sentinel comparison can never alias a legitimate time.
     private static final long UNSET_NANOS = Long.MIN_VALUE;
+    /// Three deficit-time leadership losses inside one debounce window: one or two are an ordinary
+    /// failover, the third is the first count that cannot be a single hand-over plus one retry, and it is
+    /// still early enough to warn while a tenure (~4-10s in the observed flap) fits the window several times.
+    private static final int LEADERSHIP_LOSS_WARN_THRESHOLD = 3;
+    /// Fixed, deliberately NOT the debounce window: the observed flap loses leadership every 4-10s per
+    /// node, so three losses span up to ~20s and a 15s debounce window would stay silent at a 10s
+    /// cadence. Sixty seconds covers that cadence with margin while still separating churn from an
+    /// isolated failover.
+    private static final long LEADERSHIP_LOSS_WARN_WINDOW_NANOS = timeSpan(60).seconds().nanos();
 
     private final MembershipConfig membershipConfig;
     private final TimeSpan leaderActivationDelay;
@@ -152,8 +195,8 @@ public final class LeaderReconciler {
     /// Drain-safety grace window = `nttDepartureTimeout × 2` (30s at the 15s default; Wave 2
     /// defense in depth at the drain authority). A surplus-drain victim whose membership is
     /// YOUNGER than this window is NEVER selected: a freshly-joined node's self-asserted role
-    /// may still be propagating (it travels in the join ANNOUNCE and the QUIC Hello descriptor;
-    /// gossip-rebuilt `MembershipUpdate` carries no labels), so a just-joined worker can
+    /// may still be propagating (it travels in the join ANNOUNCE, the QUIC Hello descriptor and the
+    /// labels of a gossiped `MembershipUpdate`, each arriving at its own time), so a just-joined worker can
     /// transiently read as a blank-role core and open a phantom core-surplus that drains the
     /// joiner. AGE-based and deliberately role-agnostic — an all-blank-role (all-core) cluster
     /// stays drainable once members age past the window. Sizing: ≥ the deficit debounce (×1, the
@@ -162,7 +205,17 @@ public final class LeaderReconciler {
     /// membership timing constant (`nttDepartureTimeout`) rather than introducing a new literal.
     /// Age source: [`MembershipFsm#memberAgeMs`] (first-tracked stamp on the FSM's wall clock).
     private final TimeSpan drainSafetyGraceWindow;
-    private final TimeSpan inFlightExpiry;
+    /// Status-poll cadence for in-flight replacements (#1049) — see [`#computeInFlightPollInterval`].
+    private final TimeSpan inFlightPollInterval;
+    /// How long after its mint a provider-CONFIRMED in-flight replacement may stay unjoined and still count
+    /// toward effective capacity (#1783) — see [`#computeJoinGrace`].
+    private final TimeSpan joinGraceWindow;
+    /// Wall floor a never-listed in-flight replacement must stay absent for, since it became pollable,
+    /// before it counts as deleted (#1049) — [`SourceProfile#REPLACEMENT_FIRST_LISTING_FLOOR`].
+    private final TimeSpan firstListingFloor;
+    /// Consecutive successful listings that must omit a never-listed replacement before it counts as
+    /// deleted (#1049) — see [`#computeRequiredAbsentListings`].
+    private final int requiredAbsentListings;
     private final PresenceSampler presenceSampler;
     /// Authoritative membership-count source (membership v2 cutover, #68/#94; role-scoped per
     /// cluster-topology-overhaul Wave 2 / W2). The reconciler COUNTS this FSM's
@@ -173,18 +226,15 @@ public final class LeaderReconciler {
     /// deficit that over-provisions; a genuinely-gone node drops from the count via co-confirmed
     /// death or the routed down-hysteresis crossing. presence sampler is retained for its
     /// monotonic [`PresenceSampler#peakMembershipCount`] cold-start latch and trigger wiring.
-    /// Wave 7 deferred: `peakMembershipCount` deliberately STAYS on the PresenceSampler sensor
-    /// (role-blind residual accepted, bounded by the deficit-debounce + quorum-safety gates). An
-    /// FSM-derived peak would be wrong here: the boot seed promotes the CONFIGURED topology
-    /// straight to MEMBER before any real health observation, so the FSM core count equals the
-    /// full configured count at boot and [`#reachedFullMembership`] would latch before genuine
-    /// formation — defeating the cold-start guard it exists for. The sampler peak requires
-    /// genuinely-observed SWIM-healthy presence (K_UP consecutive samples per member). Revisit
-    /// when the seed carries real health (#241 / Wave 9).
+    /// Configured peer discovery now creates OBSERVED identities, not counted members. A current
+    /// role-verified counted CORE set is therefore formation evidence alongside sampled history.
+    /// Keeping both avoids losing a full-membership interval before a departure or a target increase.
     private final MembershipFsm membershipFsm;
     private final IntSupplier configuredCoreCountSupplier;
-    /// Leader-term supplier (monotonic, incremented once per election). A value `> 1` on
-    /// activation means a prior leader existed → this leadership was gained via RE-ELECTION
+    /// Leader-term supplier: the committed `viewSequence` of the election that named this node
+    /// (`LeaderTerm.committedTerm()`, #1559 — readable at activation, before the leader-gain edge
+    /// adopts it). A fresh cluster's first election commits 1; a value `> 1` on activation means a
+    /// prior leader existed → this leadership was gained via RE-ELECTION
     /// (the cluster formed under a prior leader), so [`#reachedFullMembership`] is pre-latched
     /// on activation to avoid wedging in cold-start suppression on an already-formed cluster.
     private final Supplier<Long> leaderTermSupplier;
@@ -193,18 +243,34 @@ public final class LeaderReconciler {
     /// Used only to scope auto-heal replacement node ids to the cluster (`aether-<cluster>-node-<ulid>`)
     /// so a replacement is shape-identical to its compose-seeded siblings (NodeId == container name).
     private final Supplier<Option<ClusterName>> clusterNameSupplier;
-    /// Slice-ownership predicate (NEW narrow injected seam — drain-victim slice-owner exclusion).
-    /// `true` when the given node currently OWNS / is serving active deployed slices, so it must
-    /// NEVER be selected as a scale-down / over-provision drain victim — draining a node that is
-    /// serving load drops the slices it hosts (the 7→5 scale-down-under-load 96%-error incident).
+    /// Slice-ownership predicate (narrow injected seam — drain-victim slice-owner demotion).
+    /// `true` when the given node currently OWNS / is serving active deployed slices, so it is
+    /// selected as a scale-down / over-provision drain victim only after every eligible non-owner
+    /// (#1488 — ownership lowers preference, never excludes; see [`#selectDrainVictims`]). Preferring
+    /// non-owners avoids moving slices a scale-down need not move (the 7→5 scale-down-under-load
+    /// 96%-error incident).
     /// The reconciler lives in the MEMBERSHIP layer and must not hard-depend on the deployment FSM
     /// where the authoritative `NodeId → slices` map lives ([`ClusterDeploymentState.Active#sliceStates`]),
     /// so ownership is consulted through this narrow [`Predicate`] rather than a concrete deployment
     /// type. Defaults to `() -> false` ("owns nothing") so existing construction / tests keep working
-    /// and a node is only ever shielded when production wires the real source via
+    /// and a node is only ever demoted when production wires the real source via
     /// [`#setOwnsActiveSlices`]. A predicate (not a snapshot set) is intentional: ownership is read
     /// fresh per drain pass, never staged stale.
     private final AtomicReference<Predicate<NodeId>> ownsActiveSlices = new AtomicReference<>(id -> false);
+
+    /// #1543 E: replacements that are SURGE capacity (a live pairing's replacement before its original retires), not surplus.
+    private final AtomicReference<Supplier<Set<NodeId>>> surgeReplacements = new AtomicReference<>(Set::of);
+
+    /// Drain-availability guard (#1488 owner ruling), consulted for SLICE-OWNER candidates only:
+    /// `apply(candidate, remainingNodes)` returns the [`DrainRefusal`] naming the first hosted slice
+    /// that draining `candidate` would drop below its `minAvailable`, counting only ACTIVE instances on
+    /// `remainingNodes` ([`#remainingNodes`]), or `none()` when the drain keeps every hosted slice
+    /// available. A candidate it refuses is skipped, never drained, and the refusal is carried into the
+    /// deferral WARN. Same layering as [`#ownsActiveSlices`]: the KV-backed source lives in the
+    /// deployment layer and is wired by `AetherNode` via [`#setSliceDrainGuard`]; defaults to "always
+    /// permits" so construction without it keeps the ownership ordering alone.
+    private final AtomicReference<BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>>> sliceDrainGuard = new AtomicReference<>(LeaderReconciler::permitsEveryDrain);
+
     private final TimeSource timeSource;
     private final NttTimerScheduler scheduler;
     private final AtomicBoolean isLeader = new AtomicBoolean(false);
@@ -231,7 +297,14 @@ public final class LeaderReconciler {
     /// until the first pass runs; surfaced via [`#lastProvisioningDecision`] so the management API
     /// can expose WHY a deficit is or is not being filled without log-scraping. Pure observability —
     /// written once per pass, never read by the decision logic.
+    /// Cleared by [`#deactivate`]: the decision belongs to the term that produced it, so a re-elected
+    /// leader reports `reason="NOT_EVALUATED"` until its own first pass rather than the previous
+    /// term's reason beside a live (reset) deficit age.
     private volatile ProvisioningDecisionSnapshot lastProvisioningDecision = null;
+    /// Nanosecond stamps of leadership losses that happened while a core deficit existed, pruned to
+    /// the last [`#LEADERSHIP_LOSS_WARN_WINDOW_NANOS`]. Feeds the churn WARN in [`#recordLeadershipLoss`]; guarded
+    /// by its own monitor. Observability only — never read by the decision logic.
+    private final ArrayDeque<Long> deficitLeadershipLossNanos = new ArrayDeque<>();
     private final AtomicReference<ScheduledFuture<?>> activationFutureRef = new AtomicReference<>();
     private final AtomicReference<ScheduledFuture<?>> inFlightSweepFutureRef = new AtomicReference<>();
     /// At most one pending deficit-convergence follow-up (H1 / #257 completion — generalizes
@@ -270,7 +343,7 @@ public final class LeaderReconciler {
     /// drain does not re-fire the surplus-detecting `MEMBER_APPEARED` ingress — so without this the
     /// leader drains a single batch and then never re-checks, leaving the cluster over-provisioned
     /// past the settle window (the 02-chaos 6-where-5-expected convergence gap). Distinct from
-    /// [`#drainGraceReEvalFutureRef`], which fires only when a drain was DEFERRED (young / shielded
+    /// [`#drainGraceReEvalFutureRef`], which fires only when a drain was DEFERRED (young
     /// candidates); this one fires whenever the surplus simply has not yet CLOSED, covering the
     /// dispatched-but-not-yet-departed and floor-capped cases that the deferral path misses. Same
     /// dedupe/CAS-arm discipline (a non-null ref short-circuits, CAS-arm cancels a lost race) with
@@ -279,7 +352,14 @@ public final class LeaderReconciler {
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
-    private final ConcurrentHashMap<NodeId, Long> inFlightProvisioning = new ConcurrentHashMap<>();
+    /// Generation of a provision dispatched as a substitute for a discounted entry (#1786). Such an entry is
+    /// never itself discounted, which bounds one missing slot to an original plus one substitute in flight.
+    private static final int SUBSTITUTE_GENERATION = 1;
+
+    private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
+    /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
+    /// provider never accumulates stacked queries for the same replacement across poll ticks.
+    private final Set<NodeId> statusQueriesOutstanding = ConcurrentHashMap.newKeySet();
 
     /// Provisioning-stickiness fix — supplier of the STICKILY-retained set of in-flight provisioning
     /// ids the prior leader broadcast (via the metrics ping's `dispatchedNodes`, retained term-fenced
@@ -289,6 +369,10 @@ public final class LeaderReconciler {
     /// seed) so existing construction / tests keep working unchanged; `AetherNode` wires it to
     /// `ClusterSyncCollector::retainedDispatchedNodes`.
     private final AtomicReference<Supplier<Set<NodeId>>> retainedDispatchedSupplier = new AtomicReference<>(Set::of);
+
+    /// Verified installed electorate for formation evidence independent of desired provider capacity.
+    /// Empty means unavailable evidence; it never establishes formation.
+    private final AtomicReference<Option<Supplier<Set<NodeId>>>> installedVotersSupplier = new AtomicReference<>(none());
 
     private volatile Consumer<ReconcileIntent> reconcileListener = NOOP_LISTENER;
 
@@ -317,7 +401,10 @@ public final class LeaderReconciler {
         // Drain-safety grace = nttDepartureTimeout × 2 — see the field doc for the full rationale
         // (role-propagation race window; ≥ deficit debounce; single timing constant).
         this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.splitTimeout());
-        this.inFlightExpiry = computeInFlightExpiry(membershipConfig.splitTimeout());
+        this.inFlightPollInterval = computeInFlightPollInterval(membershipConfig.splitTimeout());
+        this.joinGraceWindow = computeJoinGrace(membershipConfig.splitTimeout());
+        this.firstListingFloor = SourceProfile.REPLACEMENT_FIRST_LISTING_FLOOR;
+        this.requiredAbsentListings = computeRequiredAbsentListings(firstListingFloor, inFlightPollInterval);
         this.presenceSampler = presenceSampler;
         this.membershipFsm = membershipFsm;
         this.configuredCoreCountSupplier = configuredCoreCountSupplier;
@@ -400,11 +487,17 @@ public final class LeaderReconciler {
     /// Provisioning-stickiness fix — on leadership GAIN, seed `inFlightProvisioning` from the prior
     /// leader's STICKILY-retained dispatched set (the metrics-ping `dispatchedNodes`, retained
     /// term-fenced by `ClusterSyncCollector`). Each retained id that is NOT already a current member
-    /// is recorded in-flight (stamped with the same `timeSource.nanoTime()` clock the normal dispatch
-    /// path uses, so the ×3 expiry backstop ages it identically), via `putIfAbsent` so a concurrent
-    /// genuine dispatch is never clobbered. This makes the new leader INHERIT the prior leader's
-    /// in-flight provisions instead of re-dispatching them (the over-provisioning / "6 cores instead
-    /// of 5" bug). Ids that are already members are skipped — the provision already fulfilled.
+    /// is recorded in-flight via `putIfAbsent` so a concurrent genuine dispatch is never clobbered. This
+    /// makes the new leader INHERIT the prior leader's in-flight provisions instead of re-dispatching
+    /// them (the over-provisioning / "6 cores instead of 5" bug). Ids that are already members are
+    /// skipped — the provision already fulfilled.
+    ///
+    /// #1049 — an inherited entry is UNCONFIRMED (the prior leader's create call has returned or never
+    /// will; this leader has not yet seen the instance), carries the per-source ceiling, and the status
+    /// poll is armed so this leader keeps it by what the provider reports rather than by age. Its ceiling
+    /// runs from the replacement's mint time where the node id carries one, so a leader change does not
+    /// restart it; its absence count and first-listing floor start at inheritance — see [`#inheritedEntry`].
+    @Contract
     private void seedInFlightFromRetainedDispatched() {
         var retained = retainedDispatchedSupplier.get().get();
 
@@ -412,22 +505,95 @@ public final class LeaderReconciler {
             return;
         }
 
-        var now = timeSource.nanoTime();
+        var nowNanos = timeSource.nanoTime();
+        var ceiling = ctm.replacementCeiling(NodeRole.CORE);
         // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
+        var unjoinedMints = unjoinedMintTimes(retained, currentMembers);
 
         for (var id : retained) {
             if (currentMembers.contains(id)) {
                 continue;
             }
 
-            inFlightProvisioning.putIfAbsent(id, now);
+            inFlightProvisioning.putIfAbsent(id,
+                                             inheritedEntry(id,
+                                                            nowNanos,
+                                                            ceiling,
+                                                            inheritedGeneration(id, unjoinedMints)));
         }
 
         log.info("LeaderReconciler seeded in-flight provisioning from retained dispatched set (retained={}, inFlight={})",
                  retained.size(),
                  inFlightProvisioning.size());
+        if (!inFlightProvisioning.isEmpty()) {
+            armInFlightSweep();
+        }
+    }
+
+    /// #1049 — the in-flight entry a new leader stamps for the inherited replacement `id`. The ceiling's clock
+    /// is backdated on [`#timeSource`] by how long ago the prior leader minted it: a CTM-minted id ends in a
+    /// ULID ([`IdGenerator#generate`]) whose 48-bit timestamp is the wall-clock millisecond it was minted —
+    /// and dispatched, since the reconciler mints an id only to dispatch it. Its absence count starts at zero
+    /// and its first-listing floor at inheritance: this leader counts only listings it has seen itself, so no
+    /// part of a prior leader's history can shorten the observation.
+    private static InFlightEntry inheritedEntry(NodeId id, long nowNanos, TimeSpan ceiling, int generation) {
+        return InFlightEntry.inFlightEntry(nowNanos - timeSpan(mintAgeMs(id)).millis().nanos(),
+                                           ceiling,
+                                           InFlightState.UNCONFIRMED,
+                                           nowNanos,
+                                           generation);
+    }
+
+    /// Mint times (ULID epoch milliseconds) of the retained ids that are not yet members; ids with no ULID
+    /// carry no mint time and are left out.
+    private static List<Long> unjoinedMintTimes(Set<NodeId> retained, Set<NodeId> currentMembers) {
+        return retained.stream()
+                       .filter(id -> !currentMembers.contains(id))
+                       .map(id -> mintedUlid(id).map(ULID::timestamp)
+                                            .or(-1L))
+                       .filter(mint -> mint >= 0L)
+                       .toList();
+    }
+
+    /// #1786 — the substitute generation survives a leader handover by inference, because what a leader
+    /// inherits is a set of node ids: the retained-dispatch wire carries no per-entry attributes, and the
+    /// provider's answer for an id is only a state (`ReplacementInstanceState`), never labels. A retained
+    /// unjoined id minted more than [`#joinGraceWindow`] after another retained unjoined id's mint is treated
+    /// as a substitute (generation 1) — a substitute is only ever dispatched once the entry it replaces has been
+    /// unjoined for longer than the grace. MISCLASSIFICATION DIRECTION: a genuine second missing slot first
+    /// dispatched more than the grace after another unjoined one is also read as a substitute, so it is never
+    /// discounted and falls back to the pre-#1786 ceiling behaviour — slower to heal, never extra spend. The
+    /// converse (a substitute read as generation 0) needs the original evicted by its ceiling first, which is
+    /// the bound's own window. Ids without a ULID are generation 0.
+    private int inheritedGeneration(NodeId id, List<Long> unjoinedMints) {
+        return mintedUlid(id).map(ulid -> generationForMint(ulid.timestamp(),
+                                                            unjoinedMints))
+                         .or(0);
+    }
+
+    private int generationForMint(long mintMs, List<Long> unjoinedMints) {
+        return unjoinedMints.stream()
+                            .anyMatch(other -> mintMs - other > joinGraceWindow.millis())
+               ? SUBSTITUTE_GENERATION
+               : 0;
+    }
+
+    /// How long ago `id` was minted, in milliseconds, read from the wall clock `ULID#ulid` stamps with (an
+    /// injected test clock here would compare a fake time against a real mint). Bounds:
+    ///   - no parseable ULID suffix (a configured `<prefix>-<ordinal>` id) → 0: nothing says when it was
+    ///     dispatched, so its ceiling restarts at inheritance;
+    ///   - a mint time in the future — this node's clock behind the minter's — → 0, as if minted now.
+    /// No upper bound is needed: a ULID timestamp is non-negative, so the age is at most the wall clock's
+    /// milliseconds since the epoch (≈1.8e12 ms, ≈1.8e18 ns), and the ceiling check subtracts the backdated
+    /// stamp from `nanoTime` modulo 2^64, which recovers exactly that age whatever `nanoTime`'s origin.
+    /// Not guarded: this node's clock running AHEAD of the minter's makes the entry look older by the skew,
+    /// so its ceiling ends early by that much.
+    private static long mintAgeMs(NodeId id) {
+        return mintedUlid(id).map(ulid -> Math.max(System.currentTimeMillis() - ulid.timestamp(),
+                                                   0L))
+                         .or(0L);
     }
 
     /// Deactivate the leader-pinned reconciler. Idempotent. Cancels the pending one-shot
@@ -445,8 +611,37 @@ public final class LeaderReconciler {
         cancelSurplusFollowUp();
         cancelDrainGraceReEval();
         inFlightProvisioning.clear();
+        statusQueriesOutstanding.clear();
+        recordLeadershipLoss();
         deficitSinceNanos = UNSET_NANOS;
+        lastProvisioningDecision = null;
         reachedFullMembership.set(false);
+    }
+
+    /// Operator WARN for M1-class leadership churn: each loss suffered while a core deficit exists is
+    /// stamped, and [`#LEADERSHIP_LOSS_WARN_THRESHOLD`] of them inside [`#LEADERSHIP_LOSS_WARN_WINDOW_NANOS`]
+    /// means the debounce clock (reset on every loss) can never mature, so auto-heal cannot fire. A loss
+    /// with no deficit clears the history — the churn is then not blocking a heal.
+    @Contract
+    private void recordLeadershipLoss() {
+        var now = timeSource.nanoTime();
+        var deficit = effectiveCapacity(membershipFsm.coreCountedMembers()) < configuredCoreCountSupplier.getAsInt();
+
+        synchronized (deficitLeadershipLossNanos) {
+            deficitLeadershipLossNanos.removeIf(stamp -> now - stamp > LEADERSHIP_LOSS_WARN_WINDOW_NANOS);
+            if (!deficit) {
+                deficitLeadershipLossNanos.clear();
+
+                return;
+            }
+
+            deficitLeadershipLossNanos.addLast(now);
+            if (deficitLeadershipLossNanos.size() >= LEADERSHIP_LOSS_WARN_THRESHOLD) {
+                log.warn("LeaderReconciler: leadership lost {} times within {} ms while a core deficit exists — the debounce clock resets on every loss, so auto-heal cannot provision until leadership stabilises",
+                         deficitLeadershipLossNanos.size(),
+                         TimeUnit.NANOSECONDS.toMillis(LEADERSHIP_LOSS_WARN_WINDOW_NANOS));
+            }
+        }
     }
 
     /// Live-event ingress for presence sampler timer-expiry. Stage 6 wires this from the presence sampler
@@ -525,12 +720,41 @@ public final class LeaderReconciler {
         ctm.drainNode(reapedNodeId, DrainReason.JOIN_GRACE_REAP);
     }
 
-    /// Register the consumer that receives every emitted [`ReconcileIntent`]. At E1 the
-    /// wiring layer's consumer just logs; Stage 6+ replaces it with the actual CTM
-    /// provisioning / drain dispatcher.
+    /// TEST observation seam only (#1573): production registers no listener, and the reconciler
+    /// dispatches provisioning / drain to the CTM directly — the intent is a record of a decision
+    /// already acted on, never the trigger for one. Package-private so no production caller can
+    /// mistake it for a wiring point.
     @Contract
-    public void setReconcileListener(Consumer<ReconcileIntent> newListener) {
+    void setReconcileListener(Consumer<ReconcileIntent> newListener) {
         reconcileListener = newListener;
+    }
+
+    /// Verified consensus authority, independent of desired provider capacity. Empty means no evidence.
+    public org.pragmatica.lang.Unit setInstalledVotersSupplier(Supplier<Set<NodeId>> supplier) {
+        installedVotersSupplier.set(some(supplier));
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    private record QuorumEvidence(boolean safe, boolean fullyObserved, int threshold) {}
+
+    /// Unwired fixtures retain their legacy capacity model; a wired empty authority fails closed.
+    private QuorumEvidence quorumEvidence(Set<NodeId> currentMembers, int desiredCapacity) {
+        return installedVotersSupplier.get()
+                                      .map(supplier -> installedQuorumEvidence(currentMembers,
+                                                                               supplier.get()))
+                                      .or(() -> new QuorumEvidence(currentMembers.size() >= quorumThreshold(desiredCapacity),
+                                                                   false,
+                                                                   quorumThreshold(desiredCapacity)));
+    }
+
+    private static QuorumEvidence installedQuorumEvidence(Set<NodeId> currentMembers, Set<NodeId> installed) {
+        int threshold = quorumThreshold(installed.size());
+        long present = installed.stream().filter(currentMembers::contains).count();
+
+        return new QuorumEvidence(!installed.isEmpty() && present >= threshold,
+                                  !installed.isEmpty() && present == installed.size(),
+                                  threshold);
     }
 
     /// Observability — whether this instance currently holds the leader lease.
@@ -540,7 +764,7 @@ public final class LeaderReconciler {
 
     /// Observability — whether the provisioning latch has armed. Starts `false`; latches
     /// `true` the first reconcile pass that observes the cluster at configured quorum
-    /// (`clusterMembershipCount >= quorumThreshold(configuredCoreCount)`, `configuredCoreCount >=
+    /// (a majority of verified installed voter identities is counted, `configuredCoreCount >=
     /// 1`); never resets within a leader term. While unarmed, provisioning is suppressed.
     public boolean isArmedForProvisioning() {
         return armedForProvisioning.get();
@@ -548,7 +772,9 @@ public final class LeaderReconciler {
 
     /// Observability — whether the reached-full-membership latch has set. Starts `false`; latches
     /// `true` the first reconcile pass that observes the cluster at FULL configured membership
-    /// (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >= 1`), or on a
+    /// (`clusterMembershipCount >= configuredCoreCount`, `configuredCoreCount >= 1`), sampled
+    /// full-membership history, or all members of a nonempty verified installed electorate. The
+    /// installed electorate establishes formation independently of target changes. Also latches on a
     /// RE-ELECTION activation (leader term > 1); never resets within a leader term. While `false`
     /// provisioning is suppressed (Bug C cold-start guard — replaces the buggy timer-anchored
     /// grace; membership-unification-spec P5).
@@ -581,16 +807,49 @@ public final class LeaderReconciler {
     }
 
     /// Inject the slice-ownership predicate consulted during drain-victim selection (the
-    /// slice-owner-exclusion guard). `AetherNode` wires this to the deployment layer's authoritative
-    /// `NodeId → active slices` source so a node currently serving load is never drained as
-    /// scale-down / over-provision surplus. `null` resets to the "owns nothing" default (no node
-    /// shielded) so the reconciler degrades to the ephemeral-preference half alone when no real
-    /// source is wired. See the [`#ownsActiveSlices`] field doc for the layering rationale.
+    /// slice-owner-demotion ordering). `AetherNode` wires this to the deployment layer's authoritative
+    /// `NodeId → active slices` source so a node currently serving load is drained as scale-down /
+    /// over-provision surplus only when non-owners cannot cover it (#1488). `null` resets to the
+    /// "owns nothing" default (no node demoted) so the reconciler degrades to the
+    /// ephemeral-preference half alone when no real source is wired. See the [`#ownsActiveSlices`] field doc for the layering rationale.
     @Contract
     public void setOwnsActiveSlices(Predicate<NodeId> predicate) {
         ownsActiveSlices.set(predicate == null
                              ? id -> false
                              : predicate);
+    }
+
+    /// Inject the surge set: members the surplus path must not count as surplus because a committed replacement pairing
+    /// brought them in on purpose (#1543). `null` resets to "no surge".
+    /// What the surge supplier reports now: the replacement pairings' nodes this reconciler counts as capacity. Read-only, for the
+    /// boot test that pins the node's wiring.
+    public Set<NodeId> surgeReplacementsView() {
+        return surgeReplacements.get()
+                                .get();
+    }
+
+    @Contract
+    public void setSurgeReplacements(Supplier<Set<NodeId>> supplier) {
+        surgeReplacements.set(supplier == null
+                              ? Set::of
+                              : supplier);
+    }
+
+    /// Inject the drain-availability guard consulted for slice-owner drain candidates (#1488 owner
+    /// ruling). `AetherNode` wires this to the KV-backed minAvailable check so an owner whose removal
+    /// would drop a hosted slice below its `minAvailable` ACTIVE instances on the remaining nodes is
+    /// never drained. `null` resets to the "always permits" default. See the [`#sliceDrainGuard`]
+    /// field doc.
+    @Contract
+    public void setSliceDrainGuard(BiFunction<NodeId, Set<NodeId>, Option<DrainRefusal>> guard) {
+        sliceDrainGuard.set(guard == null
+                            ? LeaderReconciler::permitsEveryDrain
+                            : guard);
+    }
+
+    /// The default [`#sliceDrainGuard`]: no refusal, so ownership ordering alone decides.
+    private static Option<DrainRefusal> permitsEveryDrain(NodeId candidate, Set<NodeId> remainingNodes) {
+        return none();
     }
 
     /// Observability — the one-shot leader-activation delay, computed once as
@@ -618,10 +877,19 @@ public final class LeaderReconciler {
         return drainSafetyGraceWindow;
     }
 
-    /// Observability — read-only snapshot of the in-flight provisioning map. Stage 6
-    /// will surface this through metrics.
+    /// Observability — read-only snapshot of the in-flight provisioning map: each tracked id to the
+    /// `timeSource.nanoTime()` it is aged from (dispatch; for an entry inherited from a prior leader, its
+    /// mint time where the node id carries one, else inheritance — see [`#inheritedEntry`]).
+    /// Stage 6 will surface this through metrics.
     public Map<NodeId, Long> inFlightProvisioningSnapshot() {
-        return Map.copyOf(inFlightProvisioning);
+        return inFlightProvisioning.entrySet()
+                                   .stream()
+                                   .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, LeaderReconciler::stampOf));
+    }
+
+    private static long stampOf(Map.Entry<NodeId, InFlightEntry> entry) {
+        return entry.getValue()
+                    .sinceNanos();
     }
 
     /// CAS-debounce entry point. First trigger schedules a short-debounced reconcile;
@@ -676,7 +944,7 @@ public final class LeaderReconciler {
     private void runReconcileBody(ReconcileTrigger trigger) {
         var now = timeSource.nanoTime();
 
-        evictExpiredInFlightEntries(now);
+        evictInFlightPastCeiling(now);
         // Core-scoped membership (Wave 2 / W2): only CORE-role counted members enter every
         // count below (deficit vs configuredCoreCount, quorum-safety, drain-victim pool,
         // in-flight fulfillment). A worker can neither fill a core deficit arithmetically nor
@@ -687,13 +955,14 @@ public final class LeaderReconciler {
         // EXACT id the replacement boots under, so once that id appears in `currentMembers` the
         // provision is fulfilled — the node joined under its minted identity and is now a
         // confirmed member. Removing it here keeps the in-flight map promptly accurate (it no
-        // longer lingers in the union until TTL), so membership presence is the authoritative
-        // fulfillment signal; the `× 3` TTL eviction above remains a pure backstop for provisions
-        // that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
+        // longer lingers in the union), so membership presence is the authoritative fulfillment
+        // signal; the provider-state poll and the per-source ceiling eviction above (#1049) remain the
+        // backstop for provisions that never arrive (failed boot). This runs BEFORE computing `effective`/effectiveCapacity
         // so a fulfilled id is never double-counted in the union.
         currentMembers.forEach(inFlightProvisioning::remove);
         var clusterMembershipCount = currentMembers.size();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
+        var authorityEvidence = quorumEvidence(currentMembers, configuredCoreCount);
         // Effective capacity is the SIZE OF THE UNION of confirmed members and in-flight
         // provisioning placeholders — NOT their sum (safety-critical). The identity-match clear
         // above already removes any in-flight key that has become a confirmed member, so a
@@ -706,7 +975,7 @@ public final class LeaderReconciler {
         var effective = effectiveCapacity(currentMembers);
         // Arm-after-first-quorum latch (Bug C; membership-unification-spec P5 — identity-aware
         // reconciler, approximated by a quorum latch). Latch true the first time the cluster is
-        // observed at configured QUORUM (not full membership); never resets. Arming at quorum
+        // observed at installed-electorate QUORUM (not desired capacity); never resets. Arming at quorum
         // rather than full `configuredCoreCount` lets a quorum-holding leader auto-heal after a
         // multi-node kill where only the survivors remain and the dead peers (restart:"no") never
         // return — the process never re-observes full membership, so a full-count latch wedges
@@ -715,27 +984,22 @@ public final class LeaderReconciler {
         // provisioning window is bounded by the leader-activation reconcile delay
         // (nttDepartureTimeout × 1.5), by which time formation has completed. configuredCoreCount
         // must be >= 1 to be armable.
-        if (configuredCoreCount >= 1 && clusterMembershipCount >= quorumThreshold(configuredCoreCount)) {
+        if (configuredCoreCount >= 1 && authorityEvidence.safe()) {
             if (armedForProvisioning.compareAndSet(false, true)) {
                 log.info("Provisioning ARMED at nanoTime={} (clusterMembershipCount={}, configuredCoreCount={}, quorumThreshold={})",
                          now,
                          clusterMembershipCount,
                          configuredCoreCount,
-                         quorumThreshold(configuredCoreCount));
+                         authorityEvidence.threshold());
             }
         }
-        // Reached-full-membership latch (Bug C — cold-start-over is a FACT, not a timer). Sourced
-        // from presence sampler's INDEPENDENT high-water mark ([`PresenceSampler#peakMembershipCount`]), NOT
-        // the per-pass `clusterMembershipCount`: the reconciler is departure-triggered, so its FIRST
-        // pass runs at the post-departure count (e.g. 4/5) and never during the full-membership
-        // window — a per-pass `>= configured` check could therefore never latch (live Docker trace
-        // proved it). presence sampler updates the peak on the 1→full formation growth regardless of reconcile
-        // timing, so the first pass at 4/5 sees peak=5 → latches. Latch true once; never resets.
-        // While false the cluster never reached full — a deficit may be a slow-joining configured
-        // peer, so provisioning is suppressed (COLD_START_NOT_FULL). Once true the cold-start guard
-        // no longer applies: a deficit is a departure, gated only by deficit-debounce +
-        // quorum-safety + the arm latch.
-        if (configuredCoreCount >= 1 && presenceSampler.peakMembershipCount() >= configuredCoreCount) {
+        // A current verified CORE set can reach the old target before the asynchronous sampler.
+        // Latch that evidence now: a subsequent operator increase must not move the formation
+        // threshold beyond an already-formed cluster. The installed electorate also establishes
+        // formation when target updates coalesce before any pass observes the old desired count.
+        // Sampled history still covers departure before
+        // the first reconcile. OBSERVED/unknown-role peers contribute to neither current core count.
+        if (configuredCoreCount >= 1 && (authorityEvidence.fullyObserved() || clusterMembershipCount >= configuredCoreCount || presenceSampler.peakMembershipCount() >= configuredCoreCount)) {
             if (reachedFullMembership.compareAndSet(false, true)) {
                 log.info("Reached full membership at nanoTime={} (peakMembershipCount={}, configuredCoreCount={})",
                          now,
@@ -766,7 +1030,7 @@ public final class LeaderReconciler {
         // separately at each of the three sites below let a same-pass toggle make the decision, the
         // log line, and the #336 snapshot disagree about why a deficit went unfilled.
         var autoHealEnabled = ctm.isAutoHealEnabled();
-        var quorumSafe = clusterMembershipCount >= quorumThreshold(configuredCoreCount);
+        var quorumSafe = authorityEvidence.safe();
         var provisioningPermitted = quorumSafe && provisioningAllowed(now,
                                                                       effective,
                                                                       configuredCoreCount,
@@ -808,8 +1072,8 @@ public final class LeaderReconciler {
         // Deficit-convergence follow-up (H1 / #257 completion — generalizes Fix 2). Armed off the
         // RAW confirmed-member deficit, deliberately ignoring in-flight placeholders: a pass that
         // dispatched (or is masked by in-flight) is only PENDING-resolved, so the follow-up keeps
-        // re-checking until the replacement actually JOINS (or the in-flight TTL evicts it and the
-        // deficit re-provisions). This also covers WITHIN_DEBOUNCE / quorum-unsafe / cold-start
+        // re-checking until the replacement actually JOINS (or its in-flight entry is dropped — a
+        // provider-reported failure or deletion, or the ceiling — and the deficit re-provisions). This also covers WITHIN_DEBOUNCE / quorum-unsafe / cold-start
         // suppressed passes — without it, deaths during a post-churn lull with an UNCHANGED
         // configured size never re-poke the reconciler (live-gate: a deficit sat past the 600s
         // window, then healed in 13s once poked). Runs AFTER the anchor reset above so a
@@ -1005,10 +1269,23 @@ public final class LeaderReconciler {
     /// whose in-flight placeholder has not yet expired is present in both sets; counting it
     /// once (via the union) prevents the inflated-surplus → spurious-drain → quorum-loss
     /// dissolution. Never a sum.
+    ///
+    /// A provider-CONFIRMED entry still unjoined past [`#joinGraceWindow`] is left out of the union (#1783):
+    /// it does not hide the deficit, though it stays in the map until it joins, fails or hits its ceiling.
     private int effectiveCapacity(Set<NodeId> currentMembers) {
         var union = new LinkedHashSet<>(currentMembers);
+        var now = timeSource.nanoTime();
 
-        union.addAll(inFlightProvisioning.keySet());
+        inFlightProvisioning.entrySet()
+                            .stream()
+                            .filter(entry -> entry.getValue()
+                                                  .countsTowardCapacity(now, joinGraceWindow))
+                            .map(Map.Entry::getKey)
+                            .forEach(union::add);
+        // #1543: a committed replacement pairing's replacement is capacity on purpose, joined or not yet. Without it, an
+        // original that dies before its replacement is a member reads as a deficit and auto-heal provisions a second
+        // node for the same seat.
+        union.addAll(surgeReplacements.get().get());
 
         return union.size();
     }
@@ -1052,7 +1329,7 @@ public final class LeaderReconciler {
     }
 
     /// Pick drain victims from the observed member set via the Approach-3 selection (slice-owner
-    /// exclusion + ephemeral-over-configured preference — see [`#selectDrainVictims`]), gated by a
+    /// demotion + ephemeral-over-configured preference — see [`#selectDrainVictims`]), gated by a
     /// HARD FLOOR (safety-critical, symmetric with the provisioning arm-gate). The reconciler must
     /// NEVER drain a confirmed core member below
     /// `configuredCoreCount` in a single pass — doing so drops the cluster below quorum and
@@ -1075,7 +1352,12 @@ public final class LeaderReconciler {
     /// young ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
     /// silently dropped. Internal — observers see only the count via
     /// [`ReconcileIntent#drainCount`].
-    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effective) {
+    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers,
+                                            int configuredCoreCount,
+                                            int effectiveWithSurge) {
+        var surge = surgeReplacements.get().get().size();
+        var effective = effectiveWithSurge - surge;
+
         if (effective <= configuredCoreCount) {
             return Set.of();
         }
@@ -1088,47 +1370,106 @@ public final class LeaderReconciler {
             return Set.of();
         }
 
-        var victims = selectDrainVictims(currentMembers, drainCount);
+        var refusals = new ArrayList<DrainRefusal>();
+        var victims = selectDrainVictims(currentMembers, drainCount, refusals);
 
         if (victims.size() < drainCount) {
-            deferYoungSurplusDrain(currentMembers, drainCount - victims.size());
+            deferYoungSurplusDrain(currentMembers, drainCount - victims.size(), refusals);
         }
 
         return victims;
     }
 
-    /// Victim selection (Approach 3 — slice-owner exclusion + ephemeral preference). Two guards
-    /// applied in order, then a stable cap at `drainCount`:
+    /// Victim selection (Approach 3 — slice-owner demotion + ephemeral preference, leader last).
+    /// Orderings applied in turn, then a stable cap at `drainCount`:
     ///
-    /// 1. **Slice-owner exclusion** ([`#ownsActiveSlices`]): a node currently serving / owning
-    ///    active deployed slices is removed from the candidate pool ENTIRELY — never a victim,
-    ///    regardless of provenance or age. Draining a slice owner under load drops the slices it
-    ///    hosts (the 7→5 scale-down 96%-error incident this fix addresses).
-    /// 2. **Ephemeral preference** ([`#isEphemeral`]): the remaining pool is partitioned into
-    ///    EPHEMERAL (CTM-provisioned, id carries a ULID suffix) and CONFIGURED (compose-seeded,
-    ///    `<prefix>-<ordinal>`) candidates. Victims are drawn from the ephemeral partition FIRST
-    ///    (the nodes added for scale-up), falling back to configured seeds only when ephemeral
-    ///    candidates cannot cover the surplus — so a scale-down drains the ephemeral fleet and
-    ///    preserves the originally-configured cluster.
+    /// 1. **Slice-owner demotion** ([`#ownsActiveSlices`], #1488): a node currently serving /
+    ///    owning active deployed slices is drawn from ONLY after every eligible non-owner — slice
+    ///    ownership LOWERS a node's preference, it never excludes it. Preferring non-owners keeps a
+    ///    scale-down from moving slices it does not have to move (the 7→5 scale-down 96%-error
+    ///    incident). Excluding owners outright was the #1488 defect: once every member hosted a
+    ///    slice (an autoscaler scale-up under load puts an instance on each node) the pool was empty
+    ///    on every pass and the surplus was deferred forever.
+    /// 2. **Availability guard on owners** ([`#sliceDrainGuard`], #1488 owner ruling): draining an
+    ///    owner is NOT make-before-break — the drained node stops accepting work and exits on its
+    ///    own drain grace, independently of the deployment manager's eviction loop, so every slice it
+    ///    hosts loses one instance until the deficit is re-placed. An owner is therefore taken only
+    ///    if the guard confirms each hosted slice keeps at least its `minAvailable` ACTIVE instances
+    ///    on the [`#remainingNodes`] — which excludes non-members, members already DEPARTING under an
+    ///    earlier pass's DRAIN, and the victims already selected in this pass; a refused owner is
+    ///    skipped and its refusal recorded in `refusals`.
+    /// 3. **Ephemeral preference** ([`#isEphemeral`]): within each ownership tier the pool is
+    ///    partitioned into EPHEMERAL (CTM-provisioned, id carries a ULID suffix) and CONFIGURED
+    ///    (compose-seeded, `<prefix>-<ordinal>`) candidates. Victims are drawn from the ephemeral
+    ///    partition FIRST (the nodes added for scale-up), falling back to configured seeds only when
+    ///    ephemeral candidates cannot cover the surplus — so a scale-down drains the ephemeral fleet
+    ///    and preserves the originally-configured cluster.
+    /// 4. **Leader last** ([`PresenceSampler#self`], #1089 option B): the local node — the leader,
+    ///    since only the leader reconciles — is held out of every tier above and considered only
+    ///    after all of them, under the same tier rules. It is a tie-break, never an exclusion: the
+    ///    leader is chosen only when no other member can cover the surplus.
     ///
-    /// Maturity-grace resolution: ephemeral candidates (non-slice-owners by guard 1) are drainable
-    /// regardless of age — they own nothing, so there is no role-propagation-into-ownership race to
-    /// guard against. The drain-safety grace ([`#pastDrainSafetyGrace`]) is applied ONLY to the
-    /// configured-seed partition, where a just-joined seed's role labels may still be in flight.
-    /// This is what stops the grace from forcing seed-draining (the compounding half of the bug).
-    /// Within each partition the legacy stable reversed-id iteration order is preserved for
-    /// determinism. A configured member with no readable age is treated as mature (legacy behaviour).
-    private Set<NodeId> selectDrainVictims(Set<NodeId> currentMembers, int drainCount) {
-        var candidates = currentMembers.stream()
-                                       .filter(this::doesNotOwnActiveSlices)
-                                       .sorted(Comparator.comparing(NodeId::id).reversed())
-                                       .toList();
-        var ordered = new LinkedHashSet<NodeId>();
+    /// Maturity-grace resolution: ephemeral NON-owners are drainable regardless of age — they own
+    /// nothing, so there is no role-propagation-into-ownership race to guard against. Every other
+    /// partition (configured non-owners, and both owner partitions) passes the drain-safety grace
+    /// ([`#pastDrainSafetyGrace`]) first: a just-joined seed's role labels may still be in flight,
+    /// and an ephemeral owner no longer has the "owns nothing" argument that exempts its non-owner
+    /// sibling. Candidates the grace or the availability guard hold back are deferred, never dropped
+    /// ([`#deferYoungSurplusDrain`]). Within each partition the legacy stable reversed-id iteration
+    /// order is preserved for determinism. A member with no readable age is treated as mature
+    /// (legacy behaviour).
+    private Set<NodeId> selectDrainVictims(Set<NodeId> currentMembers, int drainCount, List<DrainRefusal> refusals) {
+        var self = presenceSampler.self();
+        var others = currentMembers.stream()
+                                   .filter(id -> !id.equals(self))
+                                   .sorted(Comparator.comparing(NodeId::id).reversed())
+                                   .toList();
+        var victims = new LinkedHashSet<NodeId>();
 
-        appendVictims(ordered, ephemeralCandidates(candidates), drainCount);
-        appendVictims(ordered, matureConfiguredCandidates(candidates), drainCount);
+        appendTieredVictims(victims, others, drainCount, refusals);
+        appendTieredVictims(victims, selfIfMember(currentMembers, self), drainCount, refusals);
 
-        return Set.copyOf(ordered);
+        return Set.copyOf(victims);
+    }
+
+    /// The leader's own id as a one-element candidate list when it is a member, else empty — the
+    /// final, leader-last pass of [`#selectDrainVictims`].
+    private static List<NodeId> selfIfMember(Set<NodeId> currentMembers, NodeId self) {
+        return currentMembers.contains(self)
+               ? List.of(self)
+               : List.of();
+    }
+
+    /// Append victims from `candidates` in tier order — ephemeral non-owners, mature configured
+    /// non-owners, then the guarded owner tier (mature ephemeral, mature configured) — up to the
+    /// `drainCount` cap. Owners the guard refuses are recorded in `refusals`.
+    @Contract
+    private void appendTieredVictims(Set<NodeId> victims,
+                                     List<NodeId> candidates,
+                                     int drainCount,
+                                     List<DrainRefusal> refusals) {
+        var nonOwners = nonSliceOwners(candidates);
+        var owners = sliceOwners(candidates);
+
+        appendVictims(victims, ephemeralCandidates(nonOwners), drainCount);
+        appendVictims(victims, matureConfiguredCandidates(nonOwners), drainCount);
+        appendGuardedVictims(victims, matureEphemeralCandidates(owners), drainCount, refusals);
+        appendGuardedVictims(victims, matureConfiguredCandidates(owners), drainCount, refusals);
+    }
+
+    /// The members that own no active slices — the preferred victim tier.
+    private List<NodeId> nonSliceOwners(List<NodeId> members) {
+        return members.stream()
+                      .filter(this::doesNotOwnActiveSlices)
+                      .toList();
+    }
+
+    /// The members that own active slices — the fallback victim tier (#1488), drawn from only when
+    /// the non-owners cannot cover the surplus.
+    private List<NodeId> sliceOwners(List<NodeId> members) {
+        return members.stream()
+                      .filter(this::isSliceOwner)
+                      .toList();
     }
 
     /// Append candidates to the accumulating victim set up to the `drainCount` cap, preserving the
@@ -1144,11 +1485,59 @@ public final class LeaderReconciler {
         }
     }
 
-    /// The EPHEMERAL (CTM-provisioned) partition of the candidate pool — drainable regardless of
-    /// age (they own no slices by guard 1, so the maturity grace does not apply).
+    /// Owner-tier counterpart of [`#appendVictims`]: each candidate is added only when the
+    /// [`#sliceDrainGuard`] finds no hosted slice that draining it — on top of the victims accumulated
+    /// so far — would drop below `minAvailable`; otherwise its refusal is appended to `refusals`.
+    /// Order-sensitive by design: the remaining-node set shrinks with the growing victim set, so a
+    /// second owner sharing a slice with an earlier victim is refused.
+    @Contract
+    private void appendGuardedVictims(Set<NodeId> victims,
+                                      List<NodeId> candidates,
+                                      int drainCount,
+                                      List<DrainRefusal> refusals) {
+        var liveNodes = membershipFsm.countedMembers();
+
+        for (var id : candidates) {
+            if (victims.size() >= drainCount) {
+                return;
+            }
+
+            sliceDrainGuard.get()
+                           .apply(id,
+                                  remainingNodes(liveNodes, victims, id))
+                           .apply(() -> victims.add(id),
+                                  refusals::add);
+        }
+    }
+
+    /// The nodes whose ACTIVE slice instances still count if `candidate` is drained: the FSM's
+    /// counted members (MEMBER + SUSPECT, workers included — slices are placed on workers too), minus
+    /// this pass's `victims` and `candidate`. The counted set is the reconciler's existing record of an
+    /// outstanding drain: every DRAIN it dispatches reaches `MembershipFsm#onDrainRequested` through the
+    /// CTM drain sink, which moves the target to DEPARTING, and DEPARTING does not count. So an earlier
+    /// pass's victim that has not yet left — whose `NodeArtifact` entries survive until DECOMMISSIONED —
+    /// is not counted as capacity, and neither is a node that has already left membership.
+    private static Set<NodeId> remainingNodes(Set<NodeId> liveNodes, Set<NodeId> victims, NodeId candidate) {
+        return liveNodes.stream()
+                        .filter(id -> !id.equals(candidate))
+                        .filter(id -> !victims.contains(id))
+                        .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// The EPHEMERAL (CTM-provisioned) partition of the NON-OWNER tier — drainable regardless of
+    /// age (they own no slices, so the maturity grace does not apply).
     private List<NodeId> ephemeralCandidates(List<NodeId> candidates) {
         return candidates.stream()
                          .filter(this::isEphemeral)
+                         .toList();
+    }
+
+    /// The EPHEMERAL partition of the SLICE-OWNER tier that has also passed the drain-safety grace —
+    /// an owner lacks the "owns nothing" argument that exempts [`#ephemeralCandidates`] from it.
+    private List<NodeId> matureEphemeralCandidates(List<NodeId> candidates) {
+        return candidates.stream()
+                         .filter(this::isEphemeral)
+                         .filter(this::pastDrainSafetyGrace)
                          .toList();
     }
 
@@ -1161,11 +1550,17 @@ public final class LeaderReconciler {
                          .toList();
     }
 
-    /// Negation of [`#ownsActiveSlices`] for stream filtering — `true` when the node is eligible
-    /// to be a drain victim on the slice-ownership axis (owns no active slices).
+    /// Whether the node currently owns active slices, read fresh from the injected
+    /// [`#ownsActiveSlices`] predicate — places it in the fallback victim tier.
+    private boolean isSliceOwner(NodeId id) {
+        return ownsActiveSlices.get()
+                               .test(id);
+    }
+
+    /// Negation of [`#isSliceOwner`] for stream filtering — `true` when the node belongs to the
+    /// preferred victim tier on the slice-ownership axis (owns no active slices).
     private boolean doesNotOwnActiveSlices(NodeId id) {
-        return ! ownsActiveSlices.get()
-                                 .test(id);
+        return ! isSliceOwner(id);
     }
 
     /// Whether `id` is an EPHEMERAL (CTM-provisioned / bootstrap-minted) node rather than a
@@ -1178,14 +1573,20 @@ public final class LeaderReconciler {
     /// cross-layer dependency: `ULID` is the same utility `NodeId`/`IdGenerator` already use to
     /// MINT these ids.
     private boolean isEphemeral(NodeId id) {
+        return mintedUlid(id).isPresent();
+    }
+
+    /// The ULID a minted id ends in (`<prefix>-<ULID>`), or empty for any other shape — the id-shape
+    /// contract [`#isEphemeral`] describes. Its timestamp is the id's mint time ([`#mintAgeMs`]).
+    private static Option<ULID> mintedUlid(NodeId id) {
         var raw = id.id();
         var lastDash = raw.lastIndexOf('-');
 
         if (lastDash < 0 || lastDash == raw.length() - 1) {
-            return false;
+            return none();
         }
 
-        return ULID.parse(raw.substring(lastDash + 1)).isSuccess();
+        return ULID.parse(raw.substring(lastDash + 1)).option();
     }
 
     /// Whether `id`'s membership age has reached the drain-safety grace window. Unknown age
@@ -1199,18 +1600,40 @@ public final class LeaderReconciler {
     /// Deferral of the un-covered surplus shortfall: WARN with the young candidates' ages (the
     /// operator-facing trace of WHY the surplus was not fully drained) and arm a single
     /// follow-up reconcile for when the oldest young candidate matures. The shortfall can arise
-    /// from two eligibility filters — a configured seed still inside the drain-safety grace, OR
-    /// every remaining surplus node being shielded as a slice owner — and either way the surplus
-    /// is stable-state (no SWIM edge re-fires the reconciler), so this never silently drops it: the
-    /// follow-up re-evaluates after the grace window (when seeds mature and/or slice ownership may
-    /// have shifted), bounded and deduped exactly like the deficit follow-up.
+    /// from two eligibility filters — a remaining candidate (a configured seed, or a slice owner of
+    /// either kind) still inside the drain-safety grace, OR a slice owner refused by the
+    /// availability guard because draining it would drop a hosted slice below `minAvailable`
+    /// (#1488) — and the surplus is stable-state (no SWIM edge re-fires the reconciler), so this
+    /// never silently drops it: the follow-up re-evaluates after the oldest young candidate matures,
+    /// or after the full grace window when none is young (when seeds mature and/or slice placement
+    /// may have shifted), bounded and deduped exactly like the deficit follow-up.
+    ///
+    /// Each owner the availability guard refused is named in the WARN with the slice that held it
+    /// back, the ACTIVE instances that slice would keep on the remaining nodes, and its `minAvailable`,
+    /// so an operator can see which slice to add capacity to or lower `minAvailable` for.
     @Contract
-    private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount) {
-        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or shielded as active-slice owners; youngAgesMs={}",
+    private void deferYoungSurplusDrain(Set<NodeId> currentMembers, int deferredCount, List<DrainRefusal> refusals) {
+        log.warn("LeaderReconciler deferring surplus drain of {} member(s): remaining candidates are either younger than the drain-safety grace ({} ms — role propagation may still be in flight) or slice owners whose removal would drop a hosted slice below minAvailable; youngAgesMs={}, minAvailableRefusals=[{}]",
                  deferredCount,
                  drainSafetyGraceWindow.millis(),
-                 youngMemberAgesMs(currentMembers));
+                 youngMemberAgesMs(currentMembers),
+                 describeRefusals(refusals));
         armDrainGraceReEval(currentMembers);
+    }
+
+    /// One `owner=…, artifact=…, remainingActive=…, minAvailable=…` entry per refusal, `; `-separated,
+    /// for the deferral WARN. Pure formatting.
+    private static String describeRefusals(List<DrainRefusal> refusals) {
+        return refusals.stream()
+                       .map(LeaderReconciler::describeRefusal)
+                       .collect(Collectors.joining("; "));
+    }
+
+    private static String describeRefusal(DrainRefusal refusal) {
+        return REFUSAL_FORMAT.formatted(refusal.owner().id(),
+                                        refusal.artifact().asString(),
+                                        refusal.remainingActive(),
+                                        refusal.minAvailable());
     }
 
     /// Ages (ms) of the still-young members in `currentMembers` (age readable AND below the
@@ -1290,12 +1713,36 @@ public final class LeaderReconciler {
                      peersToProvision);
         }
 
-        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos, placeholder, currentMembers));
+        var generation = substituteGeneration(nowNanos);
+
+        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos,
+                                                                        placeholder,
+                                                                        currentMembers,
+                                                                        generation));
+    }
+
+    /// #1786 — a provision dispatched while a discounted (unjoined past the join grace) entry is still in flight
+    /// is a SUBSTITUTE for it: generation 1. Every other dispatch — the first, or the re-dispatch after the
+    /// ceiling evicted the stale entry — is generation 0.
+    private int substituteGeneration(long nowNanos) {
+        return inFlightProvisioning.values()
+                                   .stream()
+                                   .anyMatch(entry -> entry.isDiscounted(nowNanos, joinGraceWindow))
+               ? SUBSTITUTE_GENERATION
+               : 0;
     }
 
     @Contract
-    private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers) {
-        inFlightProvisioning.put(placeholder, nowNanos);
+    private void dispatchSingleProvision(long nowNanos,
+                                         NodeId placeholder,
+                                         Set<NodeId> currentMembers,
+                                         int generation) {
+        inFlightProvisioning.put(placeholder,
+                                 InFlightEntry.inFlightEntry(nowNanos,
+                                                             ctm.replacementCeiling(NodeRole.CORE),
+                                                             InFlightState.DISPATCHING,
+                                                             nowNanos,
+                                                             generation));
         armInFlightSweep();
         // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
@@ -1306,7 +1753,9 @@ public final class LeaderReconciler {
         //
         // Disposition handling (auto-heal-wedge fix): the placeholder was stamped above BEFORE the
         // call, so effectiveCapacity already counts it. Keep it ONLY when a VM is genuinely coming.
-        //   - Dispatched (success, real boot) → KEEP the placeholder; a VM is on its way.
+        //   - Dispatched (success, real boot) → KEEP the placeholder; a VM is on its way. The create call
+        //     has returned, so the entry leaves DISPATCHING and the status poll starts asking the
+        //     provider about it (#1049). While DISPATCHING only the ceiling bounds it.
         //   - Deferred (success, NO boot: circuit-open or no-healthy-peers) → REMOVE it; nothing is
         //     coming, so the raw deficit must stay visible for the next tick to re-poke (a retained
         //     placeholder would mask the deficit and permanently wedge auto-heal once the breaker
@@ -1317,7 +1766,50 @@ public final class LeaderReconciler {
                                  currentMembers,
                                  NodeRole.CORE)
            .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
-           .onFailure(_ -> inFlightProvisioning.remove(placeholder));
+           .onFailure(cause -> reapFailedProvision(placeholder, cause));
+    }
+
+    /// #1111 — a failed create is a drop like the other three, with one exception: a failure that PROVES no instance was made (a capacity
+    /// refusal in every zone, the node cap, a refused fleet-capacity reservation) reaps nothing. Every other failure is AMBIGUOUS, because
+    /// the providers report a readiness timeout, a 5xx after the provider accepted, a lost response and a failed tag as an ordinary provision
+    /// failure while the instance exists and bills: the manager looks the instance up by its label and terminates it, or confirms it absent. Only
+    /// the call that actually removes the entry acts, so a placeholder the ceiling already dropped is not reaped twice.
+    @Contract
+    private void reapFailedProvision(NodeId placeholder, Cause cause) {
+        Option.option(inFlightProvisioning.remove(placeholder)).onPresent(entry -> settleFailedProvision(placeholder,
+                                                                                                         cause));
+    }
+
+    private void settleFailedProvision(NodeId placeholder, Cause cause) {
+        if (provesNoInstance(cause)) {
+            log.warn("LeaderReconciler in-flight replacement {} dropped: the provider created no instance, so nothing is reaped: {}",
+                     placeholder,
+                     cause.message());
+
+            return;
+        }
+
+        reapDropped(placeholder, "its create failed: " + cause.message(), ClusterTopologyManager.DroppedInstance.MAYBE);
+    }
+
+    private static ClusterTopologyManager.DroppedInstance knownInstance(boolean listed) {
+        return listed
+               ? ClusterTopologyManager.DroppedInstance.LISTED
+               : ClusterTopologyManager.DroppedInstance.CREATED;
+    }
+
+    /// The causes that state no instance was made: `CapacityUnavailable` (Hetzner `resource_unavailable`, AWS `InsufficientInstanceCapacity`, and
+    /// the manager's all-zones-exhausted refusal), `NodeCapExceeded` (the fleet cap, checked before the create call) and the fleet-capacity
+    /// refusal of `CapacityControlledLifecycle` ("no provider create was dispatched").
+    private static boolean provesNoInstance(Cause cause) {
+        return cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded || cause == CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE;
+    }
+
+    /// #1111 — every drop of an in-flight replacement hands its instance to the manager's confirmed reap (bounded, confirmed, operator-visible
+    /// when unconfirmed), which never terminates a node that shows life. `knowledge` says what is known of the instance: listed by the provider, only created, or possibly never made.
+    @Contract
+    private void reapDropped(NodeId id, String reason, ClusterTopologyManager.DroppedInstance knowledge) {
+        ctm.reapDroppedReplacement(id, reason, knowledge);
     }
 
     /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
@@ -1327,8 +1819,22 @@ public final class LeaderReconciler {
     private void reconcileInFlightForDisposition(NodeId placeholder, ProvisionDisposition disposition) {
         switch (disposition) {
             case ProvisionDisposition.Deferred _ -> inFlightProvisioning.remove(placeholder);
-            case ProvisionDisposition.Dispatched _ -> {}
+            case ProvisionDisposition.Dispatched _ -> markDispatched(placeholder);
         }
+    }
+
+    /// #1049 — a Dispatched provision's create call has returned, so the provider can now be asked about
+    /// the instance: DISPATCHING → UNCONFIRMED, pollable from now. Its first-listing floor starts here, never
+    /// at dispatch: a slow create-and-readiness wait says nothing about how far the provider's listing lags.
+    /// Guarded by `replace(key, expected, next)` so an entry the ceiling already evicted, or membership
+    /// already fulfilled, is never resurrected.
+    @Contract
+    private void markDispatched(NodeId placeholder) {
+        Option.option(inFlightProvisioning.get(placeholder))
+              .filter(InFlightEntry::isDispatching)
+              .onPresent(entry -> inFlightProvisioning.replace(placeholder,
+                                                               entry,
+                                                               entry.pollableFrom(timeSource.nanoTime())));
     }
 
     @Contract
@@ -1341,20 +1847,44 @@ public final class LeaderReconciler {
         ctm.drainNode(peerId, DrainReason.OVERPROVISION_PARTITION_HEAL);
     }
 
+    /// #1049 — drop every in-flight entry older than its own per-source ceiling. The one time bound left,
+    /// applied whatever the provider reports, so neither an instance stuck booting nor a provider that
+    /// cannot answer holds a slot forever. Cheap (no provider call), so it runs on every reconcile pass
+    /// as well as on the sweep tick.
     @Contract
-    private void evictExpiredInFlightEntries(long nowNanos) {
-        var expiryThresholdNanos = inFlightExpiry.nanos();
-
-        inFlightProvisioning.entrySet().removeIf(entry -> nowNanos - entry.getValue() > expiryThresholdNanos);
+    private void evictInFlightPastCeiling(long nowNanos) {
+        inFlightProvisioning.entrySet()
+                            .removeIf(entry -> isPastCeilingLogged(nowNanos,
+                                                                   entry.getKey(),
+                                                                   entry.getValue()));
     }
 
-    /// Arm a single self-rescheduling one-shot sweep that purges expired in-flight provisioning
-    /// entries. The periodic full-reconcile tick was deliberately removed (it caused over-
-    /// provisioning storms); this sweep is NOT that tick — it fires ONLY while in-flight entries
-    /// exist and self-cancels once the map drains. It exists for the case where a provisioned
-    /// replacement boots then dies before reaching READY: the SWIM/QUIC churn that would re-enter
-    /// the event-triggered reconcile stops, so without this sweep the placeholder never expires and
-    /// the deficit is never re-seen. Idempotent: at most one outstanding sweep future via the
+    private boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
+        if (!entry.isPastCeiling(nowNanos)) {
+            return false;
+        }
+
+        log.info("LeaderReconciler dropping in-flight replacement {}: still unjoined after its {} ms replacement ceiling (state={}) — the deficit re-opens",
+                 id,
+                 entry.ceiling().millis(),
+                 entry.state());
+        reapDropped(id,
+                    "still unjoined after its " + entry.ceiling().millis()
+                   + " ms replacement ceiling (state=" + entry.state()
+                   + ")",
+                    knownInstance(entry.state() == InFlightState.CONFIRMED));
+
+        return true;
+    }
+
+    /// Arm a single self-rescheduling one-shot sweep over the in-flight provisioning entries. The
+    /// periodic full-reconcile tick was deliberately removed (it caused over-provisioning storms);
+    /// this sweep is NOT that tick — it fires ONLY while in-flight entries exist and self-cancels once
+    /// the map drains. It exists for the case where a provisioned replacement boots then dies before
+    /// reaching READY: the SWIM/QUIC churn that would re-enter the event-triggered reconcile stops, so
+    /// without this sweep the placeholder would never be re-examined and the deficit never re-seen.
+    /// Each tick evicts entries past their ceiling and polls the provider (#1049), at
+    /// [`#inFlightPollInterval`] spacing. Idempotent: at most one outstanding sweep future via the
     /// null-check + CAS guard, so a concurrent `dispatchSingleProvision` cannot orphan a timer.
     @Contract
     private void armInFlightSweep() {
@@ -1362,18 +1892,18 @@ public final class LeaderReconciler {
             return;
         }
 
-        var future = scheduler.schedule(this::runInFlightSweep, inFlightExpiry);
+        var future = scheduler.schedule(this::runInFlightSweep, inFlightPollInterval);
 
         if (!inFlightSweepFutureRef.compareAndSet(null, future)) {
             future.cancel(false);
         }
     }
 
-    /// Sweep tick: purge expired in-flight entries, re-trigger reconcile if a slot was reclaimed
-    /// (so the deficit is re-evaluated), and re-arm only while in-flight entries remain. Re-arms
-    /// via [`#armInFlightSweep`] (NOT a bare ref set) so a concurrently-armed future is never
-    /// orphaned — the ref is nulled at the top, then `armInFlightSweep` arms cleanly or no-ops if a
-    /// concurrent dispatch already armed.
+    /// Sweep tick: evict entries past their ceiling (re-triggering reconcile if a slot was reclaimed,
+    /// so the deficit is re-evaluated), poll the provider for the rest, and re-arm only while in-flight
+    /// entries remain. Re-arms via [`#armInFlightSweep`] (NOT a bare ref set) so a concurrently-armed
+    /// future is never orphaned — the ref is nulled at the top, then `armInFlightSweep` arms cleanly or
+    /// no-ops if a concurrent dispatch already armed.
     @Contract
     private void runInFlightSweep() {
         inFlightSweepFutureRef.set(null);
@@ -1383,14 +1913,103 @@ public final class LeaderReconciler {
 
         var before = inFlightProvisioning.size();
 
-        evictExpiredInFlightEntries(timeSource.nanoTime());
+        evictInFlightPastCeiling(timeSource.nanoTime());
         if (inFlightProvisioning.size() < before) {
             triggerReconcile(ReconcileTrigger.NTT_FIRE);
         }
 
+        pollInFlightInstanceStates();
         if (!inFlightProvisioning.isEmpty()) {
             armInFlightSweep();
         }
+    }
+
+    /// #1049 — ask the provider about every in-flight entry whose create call has returned. A
+    /// DISPATCHING entry is skipped (its create may not have happened yet, so an empty listing would
+    /// say nothing), and so is an entry whose previous query is still outstanding (single-flight).
+    @Contract
+    private void pollInFlightInstanceStates() {
+        inFlightProvisioning.forEach(this::pollInstanceStateIfDue);
+    }
+
+    /// The query's failure channel is not observed here: [`ClusterTopologyManager#replacementInstanceState`]
+    /// answers an unanswerable query with UNKNOWN rather than failing, and UNKNOWN changes nothing —
+    /// so a failure that escaped that contract leaves the entry exactly as UNKNOWN would, bounded by
+    /// the ceiling.
+    @Contract
+    private void pollInstanceStateIfDue(NodeId id, InFlightEntry entry) {
+        if (entry.isDispatching() || !statusQueriesOutstanding.add(id)) {
+            return;
+        }
+
+        ctm.replacementInstanceState(id)
+           .onResult(_ -> statusQueriesOutstanding.remove(id))
+           .onSuccess(state -> applyInstanceState(id, entry, state));
+    }
+
+    /// #1049 — act on one provider answer. Every transition is guarded against the entry the query was
+    /// issued for (`replace`/`remove` with the expected value), so an answer arriving after the entry was
+    /// fulfilled by membership, evicted by the ceiling, or cleared by deactivation changes nothing.
+    ///   - PRESENT → keep, and mark CONFIRMED: the instance has now been seen.
+    ///   - FAILED → drop and re-trigger: the provider reports the boot failed.
+    ///   - ABSENT → drop and re-trigger when CONFIRMED (an instance already seen is gone). A never-seen
+    ///     absence is counted, and is a deletion only once the count and the floor both say so — see
+    ///     [`#computeRequiredAbsentListings`]. Until then it may be a listing that lags creation.
+    ///   - UNKNOWN → keep, and do not count: a listing that failed, or a status the provider could not
+    ///     state, is no evidence of absence. The ceiling is the only bound.
+    /// A dropped entry re-opens the raw deficit, which re-ages past the normal deficit debounce before the
+    /// next dispatch (the anchor was reset when this replacement was dispatched).
+    @Contract
+    private void applyInstanceState(NodeId id, InFlightEntry polled, ReplacementInstanceState state) {
+        switch (state) {
+            case PRESENT -> inFlightProvisioning.replace(id, polled, polled.withState(InFlightState.CONFIRMED));
+            case FAILED -> dropInFlight(id, polled, state);
+            case ABSENT -> recordAbsence(id, polled);
+            case UNKNOWN -> {}
+        }
+    }
+
+    /// An ABSENT answer is a deletion for an instance already listed. For a never-listed one it is counted —
+    /// through a guarded `replace`, so two answers issued for the same polled entry count once — and it is a
+    /// deletion only when the count reaches [`#requiredAbsentListings`] and [`#firstListingFloor`] has passed
+    /// since the entry became pollable.
+    @Contract
+    private void recordAbsence(NodeId id, InFlightEntry polled) {
+        if (polled.state() == InFlightState.CONFIRMED) {
+            dropInFlight(id, polled, ReplacementInstanceState.ABSENT);
+
+            return;
+        }
+
+        var counted = polled.withAbsentListing();
+
+        if (isEstablishedDeletion(counted)) {
+            dropInFlight(id, polled, ReplacementInstanceState.ABSENT);
+
+            return;
+        }
+
+        inFlightProvisioning.replace(id, polled, counted);
+    }
+
+    private boolean isEstablishedDeletion(InFlightEntry counted) {
+        return counted.absentListings() >= requiredAbsentListings && counted.isPollableFor(timeSource.nanoTime(),
+                                                                                           firstListingFloor);
+    }
+
+    @Contract
+    private void dropInFlight(NodeId id, InFlightEntry polled, ReplacementInstanceState state) {
+        if (!inFlightProvisioning.remove(id, polled)) {
+            return;
+        }
+
+        log.info("LeaderReconciler dropping in-flight replacement {}: provider reports {} — the deficit re-opens and re-dispatches after the deficit debounce",
+                 id,
+                 state);
+        reapDropped(id,
+                    "the provider reports " + state,
+                    knownInstance(state == ReplacementInstanceState.FAILED || polled.state() == InFlightState.CONFIRMED));
+        triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 
     /// Arm the deficit-convergence follow-up (H1 / #257 completion) when this pass ended with
@@ -1542,15 +2161,45 @@ public final class LeaderReconciler {
         return timeSpan(splitTimeout.nanos() * 3 / 2).nanos();
     }
 
-    /// In-flight provisioning entries expire at `nttDepartureTimeout × 3`. This window is
-    /// decoupled from (and deliberately longer than) the `× 1.5` leader-activation quiesce
-    /// delay: an in-flight entry must outlive a freshly provisioned node's WORST-CASE
-    /// time-to-stable-membership (container boot + JVM start + SWIM up-hysteresis), which can
-    /// run to tens of seconds. If the entry expired first, the reconciler would forget the
-    /// node it is still waiting on, re-observe the same deficit, and re-provision a phantom
-    /// replacement — the auto-heal provisioning storm this expiry exists to prevent.
-    private static TimeSpan computeInFlightExpiry(TimeSpan splitTimeout) {
-        return timeSpan(splitTimeout.nanos() * 3).nanos();
+    /// Status-poll cadence for in-flight replacements (#1049) = `nttDepartureTimeout` (×1; 15s at the
+    /// default). One provider listing per in-flight entry per interval, only while entries exist, only on
+    /// the leader, single-flight per entry, and never from the reconcile pass — whose triggers can burst —
+    /// so a heal of a few nodes costs a few listings a minute. Tied to the single membership timing
+    /// constant: a provider-reported failure is seen within one interval and re-dispatched after one
+    /// more (the deficit debounce). This is NOT a lifetime: an entry the provider reports booting is
+    /// kept across any number of intervals, up to its ceiling. (It replaces the former `× 3` expiry,
+    /// which was a lifetime and was shorter than a cloud replacement's time to join.)
+    private static TimeSpan computeInFlightPollInterval(TimeSpan splitTimeout) {
+        return splitTimeout;
+    }
+
+    /// Consecutive successful listings that must omit a never-listed replacement before it counts as deleted
+    /// (#1049) = ⌈first-listing floor ÷ status-poll interval⌉, which is 12 at the default 3-minute floor
+    /// ([`SourceProfile#REPLACEMENT_FIRST_LISTING_FLOOR`], where the floor is derived) and 15s interval.
+    ///
+    /// The guarantee, with the floor: a replacement the provider has never listed is re-dispatched only once
+    /// BOTH at least this many successful listings since it became pollable (its create call resolved, or a
+    /// new leader inherited it) have omitted it, AND the floor has passed since then. A listing that failed,
+    /// or a status the provider could not state, counts toward neither and does not reset the count (it is
+    /// not a successful listing, so it does not break a run of them); a listing that shows the instance ends
+    /// the count for good. So a listing that lags a create by less than the floor never mints a duplicate,
+    /// however long the create itself took, and a provider outage cannot shorten the observation: without
+    /// successful listings only the ceiling bounds the entry. Deriving the count from the floor makes the two
+    /// agree when every poll succeeds on the grid; the count binds when listings fail or run slower than the
+    /// interval, the floor when they land off the grid. Always at least one, since both spans are positive.
+    private static int computeRequiredAbsentListings(TimeSpan firstListingFloor, TimeSpan inFlightPollInterval) {
+        return (int) Math.ceilDiv(firstListingFloor.nanos(), inFlightPollInterval.nanos());
+    }
+
+    /// Join grace = `nttDepartureTimeout × 6` (90s at the 15s default), configurable through `split_timeout` like
+    /// its neighbours (#1783). A cloud replacement takes 50–63s from mint to membership, so the window must sit
+    /// above that or a healthy boot would be discounted and re-minted; ×6 leaves about 1.4× headroom over the
+    /// slowest observed boot, and is roughly 2× `nttDepartureTimeout` past the provider's confirmation of an
+    /// instance created within the usual minute. Anchored on the mint so it survives a leader change. A
+    /// discounted replacement that then joins is a surplus the drain path removes — it costs a spare node
+    /// for a moment, not correctness — whereas a slot masked for the whole ceiling cost a run its budget.
+    private static TimeSpan computeJoinGrace(TimeSpan splitTimeout) {
+        return timeSpan(splitTimeout.nanos() * 6).nanos();
     }
 
     /// Drain-safety grace = `nttDepartureTimeout × 2` — see the [`#drainSafetyGraceWindow`]
@@ -1599,7 +2248,7 @@ public final class LeaderReconciler {
         var currentMembers = membershipFsm.coreCountedMembers();
         var configuredCoreCount = configuredCoreCountSupplier.getAsInt();
         var effective = effectiveCapacity(currentMembers);
-        var quorumSafe = currentMembers.size() >= quorumThreshold(configuredCoreCount);
+        var quorumSafe = quorumEvidence(currentMembers, configuredCoreCount).safe();
         var captured = Option.option(lastProvisioningDecision);
 
         return new ProvisioningDecisionSnapshot(captured.map(ProvisioningDecisionSnapshot::trigger)
@@ -1612,6 +2261,83 @@ public final class LeaderReconciler {
                                                 quorumSafe,
                                                 deficitAgeMs(now),
                                                 captured.map(ProvisioningDecisionSnapshot::reason).or("NOT_EVALUATED"));
+    }
+
+    /// #1049 — lifecycle of one in-flight auto-heal replacement. Advanced only by guarded transitions
+    /// (`replace`/`remove` against the expected entry), never by an overwrite.
+    private enum InFlightState {
+        /// The provision call has not resolved: the create may not have happened, so the provider is not
+        /// asked. Bounded only by the ceiling.
+        DISPATCHING,
+        /// The create returned (or the entry was inherited from a prior leader) but the provider has not
+        /// yet listed the instance — absences are counted, and are a deletion only once enough of them span
+        /// the first-listing floor (see [`LeaderReconciler#computeRequiredAbsentListings`]).
+        UNCONFIRMED,
+        /// The provider has listed the instance at least once — a later absence IS a deletion.
+        CONFIRMED
+    }
+
+    /// #1049 — one in-flight replacement: the [`#timeSource`] instant its ceiling runs from (dispatch, or for
+    /// an inherited entry its mint time — see [`#inheritedEntry`]), the per-source ceiling, its
+    /// [`InFlightState`], the instant it became pollable (meaningful once it has left DISPATCHING: its create
+    /// call resolved, or a new leader inherited it), and how many successful listings have omitted it since.
+    private record InFlightEntry(long sinceNanos,
+                                 TimeSpan ceiling,
+                                 InFlightState state,
+                                 long pollableSinceNanos,
+                                 int absentListings,
+                                 int generation) {
+        static InFlightEntry inFlightEntry(long sinceNanos,
+                                           TimeSpan ceiling,
+                                           InFlightState state,
+                                           long pollableSinceNanos) {
+            return inFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0);
+        }
+
+        static InFlightEntry inFlightEntry(long sinceNanos,
+                                           TimeSpan ceiling,
+                                           InFlightState state,
+                                           long pollableSinceNanos,
+                                           int generation) {
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0, generation);
+        }
+
+        InFlightEntry withState(InFlightState next) {
+            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation);
+        }
+
+        InFlightEntry pollableFrom(long nowNanos) {
+            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation);
+        }
+
+        InFlightEntry withAbsentListing() {
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1, generation);
+        }
+
+        boolean isDispatching() {
+            return state == InFlightState.DISPATCHING;
+        }
+
+        /// Only a generation-0 entry can be discounted by the join grace: a substitute keeps counting until it
+        /// joins, fails or hits its ceiling, so one missing slot has at most an original and one substitute in
+        /// flight per ceiling window.
+        boolean isDiscounted(long nowNanos, TimeSpan grace) {
+            return generation < SUBSTITUTE_GENERATION
+                   && state == InFlightState.CONFIRMED
+                   && nowNanos - sinceNanos > grace.nanos();
+        }
+
+        boolean countsTowardCapacity(long nowNanos, TimeSpan grace) {
+            return ! isDiscounted(nowNanos, grace);
+        }
+
+        boolean isPastCeiling(long nowNanos) {
+            return nowNanos - sinceNanos > ceiling.nanos();
+        }
+
+        boolean isPollableFor(long nowNanos, TimeSpan span) {
+            return nowNanos - pollableSinceNanos >= span.nanos();
+        }
     }
 
     /// #336 observability — immutable snapshot of one reconcile pass's provisioning decision. The

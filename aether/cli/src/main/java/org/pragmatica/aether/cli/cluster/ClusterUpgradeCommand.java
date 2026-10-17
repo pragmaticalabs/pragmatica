@@ -1,16 +1,17 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.concurrent.Callable;
-import java.util.regex.Pattern;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.aether.config.cluster.ClusterUpgradeToml;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
 import picocli.CommandLine;
@@ -20,17 +21,24 @@ import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TOPOLOGY;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPGRADE;
+import static org.pragmatica.aether.management.route.ManagementRoute.UPGRADE_STATUS;
 
 
-@Command(name = "upgrade", description = "Upgrade cluster to a target version")
+@Command(name = "upgrade", description = "Upgrade cluster to a target version: every node is replaced, one at a time, by a node running it (see also upgrade-status, upgrade-pause, upgrade-resume, upgrade-abort)")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterUpgradeCommand implements Callable<Integer> {
-    private static final Pattern VERSION_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Option(names = "--version", required = true, description = "Target version (e.g., 0.26.0)")
     private String targetVersion;
+
+    @Option(names = "--wait", description = "Wait until the rolling upgrade run ends (exit 0 completed; 1 aborted or paused, 2 timed out)")
+    private boolean wait;
+
+    @Option(names = "--wait-timeout-minutes", description = "With --wait: how long to wait (default 180)", defaultValue = "180")
+    private long waitTimeoutMinutes;
 
     @CommandLine.ParentCommand
     private ClusterCommand parent;
@@ -44,35 +52,136 @@ class ClusterUpgradeCommand implements Callable<Integer> {
                             .flatMap(_ -> validateVersion())
                             .flatMap(this::fetchCurrentConfig)
                             .flatMap(this::initiateUpgrade)
-                            .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
+                            .fold(ClusterUpgradeCommand::onFailure, this::onInitiated);
     }
 
     private Result<String> validateVersion() {
-        if (!VERSION_PATTERN.matcher(targetVersion).matches()) {
-            return new UpgradeError.InvalidVersion(targetVersion).result();
+        return validate(targetVersion);
+    }
+
+    /// Package-private so a test pins which versions the command accepts (#1543 F2: SemVer with a pre-release, as our own releases are).
+    static Result<String> validate(String version) {
+        if (!ClusterUpgradeToml.isUpgradeVersion(version)) {
+            return new UpgradeError.InvalidVersion(version).result();
         }
 
-        return Result.success(targetVersion);
+        return Result.success(version);
     }
 
     private Result<JsonNode> fetchCurrentConfig(String version) {
         return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(MAPPER::readTree);
     }
 
-    private Result<String> initiateUpgrade(JsonNode config) {
+    Result<String> initiateUpgrade(JsonNode config) {
         var currentVersion = config.path("version").asText("unknown");
 
-        if (targetVersion.equals(currentVersion)) {
+        if (targetVersion.equals(currentVersion) && !runIsOwed()) {
             return new UpgradeError.AlreadyAtVersion(targetVersion).result();
         }
 
-        var jsonBody = "{\"targetVersion\":\"" + targetVersion + "\"}";
-
-        return ClusterHttpClient.post(CLUSTER_UPGRADE, jsonBody);
+        return ClusterHttpClient.post(CLUSTER_UPGRADE,
+                                      buildUpgradeJson(targetVersion,
+                                                       config.path("configVersion").asLong(0)));
     }
 
-    private int onSuccess(String json) {
-        return OutputFormatter.printAction(json, parent.outputOptions(), "Upgrade initiated.");
+    /// The stored version already is the target, but the run towards it may not have finished (it is live, or a node was left behind):
+    /// then the request goes to the server, which attaches to a live run or starts the one that is owed.
+    private boolean runIsOwed() {
+        return ClusterHttpClient.fetch(UPGRADE_STATUS)
+                                .flatMap(UpgradeRunWait.MAPPER::readTree)
+                                .map(status -> status.path("present")
+                                                     .asBoolean(false) && (status.path("state")
+                                                                                 .asText("")
+                                                                                 .equals("RUNNING") || status.path("state")
+                                                                                                             .asText("")
+                                                                                                             .equals("PAUSED")))
+                                .or(false);
+    }
+
+    /// Field names here MUST match `ManagementApiResponses.UpgradeRequest`; the CLI cannot depend on
+    /// `aether/node`, so the contract is spelled twice and `ClusterUpgradeCommandTest` /
+    /// `UpgradeRequestContractTest` pin the two spellings to the same names. `expectedVersion` is the
+    /// `configVersion` read from the same `GET /cluster/config` that supplied the current version (#1424).
+    static String buildUpgradeJson(String targetVersion, long expectedVersion) {
+        return "{\"targetVersion\":\"" + targetVersion + "\",\"expectedVersion\":" + expectedVersion + "}";
+    }
+
+    private int onInitiated(String json) {
+        var printed = OutputFormatter.printAction(json, parent.outputOptions(), "Upgrade initiated.");
+
+        return wait && printed == ExitCode.SUCCESS
+               ? awaitRun()
+               : printed;
+    }
+
+    private int awaitRun() {
+        return awaitRun(waitTimeoutMinutes * 60_000L);
+    }
+
+    /// Package-private so a test drives the real wiring (endpoint in force, topology, failover) with a short bound.
+    int awaitRun(long boundMs) {
+        var outcome = UpgradeRunWait.await(statusPoll(),
+                                           System::currentTimeMillis,
+                                           ClusterUpgradeCommand::sleep,
+                                           boundMs,
+                                           5_000L,
+                                           System.out::println);
+
+        return exitFor(outcome);
+    }
+
+    /// The run replaces every node, the one polled included, so the poll follows the live membership once the endpoint stops
+    /// answering (#1543 F2). The credential stays what the endpoint in force had: the candidates are the cluster's own members.
+    private static Supplier<Result<String>> statusPoll() {
+        var override = ClusterHttpClient.ENDPOINT_OVERRIDE.get();
+        var fromContext = ClusterHttpClient.ENDPOINT_FROM_CONTEXT.get() || override == null || override.isBlank();
+
+        return ClusterHttpClient.resolveEndpoint().<Supplier<Result<String>>> fold(_ -> () -> ClusterHttpClient.fetch(UPGRADE_STATUS),
+                                                                                   primary -> UpgradeStatusPoll.upgradeStatusPoll(primary,
+                                                                                                                                  () -> ClusterHttpClient.fetch(UPGRADE_STATUS),
+                                                                                                                                  () -> ClusterHttpClient.fetch(CLUSTER_TOPOLOGY),
+                                                                                                                                  endpoint -> switchEndpoint(endpoint,
+                                                                                                                                                             fromContext),
+                                                                                                                                  System.out::println));
+    }
+
+    @Contract
+    private static void switchEndpoint(String endpoint, boolean fromContext) {
+        ClusterHttpClient.setEndpointOverride(endpoint);
+        ClusterHttpClient.ENDPOINT_FROM_CONTEXT.set(fromContext);
+    }
+
+    static int exitFor(UpgradeRunWait outcome) {
+        return switch (outcome) {
+            case UpgradeRunWait.Completed completed -> {
+                System.out.println("Upgrade to " + completed.targetVersion() + " completed: every node reports it.");
+                yield ExitCode.SUCCESS;
+            }
+            case UpgradeRunWait.Aborted aborted -> {
+                System.err.println("Upgrade aborted: " + aborted.reason());
+                yield ExitCode.ERROR;
+            }
+            case UpgradeRunWait.Paused paused -> {
+                System.err.println("Upgrade paused, it needs an operator: " + paused.reason() + "\nFix the cause, then `aether cluster upgrade-resume` (or `upgrade-abort`).");
+                yield ExitCode.ERROR;
+            }
+            case UpgradeRunWait.NoRun _ -> {
+                System.err.println("Error: the cluster reports no upgrade run.");
+                yield ExitCode.ERROR;
+            }
+            case UpgradeRunWait.TimedOut timedOut -> {
+                System.err.println("Timed out waiting for the upgrade (last seen: " + timedOut.lastSeen() + "). The run continues on the cluster: `aether cluster upgrade-status`.");
+                yield ExitCode.TIMEOUT;
+            }
+        };
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static int onFailure(Cause cause) {
@@ -91,7 +200,8 @@ class ClusterUpgradeCommand implements Callable<Integer> {
         record InvalidVersion(String version) implements UpgradeError {
             @Override
             public String message() {
-                return "Invalid version format: " + version + " (expected X.Y.Z)";
+                return "Invalid version format: " + version
+                     + " (expected SemVer MAJOR.MINOR.PATCH with an optional pre-release, e.g. 1.0.0 or 1.0.0-rc5)";
             }
         }
 

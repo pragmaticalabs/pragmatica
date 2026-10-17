@@ -8,11 +8,25 @@ import org.pragmatica.lang.Cause;
 
 
 public sealed interface ReplicationError extends Cause {
-    enum General implements ReplicationError {
+    /// Replica availability is a passing condition, like a quorum not yet reached (#280).
+    enum General implements ReplicationError, Cause.Transient {
         NOT_ENOUGH_REPLICAS("Not enough replicas available for requested acknowledgment count"),
         REPLICATION_TIMEOUT("Replication acknowledgment timed out");
         private final String message;
         General(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
+    /// Lifecycle refusals: the component has ended, so no retry can change the outcome (#1246 review N6).
+    enum Lifecycle implements ReplicationError, Cause.Terminal {
+        BATCHER_CLOSED("Replication batcher is closed");
+        private final String message;
+        Lifecycle(String message) {
             this.message = message;
         }
         @Override

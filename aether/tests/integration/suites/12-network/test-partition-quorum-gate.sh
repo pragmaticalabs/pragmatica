@@ -1,8 +1,7 @@
 #!/bin/bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-# Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-# See LICENSE in the repository root for full terms.
+# Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 #
 # test-partition-quorum-gate.sh — Spec §16 rows S05 + S06.
 #
@@ -32,8 +31,9 @@
 #   container process alive. From the majority's perspective: SWIM
 #   ping-acks fail and QUIC drops; from the minority's perspective: same,
 #   plus zero peer visibility. The reverse op `docker network connect`
-#   restores reachability (with a new IP, which Docker DNS resolves and
-#   QUIC tolerates via fresh handshake).
+#   restores reachability with `--ip` set to the address the container had before the
+#   disconnect (the compose networks have a fixed subnet): a SWIM member's address is pinned to its
+#   process, so a container that came back on a new address would be refused, not adopted.
 #
 # Why this test no longer asserts a 5s minority HOLD:
 #   The earlier expectation — minority NodeIds stay PRESENT for the full
@@ -72,7 +72,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
@@ -108,6 +108,18 @@ fi
 # Post-heal recovery budget. SWIM reconvergence + QUIC fresh handshake +
 # periodic observation cycle + KV consensus apply: empirically ~10-20s on
 # remote Docker. 30s gives 10-20s headroom.
+#
+# CALIBRATED ON DOCKER, where a heal is a REJOIN: the partitioned containers are still alive.
+# On cloud, S06 measures REPLACEMENT whenever the minority was evicted during the partition: CTM
+# terminates the evicted VMs ("reaping container to prevent phantom resurrection"), so after the
+# heal there is nothing left to rejoin and the count returns to 5 only when CTM-provisioned
+# replacements boot and join. That is a different and slower mechanism than this budget was
+# measured for. It is NOT re-tuned here, because there is no clean cloud measurement of
+# replacement time yet: the one cloud red (s27 cluster B, 2026-09-25) was dominated by the
+# harness's own partition firewalls blocking every replacement until heal (#1500, now fixed), so
+# its "joined ~10s after the window closed" is not a replacement baseline. Eviction on cloud is
+# also intermittent (two 2026-09-24 runs passed S06 in 0-1s with no eviction). Re-measure before
+# changing the budget.
 HEAL_BUDGET_S=30
 
 # Docker cluster-network name. Used ONLY on the non-cloud (docker network
@@ -116,8 +128,20 @@ HEAL_BUDGET_S=30
 # Defined unconditionally so a stray reference can never trip `set -u`.
 NETWORK_NAME="aether-${CLUSTER_ID:-b}-network"
 
+# Isolation gate budget (S05): how long to wait, AFTER both partition firewalls are applied, for every majority node to
+# show both minority nodes gone before the S05 clock starts. Cloud: the SWIM suspicion + timeout budget the window above
+# uses (the established QUIC links outlive a provider firewall until SWIM tears them down); docker: instant cutover.
+if [ "${CLOUD_MODE:-false}" = "true" ]; then
+    ISOLATION_WAIT_S="${S05_ISOLATION_WAIT_S:-$(( ${CLOUD_PARTITION_SWIM_WINDOW_S:-45} * ${TIMEOUT_SCALE:-1} ))}"
+else
+    ISOLATION_WAIT_S="${S05_ISOLATION_WAIT_S:-20}"
+fi
+
 MINORITY_FILE="/tmp/s05-minority-ids.$$"
 LEADER_FILE="/tmp/s05-leader.$$"
+S05_LAST_READ_FILE="/tmp/s05-lastread.$$"
+# Every leader id any majority read reported, one per line, from the instant before the partition through the end of the window.
+S05_LEADERS_SEEN_FILE="/tmp/s05-leaders-seen.$$"
 
 # Query the lifecycle endpoint for a specific node and extract the reported
 # state string. Returns one of SYNCING / READY / DRAINING (NodeReportedState),
@@ -176,6 +200,37 @@ container_for_node() {
     remote_exec "docker ps --filter 'label=aether.node-id=${nid}' ${cluster_filter} --format '{{.Names}}' | head -1" 2>/dev/null || true
 }
 
+# A reconnect must give the container back ITS address. Peers pin a member's SWIM address to the process, so a
+# container that comes back on a new address is refused (and reported) instead of adopted, and S06 could never
+# see 5 healthy cores. The compose networks have a fixed subnet, which is what lets `docker network connect --ip`
+# restore the address. The address is read before the disconnect, since a disconnected container has none.
+PARTITION_IP_DIR="${PARTITION_IP_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/s05-ips.XXXXXX")}"
+
+remember_network_ip() {
+    local container="$1" nets ip err
+    err="${PARTITION_IP_DIR}/${container}.err"
+    : > "${PARTITION_IP_DIR}/${container}"
+    if ! nets=$(remote_exec "docker inspect -f '{{json .NetworkSettings.Networks}}' ${container}" 2>"$err"); then
+        log_warn "remember_network_ip: docker inspect of ${container} failed ($(tr '\n' ' ' < "$err")); no address remembered, the reconnect will not restore one"
+        return 0
+    fi
+    if ! ip=$(printf '%s' "$nets" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["'"${NETWORK_NAME}"'"]["IPAddress"])
+' 2>"$err"); then
+        log_warn "remember_network_ip: ${container} has no address on ${NETWORK_NAME} ($(tr '\n' ' ' < "$err")); the reconnect will not restore one"
+        return 0
+    fi
+    printf '%s' "$ip" > "${PARTITION_IP_DIR}/${container}"
+}
+
+recall_network_ip() {
+    local file="${PARTITION_IP_DIR}/$1"
+    if [ -s "$file" ]; then
+        tr -d '[:space:]' < "$file"
+    fi
+}
+
 # Disconnect a container from the cluster network. Container process
 # remains alive but loses all peer reachability. stderr captured (silent
 # stderr is a known trap per project memory).
@@ -196,6 +251,7 @@ disconnect_node_from_network() {
         return 0
     fi
     local out rc
+    remember_network_ip "$container"
     out=$(remote_exec "docker network disconnect ${NETWORK_NAME} ${container}" 2>&1)
     rc=$?
     if [ $rc -ne 0 ]; then
@@ -223,8 +279,13 @@ connect_node_to_network() {
         log_info "Healed partition for ${container} (provider firewall removed)"
         return 0
     fi
-    local out rc
-    out=$(remote_exec "docker network connect ${NETWORK_NAME} ${container}" 2>&1)
+    local out rc ip_flag=""
+    local remembered
+    remembered=$(recall_network_ip "$container")
+    if [ -n "$remembered" ]; then
+        ip_flag=" --ip ${remembered}"
+    fi
+    out=$(remote_exec "docker network connect${ip_flag} ${NETWORK_NAME} ${container}" 2>&1)
     rc=$?
     if [ $rc -ne 0 ]; then
         if printf '%s' "$out" | grep -qi "already exists\|already connected\|endpoint with name"; then
@@ -290,6 +351,223 @@ test_pick_minority() {
     log_info "Leader (majority): ${leader} | Minority (to partition): ${m1}, ${m2}"
 }
 
+# One read of the majority's view: prints "<leaderId|none> <quorate>" on a SUCCESSFUL read and nothing
+# when the read failed or the body is unusable (unknown — not evidence either way).
+#
+# Every call records what it got in S05_LAST_READ_FILE ("HTTP <status>, body: <first 300 bytes>"; status 000 = no answer), because
+# the caller runs this inside $(...) and a failure report must say what the endpoint ACTUALLY answered: a 503 whose body says
+# "Leader X is not connected for management forward" is the answering node failing to reach the CURRENT leader, not proof that the
+# leader we meant to read is down (run 7: core-0 forwarded to a minority node that had won an election).
+_majority_sample() {
+    local ep="$1" body leader quorate scratch status
+    scratch=$(mktemp)
+    status=$(curl -sk -m 5 -o "$scratch" -w '%{http_code}' -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/nodes/status" 2>/dev/null) || status="000"
+    body=$(cat "$scratch" 2>/dev/null); rm -f "$scratch"
+    printf 'HTTP %s, body: %s' "${status:-000}" "$(printf '%s' "$body" | head -c 300 | tr '\n\t' '  ')" > "$S05_LAST_READ_FILE" || true
+    case "$status" in 2??) ;; *) return 0 ;; esac
+    [ -n "$body" ] || return 0
+    printf '%s' "$body" | grep -qE '"leaderId"[[:space:]]*:' || return 0
+    leader=$(printf '%s' "$body" | grep -oE '"leaderId"[[:space:]]*:[[:space:]]*("[^"]*"|null)' | head -1 \
+             | sed -E 's/.*:[[:space:]]*//; s/"//g')
+    quorate=$(printf '%s' "$body" | grep -oE '"quorate"[[:space:]]*:[[:space:]]*(true|false)' | head -1 | grep -oE '(true|false)$')
+    [ -n "$leader" ] && [ "$leader" != "null" ] || leader="none"
+    printf '%s %s' "$leader" "${quorate:-unknown}"
+}
+
+# "<leader> xN, ..." — the distinct leader ids seen by any majority read since the partition began.
+_s05_leaders_seen() {
+    if [ -s "$S05_LEADERS_SEEN_FILE" ]; then
+        sort "$S05_LEADERS_SEEN_FILE" | uniq -c | awk '{ printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
+    else
+        printf '<no successful leader read>'
+    fi
+}
+
+# Apply both minority partitions CONCURRENTLY and return only when both have been applied (each disconnect confirms its own
+# application: cloud_partition_node waits for the firewall's applied_to). rc 0 only when both succeeded. Logs the spread
+# between the two completions.
+_s05_partition_both() {
+    local c1="$1" c2="$2" f1 f2 t1 t2 p1 p2 r1 r2
+    f1=$(mktemp); f2=$(mktemp)
+    ( r=0; disconnect_node_from_network "$c1" || r=$?; printf '%s %s' "$r" "$(date +%s)" > "$f1" ) &
+    p1=$!
+    ( r=0; disconnect_node_from_network "$c2" || r=$?; printf '%s %s' "$r" "$(date +%s)" > "$f2" ) &
+    p2=$!
+    wait "$p1" "$p2" || true
+    r1=$(awk '{print $1}' "$f1" 2>/dev/null); t1=$(awk '{print $2}' "$f1" 2>/dev/null)
+    r2=$(awk '{print $1}' "$f2" 2>/dev/null); t2=$(awk '{print $2}' "$f2" 2>/dev/null)
+    rm -f "$f1" "$f2"
+    if [ "${r1:-1}" != "0" ] || [ "${r2:-1}" != "0" ]; then
+        log_fail "S05: partition not fully applied (${c1} rc=${r1:-?}, ${c2} rc=${r2:-?}) — the 2-vs-3 split does not exist, so S05 measures nothing"
+        return 1
+    fi
+    log_info "S05: both partitions applied (${c1}, ${c2}); completions $(( ${t1:-0} > ${t2:-0} ? ${t1:-0} - ${t2:-0} : ${t2:-0} - ${t1:-0} ))s apart"
+    return 0
+}
+
+# The majority's node ids: every running core except the two minority nodes (runtime-id form on cloud, node-N on docker).
+_s05_majority_ids() {
+    local m1 m2 id i
+    m1=$(to_node_id "$1"); m2=$(to_node_id "$2")
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        for id in $(cloud_running_cores); do
+            [ "$id" = "$m1" ] || [ "$id" = "$m2" ] || printf '%s\n' "$id"
+        done
+    else
+        for i in $(seq 1 "${NODE_COUNT:-5}"); do
+            id="node-${i}"
+            [ "$id" = "$1" ] || [ "$id" = "$2" ] || printf '%s\n' "$id"
+        done
+    fi
+}
+
+# One majority node's LOCAL membership state of one node: Member / Suspect / Dead / ... ; empty when the node has no entry;
+# prints "?" when the read itself failed (unknown, never evidence of isolation).
+_s05_member_state() {
+    local ep="$1" node="$2" body
+    body=$(curl -sk -m 5 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/cluster/membership" 2>/dev/null) || { printf '?'; return 0; }
+    [ -n "$body" ] || { printf '?'; return 0; }
+    printf '%s' "$body" | grep -qF '"members"' || { printf '?'; return 0; }
+    # A missing/failing parser must read as UNKNOWN, never as "the node is gone" (an absent entry is a normal empty answer, rc 0).
+    membership_node_state "$body" "$node" || printf '?'
+}
+
+# The LEADER's transport view of one node (topology nodeDetails[].health): CONNECTED when a live QUIC link is observed right
+# now, DISCOVERED when known without a link, empty when absent; "?" when the read failed.
+_s05_link_health() {
+    local ep="$1" node="$2" body
+    body=$(curl -sk -m 5 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/cluster/topology" 2>/dev/null) || { printf '?'; return 0; }
+    [ -n "$body" ] || { printf '?'; return 0; }
+    printf '%s' "$body" | grep -qF '"nodeDetails"' || { printf '?'; return 0; }
+    printf '%s' "$body" | grep -oE "\{[^{}]*\"nodeId\"[[:space:]]*:[[:space:]]*\"${node}\"[^{}]*\}" | grep -F '"health"' | head -1 \
+        | grep -oE '"health"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/'
+}
+
+# Wait (bounded) until the partition is IN FORCE from the majority's side: every majority node's own membership shows each
+# minority node as anything but Member (Suspect/Dead/absent), and the leader sees no CONNECTED transport link to either. An
+# unreadable read is unknown, not isolation. <budget seconds> <leader id> <minority ids> <majority ids>.
+# rc 0 isolated; rc 1 not within the budget — an honest FAIL naming every node still seeing a minority node, never a silent start.
+_s05_wait_isolated() {
+    local budget="$1" leader="$2" minority="$3" majority="$4"
+    local deadline=$(( SECONDS + budget )) m x ep st health pending lead_ep sample cur
+    if [ -z "$(printf '%s' "$majority" | tr -d '[:space:]')" ]; then
+        log_fail "S05: no majority nodes could be enumerated, so isolation cannot be confirmed — refusing to time the window against an unverified split"
+        return 1
+    fi
+    lead_ep=$(node_mgmt_endpoint "$leader")
+    while :; do
+        pending=""
+        for m in $majority; do
+            ep=$(node_mgmt_endpoint "$m")
+            for x in $minority; do
+                st=$(_s05_member_state "$ep" "$(to_node_id "$x")")
+                case "$st" in
+                    Member|'?') pending="${pending} ${m}->$(to_node_id "$x")=${st:-absent}" ;;
+                esac
+            done
+        done
+        # LEADER CONTINUITY: every majority node's view of the leader, on every poll. The wait must never be the place a deposition
+        # heals unseen (run 7: the minority node deposed the leader ~1 s after its firewall landed, i.e. INSIDE this wait). A read
+        # that fails is unknown (never a pass); a read that answers with a different leader, none, or not-quorate is the violation.
+        for m in $majority; do
+            ep=$(node_mgmt_endpoint "$m")
+            sample=$(_majority_sample "$ep")
+            [ -n "$sample" ] || continue
+            cur="${sample%% *}"
+            printf '%s\n' "$cur" >> "$S05_LEADERS_SEEN_FILE" || true
+            if [ "${sample##* }" = "false" ]; then
+                log_fail "S05 violation: ${m} reported NOT quorate during the isolation wait of the 2-vs-3 partition. Leaders observed: $(_s05_leaders_seen)"
+                return 2
+            fi
+            if [ -n "$leader" ] && [ "$cur" != "$leader" ]; then
+                log_fail "S05 violation: the majority leader changed during the isolation wait: the pre-partition leader was '${leader}', ${m} reports '${cur}'. The leader stayed in the majority partition; a 2-node minority must not depose it (#1748). Leaders observed: $(_s05_leaders_seen)"
+                return 2
+            fi
+        done
+        if [ -n "$lead_ep" ]; then
+            for x in $minority; do
+                health=$(_s05_link_health "$lead_ep" "$(to_node_id "$x")")
+                case "$health" in
+                    CONNECTED|'?') pending="${pending} leader-link->$(to_node_id "$x")=${health}" ;;
+                esac
+            done
+        else
+            pending="${pending} leader-endpoint-unresolved"
+        fi
+        if [ -z "$pending" ]; then
+            log_info "S05: isolation confirmed — every majority node shows both minority nodes gone from membership and the leader has no live link to either; the ${PARTITION_DURATION_S}s window starts now"
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            log_fail "S05: isolation never completed within ${budget}s of both partitions being applied — still seen as live or unreadable:${pending}. The 2-vs-3 split is not in force, so timing the majority now would measure the provider firewall's handling of established flows, not the product"
+            return 1
+        fi
+        sleep "${S05_ISOLATION_POLL_S:-2}"
+    done
+}
+
+# Poll the MAJORITY's health for the partition window. Returns 1 on an S05 violation.
+#
+# The read goes to the LEADER's own endpoint (the leader stays in the majority), never to whichever
+# node the pinned endpoint happens to be: a partitioned minority node keeps mgmt open and answers
+# with ITS view (leaderless, not quorate), which S05 once scored as a majority failure (harness
+# false positive: the pinned node was the minority victim). A FAILED read is UNKNOWN — retried at the
+# next poll; only a SUCCESSFUL read that reports no leader or quorate=false is a violation. Unknown is
+# BOUNDED so it cannot mask a real loss: S05_MAX_CONSECUTIVE_UNKNOWN (default 3) failed reads in a row
+# mean the leader is unreachable and fail the test, and fewer than S05_MIN_OK_READS (default 3)
+# successful reads across the window is inconclusive and fails too — never a pass.
+monitor_majority_during_partition() {
+    local leader="$1"
+    local ep
+    ep=$(node_mgmt_endpoint "$leader")
+    if [ -z "$ep" ]; then
+        ep=$(_resolve_live_endpoint)
+        log_warn "S05: could not derive the leader's (${leader:-?}) management endpoint; reading through ${ep} (it may be a partitioned node)"
+    fi
+    local deadline
+    deadline=$(deadline_in "$PARTITION_DURATION_S")
+    local ok_reads=0 unknown_reads=0 consecutive_unknown=0 sample cur_leader quorate
+    local max_unknown="${S05_MAX_CONSECUTIVE_UNKNOWN:-3}" min_ok="${S05_MIN_OK_READS:-3}"
+    while [ $SECONDS -lt $deadline ]; do
+        sample=$(_majority_sample "$ep")
+        if [ -z "$sample" ]; then
+            unknown_reads=$((unknown_reads + 1))
+            consecutive_unknown=$((consecutive_unknown + 1))
+            if [ "$consecutive_unknown" -ge "$max_unknown" ]; then
+                log_fail "S05 majority-unreadable: ${consecutive_unknown} consecutive reads of ${ep} (the majority leader's endpoint, ${leader:-?}) returned no usable status (${ok_reads} successful before); last read: $(cat "$S05_LAST_READ_FILE" 2>/dev/null || echo '<none recorded>'). An HTTP error body naming a forwarding failure means the answering node could not reach the CURRENT leader (the leader may have changed), not that ${leader:-?} is down; S05 must not report either as a pass"
+                return 1
+            fi
+            sleep "${S05_POLL_S:-1}"
+            continue
+        fi
+        consecutive_unknown=0
+        ok_reads=$((ok_reads + 1))
+        cur_leader="${sample%% *}"
+        quorate="${sample##* }"
+        if [ "$quorate" = "false" ]; then
+            log_fail "S05 violation: the majority (read from ${ep}) reported NOT quorate during a 2-vs-3 minority partition. The 3-node majority must retain quorum throughout — a minority split must never cost the majority its quorum."
+            return 1
+        fi
+        if [ "$cur_leader" = "none" ]; then
+            log_fail "S05 violation: the majority (read from ${ep}) reported NO leader during the minority partition. The leader stayed in the majority partition; a 2-node minority split must not trigger re-election or leaderlessness on the majority side."
+            return 1
+        fi
+        printf '%s\n' "$cur_leader" >> "$S05_LEADERS_SEEN_FILE" || true
+        if [ -n "$leader" ] && [ "$cur_leader" != "$leader" ]; then
+            log_fail "S05 violation: the majority leader changed during the partition window: the pre-partition leader was '${leader}', ${ep} reports '${cur_leader}'. The leader stayed in the majority partition; a 2-node minority must not depose it (#1748). Leaders observed: $(_s05_leaders_seen)"
+            return 1
+        fi
+        sleep "${S05_POLL_S:-1}"
+    done
+    if [ "$ok_reads" -lt "$min_ok" ]; then
+        log_fail "S05 inconclusive: only ${ok_reads} successful read(s) of the majority (${ep}) in ${PARTITION_DURATION_S}s, need ${min_ok} (${unknown_reads} failed) — cannot claim the majority stayed quorate and led"
+        return 1
+    fi
+
+    log_pass "S05: majority stayed quorate with a stable leader (${leader:-?}) throughout the ${PARTITION_DURATION_S}s dual-signal partition (${ok_reads} window reads, ${unknown_reads} unreadable); leaders observed at every read from just before the partition (isolation wait + window): $(_s05_leaders_seen); prompt minority eviction (if any) is intended co-confirmation behavior"
+    return 0
+}
+
 test_partition_does_not_destabilize_majority() {
     local m1 m2 c1 c2 leader
     m1=$(sed -n '1p' "$MINORITY_FILE")
@@ -311,40 +589,44 @@ test_partition_does_not_destabilize_majority() {
     assert_eq "$pre1" "READY" "Pre-partition: ${m1} reports READY"
     assert_eq "$pre2" "READY" "Pre-partition: ${m2} reports READY"
 
-    log_info "Injecting 2-vs-3 partition for ${PARTITION_DURATION_S}s (dual-signal: QUIC drop + SWIM faulty)"
-    disconnect_node_from_network "$c1" || return 1
-    disconnect_node_from_network "$c2" || return 1
-
-    # Continuous monitoring during the partition: poll the MAJORITY's health at
-    # ~1Hz. The protective property under a dual-signal (transport + SWIM-faulty)
-    # split is that the 3-node majority MUST stay quorate with a STABLE leader —
-    # a 2-node minority partition can never be allowed to topple the majority.
-    # Prompt eviction of the dual-signal minority is INTENDED (LeaderReconciler
-    # two-signal co-confirmation) and is NOT asserted against here. The earlier
-    # "minority must remain present for the full window" expectation was wrong
-    # for a dual-signal injection and produced a false FAIL.
-    local deadline=$((SECONDS + PARTITION_DURATION_S))
-    while [ $SECONDS -lt $deadline ]; do
-        local quorate cur_leader
-        quorate=$(cluster_quorate 2>/dev/null || true)
-        if [ "$quorate" = "false" ]; then
-            log_fail "S05 violation: cluster reported NOT quorate during a 2-vs-3 minority partition. The 3-node majority must retain quorum throughout — a minority split must never cost the majority its quorum."
+    log_info "Injecting 2-vs-3 partition for ${PARTITION_DURATION_S}s (dual-signal: QUIC drop + SWIM faulty), after both partitions are applied and isolation is confirmed"
+    # The heal below runs on EVERY exit path from here on — a failed disconnect, an S05
+    # violation, or success. A `return 1` between partition and heal used to skip it, leaking
+    # the partition (two Hetzner firewalls at 5c1a726b7) into the next test. Healing is
+    # idempotent, so healing a node whose disconnect never landed is harmless.
+    local rc=0 majority pre_sample
+    majority=$(_s05_majority_ids "$m1" "$m2")   # enumerated BEFORE the partition changes what the cluster reports
+    # The pre-partition leader, read immediately before the partition: every later read (isolation wait AND window) is compared
+    # to it. An answered read that already differs means the premise is gone, not that the partition did anything.
+    : > "$S05_LEADERS_SEEN_FILE"
+    pre_sample=$(_majority_sample "$(node_mgmt_endpoint "$leader")")
+    if [ -n "$pre_sample" ]; then
+        printf '%s\n' "${pre_sample%% *}" >> "$S05_LEADERS_SEEN_FILE"
+        if [ -n "$leader" ] && [ "${pre_sample%% *}" != "$leader" ]; then
+            log_fail "S05 premise: the leader read immediately before the partition is '${pre_sample%% *}', not the picked '${leader}' — the cluster was already unsettled, so the partition is not injected"
             return 1
         fi
-        cur_leader=$(cluster_leader 2>/dev/null || true)
-        if [ -z "$cur_leader" ] || [ "$cur_leader" = "none" ]; then
-            log_fail "S05 violation: majority lost its leader during the minority partition. The leader stayed in the majority partition; a 2-node minority split must not trigger re-election or leaderlessness on the majority side."
-            return 1
-        fi
-        sleep 1
-    done
-
-    log_pass "S05: majority stayed quorate with a stable leader (${leader:-?}) throughout the ${PARTITION_DURATION_S}s dual-signal partition; prompt minority eviction (if any) is intended co-confirmation behavior"
+    else
+        log_warn "S05: the leader could not be read immediately before the partition; comparing every later read to the picked leader '${leader:-?}'"
+    fi
+    # (1) Both partitions are applied BEFORE the S05 clock starts, concurrently (applied one after the other they landed ~20 s
+    # apart in run 7, so for that window the "2-vs-3 partition" was a 1-vs-4 plus a half-cut node). (2) The clock then starts only
+    # when every majority node shows both minority nodes gone; established QUIC links outlive a provider firewall, so
+    # "firewall applied" is not "isolated". Neither step masks a product failure: a leader deposed by a half-cut node is still
+    # an S05 violation, but one the harness can no longer cause.
+    if ! _s05_partition_both "$c1" "$c2"; then
+        rc=1
+    elif ! _s05_wait_isolated "$ISOLATION_WAIT_S" "$leader" "$m1 $m2" "$majority"; then
+        rc=1
+    elif ! monitor_majority_during_partition "$leader"; then
+        rc=1
+    fi
 
     # Heal — the next test function asserts the recovery contract.
     log_info "Healing partition: reconnecting ${c1}, ${c2} to ${NETWORK_NAME}"
     connect_node_to_network "$c1" || log_warn "Reconnect of ${c1} returned non-zero; recovery assertion will surface any real problem"
     connect_node_to_network "$c2" || log_warn "Reconnect of ${c2} returned non-zero; recovery assertion will surface any real problem"
+    return $rc
 }
 
 test_cluster_heals_to_5_onduty() {
@@ -356,10 +638,38 @@ test_cluster_heals_to_5_onduty() {
         "[ \$(cluster_active_core_count) -eq 5 ]" "$HEAL_BUDGET_S"; then
         local now_count
         now_count=$(cluster_active_core_count)
-        log_fail "S06 violation: cluster did not return to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal (current count=${now_count}). Possible regression: post-heal SWIM/QUIC reconvergence stuck, or one of the minority nodes was incorrectly removed from membership late (after the partition assertion window closed but before reconnect took effect)."
+        log_fail "S06 violation: cluster did not return to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal (current count=${now_count}). Possible regression: post-heal SWIM/QUIC reconvergence stuck, or one of the minority nodes was incorrectly removed from membership late (after the partition assertion window closed but before reconnect took effect). On cloud with an evicted minority this window measures CTM REPLACEMENT, not rejoin (see HEAL_BUDGET_S)."
         return 1
     fi
     assert_cluster_healthy "S06: cluster returned to 5 healthy cores within ${HEAL_BUDGET_S}s of partition heal"
+}
+
+# Heal one minority node from cleanup. Never skips silently: every path that does not heal says
+# so, naming the node and the reason.
+#
+# Cloud: container_for_node echoes empty once the node is no longer a live member (CTM replaced or
+# reaped it). The partition firewall outlives the VM's membership, though, and
+# cloud_heal_partition needs only the node id (the firewall name derives from it), so heal by id
+# rather than skip — a skipped heal here leaked two firewalls at 5c1a726b7 and starved the next
+# test's replacements. Docker: no container means no network attachment to restore, so there is
+# nothing to heal, but it is logged.
+heal_minority_node() {
+    local nid="$1" c
+    c=$(container_for_node "$nid")
+    if [ -n "$c" ]; then
+        connect_node_to_network "$c" || true
+        return 0
+    fi
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        local rid
+        rid=$(to_node_id "$nid")
+        log_warn "cleanup: ${nid} is not a live member (container_for_node empty); healing partition by node id ${rid}"
+        connect_node_to_network "$rid" || \
+            log_warn "cleanup: heal by id ${rid} returned non-zero; its partition firewall may have leaked — check hcloud firewall list for aether-partition-*"
+        return 0
+    fi
+    log_warn "cleanup: SKIPPING heal for ${nid}: no docker container carries aether.node-id=${nid}, so there is no network attachment to restore"
+    return 0
 }
 
 cleanup() {
@@ -367,20 +677,13 @@ cleanup() {
     # the in-test reconnect ran. Idempotent: connect_node_to_network
     # tolerates "already connected".
     if [ -f "$MINORITY_FILE" ]; then
-        local m1 m2 c1 c2
-        m1=$(sed -n '1p' "$MINORITY_FILE" 2>/dev/null || true)
-        m2=$(sed -n '2p' "$MINORITY_FILE" 2>/dev/null || true)
-        if [ -n "$m1" ]; then
-            c1=$(container_for_node "$m1")
-            [ -n "$c1" ] && connect_node_to_network "$c1" || true
-        fi
-        if [ -n "$m2" ]; then
-            c2=$(container_for_node "$m2")
-            [ -n "$c2" ] && connect_node_to_network "$c2" || true
-        fi
+        local m
+        while IFS= read -r m; do
+            [ -n "$m" ] && heal_minority_node "$m"
+        done < "$MINORITY_FILE"
     fi
 
-    rm -f "$MINORITY_FILE" "$LEADER_FILE"
+    rm -f "$MINORITY_FILE" "$LEADER_FILE" "$S05_LAST_READ_FILE" "$S05_LEADERS_SEEN_FILE"
 
     # Semantic baseline restore — resets the CTM circuit breaker if
     # tripped, waits for ON_DUTY healthy parity + generation quiescence
@@ -389,6 +692,12 @@ cleanup() {
     restore_cluster_baseline || \
         log_warn "cleanup: restore_cluster_baseline reported non-zero; subsequent tests may inherit cluster churn"
 }
+
+# Sourced (test/test-s05-isolation.sh drives the functions above against stubs): stop before the trap and the scenario.
+# A direct run (`bash "$test_file"`) goes on.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
 
 # Run cleanup on ANY exit path — including a `return 1` from inside a
 # test function that propagates up through `set -e` and aborts the

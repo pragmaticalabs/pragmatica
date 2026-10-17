@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.fsm.ControlLoopContext;
@@ -56,6 +57,8 @@ public interface ControlLoop {
     @MessageReceiver
     void onMembershipDecision(MembershipDecision decision);
 
+    org.pragmatica.lang.Unit onWorkerDeparture(org.pragmatica.consensus.NodeId node);
+
     @MessageReceiver
     void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
 
@@ -71,17 +74,28 @@ public interface ControlLoop {
     @MessageReceiver
     void onQuorumStateChange(ClusterStateNotification notification);
 
-    void registerBlueprint(Artifact artifact,
-                           int instances,
-                           int minInstances,
-                           Option<Integer> maxInstances,
-                           Option<Double> scaleUpThreshold,
-                           Option<Double> scaleDownThreshold);
-
+    /// Registers the slice from the whole `SliceTargetValue` that was observed for it, rather than
+    /// from a hand-picked selection of its components.
+    ///
+    /// This parameter used to be seven exploded fields, and that shape was the root of #698, #936
+    /// and #937: the autoscaler had to rebuild a nine-component durable value out of the subset it
+    /// had been handed, so every component outside the subset was replaced by a factory default on
+    /// every scaling Put — the owner erased, the placement reset, and the floor ratcheted. Passing
+    /// the value keeps the autoscaler's decision to a single number and leaves every other
+    /// component untouched by construction.
+    ///
+    /// `artifact` is the slice's base coordinate at `target.currentVersion()`; the two must agree,
+    /// because the registration is keyed by it and the value's version is written back out.
+    void registerBlueprint(Artifact artifact, SliceTargetValue target);
     void unregisterBlueprint(Artifact artifact);
     ControllerConfig configuration();
     void updateConfiguration(ControllerConfig config);
     void stop();
+
+    default Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
+        return Unit.unit();
+    }
+
     void onCommunityMetricsSnapshot(CommunityMetricsSnapshot snapshot);
     Map<String, CommunityMetricsSnapshot> communitySnapshots();
     /// Bounded snapshot of the latest per-artifact scaling decision (#425). Leader-only observability
@@ -167,6 +181,13 @@ public interface ControlLoop {
         }
 
         @Override
+        public org.pragmatica.lang.Unit onWorkerDeparture(org.pragmatica.consensus.NodeId node) {
+            ctx.removeNodeMetrics(node);
+
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        @Override
         public void onMembershipDecision(MembershipDecision decision) {
             switch (decision) {
                 case NodeJoined(_, var newTopology, _, _) -> ctx.setTopology(newTopology);
@@ -199,11 +220,7 @@ public interface ControlLoop {
             var value = valuePut.cause().value();
 
             registerBlueprint(key.artifactBase().withVersion(value.currentVersion()),
-                              value.targetInstances(),
-                              value.effectiveMinInstances(),
-                              value.maxInstances(),
-                              value.scaleUpThreshold(),
-                              value.scaleDownThreshold());
+                              value);
         }
 
         @Override
@@ -228,18 +245,14 @@ public interface ControlLoop {
         }
 
         @Override
-        public void registerBlueprint(Artifact artifact,
-                                      int instances,
-                                      int minInstances,
-                                      Option<Integer> maxInstances,
-                                      Option<Double> scaleUpThreshold,
-                                      Option<Double> scaleDownThreshold) {
-            ctx.putBlueprint(artifact, instances, minInstances, maxInstances, scaleUpThreshold, scaleDownThreshold);
-            log.info("Registered blueprint: {} with {} instances (min: {}, max: {})",
+        public void registerBlueprint(Artifact artifact, SliceTargetValue target) {
+            ctx.putBlueprint(artifact, target);
+            log.info("Registered blueprint: {} with {} instances (min: {}, max: {}, placement: {})",
                      artifact,
-                     instances,
-                     minInstances,
-                     maxInstances);
+                     target.targetInstances(),
+                     target.effectiveMinInstances(),
+                     target.maxInstances(),
+                     target.effectivePlacement());
         }
 
         @Override
@@ -261,6 +274,11 @@ public interface ControlLoop {
         @Override
         public void stop() {
             fsm.dispatch(new ClusterFsmEvent.Shutdown());
+        }
+
+        @Override
+        public Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
+            return ctx.setMetricsProducerEligibility(isEligible);
         }
 
         @Override

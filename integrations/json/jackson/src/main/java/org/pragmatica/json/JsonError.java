@@ -87,7 +87,10 @@ public sealed interface JsonError extends Cause {
         }
 
         public static TypeMismatch typeMismatch(String expectedType, String actualValue, String path) {
-            return new TypeMismatch(expectedType, actualValue, Option.option(path));
+            // #772: Jackson's getPathReference() returns "" (not null) for a root-level/pathless
+            // mismatch — e.g. a missing request body — so Option.option's null-only filter left a
+            // blank path present and message() rendered a dangling "... at " suffix.
+            return new TypeMismatch(expectedType, actualValue, Option.option(path).filter(p -> !p.isBlank()));
         }
 
         @Override

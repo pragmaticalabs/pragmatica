@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.io.PrintStream;
@@ -23,14 +22,16 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Result.success;
 
 
 @Command(name = "bootstrap", description = {"Bootstrap a new cluster from config file.", "", "Required when the cluster has no static seed members (cluster.static=0) and the cloud", "minimum is at least the quorum size (cloud.min >= quorum): with no static seeds the", "nodes cannot self-form a quorum, so an explicit operator-driven bootstrap is required."})
@@ -45,35 +46,40 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     @Parameters(index = "0", description = "Path to aether-cluster.toml config file")
     private Path configFile;
 
-    @Option(names = "--yes", description = "Skip confirmation prompt")
+    @CommandLine.Option(names = "--yes", description = "Skip confirmation prompt")
     private boolean skipConfirmation;
 
-    @Option(names = "--resume", description = "Resume a failed bootstrap")
+    @CommandLine.Option(names = "--resume", description = "Resume a failed bootstrap")
     private boolean resume;
 
-    @Option(names = "--full-check", description = "Run full network pre-flight checks before bootstrap")
+    @CommandLine.Option(names = "--full-check", description = "Run full network pre-flight checks before bootstrap")
     private boolean fullCheck;
 
-    @Option(names = "--wait", description = "Wait for cluster to become healthy after bootstrap")
+    @CommandLine.Option(names = "--wait", description = "Wait for cluster to become healthy after bootstrap")
     private boolean waitForCompletion;
 
-    @Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300")
+    @CommandLine.Option(names = "--timeout", description = "Timeout in seconds for EACH wait stage of --wait: node health, quorum formation and the final cluster"
+                                                         + " status. When omitted, node health and quorum formation use [operations.timeouts] from the config"
+                                                         + " and the final status wait uses 300.", defaultValue = "300")
     private int timeoutSeconds;
+
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec spec;
 
     /// Raw picocli-bound text, deliberately NOT a [ClusterName]: picocli assigns it before any Aether
     /// code runs, and `ClusterBootstrapConfig.withClusterName` re-parses it through `ClusterIdentity`.
-    @Option(names = "--cluster", description = "Override [cluster].name from the TOML (CLI > TOML > default)")
+    @CommandLine.Option(names = "--cluster", description = "Override [cluster].name from the TOML (CLI > TOML > default)")
     private String clusterNameOverride;
 
-    @Option(names = "--ssh-public-key", description = "Path to operator SSH public key (e.g. ~/.ssh/id_ed25519.pub). "
-                                                    + "Overrides [infrastructure.ssh].public_key_file in TOML and the AETHER_SSH_KEY env fallback. "
-                                                    + "Required for cloud sources to be SSH-reachable.")
+    @CommandLine.Option(names = "--ssh-public-key", description = "Path to operator SSH public key (e.g. ~/.ssh/id_ed25519.pub). "
+                                                                + "Overrides [infrastructure.ssh].public_key_file in TOML and the AETHER_SSH_KEY env fallback. "
+                                                                + "Required for cloud sources to be SSH-reachable.")
     private String sshPublicKeyPath;
 
-    @Option(names = "--keep-on-failure", description = "Skip automatic cleanup of provisioned VMs and SSH keys when bootstrap fails. "
-                                                     + "Symmetric with 'aether cluster destroy --keep-resources'. "
-                                                     + "Use to preserve resources for SSH-inspection diagnosis; clean up later with "
-                                                     + "'aether cluster destroy --cluster <name> --yes'.")
+    @CommandLine.Option(names = "--keep-on-failure", description = "Skip automatic cleanup of provisioned VMs and SSH keys when bootstrap fails. "
+                                                                 + "Symmetric with 'aether cluster destroy --keep-resources'. "
+                                                                 + "Use to preserve resources for SSH-inspection diagnosis; clean up later with "
+                                                                 + "'aether cluster destroy --cluster <name> --yes'.")
     private boolean keepOnFailure;
 
     @CommandLine.ParentCommand
@@ -102,14 +108,23 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     }
 
     private Result<ParsedConfig> applyClusterNameOverride(ParsedConfig parsed) {
-        if (clusterNameOverride == null || clusterNameOverride.isBlank()) {
-            return Result.success(parsed);
-        }
+        return applyClusterNameOverride(parsed, option(clusterNameOverride));
+    }
 
-        return parsed.config()
-                     .withClusterName(clusterNameOverride)
-                     .map(updated -> new ParsedConfig(updated,
-                                                      parsed.rawToml()));
+    /// #1487 — the override reaches BOTH the parsed config and the raw TOML. The raw TOML is what formation
+    /// POSTs to `/api/v1/cluster/config` and what CTM later reads the cluster name from, so overriding only
+    /// the parsed config left every replacement labelled with the TOML's name. A blank override is absent.
+    static Result<ParsedConfig> applyClusterNameOverride(ParsedConfig parsed, Option<String> override) {
+        return override.filter(Verify.Is::notBlank)
+                       .map(name -> withClusterName(parsed, name))
+                       .or(success(parsed));
+    }
+
+    private static Result<ParsedConfig> withClusterName(ParsedConfig parsed, String name) {
+        return Result.all(parsed.config().withClusterName(name),
+                          ClusterNameToml.withClusterName(parsed.rawToml(),
+                                                          name))
+                     .map(ParsedConfig::new);
     }
 
     private Result<ParsedConfig> parseConfig() {
@@ -142,12 +157,45 @@ class ClusterBootstrapCommand implements Callable<Integer> {
             return AbortedError.INSTANCE.result();
         }
 
-        return SshKeyResolver.resolveOrFailIfCloud(config, option(sshPublicKeyPath)).flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config,
-                                                                                                                                            resume,
-                                                                                                                                            fullCheck,
-                                                                                                                                            keys,
-                                                                                                                                            keepOnFailure,
-                                                                                                                                            parsed.rawToml()));
+        return SshKeyResolver.resolveOrFailIfCloud(config, option(sshPublicKeyPath)).flatMap(keys -> invokeBootstrap(parsed,
+                                                                                                                     keys));
+    }
+
+    private Result<ClusterBootstrapOrchestrator.BootstrapResult> invokeBootstrap(ParsedConfig parsed,
+                                                                                 List<SshPublicKey> keys) {
+        BootstrapWaitCap.seconds = timeoutGiven()
+                                   ? option(timeoutSeconds)
+                                   : Option.none();
+        try {
+            return bootstrapInvoker.invoke(parsed.config(), resume, fullCheck, keys, keepOnFailure, parsed.rawToml());
+        } finally {
+            BootstrapWaitCap.seconds = Option.none();
+        }
+    }
+
+    /// Test seam: the orchestrator call, so a test can see exactly which config is handed over (and therefore hashed).
+    @FunctionalInterface
+    interface BootstrapInvoker {
+        Result<ClusterBootstrapOrchestrator.BootstrapResult> invoke(ClusterBootstrapConfig config,
+                                                                    boolean resume,
+                                                                    boolean fullCheck,
+                                                                    List<SshPublicKey> keys,
+                                                                    boolean keepOnFailure,
+                                                                    String rawToml);
+    }
+
+    static volatile BootstrapInvoker bootstrapInvoker = ClusterBootstrapOrchestrator::bootstrap;
+
+    /// `--timeout` given explicitly on a `--wait` bootstrap bounds the formation waits too, not only the final status poll: an operator reads
+    /// `--wait --timeout 60` as "give up after 60 seconds", and the formation waits otherwise ran on the config's own 300 s / 600 s. It is a RUNTIME
+    /// cap ([BootstrapWaitCap]) and never enters the config: the config is hashed, and a resume with a
+    /// different `--timeout` must still match the stored hash.
+    boolean timeoutGiven() {
+        return waitForCompletion
+               && spec != null
+               && spec.commandLine()
+                      .getParseResult()
+                      .hasMatchedOption("--timeout");
     }
 
     record ParsedConfig(ClusterBootstrapConfig config, String rawToml) {}

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.cli.cluster;
 
@@ -109,7 +108,7 @@ class BootstrapPhaseProvisionUserDataTest {
                                                              Map.of("eu-1", source),
                                                              Map.of(),
                                                              InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                             OperationsConfig.defaultOperationsConfig());
+                                                             OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static BootstrapContext baseContext(ClusterBootstrapConfig config) {
@@ -219,8 +218,15 @@ class BootstrapPhaseProvisionUserDataTest {
         var spec = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0);
         var ud = spec.userData().or("");
 
-        assertTrue(ud.contains("AETHER_CLUSTER_SECRET=\"test-secret-xyz\""),
-                   "Cluster secret must be embedded in cloud-init script (header/env vars)");
+        assertTrue(ud.contains("(umask 077; install -d -m 0755 /opt/aether/config && printf '%s' 'test-secret-xyz' > /opt/aether/config/cluster-secret)"),
+                   "Cluster secret must be written to its 0400 file by shell builtins (positive control: the sentinel IS in the script)");
+        assertTrue(ud.contains("chown 1000:1000 /opt/aether/config/cluster-secret\nchmod 0400 /opt/aether/config/cluster-secret"),
+                   "the file belongs to the node user and is read-only");
+        assertFalse(ud.contains("AETHER_CLUSTER_SECRET=\"test-secret-xyz\""),
+                    "#828: the secret is no longer a shell variable that the docker run line could expand");
+        var run = ud.substring(ud.indexOf("docker run -d"), ud.indexOf("\"${AETHER_IMAGE}\"\n\n", ud.indexOf("docker run -d")));
+
+        assertFalse(run.contains("test-secret-xyz"), "#828: the docker run argv must not hold the secret value: " + run);
     }
 
     @Test
@@ -286,8 +292,11 @@ class BootstrapPhaseProvisionUserDataTest {
 
         var ud = invokeBuildCloudProvisionSpec(ctx, source, "eu-1-core-0", 0).userData().or("");
 
-        assertTrue(ud.contains("-e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\""),
-                   "docker run must export AETHER_CLUSTER_SECRET so the env-fallback path resolves");
+        assertTrue(ud.contains("-e AETHER_CLUSTER_SECRET_FILE=\"/run/secrets/aether-cluster-secret\""),
+                   "docker run must point the node at the mounted secret file so Main resolves the secret");
+        assertTrue(ud.contains("--mount type=bind,src=/opt/aether/config/cluster-secret,dst=/run/secrets/aether-cluster-secret,readonly"),
+                   "the secret file is bind-mounted read-only");
+        assertFalse(ud.contains("-e AETHER_CLUSTER_SECRET="), "#828: no secret env var in the container (docker inspect)");
     }
 
     @Test

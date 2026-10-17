@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.management.route;
 
@@ -87,6 +86,35 @@ class RouteAssemblerTest {
         var path = ManagementRoute.DEPLOY_PROMOTE.assemble(values);
         assertThat(path.isFailure()).isTrue();
         path.onFailure(c -> assertThat(c).isInstanceOf(ManagementRouteError.MissingParam.class));
+    }
+
+    /// #725 (1): an empty or whitespace-only value rendered as two adjacent slashes
+    /// (`/api/v1/deploy/promote/`) — a malformed URL the matcher happily round-trips, so the caller
+    /// with an accidentally-empty value got a wrong request instead of an error at the assembly
+    /// site. Blank is missing.
+    @Test
+    void assemble_failsOnBlankParam_ratherThanRenderingAdjacentSlashes() {
+        for (var blank : List.of("", " ", "\t")) {
+            var path = ManagementRoute.DEPLOY_PROMOTE.assemble(blank);
+
+            assertThat(path.isFailure()).as("blank value %s must be refused at assembly", blank.length())
+                                        .isTrue();
+            path.onFailure(c -> assertThat(c).isInstanceOf(ManagementRouteError.MissingParam.class));
+        }
+    }
+
+    /// #725 (2) is NOT a defect: `/` inside a value is load-bearing. `aether artifact …` builds
+    /// `groupPath = group.replace('.', '/')` (`AetherCli`) and passes it as ONE value to
+    /// `ARTIFACT_GET`/`PUT`/`DELETE`/`MAVEN_METADATA`, whose `groupPath` param spans as
+    /// many segments as the group has dots. `assemble_urlEncodesSegments` above pins the
+    /// un-escape; this pins the caller's shape so the reason is next to the rule.
+    @Test
+    void assemble_groupPathWithSlashes_spansSegments_becauseMavenRoutesNeedIt() {
+        // ARTIFACT_INFO spans too since #1102 (served by MavenProtocolRoutes, pinned by
+        // MavenProtocolRoutesInfoTest); ARTIFACT_GET stays the canonical example.
+        var path = ManagementRoute.ARTIFACT_GET.assemble("org/example", "hello", "1.0.0", "hello-1.0.0.jar");
+        path.onSuccess(p -> assertThat(p).isEqualTo("/repository/org/example/hello/1.0.0/hello-1.0.0.jar"));
+        assertThat(path.isSuccess()).isTrue();
     }
 
     @Test

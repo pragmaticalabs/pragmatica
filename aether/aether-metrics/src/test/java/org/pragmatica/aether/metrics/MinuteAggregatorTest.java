@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.metrics;
 
@@ -11,7 +10,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.metrics.consensus.RabiaMetrics;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
-import org.pragmatica.aether.metrics.network.NetworkMetrics;
 
 import java.util.Map;
 
@@ -23,7 +21,7 @@ class MinuteAggregatorTest {
 
     private ComprehensiveSnapshot snapshot(long timestamp, double cpu, double avgLatencyMs) {
         return new ComprehensiveSnapshot(timestamp, cpu, 100L, 1000L,
-            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, NetworkMetrics.EMPTY, RabiaMetrics.EMPTY,
+            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, RabiaMetrics.EMPTY,
             10, 9, 1, avgLatencyMs, Map.of());
     }
 

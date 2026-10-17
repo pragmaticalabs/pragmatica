@@ -6,72 +6,76 @@ Complete reference for configuring Aether nodes, cluster, and runtime behavior.
 
 ### AetherNodeConfig
 
-Main configuration for an Aether cluster node.
+Main configuration for an Aether cluster node. There is no all-args or partial-args static
+factory — construction is only via a staged `builder()` chain; each stage's setter returns the
+next stage's type. `self` through `quicTls` are required (no default); `.build()` becomes
+available starting at `certificateProvider`, and every stage from there defaults if skipped.
 
 ```java
-AetherNodeConfig.aetherNodeConfig(
-    self,              // NodeId - unique node identifier
-    port,              // int - cluster communication port
-    coreNodes,         // List<NodeInfo> - cluster peers
-    sliceActionConfig, // SliceActionConfig - slice lifecycle settings
-    sliceConfig,       // SliceConfig - slice repository configuration
-    managementPort,    // int - HTTP API port (0 to disable)
-    artifactRepoConfig // DHTConfig - artifact repository settings
-);
+var config = AetherNodeConfig.builder()
+    .self(self)                       // NodeId - unique node identifier
+    .coreNodes(coreNodes)             // List<NodeInfo> - cluster peers
+    .managementPort(managementPort)   // int - HTTP API port (0 to disable)
+    .sliceConfig(sliceConfig)         // SliceConfig - slice repository configuration
+    .artifactRepo(artifactRepoConfig) // DHTConfig - artifact repository settings
+    .coreMax(coreMax)                 // int - target cluster size (0 = coreNodes.size())
+    .appHttp(appHttpConfig)           // AppHttpConfig - slice-route HTTP server
+    .tls(Option.none())               // Option<TlsConfig> - cluster/HTTP TLS
+    .quicTls(quicTlsConfig)           // TlsConfig - QUIC cluster transport TLS
+    .build();                         // remaining stages take their per-stage default
 ```
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `self` | `NodeId` | required | Unique node identifier |
-| `port` | `int` | required | Cluster communication port |
-| `coreNodes` | `List<NodeInfo>` | required | List of cluster peers |
-| `sliceActionConfig` | `SliceActionConfig` | defaults | Slice lifecycle timeouts |
-| `sliceConfig` | `SliceConfig` | defaults | Slice repository configuration |
-| `managementPort` | `int` | 8080 | HTTP management API port |
-| `artifactRepoConfig` | `DHTConfig` | DEFAULT | Artifact repository settings |
+| Stage (required, no default) | Type | Description |
+|---|---|---|
+| `self` | `NodeId` | Unique node identifier |
+| `coreNodes` | `List<NodeInfo>` | Cluster peers |
+| `managementPort` | `int` | HTTP management API port (0 to disable) |
+| `sliceConfig` | `SliceConfig` | Slice repository configuration |
+| `artifactRepo` | `DHTConfig` | Artifact repository settings |
+| `coreMax` | `int` | Target cluster size (0 uses `coreNodes.size()`) |
+| `appHttp` | `AppHttpConfig` | Application HTTP server for slice routes |
+| `tls` | `Option<TlsConfig>` | TLS for cluster and HTTP |
+| `quicTls` | `TlsConfig` | QUIC cluster transport TLS |
 
-Additional fields configured via `with*` builder methods:
+Stages from `certificateProvider` onward default if skipped (each is also settable explicitly
+before calling `.build()`):
 
-| Method | Type | Default | Description |
-|--------|------|---------|-------------|
-| `withTls()` | `TlsConfig` | none | TLS for cluster and HTTP |
-| `withAppHttp()` | `AppHttpConfig` | defaults | Application HTTP server for slice routes |
-| `withControllerConfig()` | `ControllerConfig` | DEFAULT | Scaling thresholds and behavior |
-| `withTtm()` | `TtmConfig` | defaults | TTM predictive scaling |
-| `withRollback()` | `RollbackConfig` | defaults | Automatic rollback settings |
-| `withConfigProvider()` | `ConfigurationProvider` | none | Resource provisioning |
-| `withEnvironment()` | `EnvironmentIntegration` | none | Compute/secrets integration |
-| `withAutoHeal()` | `AutoHealConfig` | DEFAULT | Auto-heal retry configuration |
+| Stage | Default when `.build()` is called early |
+|---|---|
+| `certificateProvider` | `Option.none()` |
+| `configProvider` | `Option.none()` |
+| `environment` | `Option.none()` |
+| `managementHttpProtocol` | `HttpProtocol.H1` |
+| `storageConfig` | `Map.of()` |
+| `backupConfig` | `Option.none()` |
+| `membership` | `Option.none()` |
+| `streaming` | `StreamingConfig.streamingConfig()` |
+| `protocol` | `ProtocolConfig.defaultConfig()` |
+| `sliceAction` | `SliceActionConfig.sliceActionConfig()` |
+| `cache` | `DHTConfig.CACHE_DEFAULT` |
+| `ttm` | `TtmConfig.ttmConfig()` |
+| `rollback` | `RollbackConfig.rollbackConfig()` |
+| `controllerConfig` | `ControllerConfig.DEFAULT` |
+| `autoHeal` | `AutoHealConfig.DEFAULT` |
+| `observability` | `ObservabilityConfig.DEFAULT` |
+| `atomicity` | `DeploymentAtomicity.ALL_OR_NOTHING` |
+| `activationGated` | `false` |
+| `timeouts` | `TimeoutsConfig.timeoutsConfig()` |
+| `workerConfig` | `Option.none()` |
+| `deploymentDefaults` | `DeploymentDefaults.DEFAULT` |
+| `clusterFormation` | `ClusterFormationConfig.defaults()` |
 
-### Factory Methods
+Three fields have no builder stage at all — they're set on the built config, because their
+authoritative source is resolved outside the builder (see the `withAutoHeal`/`withClusterName`/
+`withStorageEncryption` doc comments in `AetherNodeConfig.java`):
 
-```java
-// Minimal configuration
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers);
+| Method | Type | Description |
+|---|---|---|
+| `withClusterName()` | `Option<ClusterName>` | Cluster identity, stamped from `AETHER_CLUSTER_NAME` |
+| `withAutoHeal()` | `AutoHealConfig` | Auto-heal retry configuration (overrides the builder default) |
+| `withStorageEncryption()` | `Option<StorageEncryptionConfig>` | Storage-tier encryption keyring |
 
-// With custom slice action config
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig);
-
-// With management port
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig, 8080);
-
-// Full configuration
-AetherNodeConfig.aetherNodeConfig(nodeId, port, peers, sliceActionConfig, sliceConfig, 8080, dhtConfig);
-
-// Test configuration (shorter timeouts, management disabled, full replication)
-AetherNodeConfig.testConfig(nodeId, port, peers);
-
-// Forge simulation configuration (CPU-based scaling disabled)
-AetherNodeConfig.forgeConfig(nodeId, port, peers);
-```
-
-### TLS Configuration
-
-```java
-var tlsConfig = TlsConfig.tlsConfig(certPath, keyPath);
-var config = AetherNodeConfig.aetherNodeConfig(...)
-                             .withTls(tlsConfig);
-```
+See `Main.java`'s `run()` method for the full production wiring, including these three post-build calls.
 
 When `[tls]` `auto_generate = false` with operator-provided `cert_path`/`key_path`, the node
 **refuses to start** if `AETHER_INSECURE_DEV_MODE=true` is also set — insecure dev-mode is
@@ -86,8 +90,7 @@ Controls slice lifecycle timeouts and behavior.
 
 ```java
 SliceActionConfig.sliceActionConfig();
-SliceActionConfig.sliceActionConfig(serializerProvider);
-SliceActionConfig.sliceActionConfig(serializerProvider, frameworkJarsPath);
+SliceActionConfig.sliceActionConfig(frameworkJarsPath);
 ```
 
 | Parameter | Default | Description |
@@ -98,8 +101,9 @@ SliceActionConfig.sliceActionConfig(serializerProvider, frameworkJarsPath);
 | `unloadingTimeout` | 2 minutes | Max time for slice unloading |
 | `startStopTimeout` | 5 seconds | Max time for start/stop |
 | `repositories` | Local repository | Artifact repositories |
-| `serializerProvider` | Fury | Serialization provider |
-| `frameworkJarsPath` | none | Custom framework JARs path |
+| `artifact_archive_retention` | `7d` | Minimum time a version must have been stored in the built-in artifact store before it may be archived (`aether artifacts archive`). Must be a positive duration; an unparseable or non-positive value fails config validation |
+| `artifact_max_versions` | `10000` | Bound on the PRESENT (not archived) versions of one artifact in the built-in store. A new version past it is refused (`409`, nothing uploaded); existing versions are never dropped and archiving frees room. Must be at least 1 |
+| `frameworkJarsPath` | none (`Option.empty()`) | Custom framework JARs path |
 
 ## Controller Configuration
 
@@ -130,10 +134,10 @@ ControllerConfig.controllerConfig(
 
 ```bash
 # View current config
-curl http://localhost:8080/api/controller/config
+curl http://localhost:8080/api/v1/controller/config
 
 # Update config
-curl -X POST http://localhost:8080/api/controller/config \
+curl -X POST http://localhost:8080/api/v1/controller/config \
   -H "Content-Type: application/json" \
   -d '{
     "cpuScaleUpThreshold": 0.75,
@@ -208,6 +212,170 @@ DHTConfig.SINGLE_NODE;  // Single-node testing
 | `readQuorum` | 2 | Read quorum size |
 | `operationTimeout` | 30 seconds | Operation timeout |
 
+## Storage Encryption Configuration
+
+### `[storage.encryption]` — #253
+
+At-rest encryption for block-storage tiers, keyed through the node's existing `SecretsProvider`
+(no dedicated key-management service; Vault/#119 integration is a deferred follow-up).
+
+```toml
+[storage.encryption]
+active_key_id = "k1"
+streams_encrypted = false        # opts the built-in `streams` instance's segment-block tiers in
+
+[storage.encryption.keys]
+k1 = "${secrets:storage-key-v1}"
+k0 = "${secrets:storage-key-v0}"  # retired key, kept resolvable for reads only
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `active_key_id` | required if section present | Key id (must be a key in `keys`) new writes encrypt under |
+| `streams_encrypted` | false | Opts the built-in `streams` instance's segment-block tiers into encryption — `streams` has no `[storage.streams] encrypted` field of its own |
+| `keys.<id>` | none | `${secrets:<path>}` reference resolved via `SecretsProvider`, one per key id. Secret value must be a Base64-encoded 32-byte AES-256 key |
+
+Per-instance opt-in (any `[storage.<name>]` section, e.g. `[storage.artifacts]`):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `encrypted` | false | Wraps this instance's disk/DHT tiers in `EncryptingStorageTier`. Requires `[storage.encryption]` to be present with at least one key |
+
+**Boot behavior.** Every key in `keys` is resolved through the live `SecretsProvider` once, at boot,
+bounded by a 30-second timeout. Boot fails — naming the key id, never the secret value — if any key
+fails to resolve (malformed `${secrets:...}` reference, provider failure, invalid Base64, wrong
+decoded length), if `active_key_id` is absent from `keys`, or if encryption is requested
+(`encrypted = true` on any instance, or `streams_encrypted = true`) but `[storage.encryption]` is
+missing entirely. If the node's environment has no `SecretsProvider` at all while
+`[storage.encryption]` is present, boot fails with `NoSecretsProviderForStorageEncryption`.
+
+**Coverage.** Encrypts block payloads (`get`/`put`) on `LocalDiskTier` and `DhtStorageTier` for any
+instance with `encrypted = true`, and on the `streams` instance's segment-block tiers when
+`streams_encrypted = true`. The auto-synthesized default `artifacts` and `content` instances
+(created when no explicit `[storage.artifacts]`/`[storage.content]` section is configured) track
+node-wide keyring presence: encrypted whenever `[storage.encryption]` is configured with a
+resolvable keyring, plaintext otherwise — an explicit `[storage.artifacts]`/`[storage.content]`
+section is only needed to opt out or to fine-tune other settings, not merely to get coverage
+(`content` joined this coverage in #783; it previously bypassed the config/keyring wiring, and
+demotion/GC, entirely via a separate factory path). Does **not** cover: `MemoryTier` (in-process,
+never touches disk); metadata/refs/snapshot files (`MetadataStore`/`SnapshotManager`) for any
+instance, `streams` included; the `streams` instance's write-ahead log (`walPath`, #634-3) — a
+separate directory from the segment-block tiers that `streams_encrypted` gates, and never wrapped
+in `EncryptingStorageTier`.
+
+**`content` encryption is triggered by keyring presence, not by opting in.** The synthesized
+`content` instance takes `encrypted = <a keyring is configured>`, exactly like the synthesized
+`artifacts` default. Two consequences worth knowing before you upgrade or reconfigure:
+
+- Enabling `[storage.encryption]` for any instance turns on `content` encryption too. If `content`
+  already holds plaintext blocks, they become unreadable — the disk tier refuses at boot and the DHT
+  tier fails per read (`LegacyPlaintextBlock`). There is no migration path in rc4 (#831). Set
+  `[storage.content] encrypted = false` explicitly to opt out. See
+  [`known-limitations.md`](known-limitations.md) for the upgrade note in full.
+- The synthesized `content` default derives its `disk_path`/`snapshot_path` as a sibling of whatever
+  `artifacts` resolves to (`<artifacts disk_path>/../content/{blocks,snapshots}`), and it ignores an
+  explicit `[storage.artifacts] snapshot_path`. If `artifacts` sits on a mounted volume, content's
+  tier may land outside it. Configure `[storage.content]` explicitly to control placement.
+
+**Storage paths are per instance (#856, #912).** A `[storage.<name>]` section that omits `disk_path` /
+`snapshot_path` resolves them under the default root, `/data/aether` (`<root>/storage`,
+`<root>/metadata-snapshots`); the JVM system property `aether.storage.defaultRoot` names another root.
+Two instances whose disk or snapshot directories coincide, or where one lies inside the other, are
+refused at boot with `StoragePathsOverlap` naming both. Give each instance its own paths.
+
+**Not the same as `[streams.X].encryption-key-id`.** That per-stream blueprint key is unrelated and
+was already found structurally inert and rejected at validation (`#576`, 2026-08-27) —
+`StorageSegmentSink`'s own segment-payload pipeline has no encryptor wired to it, and `#253` does not
+change that. `streams_encrypted` above only affects the generic storage-tier framework's `streams`
+instance.
+
+**Wire format.** Each encrypted block is stored as
+`MAGIC("AEC1") | VERSION | KEY_ID_LEN | KEY_ID | NONCE(12B) | CIPHERTEXT+GCM_TAG`. Everything before
+the nonce is authenticated (AES-GCM AAD) but not encrypted — editing the header, including swapping
+in a different valid key id, fails decryption closed. A block with no recognizable header (fewer
+than 4 bytes, or a non-matching magic) is treated as **legacy plaintext**: enabling encryption over a
+local-disk directory that already holds unmarked block files is refused at boot; a DHT tier has no
+directory to scan for that forward-direction check, so an unmarked plaintext block on the DHT tier is
+instead caught per block on read, exactly as before this ruling. The DHT tier does still have its own
+check, but in the opposite direction — see "Reverse-direction refusal" below. A block whose
+header names a key id absent from the configured keyring fails with `UnknownKeyId` rather than a
+truncated read.
+
+**Reverse-direction refusal.** The legacy-plaintext checks above guard *enabling* encryption over
+existing plaintext; boot also refuses the opposite move — *disabling* encryption (or omitting
+`[storage.encryption]` entirely) over a tier that already holds ciphertext. Both local-disk and DHT
+tiers write a `.encryption-enabled` marker the first time encryption is enabled over them (a file at
+the disk directory's root; a key under the DHT tier's `<name>-blocks` namespace). If that marker is
+present and no keyring resolves for the instance, boot fails with `EncryptedTierRequiresKeyring`
+naming the instance and the key id blocks were last written under, instead of silently handing back
+framed `AEC1...` bytes as if they were plaintext content on every read. Recovery: restore
+`[storage.encryption]` with that key id still resolvable in `[storage.encryption.keys]`, or migrate
+to a fresh, unmarked directory or DHT namespace (`#831`). This marker/refusal pair covers the
+per-instance disk/DHT path above and, since `#849`, both sides of the built-in `streams` segment
+tiers: the `stream-segments` DHT namespace is stamped at `stream-segments/.encryption-enabled` on
+the same post-formation admission as every `<name>-blocks` namespace, and refuses the same way.
+**A refused boot leaves no disk marker behind (`#852`).** Storage construction is two-phase: the
+guards of every configured instance *and* of the built-in `streams` segment tiers all run first, and
+only when all of them pass are the `.encryption-enabled` disk markers written. So a boot refused by
+any one of them — legacy plaintext under an `encrypted = true` instance, `streams_encrypted` turned
+on over a segments directory that already holds plaintext, or either of the reverse-direction
+refusals — stamps no directory at all, and backing the others out to `encrypted = false` afterwards
+starts, because there is no marker for their reverse guard to trip on. Two windows stay outside this
+guarantee, and both open only AFTER the boot has been admitted: an I/O error on a marker file, or a
+crash part-way through writing the set, leaves the markers already written (re-running the same
+config completes them; a back-out to `encrypted = false` does not), and the DHT marker is checked
+post-formation (see next paragraph), so its refusal follows disk markers an admitted construction
+already wrote.
+**Timing differs by tier (`#858`/`#874`):** the local-disk marker is checked synchronously during
+storage construction, before the node object exists — a disk read needs no cluster. The DHT marker
+cannot be: its `DHTClient` can only route once cluster formation resolves, so that check runs from
+`start()`, after formation resolves. It does **not** run before the node's HTTP surfaces come up —
+`managementServer`/`appHttpServer` start earlier in the same `start()` chain and can already accept
+traffic, including the Maven protocol handler's writes, while this check is in flight. What actually
+blocks during that window is every DHT-tier operation on the pending namespace — `get`, `put`,
+`delete` and `exists` all gate on the same internal check (not observable as a separate config knob),
+so a write cannot land ahead of the check and persist plaintext into a namespace the check later finds
+already encrypted.
+**Only a definite refusal is fatal (`#1052`).** If the DHT check reads a marker and no keyring is
+configured, it fails with `EncryptedTierRequiresKeyring`. That stops the node the same way any other
+`start()` failure does: exit code `1`, the generic "fatal startup failure" path (`Main#exitWithError`).
+See [`node-operations.md`](node-operations.md#exit-codes) for the full table. If the check cannot
+complete (a marker get/put timing out after 30 s, or no DHT quorum while the ring is still converging),
+that is not an answer. The node stays in the cluster and retries with exponential backoff: 1 s,
+doubling to a 30 s cap, jittered, with no give-up bound. Each attempt that fails logs one WARN line
+naming the instance and the attempt number (`DHT encryption-marker check attempt 3 for instance
+'content' did not complete: ...`). [mechanism: only `EncryptedTierRequiresKeyring` is a `Cause.Terminal`, and the retry loop stops only on
+a terminal cause.] Until the check completes:
+- every operation on that instance's DHT tier stays gated and is refused with `TierNotAdmitted` after
+  30 s;
+- the node stays in lifecycle state `JOINING` (never `ACTIVE`), so `/health/ready` answers 503;
+- the `dht-admission` readiness component names the instances still pending.
+
+[mechanism: the tier gate and the self-ready signal wait on the same per-instance gate, which only the
+check's final outcome resolves.]
+
+The node does not exit on a timeout. [design intent — unverified on a multi-node cluster under churn:
+that such a node then verifies and becomes ready once the ring converges.]
+**Recovery:** a pending check clears on its own once the DHT answers. If `dht-admission` stays DOWN,
+the DHT cannot reach quorum for that namespace. Check cluster membership (`/api/v1/nodes`) and the
+node's WARN attempt lines. A refusal clears only as described above: restore the keyring, or migrate.
+A stop (SIGTERM) while the check is still retrying is logged at INFO as a stop, not as a start failure,
+and the shutdown hook owns the exit.
+
+**Nonce bound.** Each block's 12-byte (96-bit) nonce is drawn from `SecureRandom`, not a counter.
+NIST SP 800-38D caps random-96-bit-nonce AES-GCM at 2³² encryptions under one key before nonce
+collision risk becomes significant; a single collision under the same key is a full break, not a
+graceful degradation. Rotate `active_key_id` well before any one instance approaches that many
+encrypted blocks — see `security-subsystem-spec.md` §5.4/§5.7 for the full analysis and the
+misuse-resistant-AEAD follow-up this motivates.
+
+**Key rotation.** Add a new `keys.<id>` entry, flip `active_key_id`; every prior key remains
+resolvable for existing blocks. Re-encrypting already-written blocks under the new active key
+(including on tier demote/promote) is not part of this fix.
+
+**Migration limitation.** There is no path from an existing plaintext tier to an encrypted one in
+rc4 — enabling `encrypted = true` (or `streams_encrypted = true`) is new-instance/fresh-data only.
+
 ## Environment Variables
 
 For container deployment, configuration via environment variables:
@@ -222,6 +390,8 @@ For container deployment, configuration via environment variables:
 | `CLUSTER_PEERS` | required | Cluster peer list |
 | `JAVA_OPTS` | `-Xmx256m` | JVM options |
 | `AETHER_CLUSTER_SECRET` | none | Shared secret used to generate TLS certificates; fallback for `tls.cluster_secret` |
+| `AETHER_CLUSTER_SECRET_FILE` | none | Path to a file holding the cluster secret (trailing line breaks are stripped, nothing else); preferred over the plain variable because the value is then in no argv or container environment. Both set to different values is refused at start (exit 65) |
+| `AETHER_API_KEYS_FILE` | none | Path to a file holding the accepted API keys in the `AETHER_API_KEYS` format; wins over the plain variable, and both set to different values is refused at start (exit 65). Every `${env:NAME}` reference in a node config also accepts `NAME_FILE`; only the three file-delivered variables (`AETHER_CLUSTER_SECRET`, `AETHER_API_KEY`, `AETHER_API_KEYS`) are refused at start when their file is broken, any other name leaves the reference as its literal placeholder |
 
 There are no `TLS_ENABLED` / `TLS_CERT_PATH` / `TLS_KEY_PATH` environment variables — TLS is
 configured via the `[cluster] tls` and `[tls]` TOML keys (`auto_generate`, `cert_path`,
@@ -262,28 +432,39 @@ var peers = List.of(
     NodeInfo.nodeInfo(NodeId.nodeId("node-3"), "192.168.1.3", 8090)
 );
 
-var config = AetherNodeConfig.aetherNodeConfig(
-    NodeId.nodeId("node-1"),
-    8090,
-    peers
-);
+var config = AetherNodeConfig.builder()
+    .self(NodeId.nodeId("node-1"))
+    .coreNodes(peers)
+    .managementPort(8090)
+    .sliceConfig(SliceConfig.sliceConfig())
+    .artifactRepo(DHTConfig.DEFAULT)
+    .coreMax(peers.size())
+    .appHttp(AppHttpConfig.appHttpConfig())
+    .tls(Option.none())
+    .quicTls(quicTlsConfig)
+    .build();
 ```
 
 ### Production with TLS
 
 ```java
-var config = AetherNodeConfig.aetherNodeConfig(
-    NodeId.nodeId("node-1"),
-    8090,
-    peers,
-    SliceActionConfig.sliceActionConfig(),
-    8080
-).withTls(TlsConfig.tlsConfig(certPath, keyPath));
+var config = AetherNodeConfig.builder()
+    .self(NodeId.nodeId("node-1"))
+    .coreNodes(peers)
+    .managementPort(8080)
+    .sliceConfig(SliceConfig.sliceConfig())
+    .artifactRepo(DHTConfig.DEFAULT)
+    .coreMax(peers.size())
+    .appHttp(AppHttpConfig.appHttpConfig())
+    .tls(TlsConfig.server(certPath, keyPath))
+    .quicTls(TlsConfig.server(certPath, keyPath))
+    .build();
 ```
 
 ### Custom Timeouts
 
-Since `SliceActionConfig` is a record, custom timeouts can be constructed directly:
+Since `SliceActionConfig` is a record, custom timeouts can be constructed directly (7 fields —
+there is no serializer-provider field; slice serialization is not part of this config):
 
 ```java
 var sliceActionConfig = new SliceActionConfig(
@@ -293,20 +474,40 @@ var sliceActionConfig = new SliceActionConfig(
     timeSpan(5).minutes(),    // unloadingTimeout
     timeSpan(2).minutes(),    // startStopTimeout
     List.of(localRepository()),
-    furySerializerFactoryProvider(),
     Option.empty()            // frameworkJarsPath
 );
 
-var config = AetherNodeConfig.aetherNodeConfig(
-    nodeId, port, peers, sliceActionConfig
-);
+var config = AetherNodeConfig.builder()
+    .self(nodeId)
+    .coreNodes(peers)
+    .managementPort(port)
+    .sliceConfig(sliceConfig)
+    .artifactRepo(artifactRepoConfig)
+    .coreMax(peers.size())
+    .appHttp(AppHttpConfig.appHttpConfig())
+    .tls(Option.none())
+    .quicTls(quicTlsConfig)
+    .sliceAction(sliceActionConfig)
+    .build();
 ```
 
 ### Test Configuration
 
+There is no canned test or forge factory — tests build the minimal required chain directly and
+skip everything from `certificateProvider` onward to take its defaults:
+
 ```java
-// Shorter timeouts for faster tests
-var config = AetherNodeConfig.testConfig(nodeId, port, peers);
+var config = AetherNodeConfig.builder()
+    .self(nodeId)
+    .coreNodes(peers)
+    .managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
+    .sliceConfig(SliceConfig.sliceConfig())
+    .artifactRepo(DHTConfig.DEFAULT)
+    .coreMax(peers.size())
+    .appHttp(AppHttpConfig.appHttpConfig())
+    .tls(Option.none())
+    .quicTls(quicTlsConfig)
+    .build();
 ```
 
 ## Worker Configuration
@@ -315,16 +516,30 @@ var config = AetherNodeConfig.testConfig(nodeId, port, peers);
 [worker]
 group_name = "default"
 zone = "local"
-max_group_size = 100
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `group_name` | string | `"default"` | Logical group name for this worker pool |
-| `zone` | string | `"local"` | Zone identifier for zone-aware grouping. Workers in the same zone auto-cluster |
-| `max_group_size` | int | `100` | **Inert today** — declared for the worker-group splitting mechanism, which is not built (#673: `GroupAssignment.computeGroups` has no live caller; communities are one-per-source). Parsed and validated (`< 2` refuses at parse); changes no behavior until #673's wire-or-delete decision. Community size in the shipping product is the per-source worker count. |
+| `group_name` | string | `"default"` | Logical group name for this worker pool. Parsed, validated and stored; **read by no production code** (see below) |
+| `zone` | string | `"local"` | Zone identifier. Parsed, validated and stored; **read by no production code** (see below). Not the same knob as the `AETHER_ZONE` environment variable |
+| `max_group_size` | — | — | **Removed (#673, 2026-09-14).** A present key is refused at parse: worker group splitting was never wired, and communities are one per source (`<source>-w-0`). Remove the key from any `[worker]` table. |
 
-Zone is also extracted from the NodeId: everything before the last dash (e.g., `us-east-worker-1` → zone `us-east-worker`). The explicit `zone` config takes precedence for group computation.
+Both keys above are parsed, validated and stored on `AetherNodeConfig`, and then **read by nothing**. Their only
+consumer was the worker group-splitting chain (`GroupMembershipTracker` → `GroupAssignment.computeGroups`), which
+was never wired into a live node and was deleted in #673 (2026-09-14). Setting either key changes no behaviour
+today; they are documented because they are still accepted, not because they do anything.
+
+NodeId-derived zones were removed in #592 (2026-08-17). A node's zone is no longer inferred by splitting its id at
+the last dash — that was identifier parsing rather than zone awareness, and it put `node-1` in a zone called
+`node`.
+
+`[worker] zone` is a **different knob** from the `AETHER_ZONE` environment variable, and only the latter is live:
+`Main` maps `AETHER_ZONE` onto `NodeInfo.LABEL_ZONE`, the Hello handshake propagates that label into
+`SwimMember.labels`, and it is read for observability by `ClusterTopologyManagerRecord` and `ClusterTopologyRoutes`.
+`AETHER_ZONE` is stamped on every provisioned node from that node's own source, never inherited from the
+provisioning host (#1650): the source's single configured zone, or nothing for a source listing several `zones`,
+because the landing zone is chosen by capacity rotation after the node's user-data is rendered. `AETHER_SOURCE` is
+stamped the same way, always.
 
 Workers self-organize into groups deterministically from SWIM membership. Same membership produces identical groups on every worker — no coordination needed. Each group elects its own governor (lowest ALIVE NodeId).
 
@@ -333,17 +548,24 @@ Workers self-organize into groups deterministically from SWIM membership. Same m
 ```toml
 [backup]
 enabled = true
-interval = "5m"
 path = "/data/backups"
 remote = ""
+restore = "auto"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `false` | Enable durable backup |
-| `interval` | string | `"5m"` | Backup frequency |
-| `path` | string | env-dependent | Git repo directory for backups |
-| `remote` | string | `""` | Optional git remote URL |
+| `enabled` | boolean | `false` | Enable the change-triggered KV backup and the cold-start restore (also needs a non-blank `path`) |
+| `path` | string | env-dependent | Directory holding the backup repository `<path>/kv-backup` |
+| `remote` | string | `""` | Git remote the leader pushes to, fast-forward only |
+| `restore` | string | `"auto"` | `auto`: a cold start restores the backup head (fresh when empty); `fresh`: ignore the backup |
+
+Each key is overridable by an environment variable: `AETHER_BACKUP_ENABLED`, `AETHER_BACKUP_PATH`, `AETHER_BACKUP_REMOTE`, `AETHER_BACKUP_RESTORE`.
+**The environment wins over the TOML, per key**; a blank variable counts as unset. When the environment value differs from the TOML value the node logs a
+WARN at startup naming the key and both sources (never the values). A Docker node has no TOML of its own and is configured by these variables alone.
+
+The leader writes the backup on change (#1532); a whole-cluster restart is a regular start of fresh cores
+followed by the restore (#1533). See the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
 Default `path` by environment:
 - LOCAL: `./aether-backups`
@@ -356,14 +578,17 @@ Default `path` by environment:
 [dht.replication]
 cooldown_delay_ms = 10000
 cooldown_rate = 10000
-target_rf = 3
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cooldown_delay_ms` | long | `10000` | Delay (ms) after node startup before upgrading to target RF |
+| `cooldown_delay_ms` | long | `10000` | Delay (ms) after node startup before replication warmup starts |
 | `cooldown_rate` | int | `10000` | Max entries/sec during replication warmup |
-| `target_rf` | int | `3` | Target replication factor (0 = full replication) |
+
+The DHT's replication factor and confirmation factor are not node-local settings: they come from the
+cluster's committed `[replication]` section, and the cache namespace's from `[cache]` (#1777; see
+[bootstrap-config.md](bootstrap-config.md#replication--default-replication-factors-cluster-wide-1564)). The former
+`target_rf` key is removed, and a node config that still sets it is refused at load.
 
 ## Streaming Configuration
 
@@ -374,6 +599,9 @@ read_forward_timeout = "2s"
 max_read_response_bytes = "28MB"
 reshuffle_concurrency = 2
 caught_up_max_lag_offsets = 1024
+# segment_disk_max_bytes = "200GB"   # unset: derived from the disk at boot
+isr_lag_max = "30s"
+promotion_escape_after = "120s"
 ```
 
 | Field | Type | Default | Description |
@@ -383,6 +611,9 @@ caught_up_max_lag_offsets = 1024
 | `max_read_response_bytes` | data size | `28MB` | Cap on a single forwarded-read response |
 | `reshuffle_concurrency` | int | `2` | Partitions one node may hold in materialize+backfill at once. Must be `>= 1` |
 | `caught_up_max_lag_offsets` | long | `1024` | How far a `CAUGHT_UP` replica may trail the freshest peer watermark and still serve reads or count toward the ring-release catch-up gate. Must be `>= 0` |
+| `segment_disk_max_bytes` | data size | derived | Cap on this node's local-disk tier for sealed stream segments. Unset (or `0`): 40% of the usable space on the filesystem holding the stream data directory at boot, clamped to at least 1 GiB and at most usable space minus 2 GiB (the WAL usually shares the disk); the chosen value is logged at INFO. A value above the usable space is kept, with a WARN. Must be `>= 0` |
+| `isr_lag_max` | duration | `30s` | How long a member of a partition's in-sync replica set (ISR) may stay behind the owner's head before the owner asks for it to leave the ISR (#1730; Kafka's `replica.lag.time.max.ms`). **Liveness only:** the ISR changes only by a committed write and a `confirmation_factor` ≥ 2 acknowledgement waits for every committed ISR member, so no value makes an acknowledgement unsafe. Smaller drops a slow replica sooner (shorter ack stalls, fewer in-sync copies); larger keeps it longer (an acknowledgement can wait up to this long for a lagging member) |
+| `promotion_escape_after` | duration | `120s` | How long a stream partition's promotion (the owner activation gate, the replica promotion contest) waits for members that do not answer (each unreachable member continuously for this long, on its own clock) before a candidate named in the partition's COMMITTED in-sync set goes ahead without them (#2080). A candidate outside the set, or a record with no committed set, never goes ahead. Refused if below the alarm bounds it follows: two `swim.suspect_timeout` windows (20 s at the default) and the contest's source wait (20 s at the default). **The default is a guess**: a lower value risks escaping past a node that only boots slowly after a full-cluster cold restart, which can leave acknowledged records behind (retained in a recovery segment and reported); the measured boot spread of a cold restart would settle it. Each escape raises the CRITICAL operator event `stream-promotion-past-unreachable-peers` naming this bound and the time elapsed |
 
 `reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
 partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition
@@ -430,8 +661,10 @@ provider = "hetzner"                          # Required: hetzner | aws | gcp | 
 api_token = "${env:HCLOUD_TOKEN}"         # Supports ${env:VAR} interpolation
 
 [cloud.compute]                                # Instance provisioning parameters
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 user_data = "#!/bin/bash\n..."
 ssh_key_ids = "12345,67890"                    # Comma-separated lists

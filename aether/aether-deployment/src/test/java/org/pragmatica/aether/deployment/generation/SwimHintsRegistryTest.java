@@ -110,7 +110,7 @@ class SwimHintsRegistryTest {
             var registry = SwimHintsRegistry.swimHintsRegistry(TTL, clock::get, changes::incrementAndGet);
             registry.putHint(NODE_A, HealthHint.FAULTY, clock.get());
 
-            var healthy = new PeerHealthObservation(NODE_A, HealthHintWire.HEALTHY, 1L, 0L, clock.get());
+            var healthy = new PeerHealthObservation(NODE_A, HealthHintWire.HEALTHY, 0L, 1L, 0L, clock.get());
             registry.onPeerHealth(healthy);
 
             assertThat(registry.isEmpty()).isTrue();
@@ -130,7 +130,7 @@ class SwimHintsRegistryTest {
 
             // Recovery lands well within the TTL window.
             clock.set(1_000_000L + 1_000L);
-            var healthy = new PeerHealthObservation(NODE_A, HealthHintWire.HEALTHY, 1L, 0L, clock.get());
+            var healthy = new PeerHealthObservation(NODE_A, HealthHintWire.HEALTHY, 0L, 1L, 0L, clock.get());
             registry.onPeerHealth(healthy);
 
             assertThat(registry.isEmpty()).isTrue();
@@ -143,7 +143,7 @@ class SwimHintsRegistryTest {
             var changes = new AtomicInteger(0);
             var registry = SwimHintsRegistry.swimHintsRegistry(TTL, clock::get, changes::incrementAndGet);
 
-            var faulty = new PeerHealthObservation(NODE_A, HealthHintWire.FAULTY, 1L, 0L, clock.get());
+            var faulty = new PeerHealthObservation(NODE_A, HealthHintWire.FAULTY, 0L, 1L, 0L, clock.get());
             registry.onPeerHealth(faulty);
 
             assertThat(registry.currentTtlFiltered()).containsEntry(NODE_A, HealthHint.FAULTY);
@@ -155,7 +155,7 @@ class SwimHintsRegistryTest {
             var changes = new AtomicInteger(0);
             var registry = SwimHintsRegistry.swimHintsRegistry(TTL, clock::get, changes::incrementAndGet);
 
-            var suspected = new PeerHealthObservation(NODE_A, HealthHintWire.SUSPECTED, 1L, 0L, clock.get());
+            var suspected = new PeerHealthObservation(NODE_A, HealthHintWire.SUSPECTED, 0L, 1L, 0L, clock.get());
             registry.onPeerHealth(suspected);
 
             assertThat(registry.currentTtlFiltered()).containsEntry(NODE_A, HealthHint.SUSPECTED);

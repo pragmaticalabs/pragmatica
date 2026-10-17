@@ -8,6 +8,11 @@
 **Author:** Design team
 **Last Updated:** 2026-03-17
 
+> **Superseded replication keys (#1564).** This exploratory draft's `replication` and `acks` stream keys were never
+> implemented. The shipped policy is `replication_factor` (copies including the owner) and `confirmation_factor`
+> (copies including the owner that hold a write before it is acknowledged) — see `streaming-spec.md` §10.5 and
+> `../reference/guarantees.md` §4a.
+
 ---
 
 ## Table of Contents
@@ -58,7 +63,7 @@ Adding streaming as an external dependency (Kafka, Redpanda, NATS JetStream) cre
 As a built-in Aether resource, streams are:
 
 - **Lifecycle-managed:** Created, scaled, and removed via blueprint — same as slices.
-- **Co-location aware:** Runtime can place producer and consumer slices on the same node for zero-copy intra-node streaming.
+- **Co-location aware:** Runtime can place producer and consumer slices on the same node, removing the network hop. *(Implementation note, #1248: this is not zero-copy — storage is off-heap and delivery copies to heap; see `reference/streaming-performance-analysis.md` §4.3.)*
 - **Consistency-integrated:** Stream metadata lives in Rabia consensus alongside all other cluster state.
 - **Zero-ops:** No separate cluster. Scales with the Aether topology automatically.
 
@@ -181,14 +186,16 @@ consistency = "strong"           # produce path goes through Rabia
 
 Consumer groups can be declared in the blueprint (static) or created at runtime by slices (dynamic):
 
-> **⚠️ REJECTED AT DEPLOY TIME TODAY (#576).** Neither key below is read at runtime, so a blueprint
-> containing this block does not deploy — it is failed as inert configuration. `auto-offset-reset`
+> **⚠️ REFUSED BY BLUEPRINT VALIDATION (#576).** Neither key below is read at runtime, and both are
+> failed as inert configuration — but that refusal does not block the publish today
+> (`BlueprintService.streamBindings` discards it), so the blueprint deploys with empty stream bindings. `auto-offset-reset`
 > accepts only `"earliest"`, because a never-committed consumer always starts at offset 0 permanently
-> by the **#478 ruling**, so the `"latest"` shown here is the value that gets refused. Retained as the
-> design target for **#677**; see `streaming-spec.md` §3.2/§3.3 for the full per-key status.
+> by the **#478 ruling**, so the `"latest"` shown here is the value that gets refused. Retained as a
+> post-GA design target (**#677** descoped the wiring from 1.0); see `streaming-spec.md` §3.2/§3.3 for
+> the full per-key status.
 
 ```toml
-# DESIGN TARGET — does not deploy today (#576, #677).
+# DESIGN TARGET — refused as inert (#576, #677); that refusal does not block the publish today.
 [streams.order-events.consumer-groups.analytics]
 auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
 commit-interval = "1s"           # REJECTED as inert: not read at runtime
@@ -341,7 +348,7 @@ Push subscriptions are governor-to-consumer TCP connections. If the consumer is 
 
 If a consumer slice runs on a worker that holds a replica of the partition (see [Section 10](#10-replication)), it reads from the local replica. No network hop.
 
-If the consumer runs on the same node as the governor, it reads directly from the governor's ring buffer — zero-copy, same as the co-located producer case.
+If the consumer runs on the same node as the governor, it reads directly from the governor's ring buffer — no network hop. *(Implementation note, #1248: the read is not zero-copy; each event is copied out of the off-heap ring into heap `byte[]` arrays before delivery. See `reference/streaming-performance-analysis.md` §4.3.)*
 
 ### 7.4 Fan-In Consumer
 
@@ -433,6 +440,11 @@ record StreamPartitionAssignmentValue(
     Map<Integer, NodeId> partitionToConsumer  // partition index -> consumer node
 ) implements AetherValue { }
 ```
+
+> **Status (#1271, verified at `13cab2ceb`):** shipped as a per-PARTITION `ConsumerAssignmentKey`
+> (`consumer-assign/{stream}/{partition}/{group}`) whose `ConsumerAssignmentValue` carries the assignee,
+> an epoch and the `AssignmentToken` the applier checks on every cursor checkpoint write. The per-stream
+> map above was never implemented; see `streaming-spec.md` §5.
 
 **Option B: Governor-Local Assignment**
 
@@ -741,6 +753,9 @@ acks = "governor"     # Option A (default)
 # acks = "consensus"  # Option C, equivalent to consistency = "strong"
 ```
 
+> Superseded by #1564: the shipped equivalent of Option B is `confirmation_factor` (copies, the owner included, that
+> hold a write before the ack; default 2), not an `acks` key.
+
 ### DD-3: Consumer Group Partition Assignment
 
 **Context:** How are partitions assigned to consumers within a group? (Detailed in [Section 9.3](#93-partition-assignment-within-consumer-group))
@@ -823,7 +838,7 @@ consumer.commit();
 | **Replication** | Governor-push within group | ISR (leader-follower) | Raft per-partition | Raft per-stream | BookKeeper quorum |
 | **Consumer groups** | Consensus-coordinated | Coordinator broker | Coordinator broker | Server-side | Subscription types |
 | **Failure detection** | SWIM (~2s) | Session timeout (~10s+) | Raft heartbeat | Server monitoring | ZK session / Raft |
-| **Co-location optimization** | Yes (zero-copy same-node) | No | No | No | No |
+| **Co-location optimization** | Yes (same-node, no network hop; delivery copies to heap) | No | No | No | No |
 | **Deployment** | Built into Aether runtime | Separate cluster | Separate cluster | Separate cluster | Separate cluster (+ BookKeeper) |
 | **Retention** | Bounded (time/count/size) | Unbounded + compaction | Unbounded + compaction | Limits + discard | Unbounded + tiered |
 
@@ -971,13 +986,13 @@ For cases requiring partition count reduction or schema changes, the recommended
 aether stream create order-events-v2 --partitions 12 --replication 3
 
 # 2. Deploy bridge slice that reads from old, writes to new
-aether blueprint deploy bridge-blueprint.toml
+aether blueprints deploy bridge-blueprint.toml
 
 # 3. Wait for bridge to catch up (consumer lag = 0)
 aether stream lag order-events --group bridge
 
 # 4. Switch producers to new stream (blueprint update)
-aether blueprint deploy updated-blueprint.toml
+aether blueprints deploy updated-blueprint.toml
 
 # 5. Delete old stream after verification
 aether stream delete order-events

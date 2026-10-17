@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -56,8 +56,8 @@ import static org.pragmatica.lang.Unit.unit;
 ///
 /// ## Durability, stated per operation rather than as a label
 ///   - A write resolves only once the record is fsync-durable on the owner AND held by the keyspace's
-///     declared `minSyncReplicas`. At `replication_factor = 1` that is the owner alone, which survives a
-///     RESTART and not a node loss; at 2 or more a peer holds it before the caller is told anything.
+///     resolved `confirmation_factor` copies, the owner included (#1564; 2 with the cluster defaults — the
+///     owner plus one peer), so at CF >= 2 a peer holds it before the caller is told anything.
 ///   - A write that reaches the log but misses the replication barrier reports
 ///     [EntityLogError.ReplicationBarrierUnmet] and IS applied locally, because the record is in the log
 ///     and a recovering node will replay it. Reporting failure while diverging from the log would be
@@ -103,6 +103,9 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// Consecutive consume-append failures per stuck timer, so the ERROR that reports one can be
     /// rate-limited while still carrying how long it has been stuck. See [#failedConsumes].
     private final Map<TimerId, AtomicLong> unconsumedFires = new ConcurrentHashMap<>();
+    /// Timers with a fire queued or running on their key's tail, so a tick does not queue another behind
+    /// it (#1269). See [#submitFire].
+    private final Set<TimerId> firesInFlight = ConcurrentHashMap.newKeySet();
     private Option<EntityOwnerForward> forward = Option.none();
     private final AtomicReference<Option<Runnable>> closeHook = new AtomicReference<>(Option.none());
     private final Option<LinearizableEntityServe<K, S>> linearizableServe;
@@ -405,7 +408,18 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     }
 
     private Promise<Option<S>> getLocal(K key) {
-        return ready(key).flatMap(_ -> readState(key));
+        return ready(key).flatMap(_ -> readCommittedState(key));
+    }
+
+    /// The client-facing read (#2087): committed state only. The write path and the timers keep [#readState], which sees the
+    /// owner's own pending entries -- the single writer sequences against its log, a reader sees what the log has acknowledged.
+    private Promise<Option<S>> readCommittedState(Object key) {
+        return fold.getCommitted(partitionOf(key),
+                                 String.valueOf(key))
+                   .flatMap(raw -> raw.fold(() -> Promise.success(Option.<S> none()),
+                                            bytes -> Result.lift(throwable -> codecFailed(key, throwable),
+                                                                 () -> Option.some(decode(bytes)))
+                                                           .async()));
     }
 
     /// The `BOUNDED_STALE` read half of #596. A read is served LOCALLY by any node that HOLDS the
@@ -472,6 +486,23 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
         return substrate.holdsPartition(keyspace, partition)
                ? fold.ready(partition)
                      .flatMap(_ -> fold.caughtUp(partition))
+               : notHeld(partition);
+    }
+
+    /// This node does not hold the partition's ring. Whether that is "ask elsewhere" or "wait" is decided
+    /// from COMMITTED state: a node the committed ownership record names as OWNER of the arc yet holding no
+    /// ring is mid-transition (its ring not materialized yet, or released while ownership has not moved),
+    /// so the answer is the transient [EntityError.OwnerTransitioning] — which also survives the forward
+    /// wire, where a terminal `PartitionNotHeld` was kept as a plain refusal nobody retried. A node that is
+    /// not the owner keeps the terminal `PartitionNotHeld`: it is genuinely foreign and retrying here never
+    /// helps. The unwired fence-test form has no admission and therefore no owner view, so it stays terminal.
+    private Promise<Unit> notHeld(int partition) {
+        var owner = admission.map(gate -> gate.isPartitionOwner(partition)).or(false);
+
+        return owner
+               ? new EntityError.OwnerTransitioning(keyspace + "/" + partition,
+                                                    "this node is the committed owner of partition " + partition
+                                                   + " but does not hold it yet").promise()
                : new EntityLogError.PartitionNotHeld(keyspace, partition).promise();
     }
 
@@ -517,8 +548,9 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
     /// An entity built WITHOUT admission (the unwired fence-test form) owns everything, matching
     /// [#admitWrite]'s permissive fallback — the two must agree, or a unit-test entity would schedule
-    /// timers it then refuses to fire.
-    private boolean isPartitionOwned(int partition) {
+    /// timers it then refuses to fire. Package-visible: the checkpoint driver asks the same question to
+    /// decide which partitions carry a checkpoint lag (#1330).
+    boolean isPartitionOwned(int partition) {
         return admission.fold(() -> true, gate -> gate.isPartitionOwner(partition));
     }
 
@@ -638,12 +670,35 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// concurrent create / update / delete on that key — the same guarantee an external update gets, which
     /// is what spec §4.5 means by "applies the scheduled operation via the same path as an external
     /// update". [Deadline#unbounded()] because there is no caller whose budget could bound it.
+    ///
+    /// At most ONE fire per timer is queued at a time (#1269). The tick runs every second and a fire can
+    /// sit behind a slow or stalled operation on its key; queuing one per tick grew that key's queue by
+    /// the number of due timers every second, and [#fireStillPending] discarded the extras only once they
+    /// finally ran. The in-tail re-checks stay — the mark only stops duplicates from being QUEUED. See
+    /// [#fireReleasing] for where the mark is cleared, and why there.
     @Contract
     private void submitFire(int partition, EntityFold.DueTimer due) {
+        var id = fireKey(due);
+
+        if (!firesInFlight.add(id)) {
+            return;
+        }
+
         perKey.submit(due.key(),
                       () -> Deadline.runWith(Deadline.unbounded(),
-                                             () -> fireAdmitted(partition, due)))
+                                             () -> fireReleasing(partition, due, id)))
               .onFailure(cause -> logFireDeferred(due, cause));
+    }
+
+    /// The fire, with its in-flight mark cleared as a STEP of the fire's own chain — success, failure or a
+    /// synchronous throw alike — so the mark is gone before the key's next operation can start. Cleared
+    /// from an observer on the executor's promise instead, it ran on another thread and could still be set
+    /// when the next tick came: a fire deferred by a fence was then skipped as "in flight" after the fence
+    /// had cleared.
+    private Promise<Unit> fireReleasing(int partition, EntityFold.DueTimer due, TimerId id) {
+        return Result.lift(() -> fireAdmitted(partition, due))
+                     .<Promise<Unit>> fold(Cause::promise, fire -> fire)
+                     .withResult(_ -> firesInFlight.remove(id));
     }
 
     private Promise<Unit> fireAdmitted(int partition, EntityFold.DueTimer due) {
@@ -1067,12 +1122,21 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// surfaced as a generic failure instead of [EntityError.EntityAlreadyExists] read as an
     /// unexplained error to every matcher keyed on the type (02w counts acked creates exactly that
     /// way). Only the variants that legitimately cross this boundary are reconstructed; anything
-    /// else keeps the carrier, whose message already names the owner's reason.
+    /// else keeps the carrier, whose message already names the owner's reason. [EntityError.StorageUnavailable]
+    /// crosses so a transient refusal stays transient for the caller; the carrier becomes its wrapped cause, so
+    /// the owner's inner reason survives in the message. The owner's not-ready answers
+    /// (`OwnerTransitioning`, `OwnershipNotYetCommitted`, `FoldInProgress`) cross as
+    /// [EntityError.OwnerTransitioning], for the same reason: left as the terminal carrier they read as a
+    /// permanent refusal during a handoff that clears by itself.
     private Cause retypeForwarded(Cause cause, K key) {
-        return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ignored)
+        return cause instanceof EntityOwnerForward.ForwardRefused(var failureType, var ownerMessage)
                ? switch (failureType) {
             case "EntityAlreadyExists" -> new EntityError.EntityAlreadyExists(String.valueOf(key));
             case "EntityNotFound" -> new EntityError.EntityNotFound(String.valueOf(key));
+            case "StorageUnavailable" -> new EntityError.StorageUnavailable(String.valueOf(key), cause);
+            case "OwnerTransitioning", "OwnershipNotYetCommitted", "FoldInProgress", "NotYetCommitted" -> new EntityError.OwnerTransitioning(String.valueOf(key),
+                                                                                                                                             ownerMessage);
+            case "ForwardBudgetExhausted" -> new EntityOwnerForward.ForwardNotSent("entity owner-forward for key '" + key + "' refused by the owner, which did not touch the entity: " + ownerMessage + " — nothing was applied; safe to retry with a fresh budget");
             default -> cause;
         }
                : cause;
@@ -1317,17 +1381,23 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
     /// Append, then apply the record to the fold at the offset the log assigned it.
     ///
-    /// `onSuccess` rather than `map` is deliberate: the fold must be updated for a record that reached the
-    /// log even when the promise afterwards carries [EntityLogError.ReplicationBarrierUnmet]. That cause
-    /// is raised by the substrate AFTER the offset exists and the record is durable, so refusing to apply
-    /// it here would leave this node serving a view that disagrees with the log it recovers from.
+    /// The apply is a step of the chain (`withSuccess`), not an `onSuccess` observer (#1241). On a pending
+    /// append promise `onSuccess` runs on another thread while the dependent steps run inline, so the
+    /// key's serialization tail could resolve — and the key's next operation start — before the fold held
+    /// this record. In the chain, the fold holds it before anything downstream of the append runs.
+    ///
+    /// The fold must also take a record that reached the log when the promise carries
+    /// [EntityLogError.ReplicationBarrierUnmet]. That cause is raised by the substrate AFTER the offset
+    /// exists and the record is durable, so refusing to apply it would leave this node serving a view that
+    /// disagrees with the log it recovers from. `withSuccess` does not run on a failure; that apply is
+    /// [#translateAppendFailure]'s, which is equally a synchronous step of the chain.
     private Promise<Long> appendAndApply(Object key, EntityLogRecord record) {
         var partition = partitionOf(key);
 
         return substrate.append(keyspace,
                                 partition,
                                 record.encode())
-                        .onSuccess(offset -> fold.apply(partition, offset, record))
+                        .withSuccess(offset -> fold.apply(partition, offset, record))
                         .mapError(cause -> translateAppendFailure(key, partition, record, cause));
     }
 
@@ -1350,6 +1420,15 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
 
         return cause instanceof EntityLogError.StaleOwnerAppend stale
                ? new EntityError.StaleOwnerEpoch(String.valueOf(key), stale.detail())
+               : storageFailure(key, cause);
+    }
+
+    /// The substrate's own classification decides: a cause it marks [Cause.Transient] (a freshly handed-over
+    /// stream owner not yet promoted, catch-up pending) is a "not ready yet" and keeps that classification as
+    /// [EntityError.StorageUnavailable]; anything else is a genuine [EntityError.StorageFailed].
+    private static Cause storageFailure(Object key, Cause cause) {
+        return cause.isTransient()
+               ? new EntityError.StorageUnavailable(String.valueOf(key), cause)
                : new EntityError.StorageFailed(String.valueOf(key), cause);
     }
 

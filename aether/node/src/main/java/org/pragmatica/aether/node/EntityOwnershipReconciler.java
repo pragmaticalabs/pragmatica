@@ -11,8 +11,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -21,8 +24,10 @@ import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.entity.EntityKeyspaceRegistrar;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityKeyspaceRegistrationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityKeyspaceRegistrationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.replication.PartitionKey;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
@@ -30,11 +35,16 @@ import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter;
 import org.pragmatica.aether.stream.replication.StreamPartitionOwnershipWriter.HrwOwner;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -79,6 +89,33 @@ import org.slf4j.LoggerFactory;
 /// returns [Option#none] for an unchanged owner, so a follower and a steady-state leader both emit
 /// nothing and the batch is skipped.
 ///
+/// **The settle gate (#1734).** Registrations arrive one per node as each node provisions the slice, and an
+/// autoscaler adds and removes hosts, so the hosting set is neither monotone nor known to be complete when a tick
+/// reads it. Minting whatever is committed at tick time turned every late registration into an owner change (a fence
+/// bump with no readiness handoff), and a change every few seconds keeps the new owner's not-yet-held window open.
+/// Each keyspace therefore carries a fingerprint (partition count plus hosts that are also live members), and the
+/// writer is steered by it. Both thresholds are TIME on an injected monotonic clock, never a count of passes: an
+/// event kick ([#requestReconcile]) is a pass that takes no time, and counting it let three back-to-back kicks settle
+/// a set that had been quiet for milliseconds.
+/// - **settled** (the fingerprint unchanged for [#SETTLE_TICKS] tick intervals of time): owners are HRW over the
+///   set, as before;
+/// - **not settled, arc has a live committed owner**: that owner is kept, whatever HRW now prefers;
+/// - **not settled, committed owner left the hosting set or the members**: HRW immediately — failover is never gated,
+///   and a kick is how it is reached early;
+/// - **not settled, arc has no record**: nothing is minted, until [#FIRST_MINT_CEILING_TICKS] tick intervals of time
+///   have gone by without the set settling. The arc is then minted over the current set and the
+///   `entity-ownership-unsettled-mint` operator warning names the keyspace, the number of set changes seen and the
+///   ceiling. Existing owners are still never moved while unsettled.
+///
+/// Guarantee: owners converge to HRW(hosts ∩ members) once the hosting set has been quiet for [#SETTLE_TICKS] tick
+/// intervals (10 s at the 5 s tick); while it is not quiet, no owner changes except failover of an owner that left,
+/// and a first mint is delayed by at most [#FIRST_MINT_CEILING_TICKS] tick intervals (30 s). The quiet period is
+/// observed at pass granularity, so on a loaded scheduler it can stretch by up to one tick interval. No claim under a
+/// perpetually oscillating set, other than that arcs without a record are minted once at the ceiling and then stay put.
+/// It does not bound write refusal and is not a readiness handoff: a moved arc's new owner can still be named before
+/// its ring is held. Operator recovery: none needed; the warning is informational, and the set settling clears the
+/// state.
+///
 /// **Exclusive authority.** Entity arcs are REAL streams since #345 I3 (`StreamEntityLogSubstrate`
 /// creates `entity:<keyspace>` through `createStream`), so the stream-side replica reconcile also
 /// walks them — for replica placement, which is correct and wanted. Its OWNERSHIP driver, however,
@@ -88,6 +125,13 @@ import org.slf4j.LoggerFactory;
 /// entity arcs out, making this class the ONLY writer of `entity:*` ownership.
 public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar {
     private static final Logger LOG = LoggerFactory.getLogger(EntityOwnershipReconciler.class);
+    /// Tick intervals (of time, not passes) the hosting-set fingerprint must stay unchanged before owners may be
+    /// (re)placed. A marked guess (#1734): one interval already spans the observed 0.1-0.9 s registration gap, the second
+    /// absorbs autoscaler jitter.
+    static final int SETTLE_TICKS = 2;
+    /// Tick intervals after which an arc with no record is minted over an unsettled set anyway (30 s at the 5 s tick). A
+    /// marked guess (#1734): the gate must delay a first mint, never starve it.
+    static final int FIRST_MINT_CEILING_TICKS = 6;
 
     private final Map<String, Integer> entityKeyspaces = new ConcurrentHashMap<>();
     private final KVStore<AetherKey, AetherValue> kvStore;
@@ -96,22 +140,43 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     private final BooleanSupplier consensusActive;
     private final StreamPartitionOwnershipWriter writer;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
+    /// Where an event-triggered pass runs (see [#requestReconcile]) — injected so a test can run it inline.
+    private final Executor reconcileExecutor;
     /// The registration view the writer's [HrwOwner] reads, refreshed ONCE per tick — the writer asks
     /// per arc, and answering each ask with a fresh full scan would make a tick O(arcs × records).
     private volatile Map<String, HostedKeyspace> committedKeyspaces = Map.of();
+    private final long settleNanos;
+    private final long ceilingNanos;
+    private final LongSupplier nanoClock;
+    private final OperatorWarningSink warningSink;
+    /// Per-keyspace settle state, advanced once per pass in [#tick] and read by the writer's per-arc asks inside the
+    /// same pass; the monitor on `tick` confines it to one thread at a time.
+    private Map<String, Settling> settling = Map.of();
+    /// Keyspaces whose ceiling mint was already announced in the current unsettled run.
+    private final Set<String> ceilingAnnounced = new HashSet<>();
 
     private EntityOwnershipReconciler(KVStore<AetherKey, AetherValue> kvStore,
                                       NodeId self,
                                       Supplier<List<NodeId>> membersSupplier,
                                       BooleanSupplier consensusActive,
                                       Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
-                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
+                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                      Executor reconcileExecutor,
+                                      long settleNanos,
+                                      long ceilingNanos,
+                                      LongSupplier nanoClock,
+                                      OperatorWarningSink warningSink) {
         this.kvStore = kvStore;
         this.self = self;
         this.membersSupplier = membersSupplier;
         this.consensusActive = consensusActive;
         this.writer = writerFactory.apply(this::snapshotArcOwner);
         this.applier = applier;
+        this.reconcileExecutor = reconcileExecutor;
+        this.settleNanos = settleNanos;
+        this.ceilingNanos = ceilingNanos;
+        this.nanoClock = nanoClock;
+        this.warningSink = warningSink;
     }
 
     /// `writerFactory` receives the hosting-set [HrwOwner] this reconciler computes and returns the
@@ -123,8 +188,48 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
                                                                Supplier<List<NodeId>> membersSupplier,
                                                                BooleanSupplier consensusActive,
                                                                Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
-                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return new EntityOwnershipReconciler(kvStore, self, membersSupplier, consensusActive, writerFactory, applier);
+                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                               Executor reconcileExecutor) {
+        return entityOwnershipReconciler(kvStore,
+                                         self,
+                                         membersSupplier,
+                                         consensusActive,
+                                         writerFactory,
+                                         applier,
+                                         reconcileExecutor,
+                                         SETTLE_TICKS,
+                                         FIRST_MINT_CEILING_TICKS,
+                                         TimeSpan.timeSpan(5).seconds(),
+                                         System::nanoTime,
+                                         OperatorWarningSink.logOnly());
+    }
+
+    /// As above, with the settle gate explicit: the thresholds are `settleTicks` and `firstMintCeilingTicks` multiples of
+    /// `tickInterval`, measured on `nanoClock` (monotonic). `settleTicks` of 0 is the pre-#1734 behaviour (every set is
+    /// settled), which the tests use as the arming control.
+    static EntityOwnershipReconciler entityOwnershipReconciler(KVStore<AetherKey, AetherValue> kvStore,
+                                                               NodeId self,
+                                                               Supplier<List<NodeId>> membersSupplier,
+                                                               BooleanSupplier consensusActive,
+                                                               Function<HrwOwner, StreamPartitionOwnershipWriter> writerFactory,
+                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                               Executor reconcileExecutor,
+                                                               int settleTicks,
+                                                               int firstMintCeilingTicks,
+                                                               TimeSpan tickInterval,
+                                                               LongSupplier nanoClock,
+                                                               OperatorWarningSink warningSink) {
+        return new EntityOwnershipReconciler(kvStore,
+                                             self,
+                                             membersSupplier,
+                                             consensusActive,
+                                             writerFactory,
+                                             applier,
+                                             reconcileExecutor,
+                                             settleTicks * tickInterval.nanos(),
+                                             firstMintCeilingTicks * tickInterval.nanos(),
+                                             nanoClock,
+                                             warningSink);
     }
 
     /// One keyspace's committed registration view: the hosting set, the arc span, and whether the
@@ -160,19 +265,48 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     }
 
     /// Forget a locally-unloaded entity keyspace — the retract mirror of [#declare], same contract.
-    /// The next [#tick] sees "committed for this node but not declared" and prunes the record, which
+    /// A [#tick] sees "committed for this node but not declared" and prunes the record, which
     /// is also how a node that restarted WITHOUT the slice sheds its stale registration.
+    ///
+    /// The prune is requested NOW ([#requestReconcile]) rather than left to the periodic tick: from the
+    /// moment the slice unloads, this node is still the committed owner of arcs it cannot serve until the
+    /// registration is pruned AND the leader re-mints. Waiting a full interval for the first half is what
+    /// made that window seconds long; the second half is shortened by [#onRegistrationRemoved].
     @Override
     public Unit retract(String keyspace) {
         entityKeyspaces.remove(keyspace);
+        requestReconcile();
 
         return Unit.unit();
     }
 
+    /// Run one reconcile pass off the caller's thread, now. Event-triggered, as the level-triggered
+    /// periodic [#tick] cannot be the only way a hosting-set change reaches the leader: the interval is
+    /// the length of the handoff window it would otherwise leave open. The periodic tick stays as the
+    /// backstop — a kick whose apply failed is healed by the next interval, never lost.
+    @Contract
+    void requestReconcile() {
+        reconcileExecutor.execute(this::tick);
+    }
+
+    /// Route target for committed-registration REMOVALS: a hosting-set shrink must reach the leader's mint
+    /// now, since until the leader re-mints the retracted node is still the committed owner. Any other
+    /// removal is ignored. Runs on every node; the writer's leader gate leaves followers a no-op.
+    @Contract
+    void onRegistrationRemoved(ValueRemove<?, ?> removal) {
+        if (removal.cause().key() instanceof EntityKeyspaceRegistrationKey) {
+            requestReconcile();
+        }
+    }
+
     /// One reconcile pass — both halves, in order, so a tick that registers a keyspace can mint its
     /// arcs on the next pass over committed state.
+    ///
+    /// `synchronized` because passes now have three triggers (the periodic tick, [#retract], a committed
+    /// removal) on different threads, and two concurrent passes would each compute the same delta and commit
+    /// it twice. The body never blocks — every apply is fire-and-forget — so serialising costs nothing.
     @Contract
-    void tick() {
+    synchronized void tick() {
         // ScheduledExecutorService CANCELS a periodic task whose run throws, silently and permanently.
         // This tick is the only thing that ever mints entity ownership records, so a single throw would
         // leave every entity write refused forever with a cause that says "transient" — undiagnosable
@@ -190,6 +324,7 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
             var scanned = scanRegistrations(kvStore);
 
             committedKeyspaces = scanned;
+            settling = advanceSettling(scanned, membersSupplier.get(), nanoClock.getAsLong());
             var arcs = entityArcs(scanned);
             var commands = writer.writeOwnershipChanges(arcs);
 
@@ -206,9 +341,169 @@ public final class EntityOwnershipReconciler implements EntityKeyspaceRegistrar 
     }
 
     /// The [HrwOwner] seam bound into the writer at construction: answers each per-arc ask from the
-    /// snapshot the current tick published, plus a fresh member read.
+    /// snapshot the current tick published, plus a fresh member read, steered by the settle gate (see the type
+    /// comment's "The settle gate"). The writer asks only on a leader, so the ceiling announcement below is
+    /// leader-only too.
     private Option<NodeId> snapshotArcOwner(String arcName, int partition) {
-        return arcOwner(committedKeyspaces, membersSupplier.get(), arcName, partition);
+        var members = membersSupplier.get();
+        var hrw = arcOwner(committedKeyspaces, members, arcName, partition);
+
+        return EntityPartitionArc.keyspaceOf(arcName)
+                                 .flatMap(keyspace -> Option.option(settling.get(keyspace)).map(state -> gated(keyspace,
+                                                                                                               state,
+                                                                                                               hrw,
+                                                                                                               members,
+                                                                                                               arcName,
+                                                                                                               partition)))
+                                 .or(hrw);
+    }
+
+    private Option<NodeId> gated(String keyspace,
+                                 Settling state,
+                                 Option<NodeId> hrw,
+                                 List<NodeId> members,
+                                 String arcName,
+                                 int partition) {
+        if (state.settled()) {
+            return hrw;
+        }
+
+        return committedOwner(arcName, partition).fold(() -> firstMint(keyspace, state, hrw),
+                                                       owner -> keptOrFailedOver(keyspace, owner, hrw, members));
+    }
+
+    /// Unsettled and the arc has an owner: keep it while it is still a registered, live host — the writer sees an
+    /// unchanged owner and emits nothing. A departed owner is failover, which the gate never delays.
+    private Option<NodeId> keptOrFailedOver(String keyspace, NodeId owner, Option<NodeId> hrw, List<NodeId> members) {
+        var hosted = Option.option(committedKeyspaces.get(keyspace))
+                           .map(keyspaceHosts -> keyspaceHosts.hosts()
+                                                              .contains(owner))
+                           .or(false);
+
+        return hosted && members.contains(owner)
+               ? Option.some(owner)
+               : hrw;
+    }
+
+    private Option<NodeId> firstMint(String keyspace, Settling state, Option<NodeId> hrw) {
+        if (!state.ceilingReached()) {
+            return Option.none();
+        }
+
+        announceCeiling(keyspace, state);
+
+        return hrw;
+    }
+
+    @Contract
+    private void announceCeiling(String keyspace, Settling state) {
+        if (ceilingAnnounced.add(keyspace)) {
+            OperatorWarnings.raise(LOG,
+                                   warningSink,
+                                   OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT,
+                                   keyspace,
+                                   "Entity keyspace '{}' minted its first ownership records over a hosting set that had not settled:"
+                                  + " {} change(s) seen in {} ms, ceiling {} ms — owners may move again once the set settles",
+                                   keyspace,
+                                   state.churn(),
+                                   TimeUnit.NANOSECONDS.toMillis(state.unsettledNanos()),
+                                   TimeUnit.NANOSECONDS.toMillis(ceilingNanos));
+        }
+    }
+
+    private Option<NodeId> committedOwner(String arcName, int partition) {
+        return kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(arcName, partition),
+                                StreamPartitionOwnershipValue.class)
+                      .map(StreamPartitionOwnershipValue::owner);
+    }
+
+    /// One keyspace's settle state at one pass: the fingerprint last seen and when it last changed, when the current
+    /// unsettled run began, and the verdicts those give at the pass's clock reading. Times are monotonic nanos.
+    record Settling(Fingerprint fingerprint,
+                    long stableSince,
+                    long unsettledSince,
+                    int churn,
+                    boolean settled,
+                    boolean ceilingReached,
+                    long unsettledNanos) {
+        static Settling first(Fingerprint fingerprint, long now, long settleNanos, long ceilingNanos) {
+            return verdict(fingerprint, now, now, 0, now, settleNanos, ceilingNanos);
+        }
+
+        /// The change of fingerprint restarts the quiet period; the first change after a settle starts a new unsettled run.
+        Settling observe(Fingerprint now, long clock, long settleNanos, long ceilingNanos) {
+            var changed = !now.equals(fingerprint);
+
+            return verdict(now,
+                           changed
+                           ? clock
+                           : stableSince,
+                           changed && settled
+                           ? clock
+                           : unsettledSince,
+                           changed
+                           ? churn + 1
+                           : churn,
+                           clock,
+                           settleNanos,
+                           ceilingNanos);
+        }
+
+        private static Settling verdict(Fingerprint fingerprint,
+                                        long stableSince,
+                                        long unsettledSince,
+                                        int churn,
+                                        long clock,
+                                        long settleNanos,
+                                        long ceilingNanos) {
+            var settled = clock - stableSince >= settleNanos;
+            var unsettledNanos = clock - unsettledSince;
+
+            return settled
+                   ? new Settling(fingerprint, stableSince, clock, 0, true, false, 0L)
+                   : new Settling(fingerprint,
+                                  stableSince,
+                                  unsettledSince,
+                                  churn,
+                                  false,
+                                  unsettledNanos >= ceilingNanos,
+                                  unsettledNanos);
+        }
+    }
+
+    /// What decides whether the hosting set changed: the arc span and the registered hosts that are live members.
+    record Fingerprint(int partitionCount, Set<NodeId> liveHosts) {
+        static Fingerprint fingerprint(HostedKeyspace hosted, List<NodeId> members) {
+            return new Fingerprint(hosted.partitionCount(),
+                                   hosted.hosts()
+                                         .stream()
+                                         .filter(members::contains)
+                                         .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+        }
+    }
+
+    /// Advance every scanned keyspace's settle state by one pass; keyspaces no longer registered are dropped, and a
+    /// settled keyspace re-arms its ceiling announcement.
+    @Contract
+    private Map<String, Settling> advanceSettling(Map<String, HostedKeyspace> scanned,
+                                                  List<NodeId> members,
+                                                  long clock) {
+        var next = new HashMap<String, Settling>();
+
+        scanned.forEach((keyspace, hosted) -> next.put(keyspace,
+                                                       advanced(settling.get(keyspace),
+                                                                Fingerprint.fingerprint(hosted, members),
+                                                                clock)));
+        ceilingAnnounced.removeIf(keyspace -> !next.containsKey(keyspace) || next.get(keyspace)
+                                                                                 .settled());
+
+        return Map.copyOf(next);
+    }
+
+    private Settling advanced(Settling previous, Fingerprint now, long clock) {
+        return Option.option(previous)
+                     .map(state -> state.observe(now, clock, settleNanos, ceilingNanos))
+                     .or(() -> Settling.first(now, clock, settleNanos, ceilingNanos));
     }
 
     /// The HRW owner of `(entity:<keyspace>, partition)` over the keyspace's HOSTING set — the nodes

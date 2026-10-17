@@ -166,20 +166,31 @@ The `type` prefix determines which `ResourceFactory` handles provisioning. The `
 Deploying a blueprint runs a pre-flight check over every slice's generic resource dependencies
 (`[type.qualifier]` sections — database, cache, HTTP client, idempotency store, and any other
 resource declared via `@ResourceQualifier`) before any node activates a slice. If one or more
-declared sections have no matching config anywhere in the target cluster, the deploy fails up front
-with the complete list of missing sections, naming the slice, the resource type, and the section —
-not one node at a time, discovered only when that node's `SpiResourceProvider` tries to load the
-resource [mechanism: `ConfigSectionPreflightValidator`, aggregated via `Result.allOf`].
+declared sections are in none of the layers the slice loader would consult for that slice — the
+operator KV-Store overlay, `aether.toml`, and the slice jar's own `META-INF/resources.toml` — the deploy
+fails up front with the complete list of missing sections, naming the slice, the resource type, and the
+section — not one node at a time, discovered only when that node's `SpiResourceProvider` tries to load
+the resource [mechanism: `ConfigSectionPreflightValidator` over `SliceStore.layerSliceComposite`, aggregated
+via `Result.allOf`]. A section shipped only in the slice's own jar passes, because the loader resolves it
+there (#1067) [verified: `BlueprintPublishOwnershipTest.ConfigPreflight.publish_succeeds_whenDeclaredSectionShipsOnlyInTheSliceJar`].
 
 **Scope and honest limits:**
 - Only generic resources are checked. Pub-sub topics (publishers and subscribers) are exempt from
   this pre-flight — see the fallback note below and [Pub-Sub Messaging](#pub-sub-messaging-subscriber).
 - The check verifies *presence*, not environmental correctness — a `[database.orders]` section that
   resolves but points at an unreachable host still passes. It checks the **leader's** composite
-  configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`),
-  checked once at deploy time — a section present there but absent from a *different* node's local
-  config file is not caught here `[design intent — unverified]`. A failing check's message names
-  this exact view so it is not mistaken for a cross-node homogeneity guarantee.
+  configuration view (KV-Store operator overlay layered over the leader's own `aether.toml`) plus each
+  slice jar's own `resources.toml`, checked once at deploy time — a section present there but absent
+  from a *different* node's local config file is not caught here `[design intent — unverified]`. A
+  failing check's message names this exact view so it is not mistaken for a cross-node homogeneity
+  guarantee.
+- The view is per slice: a section one slice ships in its jar does not satisfy another slice. A slice
+  `resources.toml` that does not parse contributes nothing, as at load, where provisioning then answers
+  from the node's own configuration alone
+  [verified: `ConfigSectionPreflightValidatorTest.SliceJarLayer`].
+- `${secrets:...}` placeholders in a slice's `resources.toml` are not resolved by the check. At load, one
+  secret that fails to resolve drops that slice's whole file on that node, so a section present only
+  there passes this check and still fails at provisioning `[unverified: no test drives that path]`.
 - If the node has no configuration provider at all, the check fails **open** — deploy proceeds
   unchanged, since absence of a provider means "not checkable," not "not configured." This is a
   quiet gate by construction, so the skip itself is not: the node logs a warning naming how many
@@ -353,6 +364,18 @@ Transport is selected automatically by priority:
 | `r2dbc_url` | `String` (optional) | none | Override R2DBC URL (replaces host/port/database) |
 | `async_url` | `String` (optional) | none | Override async URL — selects postgres-async transport (highest priority) |
 | `properties.*` | `Map<String, String>` | empty | Additional driver-specific properties |
+
+**Overrides and precedence (#769):**
+- Each URL override (`jdbc_url`, `r2dbc_url`, `async_url`) takes precedence over the discrete
+  `host`/`port`/`database` fields for the transport it selects — e.g. if `async_url` embeds its
+  own port, that port is used even when a discrete `port` is also set.
+- When **more than one URL kind is set**, each connector reads host, port, database, credentials and database type
+  from **its own** URL: the JDBC connector from `jdbc_url`, the R2DBC connector from `r2dbc_url`, the async connector
+  from `async_url` (#784). Which transport connects is the best one on the slice's classpath, so a datasource may
+  carry, say, a MySQL `jdbc_url` and a PostgreSQL `async_url` and each connector gets its own. A connector whose own
+  URL is absent, or cannot supply a value (no port, say), falls through to the other URLs in the transport-selection
+  priority above, then to the discrete fields; a single URL kind behaves as before. The provisioning log line shows
+  the values of the transport the priority would pick.
 
 ### Database Types
 
@@ -579,21 +602,36 @@ Two backends are supported: `smtp` (direct SMTP) and `http` (vendor API).
 
 #### SMTP Backend
 
-Nested under `[notification.smtp]`:
+`smtpConfig` is declared `Option<SmtpConfig>` — the binder derives its section from the
+component name (camelCase → snake_case), so it reads `[notification.smtp_config]`, not
+`[notification.smtp]` (#671).
+
+Nested under `[notification.smtp_config]`. Only `host` is required; the other four settings have
+per-field defaults (the binder reads `SmtpConfig.DEFAULT_<COMPONENT>` constants by name; there is no
+whole-record default, because that would also supply a host):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `host` | `String` | required | SMTP server hostname |
 | `port` | `int` | `587` | SMTP server port |
 | `tls_mode` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
-| `auth.username` | `String` (optional, nested) | none | AUTH PLAIN username — under `[notification.smtp.auth]` |
-| `auth.password` | `String` (optional, nested) | none | AUTH PLAIN password — under `[notification.smtp.auth]` |
+| `auth.username` | `String` (optional, nested) | none | AUTH PLAIN username — under `[notification.smtp_config.auth]` |
+| `auth.password` | `String` (optional, nested) | none | AUTH PLAIN password — under `[notification.smtp_config.auth]` |
 | `connect_timeout` | duration | `10s` | TCP connection timeout |
 | `command_timeout` | duration | `30s` | SMTP command timeout |
 
+Omitting `host` from a present `[notification.smtp_config]` fails with
+`Required config field 'notification.smtp_config.host' is missing (SmtpConfig.host has no default)`
+(#822); it used to report `Config section not found: NotificationConfig.smtpConfig`, which told an
+operator who had written the section that it did not exist. The same applies to any required field of any
+nested record, `Option`-wrapped or not.
+
 #### HTTP Vendor Backend
 
-Nested under `[notification.http]`:
+`httpConfig` is declared `Option<HttpEmailConfig>`, so for the same reason it reads
+`[notification.http_config]`, not `[notification.http]` (#671).
+
+Nested under `[notification.http_config]`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -604,14 +642,32 @@ Nested under `[notification.http]`:
 
 #### Retry Configuration
 
-Nested under `[notification.retry]`:
+`retryConfig` is declared `Option<RetryConfig>`, so it reads `[notification.retry_config]`,
+not `[notification.retry]` (#671). The delay fields bind as `TimeSpan` (duration-string
+values like `"500ms"` or `"2s"`, or a bare number of seconds), not a raw millisecond `long`.
+
+Nested under `[notification.retry_config]`:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `max_attempts` | `int` | `3` | Maximum delivery attempts |
-| `initial_delay_ms` | `long` | `1000` | Initial retry delay in milliseconds |
-| `max_delay_ms` | `long` | `30000` | Maximum retry delay in milliseconds |
+| `initial_delay` | duration | `1s` | Initial retry delay |
+| `max_delay` | duration | `30s` | Maximum retry delay |
 | `backoff_multiplier` | `double` | `2.0` | Exponential backoff multiplier |
+
+The schedule applies to **transient** failures only. A failure the backend has classified as
+permanent — SMTP: any **5yz reply on any command** (the greeting, EHLO, STARTTLS, AUTH, MAIL
+FROM, RCPT TO, DATA — every refusal record carries the reply code and RFC 5321 §4.2.1 decides),
+a 3yz where a completion was expected (a challenge this client cannot answer), or a local TLS
+setup failure (`TlsSetupFailed` — in a TLS mode the send fails BEFORE any connection is opened;
+the client never falls back to cleartext); HTTP: `AuthError` (401/403), `VendorNotFound`, or a
+`RequestFailed` with any 4xx status other than 408 and 429 — is not retried: the same request
+would get the same answer, and `DeliveryFailed` is returned after the first attempt (#271).
+SMTP **4yz replies on any command** (`454 Temporary authentication failure`, `454 TLS not
+available due to temporary reason`, `421` at the greeting or EHLO, `451` at MAIL FROM),
+connection failures and timeouts, and HTTP 5xx/408/429 take the full schedule. `DeliveryFailed`
+carries the backend's last cause and its classification (`isTerminal()`/`isTransient()`), so a
+`[retry.<name>]` interceptor on the calling method sees the difference.
 
 ### API
 
@@ -651,7 +707,7 @@ sender.send(notification)
 |---------|------|
 | `BackendNotConfigured` | Unknown backend or missing backend-specific configuration |
 | `UnsupportedChannel` | Notification type not supported by this backend |
-| `DeliveryFailed` | All retry attempts exhausted |
+| `DeliveryFailed` | Retry attempts exhausted, or a permanent failure on the first attempt (see Retry Configuration) |
 
 ### TOML Examples
 
@@ -660,16 +716,18 @@ sender.send(notification)
 [notification]
 backend = "smtp"
 
-[notification.smtp]
+[notification.smtp_config]
 host = "smtp.example.com"
 port = 587
 tls_mode = "STARTTLS"
+connect_timeout = "10s"
+command_timeout = "30s"
 
-[notification.smtp.auth]
+[notification.smtp_config.auth]
 username = "noreply@example.com"
 password = "${secrets:smtp/password}"
 
-[notification.retry]
+[notification.retry_config]
 max_attempts = 3
 ```
 
@@ -678,14 +736,14 @@ max_attempts = 3
 [notification]
 backend = "http"
 
-[notification.http]
+[notification.http_config]
 provider_hint = "sendgrid"
 api_key = "${secrets:sendgrid/api-key}"
 from_address = "noreply@example.com"
 
-[notification.retry]
+[notification.retry_config]
 max_attempts = 5
-initial_delay_ms = 2000
+initial_delay = "2s"
 ```
 
 **Mailgun (HTTP vendor):**
@@ -693,7 +751,7 @@ initial_delay_ms = 2000
 [notification]
 backend = "http"
 
-[notification.http]
+[notification.http_config]
 provider_hint = "mailgun"
 api_key = "${secrets:mailgun/api-key}"
 ```
@@ -768,10 +826,10 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cache_name` | `String` | `"default"` | Logical cache name (shared name = shared cache instance) |
+| `cache_name` | `String` | `"default"` | Logical cache name (shared name = shared cache instance). Sections sharing a name must agree on `mode`, `ttl_seconds` and `max_entries` (`strategy` itself may differ); a section that disagrees with an earlier one is refused at provisioning, naming the setting and both values. The key and cached value types are compared only between sections whose slice factory supplied type tokens (`[key, response]`), and the value type only between sections whose strategy stores the result (not `WRITE_AROUND`); the type each name is held to is the first such typed section's, whatever was provisioned before it. A section without type tokens (for example a single-`@Key`-parameter method such as the banking `getBalance`) is not checked on type (#697) |
 | `strategy` | `CacheStrategy` | `CACHE_ASIDE` | Caching strategy (see table below) |
-| `ttl_seconds` | `int` | `300` | Time-to-live for cached entries |
-| `max_entries` | `int` | `10000` | Maximum number of entries |
+| `ttl_seconds` | `int` | `300` | Time-to-live for cached entries — honoured by the local store (`LOCAL`, and the L1 of `TIERED`) only. The DHT has no expiry primitive, so `DISTRIBUTED` entries (and `TIERED`'s L2) do not expire; tracked in #279 |
+| `max_entries` | `int` | `10000` | Maximum number of entries in the local store — a hard cap with least-recently-used eviction (#279); `DISTRIBUTED` storage is bounded by the DHT, not by this field |
 | `mode` | `CacheMode` | `LOCAL` | Cache storage mode |
 
 ### Cache Strategies
@@ -789,7 +847,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 | Mode | Storage | Description |
 |------|---------|-------------|
 | `LOCAL` | In-memory on local node | Fastest, no network overhead |
-| `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss |
+| `DISTRIBUTED` | DHT across the cluster | Shared cache, survives node loss. A backend failure reads as a miss and the method runs — the cache is fail-open, so a DHT outage slows the slice rather than failing it (#279) |
 | `TIERED` | Local L1 + distributed L2 | Best of both: fast local reads, falls back to the distributed L2 on a local miss [gap: no cross-node invalidation yet, so a write on one node can leave a stale L1 entry on another — tracked in #279; don't rely on cross-node consistency] |
 
 ### TOML Example
@@ -822,8 +880,9 @@ Aspects are cross-cutting concerns applied to slice method invocations via confi
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `max_attempts` | `int` | required | Maximum retry attempts (must be positive) |
+| `max_attempts` | `int` | required | Maximum attempts at the method, the first one included (must be positive; `1` means no retry — and a transient failure under a budget of 1 still logs the loop's one "giving up" WARN per call, since the budget was spent) |
 | `backoff_strategy` | `BackoffStrategy` | exponential (3 attempts) | Backoff strategy between retries |
+| `retry_on` | `RetryOn` | `TRANSIENT` | Which failures are retried. `TRANSIENT`: only a cause that implements `Cause.Transient` (promise timeouts, refused connections, exhausted pools — what infrastructure failures classify as; an HTTP-client request timeout or a mid-request reset is deliberately NOT classified, because the server may already have executed the call); an unclassified cause, which is what every business verdict is, is returned after the first attempt, so a non-idempotent method is never re-driven on its own verdict (#280). `NON_TERMINAL`: retry anything that is not `Cause.Terminal` — the behaviour before #280; opt in for a method whose failures are all infrastructural but not yet classified |
 
 `backoff_strategy` is a **discriminated sub-section**: `[retry.<name>.backoff_strategy]` with a
 `type` key selecting the shape. A **wholly absent** `[retry.<name>]` section fails loud
@@ -845,6 +904,7 @@ intent; don't conflate them
 ```toml
 [retry.payment-calls]
 max_attempts = 3
+retry_on = "TRANSIENT"
 
 [retry.payment-calls.backoff_strategy]
 type = "exponential"
@@ -940,8 +1000,8 @@ Provisioned by `RateGuardFactory` (`ResourceFactory<RateGuard, RateGuardConfig>`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name` | `String` | required | Metric name prefix |
-| `record_timing` | `boolean` | `true` | Record execution timing |
-| `record_counts` | `boolean` | `true` | Record success/failure counts |
+| `record_timing` | `boolean` | `true` | Record a timer `<name>.success` / `<name>.failure` per call |
+| `record_counts` | `boolean` | `true` | Record a counter `<name>.success.count` / `<name>.failure.count` per call (a separate meter: Micrometer refuses two meter types under one id) |
 | `tags` | `List<String>` | empty | Additional metric tags (key-value pairs) |
 
 The `MeterRegistry` is not a config field — it is resolved from the node's real, Management-API-backed
@@ -977,14 +1037,20 @@ tags = "region=eu,tier=gold"
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | `String` | required | Logger name prefix |
+| `name` | `String` | required | Logger name — each injection point logs through `LoggerFactory.getLogger(name)`, so its level is tuned per method in the logging configuration (#280) |
 | `level` | `LogLevel` | required | Log level (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`) |
-| `log_args` | `boolean` | required | Log method arguments |
-| `log_result` | `boolean` | required | Log method results |
+| `log_args` | `boolean` | required | Log method arguments — the request's `toString()`, unredacted. Treat it as personal data: leave `false` unless the request type is known to carry none |
+| `log_result` | `boolean` | required | Log method results — the result's `toString()`, truncated to 100 characters, unredacted. Same caution as `log_args` |
 | `log_duration` | `boolean` | required | Log execution duration |
 
 `LogConfig` declares no `DEFAULT` static field, so the generic config binder treats every key above
-as mandatory — there is no config-level fallback to `INFO`/`true` if a key is omitted from TOML.
+as mandatory — there is no config-level fallback if a key is omitted from TOML. The programmatic
+factories (`LogConfig.logConfig(name[, level])`) default `log_args` and `log_result` to `false`
+(#280). Both lines carry the request-id the invocation put in the SLF4J MDC (`requestId`, rendered
+as `[rid=…]` by the node's log4j layout): the entry line always did, and the exit line now
+re-applies the entry's MDC around itself, because the promise usually resolves on a thread whose
+MDC is empty (#280). Under the privacy defaults the exit line still names the OUTCOME — `ok`, or
+`failed <CauseType>` (the cause's type, never its message).
 
 ```toml
 [logging.payment-flow]
@@ -1037,7 +1103,8 @@ public interface OrderProcessor {
 ```
 
 `MessageContext(String messageId, String topic, int partition, long offset)` — `messageId` is the
-publisher-assigned identity of the EVENT and is the key to deduplicate on; it survives dead-letter
+publisher-assigned identity of the EVENT and the key a subscriber-side guard can deduplicate on; nothing in the
+platform deduplicates on it for you (see the note on publish retries below). It survives dead-letter
 redrive. `partition` and `offset` locate *this delivery* and are not identities — a redelivery or a
 redrive can present different values for the same event, so never key on them.
 
@@ -1053,6 +1120,46 @@ shape, both enforced at compile time:
   `Fn1<Promise<Unit>, T>` — typed on the event alone, with nowhere to carry the context. Declaring
   both is a compile error rather than a silent loss of the context. Use one or the other.
 
+### Publishing to a durable topic (#1236, #1237)
+
+A slice publishes through the injected `Publisher<T>` (or the typed `TypedPublisher<T>` facade). On a
+**durable** topic the returned `Promise<Unit>` resolves one of three ways:
+
+| Outcome | Meaning | What to do |
+|---------|---------|------------|
+| success | The event is held by `confirmation_factor` copies, the owner included | nothing |
+| failure (e.g. `NOT_ENOUGH_REPLICAS`) | The event is **not** in the log — the replica floor (`confirmation_factor − 1` registered peers) is checked before the append | a retry is a new publish |
+| `PublishOutcomeUnknown` | The owner appended but the floor was not confirmed (e.g. peer acks timed out): the event **may** be in the log | retry only with the same key |
+
+One known exception to "failure = not in the log": a WAL fsync failure after the owner's ring append
+(#1235).
+
+`publish(event)` mints a fresh message ID per call, so retrying it after `PublishOutcomeUnknown` writes
+a second event with a new ID. `publish(event, idempotencyKey)` uses your key as the message ID — choose
+one that names the logical event (e.g. `"order-42-placed"`); a blank key is refused. A stable key is
+**necessary** for a retry to be deduplicated, not sufficient: `[unverified: messageId is not yet
+delivered to subscribers — #1295]`, and because durable topics route events round-robin, a retry may
+land on a different partition from the first copy and be processed concurrently with it.
+
+**The key does not deduplicate on publish.** `publish(event, idempotencyKey)` only sets the event's message ID
+(`DurableTopicPublisher.publish(T, String)` calls `stream.publish(envelope(messageId, message))` with no lookup of
+prior keys), so publishing the same key twice appends two events with the same ID. Whether a subscriber collapses
+the pair depends on a subscriber-side guard you opt into (`IdempotencyMethodInterceptor`, or a projection's claim
+store), and no production claim store backs the projection guard yet (durable-pubsub-spec §8; tracked in #2201).
+
+```java
+var key = "order-" + order.id() + "-placed";
+
+// Re-sending under the SAME key is safe whichever way the first attempt failed: after a clean
+// failure the first copy is not in the log, after PublishOutcomeUnknown the copies share one ID.
+publisher.publish(event, key)
+         .orElse(() -> publisher.publish(event, key));
+```
+
+`PublishOutcomeUnknown` is deliberately not transient, so the default retry policy
+(`RetryOn.TRANSIENT`) leaves it alone; `RetryOn.NON_TERMINAL` does retry it, which is safe only for a
+keyed publish. On an **ephemeral** topic the key is ignored (there is no log and no message ID).
+
 ### Configuration
 
 | Field | Type | Default | Description |
@@ -1060,14 +1167,48 @@ shape, both enforced at compile time:
 | `topic_name` | `String` | required | Topic name for message routing |
 | `durability` | `String` | `"ephemeral"` | Delivery tier (#386): `"ephemeral"` keeps the RPC fan-out; `"durable"` backs the topic with a replicated stream |
 | `partitions` | `Integer` | `1` | Durable only. Partition count of the backing stream (per-partition ordering unit) |
-| `replicas` | `Integer` | `2` | Durable only. Copies of each partition, owner included. Must be `>= 2` |
-| `min_sync_replicas` | `Integer` | = `replicas` | Durable only. Write-ack floor, owner included. v1 constraint: MUST equal `replicas` (rejected at parse otherwise; relaxes when #411 lands) |
+| `replication_factor` | `Integer` | cluster `[replication]` default (built-in `3`) | Durable only. Copies of each partition, owner included (#1564). Below 3 only when declared here, with a LOUD warning; above the cluster's desired core count is refused |
+| `confirmation_factor` | `Integer` | `min(cluster default, replication_factor)` (built-in default `2`) | Durable only. Copies, owner included, that hold an event before `publish` resolves (#1564). Must satisfy `1 <= confirmation_factor <= replication_factor`; `1` and `= replication_factor` are accepted with a warning |
 | `retention` | `Duration` | `"7d"` | Durable only. Time retention of the backing stream (e.g. `"7d"`, `"12h"`). The effective replay window is min(this, the stream's ring count/byte sizing caps) |
 
 Declaring any of the four stream knobs on an ephemeral topic is a **deploy-time error** (the keys
 would be inert — same stance as #576): either declare `durability = "durable"` or remove them. An
 invalid durable declaration fails slice activation loudly; it never silently downgrades to
 ephemeral delivery.
+
+**Replication policy (#1564).** Durable topics, streams and durable entities share one policy with the
+same two keys (see `guarantees.md` §4a). The factors resolve once, when the topic's config is committed;
+a later change of the cluster `[replication]` default affects only topics declared afterwards, and
+redeclaring a live topic with different factors is refused at slice activation (`ChangedOnLiveResource` —
+declare a new topic instead; the blueprint publish does not check it). A declaration the policy refuses fails the blueprint publish and slice activation with
+its typed cause. The warnings — `replication-factor-below-three` (an explicit RF below 3; LOUD),
+`confirmation-equals-replication-factor` (losing any one replica refuses publishes) and
+`confirmation-factor-owner-only` (the owner's death loses events it acknowledged but had not
+replicated) — appear as WARN logs and in the publish response's `warnings`. The topic's dead-letter
+stream inherits its RF and CF. The removed keys `replicas` and `min_sync_replicas` have no aliases: a
+section still using one fails the bind as an unrecognized key. Earlier revisions forced
+`min_sync_replicas == replicas` (the "v1 constraint until #411"); that is superseded by #1564, and
+`confirmation_factor < replication_factor` is accepted.
+
+**Unrecognized keys in a topic's own section are rejected, not ignored** (#738). A mistyped key —
+most commonly a dashed spelling where the table above expects an underscore, e.g.
+`confirmation-factor` instead of `confirmation_factor` — used to bind silently as if the key had never
+been written. On an ephemeral topic this meant the deploy-time inert-key rejection above never
+fired: the mistyped knob was invisible to it, so a likely-durable declaration was silently dropped
+instead of raising the loud error it should have. (Durability-tier selection itself is unaffected
+by key spelling — it reads the `durability` field alone.) The bind now fails at parse, naming the
+nearest correctly-spelled key when one is close enough (unrelated keys get no suggestion), and
+reports every unrecognized key in the section together, not just the first. The check only looks
+at the keys this table lists, and only at the static/file-backed configuration (the section's TOML
+declaration); a nested sub-section under the same topic (for example a consumer group table) is
+unaffected however it is spelled, and so is an environment variable, system property, or
+KV-overlay entry that happens to land at the same path.
+[verified: aether/resource/api/src/test/java/org/pragmatica/aether/resource/TopicConfigTest.java (tomlBinding_rejectsDashedKey_namingCorrectSpelling, tomlBinding_rejectsDashedTopicLevelKey_evenWithNestedConsumerSubsectionPresent, tomlBinding_ignoresSystemPropertyKeyAtTopicSection_neverFailsStrictBind)]
+
+**Known limitation**: a quoted key with a literal dot (e.g. `"a.b" = 1`) is, once parsed,
+indistinguishable from a nested sub-table (`[<topic>.a]` / `b = 1`) — the check never flags it as
+unrecognized, for the same reason it never inspects a genuine nested sub-section. Avoid quoted
+dotted keys in a topic section; use a nested table if the grouping is intentional.
 
 ### TOML Example
 
@@ -1093,7 +1234,7 @@ retention = "14d"
 - **Delivery is at-most-once, unordered, and best-effort — not durable.** A publish that finds no live instance of a subscribing slice drops the message silently (the publish call still reports success); a delivery that fails mid-flight is not retried. Nothing is queued or persisted, so a subscriber that is down when a message is published misses it permanently, even after it comes back up. If your handler needs guaranteed processing, declare the topic durable — or build idempotent recovery on top (e.g. reconcile against a durable source). See `guarantees.md` §5.
 
 **Durable topics (`durability = "durable"`, #386):**
-- `publish` resolves when the event is persisted at the declared replication floor (owner + `min_sync_replicas − 1` peer acks) — NOT when subscribers process it. A subscriber down at publish time reads the event from the log when it returns.
+- `publish` resolves when the event is persisted at the declared confirmation factor (owner append + `confirmation_factor − 1` distinct peer acks) — NOT when subscribers process it. A subscriber down at publish time reads the event from the log when it returns.
 - Delivery is **at-least-once per subscribing slice**: your handler's returned `Promise<Unit>` IS the acknowledgment — success advances the group cursor, failure or timeout triggers redelivery (5 attempts with backoff), and an event that exhausts its retries lands in the topic's durable dead-letter stream (`topic:<address>.dlq`) attributed to your consumer group, never silently dropped.
 - Events of one partition are processed **in order** by your group; different partitions process independently. **Duplicates are possible** (crash-window redelivery, retry racing a slow attempt) — write handlers idempotent; the framework idempotency aspect for topics arrives with a later batch.
 - A slice upgrade keeps its consumer position (groups are version-stable) — no reprocessing storm on deploy.
@@ -1134,9 +1275,14 @@ public interface OrderService {
 | `cron` | `String` | — | Standard 5-field cron: `minute hour dom month dow` |
 | `execution_mode` | `ExecutionMode` | `single` | `single`: leader-only; `all`: every quorum-participating node |
 
-Exactly one of `interval` or `cron` must be specified. `execution_mode` replaces the earlier
-`leaderOnly: boolean` design — see #272/#273
-[verified: `aether/resource/api/.../ScheduleConfig.java`, `ExecutionMode.java`].
+Exactly one of `interval` or `cron` must be specified; the other key can be left out. Before #1438 an
+omitted key failed the section's bind, and the slice reached ACTIVE with no task published. A section
+with neither key fails the slice's activation (the slice reports FAILED) instead of activating without
+a task. `execution_mode` replaces the earlier `leaderOnly: boolean` design — see #272/#273
+[verified: `aether/resource/api/.../ScheduleConfig.java`, `ExecutionMode.java`; the interval-only,
+cron-only and neither-key shapes below are pinned by
+`aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/node/fsm/NodeDeploymentStateScheduledTaskPublishTest.java`
+through the node's real LOAD → ACTIVE chain, single-node].
 
 ### TOML Examples
 
@@ -1195,7 +1341,7 @@ Scheduled tasks can be managed at runtime via the Management API and CLI:
 
 - **Pause** — suspends a task's timer without removing the schedule. The task will not fire until resumed
 - **Resume** — restarts a paused task's timer from the current time
-- **Manual trigger** — fires a task immediately regardless of schedule or paused state
+- **Manual trigger** — fires a task immediately regardless of schedule or paused state, unless a run is already in flight (an automatic fire or another manual trigger), in which case it is refused with `409 Conflict` naming the task rather than run concurrently [mechanism: `ScheduledTaskManager.tryClaim`/`release`; pinned by `ScheduledTaskRoutesTriggerTest#ConflictGuard` — component-level, not a live multi-node run]
 
 Pause/resume state is persisted in the KV-Store through consensus — it survives leader failover and node restarts.
 
@@ -1208,12 +1354,48 @@ The runtime tracks execution metrics for each scheduled task:
 | Metric | Description |
 |--------|-------------|
 | `lastExecutionAt` | Epoch millis of the most recent execution |
-| `nextFireAt` | Epoch millis of the next scheduled fire (cron tasks) |
-| `consecutiveFailures` | Number of consecutive failed executions (resets on success) |
+| `nextFireAt` | Epoch millis of the next scheduled fire — computed for both interval and cron tasks [verified: `ScheduledTaskManagerTest` — `fireFixedRate`/`fireCron` write a real `nextFireAt` on every fire, not a placeholder] |
+| `consecutiveFailures` | Number of consecutive failed executions; resets to `0` on the next success |
 | `totalExecutions` | Lifetime execution count |
+| `skippedOverlaps` | Count of fires skipped because the previous run of the same task was still in flight — fixed-rate tasks only; see Overlap Protection below |
 | `lastFailureMessage` | Error message from the most recent failure |
 
-Execution state is written to the KV-Store after each execution (fire-and-forget). Query via `GET /api/scheduled-tasks/{config}/{artifact}/{method}/state`.
+Execution state is written to the KV-Store after each execution via a read-modify-write against the prior state entry (fire-and-forget write, but the counters themselves are accumulated, not overwritten) [verified: `aether/aether-invoke/.../ScheduledTaskManagerTest.java` — `FireBehavior` nested class]. Query via `GET /api/v1/scheduled-tasks/state/{section}/{artifact}/{methodName}`.
+
+As of #841, `execution_mode = "all"` tasks accumulate this state **per node** — each quorum member reads and writes its own node-scoped KV entry, so two nodes firing the same task concurrently never share one counter and neither can lose the other's update; `execution_mode = "single"` keeps the original unscoped key unchanged, since only one node ever executes it. `GET /api/v1/scheduled-tasks/executions-by-node/{section}/{artifact}/{methodName}` in the Management API returns the literal per-node breakdown, one row per node; the tasks-list summary (`GET /api/v1/scheduled-tasks`) and this section's own `GET .../state` endpoint instead report one *combined* row per task, applying a fixed per-field rule: `totalExecutions` and `skippedOverlaps` are summed across nodes, `consecutiveFailures` and `lastExecutionAt` take the max, `nextFireAt` takes the min, and `lastFailureMessage` (together with `updatedAt`) is taken from whichever node's row has the newest `updatedAt`
+[mechanism: `ScheduledTaskManager.TaskOps.stateKeyFor(ctx, task)` keys ALL-mode writes by `ctx.self()`; `ScheduledTaskRoutes.toSummary`/`buildStateResponse`/`buildExecutionsByNode` all scan the same node-scoped rows to build their respective views; pinned by `ScheduledTaskManagerTest.java#MultiNodeStateIsolation` and `ScheduledTaskRoutesAllModeAggregationTest.java` — component-level, not a live multi-node run]. **Rolling-upgrade note:** the pre-#841 global entry for an ALL-mode task is left in the KV-Store untouched but is excluded by all three surfaces above, so a task's per-node counters restart at zero after upgrading rather than continuing from the old shared total. The dev-only `POST /api/v1/scheduled-tasks/inject` route (see Management API) now keys an `all`-mode task's write by `ctx.self()` too, mirroring the automatic path, so its writes are visible on all three surfaces above; a `single`-mode task's `/inject` call still races the leader's automatic fire on the same unscoped entry, with no `tryClaim`/`release` guard around the read-modify-write (`/trigger` writes no state entry at all, so it is not a racer on this key) — a documented TOCTOU caveat, not addressed by this change.
+
+### Overlap Protection
+
+- **Fixed-rate (`interval`) tasks skip a fire while the previous run of the same task is still executing**, rather than allowing concurrent overlapping runs. A skipped fire increments `skippedOverlaps` and does not touch `totalExecutions` or `consecutiveFailures` [verified: `ScheduledTaskManagerTest#fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution`].
+- **Cron tasks re-schedule after the previous execution completes**, not after the fire is launched — so a slow execution delays the next cron fire rather than launching two runs concurrently; there is nothing to skip and `skippedOverlaps` never increments for cron tasks.
+- This is a fixed default (skip, not queue or run concurrently); there is no per-task configuration knob.
+
+### Clock Source
+
+Cron next-fire times are computed from the **node's own wall clock** (`Instant.now()`, read as UTC by
+`CronExpression`); there is no cluster clock, and the HLC is not consulted [mechanism:
+`ScheduledTaskManager.TaskOps.nextCronFireAt`, `CronExpression.nextFireTime(Instant)`]. Consequences, stated
+rather than solved:
+
+- `execution_mode = "all"`: each node fires a cron boundary at its own reading of it, so clock skew between
+  nodes is skew between their fires. Nothing aligns them.
+- `execution_mode = "single"`: the leader's clock is the reference; a leader change moves the reference
+  clock along with the timer, so the phase of a boundary can shift by the skew between the two leaders.
+- A clock that steps across a minute boundary on one node can fire that boundary twice or skip it once on that
+  node. Nothing detects or compensates this. Keep node clocks NTP-disciplined if cron boundaries matter.
+
+Interval tasks are affected only in phase, not in period: the interval itself is measured by the node's
+scheduler (`SharedScheduler.scheduleAtFixedRate`), so a clock step does not stretch or shrink the period, but the
+`nextFireAt` reported in state is `System.currentTimeMillis() + interval` — a node-local wall-clock reading that
+shifts with the clock.
+
+### Schedule Validation
+
+The `interval`/`cron` string is **node-local configuration** (`ScheduleConfig`, resolved per node from its own config document), not something the blueprint DSL parser can see — blueprint validation happens strictly earlier and has no access to per-node config. The earliest point an invalid interval/cron string can be rejected is therefore **slice activation**, not blueprint validation.
+
+An invalid string (fails `CronExpression.parse` or `ScheduledTaskManager.IntervalParser.parse`) fails activation for that scheduled task before any KV write happens — the malformed schedule is never registered. The failure is observable the same way any other activation failure is: it surfaces as a WARNING-severity `DeploymentFailed` event (via the existing `ClusterEventAggregator.handleDeploymentFailed` path) naming the task, the offending string, and the parser's error message — no separate plumbing was added for this
+[verified: `NodeDeploymentStateScheduledTaskValidationTest`].
 
 ### Method Constraints
 

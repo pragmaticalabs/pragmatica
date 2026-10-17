@@ -4,8 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge.api;
 
-import java.net.URI;
 import java.net.http.HttpRequest;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.function.Consumer;
@@ -14,7 +14,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.ember.EmberCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.RepositoryPutResponse;
 import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
@@ -66,8 +66,10 @@ public sealed interface DeploymentRoutes {
 
     record ClusterMetricsResponse(String body) {}
 
-    static RouteSource deploymentRoutes(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
-        var http = JdkHttpOperations.jdkHttpOperations();
+    static RouteSource deploymentRoutes(EmberCluster cluster,
+                                        Consumer<EventLogEntry> eventLogger,
+                                        OperatorKey operatorKey) {
+        var http = NodeHttp.nodeHttp(operatorKey);
 
         return RouteSource.of(blueprintRoute(cluster, http, eventLogger),
                               slicesStatusRoute(cluster, http),
@@ -76,18 +78,18 @@ public sealed interface DeploymentRoutes {
     }
 
     private static Route<ProxyResponse> blueprintRoute(EmberCluster cluster,
-                                                       JdkHttpOperations http,
+                                                       NodeHttp http,
                                                        Consumer<EventLogEntry> eventLogger) {
         return Route.<ProxyResponse> post("/api/blueprints")
                     .withBody(TypeToken.typeToken(String.class))
                     .toJson(body -> proxyBlueprint(cluster, http, eventLogger, body));
     }
 
-    private static Route<SlicesStatusResponse> slicesStatusRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<SlicesStatusResponse> slicesStatusRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<SlicesStatusResponse> get("/api/slices/status").toJson(() -> getSlicesStatus(cluster));
     }
 
-    private static Route<ClusterMetricsResponse> clusterMetricsRoute(EmberCluster cluster, JdkHttpOperations http) {
+    private static Route<ClusterMetricsResponse> clusterMetricsRoute(EmberCluster cluster, NodeHttp http) {
         return Route.<ClusterMetricsResponse> get("/api/cluster/metrics")
                     .to(_ -> proxyClusterMetrics(cluster, http))
                     .asJson();
@@ -101,7 +103,7 @@ public sealed interface DeploymentRoutes {
     }
 
     private static Promise<ProxyResponse> proxyBlueprint(EmberCluster cluster,
-                                                         JdkHttpOperations http,
+                                                         NodeHttp http,
                                                          Consumer<EventLogEntry> eventLogger,
                                                          String blueprintJson) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
@@ -119,7 +121,7 @@ public sealed interface DeploymentRoutes {
         return new SlicesStatusResponse(cluster.slicesStatus());
     }
 
-    private static Promise<ClusterMetricsResponse> proxyClusterMetrics(EmberCluster cluster, JdkHttpOperations http) {
+    private static Promise<ClusterMetricsResponse> proxyClusterMetrics(EmberCluster cluster, NodeHttp http) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyGet(http, port, "/api/v1/metrics"))
                              .map(ClusterMetricsResponse::new);
@@ -140,7 +142,19 @@ public sealed interface DeploymentRoutes {
         return node.mavenProtocolHandler()
                    .handlePut(path,
                               request.content())
-                   .map(_ -> createRepositoryResponse(eventLogger, request, path));
+                   .flatMap(response -> acceptedOrRejected(response, request, path, eventLogger));
+    }
+
+    /// The handler REFUSES with a status (#1778: SNAPSHOT 400, conflicting re-put 409), it does not fail
+    /// the promise, so a non-2xx answer must not be reported as "Deployed". Public only because an interface
+    /// member cannot be package-private; `DeploymentRoutesRepositoryPutTest` calls it directly.
+    static Promise<RepositoryPutResponse> acceptedOrRejected(MavenResponse response,
+                                                             RepositoryPutRequest request,
+                                                             String path,
+                                                             Consumer<EventLogEntry> eventLogger) {
+        return response.statusCode() < 300
+               ? Promise.success(createRepositoryResponse(eventLogger, request, path))
+               : new RepositoryPutRejected(response.statusCode(), new String(response.content(), StandardCharsets.UTF_8)).promise();
     }
 
     private static RepositoryPutResponse createRepositoryResponse(Consumer<EventLogEntry> eventLogger,
@@ -175,29 +189,31 @@ public sealed interface DeploymentRoutes {
              + ".jar";
     }
 
-    private static Promise<String> proxyPost(JdkHttpOperations http, int port, String path, String body) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(body))
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
+    private static Promise<String> proxyPost(NodeHttp http, int port, String path, String body) {
+        var request = http.request(port, path)
+                          .header("Content-Type", "application/json")
+                          .POST(HttpRequest.BodyPublishers.ofString(body))
+                          .timeout(HTTP_TIMEOUT)
+                          .build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
                                             .async());
     }
 
-    private static Promise<String> proxyGet(JdkHttpOperations http, int port, String path) {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create("http://localhost:" + port + path))
-                                 .GET()
-                                 .timeout(HTTP_TIMEOUT)
-                                 .build();
+    private static Promise<String> proxyGet(NodeHttp http, int port, String path) {
+        var request = http.request(port, path).GET().timeout(HTTP_TIMEOUT).build();
 
         return http.sendString(request)
                    .flatMap(result -> result.toResult()
                                             .async());
+    }
+
+    record RepositoryPutRejected(int status, String detail) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "Artifact repository answered " + status + ": " + detail;
+        }
     }
 
     enum LeaderNotAvailable implements org.pragmatica.lang.Cause {

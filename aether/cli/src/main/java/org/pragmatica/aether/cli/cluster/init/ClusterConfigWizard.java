@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
 import java.nio.file.Path;
@@ -9,7 +8,9 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -27,6 +28,7 @@ import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
 
 
 public class ClusterConfigWizard {
@@ -76,8 +78,9 @@ public class ClusterConfigWizard {
                     state = history.pop();
                     index = previousIndex;
                 }
-                case StepResult.Abort _ -> {
-                    return ClusterInitError.Aborted.INSTANCE.result();
+                case StepResult.Abort abort -> {
+                    return abort.cause()
+                                .result();
                 }
             }
         }
@@ -109,7 +112,7 @@ public class ClusterConfigWizard {
                                         SourceType.DOCKER,
                                         Option.none(),
                                         Option.none(),
-                                        new CoreWorkerSplit(3, 0),
+                                        new CoreWorkerSplit(CoreWorkerSplit.MINIMUM_CORE_NODES, 0),
                                         Option.none(),
                                         FirewallPreset.STANDARD,
                                         Option.none(),
@@ -225,76 +228,224 @@ public class ClusterConfigWizard {
         var provider = prompt.choice("Cloud provider",
                                      Arrays.asList(CloudProviderName.values()),
                                      defaultProvider);
-        var defaultRegion = existing.filter(cloud -> cloud.provider() == provider)
-                                    .map(CloudAnswers::region)
-                                    .or(defaultRegionFor(provider));
+
+        return cloudRegionPrompt(state, provider, existing, prompt);
+    }
+
+    /// A rejected region re-asks the REGION, not the whole cloud step. Re-entering `stepCloud` would
+    /// re-ask the provider as well and, on exhausted input, recurse without bound — a
+    /// `StackOverflowError` for `aether cluster init < /dev/null`. Mirrors [#cloudInstancePrompt],
+    /// which already retried only itself.
+    private static StepResult cloudRegionPrompt(ClusterConfigAnswers state,
+                                                CloudProviderName provider,
+                                                Option<CloudAnswers> existing,
+                                                Prompt prompt) {
+        var defaultRegion = existing.filter(cloud -> cloud.provider() == provider).map(CloudAnswers::region).or("");
 
         return guardedPrompt(prompt,
-                             "Region",
+                             regionQuestion(provider),
                              defaultRegion,
                              regionRaw -> validatedContinue(regionRaw,
-                                                            ClusterConfigWizard::nonEmpty,
-                                                            _ -> stepCloud(state, prompt),
-                                                            region -> cloudInstancePrompt(state,
-                                                                                          provider,
-                                                                                          region,
-                                                                                          existing,
-                                                                                          prompt)));
+                                                            raw -> requireRegion(provider, raw),
+                                                            _ -> cloudRegionPrompt(state, provider, existing, prompt),
+                                                            region -> cloudZonePrompt(state,
+                                                                                      provider,
+                                                                                      region,
+                                                                                      existing,
+                                                                                      prompt)));
+    }
+
+    /// gcp only: its integration requires a zone and there is NO default (see [ClusterInitError.ZoneRequired]). Every other
+    /// provider continues with an empty zone.
+    private static StepResult cloudZonePrompt(ClusterConfigAnswers state,
+                                              CloudProviderName provider,
+                                              String region,
+                                              Option<CloudAnswers> existing,
+                                              Prompt prompt) {
+        if (provider != CloudProviderName.GCP) {
+            return cloudInstancePrompt(state, provider, region, "", existing, prompt);
+        }
+
+        var defaultZone = existing.filter(cloud -> cloud.provider() == provider).map(CloudAnswers::zone).or("");
+
+        return guardedPrompt(prompt,
+                             "Zone (required — a gcp zone inside the region; no default)",
+                             defaultZone,
+                             zoneRaw -> validatedContinue(zoneRaw,
+                                                          raw -> Verify.ensure(raw,
+                                                                               Verify.Is::present,
+                                                                               new ClusterInitError.ZoneRequired(provider.value()))
+                                                                       .map(String::trim),
+                                                          _ -> cloudZonePrompt(state, provider, region, existing, prompt),
+                                                          zone -> cloudInstancePrompt(state,
+                                                                                      provider,
+                                                                                      region,
+                                                                                      zone,
+                                                                                      existing,
+                                                                                      prompt)));
     }
 
     private static StepResult cloudInstancePrompt(ClusterConfigAnswers state,
                                                   CloudProviderName provider,
                                                   String region,
+                                                  String zone,
                                                   Option<CloudAnswers> existing,
                                                   Prompt prompt) {
         var defaultInstance = existing.filter(cloud -> cloud.provider() == provider)
                                       .map(CloudAnswers::instanceType)
-                                      .or(defaultInstanceFor(provider));
+                                      .or("");
 
         return guardedPrompt(prompt,
-                             "Instance type",
+                             instanceTypeQuestion(provider),
                              defaultInstance,
                              instanceRaw -> validatedContinue(instanceRaw,
-                                                              ClusterConfigWizard::nonEmpty,
+                                                              raw -> requireInstanceType(provider, raw),
                                                               _ -> cloudInstancePrompt(state,
                                                                                        provider,
                                                                                        region,
+                                                                                       zone,
                                                                                        existing,
                                                                                        prompt),
                                                               instance -> cloudCredentialPrompt(state,
                                                                                                 provider,
                                                                                                 region,
+                                                                                                zone,
                                                                                                 instance,
                                                                                                 existing,
+                                                                                                new LinkedHashMap<>(),
                                                                                                 prompt)));
     }
 
+    /// The provider is named in the question because no suggestion is offered: a region is a
+    /// jurisdiction choice, and the operator has to make it deliberately. See
+    /// [ClusterInitError.RegionRequired].
+    private static String regionQuestion(CloudProviderName provider) {
+        return "Region (required — a " + provider.value() + " location; decides where your data resides)";
+    }
+
+    /// There is NO region default, on purpose — see [ClusterInitError.RegionRequired]. Unlike the
+    /// instance type, the argument is not catalogue rot: a defaulted region SUCCEEDS and silently
+    /// places the cluster's data in a jurisdiction nobody chose.
+    private static Result<String> requireRegion(CloudProviderName provider, String raw) {
+        return Verify.ensure(raw,
+                             Verify.Is::present,
+                             new ClusterInitError.RegionRequired(provider.value()))
+                     .map(String::trim);
+    }
+
+    /// The provider is named in the question because no suggestion is offered: the operator has to
+    /// know WHOSE catalogue to consult before answering. Coming back to an already-answered wizard
+    /// still re-offers the previous answer — that value came from the operator, not from us.
+    private static String instanceTypeQuestion(CloudProviderName provider) {
+        return "Instance type (required — use a type from " + provider.value() + "'s current catalogue)";
+    }
+
+    /// There is NO instance-type default, on purpose — see
+    /// [ClusterInitError.InstanceTypeRequired] for why it was removed. An empty answer
+    /// re-prompts with a message naming `--instance-type` and the provider whose catalogue governs
+    /// the value, so the interactive and `--non-interactive` paths refuse for the same stated reason.
+    private static Result<String> requireInstanceType(CloudProviderName provider, String raw) {
+        return Verify.ensure(raw,
+                             Verify.Is::present,
+                             new ClusterInitError.InstanceTypeRequired(provider.value()))
+                     .map(String::trim);
+    }
+
+    /// One env-var question per credential key the provider needs (#2059: aws, gcp and azure need several; hetzner one). Each
+    /// answer is kept under its key, so what the operator types reaches the generated `${env:...}` reference.
     private static StepResult cloudCredentialPrompt(ClusterConfigAnswers state,
                                                     CloudProviderName provider,
                                                     String region,
+                                                    String zone,
                                                     String instance,
                                                     Option<CloudAnswers> existing,
+                                                    Map<String, String> collected,
                                                     Prompt prompt) {
+        var remaining = CloudAnswers.credentialKeys(provider)
+                                    .stream()
+                                    .filter(key -> !collected.containsKey(key))
+                                    .toList();
+
+        if (remaining.isEmpty()) {
+            return cloudSshKeyPrompt(state, provider, region, zone, instance, collected, existing, prompt);
+        }
+
+        var key = remaining.getFirst();
         var defaultEnvVar = existing.filter(cloud -> cloud.provider() == provider)
-                                    .map(CloudAnswers::credentialEnvVar)
-                                    .or(defaultCredentialEnvVarFor(provider));
+                                    .flatMap(cloud -> Option.option(cloud.credentialEnvVars().get(key)))
+                                    .or(CloudAnswers.defaultEnvVar(provider, key));
 
         return guardedPrompt(prompt,
-                             "Credential env var name",
+                             provider == CloudProviderName.HETZNER
+                             ? "Credential env var name"
+                             : "Env var holding " + provider.value() + " " + key,
                              defaultEnvVar,
                              envRaw -> validatedContinue(envRaw,
                                                          InputValidators::validateEnvVarName,
                                                          _ -> cloudCredentialPrompt(state,
                                                                                     provider,
                                                                                     region,
+                                                                                    zone,
                                                                                     instance,
                                                                                     existing,
+                                                                                    collected,
                                                                                     prompt),
-                                                         envVar -> new StepResult.Continue(stateWithCloud(state,
-                                                                                                          new CloudAnswers(provider,
-                                                                                                                           region,
-                                                                                                                           instance,
-                                                                                                                           envVar)))));
+                                                         envVar -> {
+                                                             var next = new LinkedHashMap<>(collected);
+
+                                                             next.put(key, envVar);
+
+                                                             return cloudCredentialPrompt(state,
+                                                                                          provider,
+                                                                                          region,
+                                                                                          zone,
+                                                                                          instance,
+                                                                                          existing,
+                                                                                          next,
+                                                                                          prompt);
+                                                         }));
+    }
+
+    /// The last cloud answer, and the one whose absence used to make the generated config
+    /// un-bootstrappable — see [ClusterInitError.SshPublicKeyRequired]. Required, and NOT inferred
+    /// from `~/.ssh`: which identity may administer the cluster is the operator's decision.
+    private static StepResult cloudSshKeyPrompt(ClusterConfigAnswers state,
+                                                CloudProviderName provider,
+                                                String region,
+                                                String zone,
+                                                String instance,
+                                                Map<String, String> envVars,
+                                                Option<CloudAnswers> existing,
+                                                Prompt prompt) {
+        var defaultKey = existing.map(CloudAnswers::sshPublicKeyPath).or("");
+
+        return guardedPrompt(prompt,
+                             "SSH public key path (required — injected into provisioned VMs, e.g. ~/.ssh/id_ed25519.pub)",
+                             defaultKey,
+                             keyRaw -> validatedContinue(keyRaw,
+                                                         ClusterConfigWizard::requireSshPublicKey,
+                                                         _ -> cloudSshKeyPrompt(state,
+                                                                                provider,
+                                                                                region,
+                                                                                zone,
+                                                                                instance,
+                                                                                envVars,
+                                                                                existing,
+                                                                                prompt),
+                                                         keyPath -> new StepResult.Continue(stateWithCloud(state,
+                                                                                                           new CloudAnswers(provider,
+                                                                                                                            region,
+                                                                                                                            zone,
+                                                                                                                            instance,
+                                                                                                                            envVars,
+                                                                                                                            keyPath)))));
+    }
+
+    private static Result<String> requireSshPublicKey(String raw) {
+        return Verify.ensure(raw,
+                             Verify.Is::present,
+                             new ClusterInitError.SshPublicKeyRequired())
+                     .map(String::trim);
     }
 
     private static ClusterConfigAnswers stateWithCloud(ClusterConfigAnswers state, CloudAnswers cloud) {
@@ -313,33 +464,10 @@ public class ClusterConfigWizard {
                                         state.secret());
     }
 
-    private static String defaultRegionFor(CloudProviderName provider) {
-        return switch (provider) {
-            case HETZNER -> "hel1";
-            case AWS -> "us-east-1";
-            case GCP -> "us-central1";
-            case AZURE -> "eastus";
-        };
-    }
-
-    private static String defaultInstanceFor(CloudProviderName provider) {
-        return switch (provider) {
-            case HETZNER -> "cx21";
-            case AWS -> "t3.medium";
-            case GCP -> "e2-medium";
-            case AZURE -> "Standard_B2s";
-        };
-    }
-
-    private static String defaultCredentialEnvVarFor(CloudProviderName provider) {
-        return switch (provider) {
-            case HETZNER -> "HCLOUD_TOKEN";
-            case AWS -> "AWS_ACCESS_KEY_ID";
-            case GCP -> "GOOGLE_APPLICATION_CREDENTIALS";
-            case AZURE -> "AZURE_CLIENT_ID";
-        };
-    }
-
+    /// The credential env vars keep their conventional defaults while region, zone and instance type lost theirs, and the
+    /// distinction is the FAILURE MODE, not the stability of the value: a default env var names only WHERE A SECRET IS READ
+    /// FROM, and a wrong or unset one fails loud (the placeholder is left unresolved with a WARN, then the provider or the
+    /// compose-time check refuses). A region or zone default SUCCEEDS while being wrong.
     private static StepResult stepSsh(ClusterConfigAnswers state, Prompt prompt) {
         var existing = state.ssh();
         var defaultHosts = existing.map(ssh -> String.join(",", ssh.hosts())).or("");
@@ -488,18 +616,21 @@ public class ClusterConfigWizard {
 
     private static StepResult stepTopology(ClusterConfigAnswers state, Prompt prompt) {
         if (state.target() == SourceType.SSH) {
-            return sshDerivedTopology(state, prompt);
+            return sshTopology(state, prompt);
         }
 
-        return promptedTopology(state, prompt);
+        return promptedCore(state, prompt);
     }
 
-    private static StepResult sshDerivedTopology(ClusterConfigAnswers state, Prompt prompt) {
+    /// #1019 — the wizard asks for BOTH tiers rather than a total it then splits. The single-number
+    /// question was the interactive face of the same modelling mismatch the CLI flags removed: the
+    /// config models core and worker independently, so a total has to be un-inferred again, and the
+    /// inference is where `--nodes 5` became a three-node consensus tier.
+    private static StepResult sshTopology(ClusterConfigAnswers state, Prompt prompt) {
         return state.ssh()
-                    .map(ssh -> deriveOrFail(state,
-                                             ssh.hosts().size(),
-                                             prompt,
-                                             true))
+                    .map(ssh -> promptedSshCore(state,
+                                                prompt,
+                                                ssh.hosts().size()))
                     .or(ClusterConfigWizard::sshHostsMissing);
     }
 
@@ -509,50 +640,128 @@ public class ClusterConfigWizard {
         return new StepResult.Back();
     }
 
-    private static StepResult promptedTopology(ClusterConfigAnswers state, Prompt prompt) {
-        var defaultCount = state.topology().total() >= 3
-                           ? String.valueOf(state.topology().total())
-                           : "3";
-
-        return guardedPrompt(prompt, "Total node count", defaultCount, raw -> parseNodeCount(raw, prompt, state));
+    /// An ssh target's fleet is the host list, so only the CORE size is a question here; the worker
+    /// tier is the remainder.
+    private static StepResult promptedSshCore(ClusterConfigAnswers state, Prompt prompt, int hostCount) {
+        return guardedPrompt(prompt,
+                             "Core (consensus) node count, of " + hostCount + " SSH host(s)",
+                             defaultCore(state),
+                             raw -> parseSshCore(raw, prompt, state, hostCount));
     }
 
-    @SuppressWarnings("JBCT-EX-01")
-    private static StepResult parseNodeCount(String raw, Prompt prompt, ClusterConfigAnswers state) {
-        int count;
-
-        try {
-            count = Integer.parseInt(raw.trim());
-        } catch (NumberFormatException _) {
-            System.out.println("  ✗ expected integer >= 3");
-
-            return promptedTopology(state, prompt);
-        }
-
-        return deriveOrFail(state, count, prompt, false);
+    private static StepResult parseSshCore(String raw, Prompt prompt, ClusterConfigAnswers state, int hostCount) {
+        return parseCount(raw).fold(() -> retrySshCore(state, prompt, hostCount),
+                                    core -> sshSplitOrFail(state, prompt, core, hostCount));
     }
 
-    private static StepResult deriveOrFail(ClusterConfigAnswers state, int count, Prompt prompt, boolean fromSsh) {
-        var derived = TopologyDeriver.derive(count);
+    private static StepResult retrySshCore(ClusterConfigAnswers state, Prompt prompt, int hostCount) {
+        System.out.println("  ✗ expected integer >= " + CoreWorkerSplit.MINIMUM_CORE_NODES);
 
-        return derived.fold(cause -> reportTopologyFailure(state, prompt, cause, fromSsh),
-                            split -> announceTopology(state, split));
+        return promptedSshCore(state, prompt, hostCount);
     }
 
-    private static StepResult reportTopologyFailure(ClusterConfigAnswers state,
-                                                    Prompt prompt,
-                                                    Cause cause,
-                                                    boolean fromSsh) {
-        System.out.println("  ✗ " + cause.message());
-        if (fromSsh) {
+    private static StepResult sshSplitOrFail(ClusterConfigAnswers state, Prompt prompt, int core, int hostCount) {
+        if (hostCount < core) {
+            System.out.println("  ✗ core " + core + " exceeds the " + hostCount + " host(s) given");
+
             return new StepResult.Back();
         }
 
-        return promptedTopology(state, prompt);
+        return CoreWorkerSplit.coreWorkerSplit(core, hostCount - core).fold(ClusterConfigWizard::sshTopologyFailure,
+                                                                            split -> announceTopology(state, split));
+    }
+
+    private static StepResult sshTopologyFailure(Cause cause) {
+        System.out.println("  ✗ " + cause.message());
+
+        return new StepResult.Back();
+    }
+
+    private static String defaultCore(ClusterConfigAnswers state) {
+        return state.topology()
+                    .core() >= CoreWorkerSplit.MINIMUM_CORE_NODES
+               ? String.valueOf(state.topology().core())
+               : String.valueOf(CoreWorkerSplit.MINIMUM_CORE_NODES);
+    }
+
+    private static StepResult promptedCore(ClusterConfigAnswers state, Prompt prompt) {
+        return guardedPrompt(prompt,
+                             "Core (consensus) node count",
+                             defaultCore(state),
+                             raw -> parseCore(raw, prompt, state));
+    }
+
+    private static StepResult parseCore(String raw, Prompt prompt, ClusterConfigAnswers state) {
+        return parseCount(raw).fold(() -> retryCore(state, prompt), core -> coreOrRetry(state, prompt, core));
+    }
+
+    /// The core answer is checked BEFORE the worker question is asked (#1019 round-1 review, N2).
+    /// Previously any integer was accepted here, the worker prompt ran, and `splitOrFail` reported the
+    /// core problem only after BOTH answers — sending the operator back through both prompts to fix
+    /// one of them.
+    ///
+    /// Validating with a worker count of ZERO is what isolates the core rules rather than duplicating
+    /// them: `coreWorkerSplit` refuses a negative worker and nothing else about the tier, so 0 can
+    /// never be the reason this call fails, and every failure it returns is about the core. That keeps
+    /// the minimum, the odd rule and the maximum in [CoreWorkerSplit] as the single source — a second
+    /// copy here would be free to drift.
+    private static StepResult coreOrRetry(ClusterConfigAnswers state, Prompt prompt, int core) {
+        return CoreWorkerSplit.coreWorkerSplit(core, 0).fold(cause -> reportCoreFailure(state, prompt, cause),
+                                                             _ -> promptedWorker(state, prompt, core));
+    }
+
+    private static StepResult reportCoreFailure(ClusterConfigAnswers state, Prompt prompt, Cause cause) {
+        System.out.println("  ✗ " + cause.message());
+
+        return promptedCore(state, prompt);
+    }
+
+    private static StepResult retryCore(ClusterConfigAnswers state, Prompt prompt) {
+        System.out.println("  ✗ expected integer >= " + CoreWorkerSplit.MINIMUM_CORE_NODES);
+
+        return promptedCore(state, prompt);
+    }
+
+    private static StepResult promptedWorker(ClusterConfigAnswers state, Prompt prompt, int core) {
+        return guardedPrompt(prompt,
+                             "Worker node count",
+                             String.valueOf(state.topology().worker()),
+                             raw -> parseWorker(raw, prompt, state, core));
+    }
+
+    private static StepResult parseWorker(String raw, Prompt prompt, ClusterConfigAnswers state, int core) {
+        return parseCount(raw).fold(() -> retryWorker(state, prompt, core),
+                                    worker -> splitOrFail(state, prompt, core, worker));
+    }
+
+    private static StepResult retryWorker(ClusterConfigAnswers state, Prompt prompt, int core) {
+        System.out.println("  ✗ expected integer >= 0");
+
+        return promptedWorker(state, prompt, core);
+    }
+
+    private static StepResult splitOrFail(ClusterConfigAnswers state, Prompt prompt, int core, int worker) {
+        return CoreWorkerSplit.coreWorkerSplit(core, worker).fold(cause -> reportTopologyFailure(state, prompt, cause),
+                                                                  split -> announceTopology(state, split));
+    }
+
+    private static StepResult reportTopologyFailure(ClusterConfigAnswers state, Prompt prompt, Cause cause) {
+        System.out.println("  ✗ " + cause.message());
+
+        return promptedCore(state, prompt);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<Integer> parseCount(String raw) {
+        try {
+            return Option.some(Integer.parseInt(raw.trim()));
+        } catch (NumberFormatException _) {
+            return Option.none();
+        }
     }
 
     private static StepResult announceTopology(ClusterConfigAnswers state, CoreWorkerSplit split) {
-        System.out.println("  → derived topology: " + split.core() + " core + " + split.worker() + " worker");
+        System.out.println("  → topology: " + split.core() + " core + " + split.worker() + " worker");
 
         return new StepResult.Continue(new ClusterConfigAnswers(state.clusterName(),
                                                                 state.clusterVersion(),
@@ -733,26 +942,49 @@ public class ClusterConfigWizard {
                                    state.firewallPreset());
 
         return switch (preset) {
-            case STANDARD -> new StepResult.Continue(stateWithFirewall(state,
-                                                                       FirewallPreset.STANDARD,
-                                                                       Option.none(),
-                                                                       Option.none(),
-                                                                       List.of()));
+            case STANDARD -> firewallStandard(state, prompt);
             case RESTRICTIVE -> firewallRestrictive(state, prompt);
             case CUSTOM -> firewallCustom(state, prompt);
             case OPEN -> firewallOpen(state, prompt);
         };
     }
 
-    private static StepResult firewallRestrictive(ClusterConfigAnswers state, Prompt prompt) {
-        var detected = IpDetector.suggestAdminCidr();
-        var defaultAdmin = state.adminCidr().or(detected.isEmpty()
-                                                ? ""
-                                                : detected);
-
+    /// STANDARD opens bootstrap SSH and the management API to the admin network exactly as
+    /// RESTRICTIVE does (`FirewallPresets.addAdminScoped` is called from both), so it must collect
+    /// the CIDR. It previously did not, and STANDARD is the DEFAULT preset — see
+    /// [ClusterInitError.AdminCidrRequired]. No internal CIDR is collected: `standardRules` never
+    /// reads one.
+    private static StepResult firewallStandard(ClusterConfigAnswers state, Prompt prompt) {
         return guardedPrompt(prompt,
-                             "Admin CIDR",
-                             defaultAdmin,
+                             adminCidrQuestion(),
+                             state.adminCidr().or(""),
+                             adminRaw -> validatedContinue(adminRaw,
+                                                           InputValidators::validateCidr,
+                                                           _ -> firewallStandard(state, prompt),
+                                                           admin -> new StepResult.Continue(stateWithFirewall(state,
+                                                                                                              FirewallPreset.STANDARD,
+                                                                                                              Option.some(admin),
+                                                                                                              Option.none(),
+                                                                                                              List.of()))));
+    }
+
+    /// The detected address is shown as INFORMATION, never as an accept-on-Enter default. Baking in
+    /// a detected address is the same silent-decision failure as a defaulted region: behind NAT, on
+    /// a dynamic IP, or when the cluster is administered from elsewhere, it is simply wrong — and
+    /// pressing Enter would make that the answer without anyone choosing it.
+    private static String adminCidrQuestion() {
+        var detected = IpDetector.suggestAdminCidr();
+
+        return detected.isEmpty()
+               ? "Admin CIDR (required — the network allowed to reach SSH and the management API)"
+               : "Admin CIDR (required — the network allowed to reach SSH and the management API; this host appears to be " + detected
+                + ")";
+    }
+
+    private static StepResult firewallRestrictive(ClusterConfigAnswers state, Prompt prompt) {
+        return guardedPrompt(prompt,
+                             adminCidrQuestion(),
+                             state.adminCidr().or(""),
                              adminRaw -> validatedContinue(adminRaw,
                                                            InputValidators::validateCidr,
                                                            _ -> firewallRestrictive(state, prompt),
@@ -907,9 +1139,16 @@ public class ClusterConfigWizard {
     private static StepResult stepReview(ClusterConfigAnswers state, Prompt prompt) {
         printSummary(state);
         var generate = prompt.confirm("Generate config?", true);
+        // A docker or forge target passes no REQUIRED prompt, so nothing before this point can
+        // notice exhausted input — and `confirm` answers its own default at EOF. Without this check
+        // `aether cluster init < truncated-file` wrote a config assembled from defaults and exited
+        // SUCCESS, contradicting InputExhausted's own contract.
+        if (prompt.isInputExhausted()) {
+            return new StepResult.Abort(ClusterInitError.InputExhausted.INSTANCE);
+        }
 
         if (!generate) {
-            return new StepResult.Abort();
+            return new StepResult.Abort(ClusterInitError.Aborted.INSTANCE);
         }
 
         return new StepResult.Continue(state);
@@ -936,8 +1175,13 @@ public class ClusterConfigWizard {
     private static void printCloudSummary(CloudAnswers cloud) {
         System.out.println("  Provider:   " + cloud.provider().value());
         System.out.println("  Region:     " + cloud.region());
+        if (!cloud.zone().isEmpty()) {
+            System.out.println("  Zone:       " + cloud.zone());
+        }
+
         System.out.println("  Instance:   " + cloud.instanceType());
-        System.out.println("  Credential: ${env:" + cloud.credentialEnvVar() + "}");
+        cloud.credentialEnvVars()
+             .forEach((key, envVar) -> System.out.println("  Credential: " + key + " = ${env:" + envVar + "}"));
     }
 
     private static void printSshSummary(SshAnswers ssh) {
@@ -998,7 +1242,12 @@ public class ClusterConfigWizard {
         }
 
         if (ABORT_KEYWORD.equalsIgnoreCase(raw)) {
-            return new StepResult.Abort();
+            return new StepResult.Abort(ClusterInitError.Aborted.INSTANCE);
+        }
+        // Every required prompt re-asks on an empty answer, and at EOF each re-ask reads "" again.
+        // Stopping here is what keeps that from recursing without bound.
+        if (prompt.isInputExhausted()) {
+            return new StepResult.Abort(ClusterInitError.InputExhausted.INSTANCE);
         }
 
         return onValue.apply(raw);
@@ -1038,7 +1287,7 @@ public class ClusterConfigWizard {
 
         record Back() implements StepResult {}
 
-        record Abort() implements StepResult {}
+        record Abort(Cause cause) implements StepResult {}
     }
 
     @FunctionalInterface

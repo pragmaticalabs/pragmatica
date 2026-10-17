@@ -11,20 +11,23 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.IntConsumer;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.ember.EmberCluster.ClusterStatus;
+import org.pragmatica.aether.ember.EmberCluster.NodeStatus;
+import org.pragmatica.aether.ember.EmberCluster.StartFailure;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -42,10 +45,10 @@ import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.io.FileOps;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.http.HttpResult;
 
@@ -65,6 +68,11 @@ public final class ForgeServer {
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
+
+    private static final long EVENT_POLL_WARN_INTERVAL_MS = 60_000;
+
+    private final java.util.concurrent.atomic.AtomicLong lastEventPollWarnMs = new java.util.concurrent.atomic.AtomicLong();
+
     private volatile Option<StaticFileHandler> staticHandler = Option.empty();
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
@@ -79,7 +87,7 @@ public final class ForgeServer {
     private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                                    false));
 
-    private final HttpOperations http = JdkHttpOperations.jdkHttpOperations();
+    private final HttpOperations http;
     /// The credential Forge presents on its OWN control-plane calls (currently the startup blueprint
     /// deploy). Empty when no keys are configured, which is the default and leaves every request
     /// unauthenticated exactly as before.
@@ -89,12 +97,21 @@ public final class ForgeServer {
     /// exited rather than run an empty cluster that looked healthy. Forge must authenticate to the
     /// cluster it just secured.
     private final AtomicReference<Option<String>> operatorApiKey = new AtomicReference<>(Option.none());
+    /// One poller, so one `HttpClient`, for the server's lifetime (v1533 C1); the key is read at request time.
+    private final NodeEventPoll nodeEventPoll = NodeEventPoll.nodeEventPoll(operatorApiKey::get);
     private final long startTime = System.currentTimeMillis();
     private volatile String lastEventTimestamp = "";
 
     private ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig) {
+        this(startupConfig, forgeConfig, JdkHttpOperations.jdkHttpOperations());
+    }
+
+    /// Package-visible so the startup deploy's CALL SITE is pinnable (#1218): a test drives
+    /// [#deployBlueprintFromArtifact] against an injected transport, which a helper test cannot do.
+    ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig, HttpOperations http) {
         this.startupConfig = startupConfig;
         this.forgeConfig = forgeConfig;
+        this.http = http;
     }
 
     private static final String VERSION = "Aether Forge " + resolveVersion();
@@ -132,9 +149,36 @@ public final class ForgeServer {
         }
 
         var startupConfig = startupConfigResult.unwrap();
+        // #909 - an aether.toml that exists and does not load is refused before anything is created, not dropped to the NONE defaults.
+        ForgeAppConfig.loadOrRefuse(startupConfig.forgeConfig(), System::exit);
         var forgeConfig = loadForgeConfig(startupConfig);
 
         printBanner(forgeConfig, startupConfig);
+        // #1008 — checked before anything is created, for the whole port range at once. Since #1719 a taken
+        // port also fails the QUIC bind itself (BindFailed), but only part-way through the cluster start.
+        var quicPortCheck = ForgePortPreflight.ensureQuicPortsFree(forgeConfig.basePort(), forgeConfig.nodes());
+
+        quicPortCheck.onFailure(cause -> log.error("{}", cause.message()));
+        if (quicPortCheck.isFailure()) {
+            System.exit(1);
+
+            return;
+        }
+        // #718 - resolved and checked BEFORE anything is created, so a refusal cannot have written or
+        // deleted anything. A run that cannot prove it owns populated durable state stops here rather
+        // than silently sharing an unrelated project's cluster state.
+        var dataDirCheck = ForgeDataDir.inspect(ForgeDataDir.location(startupConfig.forgeConfig()));
+
+        dataDirCheck.onFailure(cause -> log.error("{}",
+                                                  cause.message()))
+                    .onSuccess(verdict -> log.info("{}",
+                                                   verdict.description()));
+        if (dataDirCheck.isFailure()) {
+            System.exit(1);
+
+            return;
+        }
+
         var server = new ForgeServer(startupConfig, forgeConfig);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -182,7 +226,7 @@ public final class ForgeServer {
         System.out.println("  FORGE_LOAD_CONFIG   Path to load config file");
         System.out.println("  FORGE_AUTO_START    Set to \"true\" to auto-start load");
         System.out.println("  FORGE_PORT          Dashboard port (default: 8888)");
-        System.out.println("  CLUSTER_SIZE        Number of nodes (default: 5)");
+        System.out.println("  CLUSTER_SIZE        Number of nodes (default: " + StartupConfig.DEFAULT_CLUSTER_SIZE + ")");
     }
 
     private static EmberConfig loadForgeConfig(StartupConfig startupConfig) {
@@ -207,6 +251,9 @@ public final class ForgeServer {
         log.info("=".repeat(60));
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
+        log.info("  Cluster QUIC ports: {}-{} (UDP, consensus)",
+                 forgeConfig.basePort(),
+                 forgeConfig.basePort() + forgeConfig.nodes() - 1);
         log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
         if (forgeConfig.lbEnabled()) {
             log.info("  Load balancer: http://localhost:{}", forgeConfig.lbPort());
@@ -240,7 +287,7 @@ public final class ForgeServer {
     private void initializeComponents(Option<ConfigurationProvider> configProvider) {
         var metricsInstance = ForgeMetrics.forgeMetrics();
         var clusterInstance = EmberCluster.emberCluster(forgeConfig.nodes(),
-                                                        EmberCluster.DEFAULT_BASE_PORT,
+                                                        forgeConfig.basePort(),
                                                         forgeConfig.managementPort(),
                                                         forgeConfig.appHttpPort(),
                                                         "node",
@@ -260,7 +307,8 @@ public final class ForgeServer {
                                                                                            entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
                                                                  metricsInstance,
-                                                                 configurableLoadRunnerInstance);
+                                                                 configurableLoadRunnerInstance,
+                                                                 operatorApiKey::get);
 
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);
@@ -284,15 +332,20 @@ public final class ForgeServer {
     /// + [AppHttpConfig#DEFAULT_API_VERSION_HEADER] defaults — existing path-mode forge runs are
     /// byte-for-byte unchanged.
     private void applyApiVersioning(EmberCluster clusterInstance) {
-        startupConfig.forgeConfig()
-                     .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile()
-                                         .exists())
-                     .map(ConfigLoader::load)
-                     .flatMap(Result::option)
-                     .map(AetherConfig::appHttp)
-                     .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
-                                                                                      appHttp.apiVersionHeaderName()));
+        applyApiVersioning(clusterInstance, System::exit);
+    }
+
+    /// Package-visible with the exit injected so the call site of the sibling-config refusal is pinnable (#909).
+    void applyApiVersioning(EmberCluster clusterInstance, IntConsumer exit) {
+        siblingAppConfig(exit).map(AetherConfig::appHttp)
+                        .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
+                                                                                         appHttp.apiVersionHeaderName()));
+    }
+
+    /// The sibling `aether.toml`, or none when there is no such file. One that exists and does not load is refused (#909): the cause is logged
+    /// at ERROR and Forge stops, because falling back to NONE would run an unauthenticated cluster for a user who configured authentication.
+    private Option<AetherConfig> siblingAppConfig(IntConsumer exit) {
+        return ForgeAppConfig.loadOrRefuse(startupConfig.forgeConfig(), exit);
     }
 
     /// #573 — make `forge run` honor `[app-http] security_mode` and `[app-http.api-keys.<key>]` from the
@@ -318,20 +371,19 @@ public final class ForgeServer {
     /// `ConfigLoader` resolves keys from `AETHER_API_KEYS` before any TOML, so a credential need never
     /// be written into committed config.
     private void applyAppHttpSecurity(EmberCluster clusterInstance) {
-        startupConfig.forgeConfig()
-                     .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile()
-                                         .exists())
-                     .map(ConfigLoader::load)
-                     .flatMap(Result::option)
-                     .map(AetherConfig::appHttp)
-                     .filter(appHttp -> !appHttp.apiKeys()
-                                                .isEmpty())
-                     .onPresent(appHttp -> {
-                                    clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
-                                                                        appHttp.apiKeys());
-                                    operatorApiKey.set(adminCapableKey(appHttp));
-                                });
+        applyAppHttpSecurity(clusterInstance, System::exit);
+    }
+
+    /// Package-visible with the exit injected (see [#applyApiVersioning]).
+    void applyAppHttpSecurity(EmberCluster clusterInstance, IntConsumer exit) {
+        siblingAppConfig(exit).map(AetherConfig::appHttp)
+                        .filter(appHttp -> !appHttp.apiKeys()
+                                                   .isEmpty())
+                        .onPresent(appHttp -> {
+                                       clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
+                                                                           appHttp.apiKeys());
+                                       operatorApiKey.set(adminCapableKey(appHttp));
+                                   });
     }
 
     /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the
@@ -356,32 +408,27 @@ public final class ForgeServer {
 
     /// #515 — a local-dev Forge simulator must not inherit the production `/data/aether` storage
     /// default (read-only on a laptop → a per-node "Stream WAL disabled" WARN wall + non-crash-durable
-    /// streaming). Point every embedded node at a writable, restart-stable base dir under
-    /// `$AETHER_HOME` (or the user-home `.aether/forge-data` fallback), which turns the artifact disk
-    /// tier and the per-partition stream WAL writable so Forge streaming is crash-durable by default.
-    /// Production nodes never take this path — they keep the `/data/aether` default from `StorageConfig`
-    /// / `ConfigLoader`. The single loud line (info on success, error on failure) replaces the silent
-    /// per-node WARN wall for the operator.
+    /// streaming). Point every embedded node at a writable, restart-stable base dir, which turns the
+    /// artifact disk tier and the per-partition stream WAL writable so Forge streaming is crash-durable
+    /// by default. Production nodes never take this path — they keep the `/data/aether` default from
+    /// `StorageConfig` / `ConfigLoader`. The single loud line (info on success, error on failure)
+    /// replaces the silent per-node WARN wall for the operator.
+    ///
+    /// #718 — the dir is no longer machine-wide. [ForgeDataDir] scopes it to the project owning the
+    /// `--config` file, and `claim` records this project as its owner so a later run can tell whether
+    /// state it finds is its own. [ForgeServer#main] has already refused the run if it could not.
     private void applyForgeDataDir(EmberCluster clusterInstance) {
-        var baseDir = forgeDataBaseDir();
+        var location = ForgeDataDir.location(startupConfig.forgeConfig());
+        var baseDir = location.dataDir();
 
-        FileOps.createDirectories(baseDir)
-               .onSuccess(_ -> log.info("Forge data dir: {} (stream WAL crash-durable)",
-                                        baseDir))
-               .onFailure(cause -> log.error("Forge data dir {} not writable: {} — streaming will run "
-                                            + "non-crash-durable (in-memory tail only)",
-                                             baseDir,
-                                             cause.message()));
+        ForgeDataDir.claim(location)
+                    .onSuccess(_ -> log.info("Forge data dir: {} (stream WAL crash-durable)",
+                                             baseDir))
+                    .onFailure(cause -> log.error("Forge data dir {} not writable: {} — streaming will run "
+                                                 + "non-crash-durable (in-memory tail only)",
+                                                  baseDir,
+                                                  cause.message()));
         clusterInstance.withDataBaseDir(baseDir);
-    }
-
-    private static Path forgeDataBaseDir() {
-        return Option.option(System.getenv("AETHER_HOME"))
-                     .filter(home -> !home.isBlank())
-                     .map(home -> Path.of(home, "forge-data"))
-                     .or(Path.of(System.getProperty("user.home"),
-                                 ".aether",
-                                 "forge-data"));
     }
 
     private static String serializeStatus(EmberCluster cluster,
@@ -396,13 +443,97 @@ public final class ForgeServer {
     }
 
     private void startCluster() {
-        log.info("Starting {} node cluster...", forgeConfig.nodes());
-        cluster.onPresent(c -> c.start()
-                                .await(TimeSpan.timeSpan(60).seconds())
-                                .onFailure(cause -> {
-                                               throw new IllegalStateException("Failed to start cluster: " + cause.message());
-                                           }));
+        log.info("Starting {} node cluster (start budget {}s)...",
+                 forgeConfig.nodes(),
+                 forgeConfig.startTimeoutSeconds());
+        cluster.onPresent(this::awaitClusterStart);
         TimeSpan.timeSpan(2).seconds().sleep();
+    }
+
+    private void awaitClusterStart(EmberCluster emberCluster) {
+        emberCluster.start()
+                    .await(TimeSpan.timeSpan(forgeConfig.startTimeoutSeconds()).seconds())
+                    .onFailure(cause -> failClusterStart(emberCluster, cause));
+    }
+
+    private void failClusterStart(EmberCluster emberCluster, Cause cause) {
+        throw new IllegalStateException(clusterStartFailureMessage(forgeConfig,
+                                                                   emberCluster.status(),
+                                                                   nodeFailuresOf(emberCluster),
+                                                                   cause.message()));
+    }
+
+    private static Map<String, String> nodeFailuresOf(EmberCluster emberCluster) {
+        return emberCluster.lastStartFailure()
+                           .map(StartFailure::nodeFailures)
+                           .or(Map.of());
+    }
+
+    /// The message this failure carries (#718 shape 4).
+    ///
+    /// It used to be `"Failed to start cluster: " + cause.message()`, which on the timeout path
+    /// surfaces as `Promise is not resolved within specified timeout` — a sentence naming no phase,
+    /// no peer and no port, and IDENTICAL whether nothing formed at all or four of five nodes were
+    /// consensus-active. The reader of a formation stall learned only that something did not finish.
+    ///
+    /// Every value below is read from the cluster at the deadline; none is inferred. `state` comes
+    /// from [EmberCluster#observedState], which is deliberately named for what it measures — a
+    /// diagnostic that fabricates a field is worse than one that omits it (#727). The message states
+    /// the one thing Forge DID verify (the QUIC range was free at startup, via the #1008 preflight)
+    /// and then lists the candidates it did not probe, without ranking them.
+    static String clusterStartFailureMessage(EmberConfig config,
+                                             ClusterStatus status,
+                                             Map<String, String> nodeFailures,
+                                             String detail) {
+        return "Cluster did not finish forming within the " + config.startTimeoutSeconds()
+             + "s start budget (cluster.start_timeout_seconds): " + detail
+             + " — exiting rather than leaving a cluster that never formed looking healthy. "
+             + "Reached at the deadline: " + activeCount(status)
+             + " of " + config.nodes()
+             + " node(s) consensus-active, leader=" + status.leaderId()
+             + ". " + describeNodes(status) + describeNodeFailures(nodeFailures)
+             + "'consensus-active' is AetherNode.isReady(), NOT a general health verdict. "
+             + "Forge's startup preflight verified UDP " + config.basePort()
+             + "-" + (config.basePort() + config.nodes() - 1)
+             + " was free immediately before this start, so a QUIC port collision at that moment is "
+             + "ruled out. Forge did NOT check, and any of these is consistent with what is reported "
+             + "above: stale per-node state in this run's forge-data dir, whose path is logged at "
+             + "startup (a retry/backpressure storm "
+             + "during formation can consume this whole budget); host load; or a genuine consensus "
+             + "fault. If formation on this host is merely slow, raise cluster.start_timeout_seconds.";
+    }
+
+    private static long activeCount(ClusterStatus status) {
+        return status.nodes()
+                     .stream()
+                     .filter(node -> EmberCluster.STATE_ACTIVE.equals(node.state()))
+                     .count();
+    }
+
+    private static String describeNodes(ClusterStatus status) {
+        return status.nodes()
+                     .isEmpty()
+               ? "No node reached the point of being registered. "
+               : "Per node: " + status.nodes()
+                                      .stream()
+                                      .map(ForgeServer::describeNode)
+                                      .collect(Collectors.joining(", "))
+                + ". ";
+    }
+
+    private static String describeNode(NodeStatus node) {
+        return node.id() + "=" + node.state() + "(quic " + node.port() + ")";
+    }
+
+    private static String describeNodeFailures(Map<String, String> nodeFailures) {
+        return nodeFailures.isEmpty()
+               ? "No node reported a start failure, so the budget expired with the start still in "
+                + "progress rather than with a node erroring out. "
+               : "Node start failures: " + nodeFailures.entrySet()
+                                                       .stream()
+                                                       .map(entry -> entry.getKey() + ": " + entry.getValue())
+                                                       .collect(Collectors.joining("; "))
+                + ". ";
     }
 
     private void startMetricsCollection() {
@@ -418,20 +549,24 @@ public final class ForgeServer {
     private void pollNodeEvents() {
         try {
             var port = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
-            var uriStr = "http://localhost:" + port + "/api/v1/events";
 
-            if (!lastEventTimestamp.isEmpty()) {
-                uriStr += "?since=" + URLEncoder.encode(lastEventTimestamp, StandardCharsets.UTF_8);
-            }
-
-            var request = HttpRequest.newBuilder().uri(URI.create(uriStr)).GET().timeout(Duration.ofSeconds(2)).build();
-
-            http.sendString(request)
-                .await(TimeSpan.timeSpan(3).seconds())
-                .flatMap(HttpResult::toResult)
-                .onSuccess(this::parseAndMergeEvents);
+            nodeEventPoll.fetch(port, lastEventTimestamp)
+                         .onSuccess(this::parseAndMergeEvents)
+                         .onFailure(this::warnEventPollFailed);
         } catch (Exception e) {
-            log.trace("Event polling failed: {}", e.getMessage());
+            warnEventPollFailed(Causes.fromThrowable(e));
+        }
+    }
+
+    /// A failed poll is no longer swallowed at TRACE: an empty timeline must be explainable. Rate-limited to one WARN
+    /// per minute, because the poll runs every 2 s.
+    private void warnEventPollFailed(Cause cause) {
+        var now = System.currentTimeMillis();
+        var last = lastEventPollWarnMs.get();
+
+        if (now - last >= EVENT_POLL_WARN_INTERVAL_MS && lastEventPollWarnMs.compareAndSet(last, now)) {
+            log.warn("Forge event poll of the cluster failed (the dashboard event timeline will be empty): {}",
+                     cause.message());
         }
     }
 
@@ -527,7 +662,7 @@ public final class ForgeServer {
         }
     }
 
-    private void deployBlueprintFromArtifact(String artifactCoords) {
+    void deployBlueprintFromArtifact(String artifactCoords) {
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
@@ -539,11 +674,29 @@ public final class ForgeServer {
         var request = builder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
 
         log.info("Deploying blueprint by coordinates: POST /api/v1/blueprints/deploy — {}", artifactCoords);
-        http.sendString(request)
-            .await(TimeSpan.timeSpan(10).seconds())
-            .onSuccess(result -> handleDeployResponse(result, artifactCoords))
-            .onFailure(cause -> failStartupDeploy(artifactCoords,
-                                                  cause.message()));
+        awaitStartupDeploy(http, forgeConfig, request).onSuccess(result -> handleDeployResponse(result, artifactCoords))
+                          .onFailure(cause -> failStartupDeploy(artifactCoords,
+                                                                startupDeployTimeoutDetail(forgeConfig,
+                                                                                           cause.message())));
+    }
+
+    /// The one place the startup deploy is awaited, so a test can drive the real wait against a slow
+    /// transport and observe which budget it honours (#1218).
+    static Result<HttpResult<String>> awaitStartupDeploy(HttpOperations http, EmberConfig config, HttpRequest request) {
+        return http.sendString(request)
+                   .await(startupDeployTimeout(config));
+    }
+
+    /// #1218 — the startup deploy shares the cluster-start budget. It used to carry its own hardcoded
+    /// 10 s, which `startTimeoutSeconds` did not cover: an operator on a slow host who raised the
+    /// documented knob changed the formation wait and left the step that actually timed out alone.
+    static TimeSpan startupDeployTimeout(EmberConfig config) {
+        return TimeSpan.timeSpan(config.startTimeoutSeconds()).seconds();
+    }
+
+    /// Names the budget and its setting, so a timeout is not mistaken for a rejected deploy.
+    static String startupDeployTimeoutDetail(EmberConfig config, String detail) {
+        return detail + " (deploy budget " + config.startTimeoutSeconds() + "s, set by cluster.start_timeout_seconds)";
     }
 
     private void handleDeployResponse(HttpResult<String> result, String artifactCoords) {
@@ -566,11 +719,30 @@ public final class ForgeServer {
     private void failStartupDeploy(String artifactCoords, String detail) {
         log.error("Startup blueprint deploy failed for '{}': {}", artifactCoords, detail);
 
-        throw new IllegalStateException("Startup blueprint deploy failed for '" + artifactCoords
-                                       + "': " + detail
-                                       + " — exiting so the cluster does not run empty while appearing healthy. "
-                                       + "Check the coordinates (groupId:artifactId:version:blueprint) and that the "
-                                       + "artifacts are installed to the resolvable repository (mvn install).");
+        throw new IllegalStateException(startupDeployFailureMessage(artifactCoords, detail));
+    }
+
+    /// The message this failure carries (#952).
+    ///
+    /// It used to end by telling the reader to check that the artifacts were installed
+    /// (`mvn install`). Forge never checks that. On the clean-room run that found the bug every
+    /// Maven artifact was present and correct, and the real cause was a database container that had
+    /// been dead for ten seconds — so the error pointed AWAY from the defect and the next reader
+    /// spent the effort proving a healthy component healthy.
+    ///
+    /// Naming one unverified cause is worse than naming none, because it reads as a diagnosis. This
+    /// states only what the deploy actually observed, says outright that the cause was not
+    /// determined, and lists the candidates without ranking them.
+    static String startupDeployFailureMessage(String artifactCoords, String detail) {
+        return "Startup blueprint deploy failed for '" + artifactCoords
+             + "': " + detail
+             + " — exiting so the cluster does not run empty while appearing healthy. "
+             + "Forge checked exactly one thing: it POSTed these coordinates to "
+             + "/api/v1/blueprints/deploy and recorded the response quoted above. It did NOT "
+             + "establish why that failed. Any of these is consistent with what was observed: the "
+             + "coordinates (groupId:artifactId:version:blueprint) are wrong; the artifact is not in "
+             + "the resolvable repository; or a resource the slice needs at startup — a database, "
+             + "for instance — is unavailable. Forge probes none of them.";
     }
 
     private void loadLoadConfig(Path loadConfigPath) {

@@ -1,0 +1,102 @@
+# Node Process Operations
+
+Operator reference for the `aether-node` process itself — how it starts, how it stops, and what its
+exit code tells a supervisor (systemd, Docker, Kubernetes) about what happened. This is distinct from
+the cluster-level DRAIN shutdown in [Management API](management-api.md#post-apiv1nodesshutdownid)
+(`POST /api/v1/nodes/shutdown/{id}`), which asks a node to self-drain over the membership channel and
+falls back to a container-manager grace-terminate reap if the node never exits on its own. The page
+below covers what happens *inside* the process once a stop signal — from either path, or a direct
+`SIGTERM`/`Ctrl+C` — reaches its JVM shutdown hook.
+
+## Exit codes
+
+| Code | Meaning | Where |
+|------|---------|-------|
+| `0` | Clean exit — `node.stop()` completed within the shutdown bound. | `Main#shutdownNode` |
+| `1` | Fatal startup failure — a boot-time gate refused to proceed. Causes: `AETHER_CLUSTER_NAME` unset, the container's `aether.cluster` label disagreeing with the configured cluster name, `AETHER_INSECURE_DEV_MODE=true` combined with real operator TLS certificates, or `node.start()` itself failing. The log line immediately before exit names the specific cause. | `Main#exitWithError`, `Main#verifyClusterLabelConsistency`, `Main#enforceClusterNamePresent` |
+| `2` | Drain-completed self-exit — the membership v2 drain procedure (spec §8.2) ran its sequence to completion (stop accepting new app-layer work, quiesce in-flight requests, emit SWIM `LEAVE`) and halts the process itself once done. This is a **normal**, expected exit for a node that was told to drain, not a failure. | `AetherNode#aetherNode` (default `jvmExit` callback), `DrainProcedure` |
+| `3` | Shutdown did not complete within the bound (see below) — the process was killed while still trying to stop. | `Main#shutdownNode` |
+| `65` | Configuration refused (#2052) — a config file was GIVEN with `--config=` and is missing, not a regular file, unparseable, or fails validation. The node does NOT boot on defaults. A `FATAL: refusing to start: …` line naming the file and the cause goes to the log AND to stderr. With no `--config=` at all the node still boots on defaults (deliberate: forge, tests, bare `java -jar`). | `Main#refuseConfig` (via `Main#resolveConfig`) |
+| `69` | Cloud integration refused (#2058) — the node config HAS a `[cloud]` section and the integration it names cannot be created: missing provider credentials, an unknown provider, or an invalid provider setting. The node does NOT boot without it (it used to log one line and run with no provisioning, replacement or scaling until the first incident). A `FATAL: refusing to start: the [cloud] section names provider '<p>' but its integration could not be created: …` line naming the provider, the cause and the `[cloud.credentials]` keys to add goes to the log AND to stderr. No `[cloud]` section at all is unchanged; a `docker` section is refused only when its provider rejects a `[backup] path` outside `/data` (TOML or `AETHER_BACKUP_PATH`; the named-volume rule, #1968), so a docker node can also exit 69 for that reason. | `Main#refuseCloudIntegration` (via `Main#resolveCloudIntegration`) |
+| `78` | Identity refused (`EX_CONFIG`, #1558) — the running cluster already knows this NodeId under a different boot token, so it treats this process as a second process claiming a retired identity and refuses it. The process logs `FATAL: this node's identity <id> was refused by the cluster` and halts itself. See [Control state recovery](../operators/durable-control-recovery.md). | `AetherNode#exitRefusedIdentity` (via `BootTokens#onSelfRefused`) |
+
+A supervisor should treat these codes as follows:
+
+- `1`: do not restart with the same configuration. It will fail identically.
+- `65`: do not restart with the same configuration. It fails identically; fix or replace the file named in the `FATAL` line
+  (the image entrypoint and the cloud-init unit always pass `--config=`, so a Docker or cloud node whose baked or rendered config
+  is broken lands here). Exclude it from automatic restart-on-failure policies (for example systemd `RestartPreventExitStatus=65`).
+- `69`: do not restart with the same configuration. It fails identically; add the credentials named in the `FATAL` line to the
+  source's `node_config` (`[source.<name>.node_config.cloud.credentials]`) and re-provision. Required `[cloud.credentials]` keys per provider:
+  `hetzner` `api_token`; `aws` `access_key_id`, `secret_access_key`, `region`; `gcp` `project_id`, `service_account_email`, `private_key_pem`,
+  `zone`; `azure` `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group`, `location`. The bootstrap overlay renders the source's `node_config` `[cloud.credentials]`, its region/zone/location and, for hetzner, its `credentials` (#2059), and the bootstrap validate phase refuses a source missing any of them, naming the key. A node that still refuses to start with 69 therefore has credentials the operator never supplied (hand-written `node_config`, or a source stored before #2059): add them under `[source.<name>.node_config.cloud.credentials]` and re-provision.
+  Exclude 69 from automatic restart-on-failure policies (for example systemd `RestartPreventExitStatus=69`).
+- `2`: a normal drain-completed exit. The node has left the cluster. Bring capacity back as a **new node
+  under a fresh NodeId**, never by restarting under the drained NodeId: identity removal is terminal.
+- `3`: the process was killed while still trying to stop. It is safe to restart, but check the thread
+  dump the process logged first.
+- `78`: **do NOT restart under the same identity.** A restart draws a new boot token and is refused
+  again for as long as any running peer remembers the old one. Replace the node with a new one under a
+  fresh NodeId. With every process of the old cluster stopped no peer remembers the old tokens, but a
+  same-NodeId start is still not a supported restart mode (see
+  [durable-control-recovery](../operators/durable-control-recovery.md)). Automatic restart-on-failure policies (`Restart=on-failure`, Docker `restart: on-failure`,
+  Kubernetes `restartPolicy: OnFailure`/`Always`) would loop on this code: exclude `78`, for example with
+  systemd `RestartPreventExitStatus=78`.
+
+Codes `2` and `3` used to collide (both were `2`) before #838 review round 1 separated them; see the
+halt-not-exit note below for why the collision mattered beyond naming.
+
+## Shutdown bound (#749, #750, #838)
+
+`Main#shutdownNode` runs from the JVM shutdown hook (registered via
+`Runtime.getRuntime().addShutdownHook`, so it fires on `SIGTERM` and on `Ctrl+C`) and calls
+`node.stop()`, then waits up to **30 seconds** (`Main#SHUTDOWN_TIMEOUT`) via `Promise#await(TimeSpan)`.
+
+- If `node.stop()` settles within 30s: its result is logged (a failure result is logged at ERROR but
+  is **not** itself a non-zero exit — the process still exits `0`, since the shutdown sequence itself
+  ran to completion). `[design intent — unverified]`
+- If it has **not** settled within 30s: the process logs an ERROR naming the timeout, dumps every live
+  thread (name, state, lock, full stack, including virtual threads — via
+  `HotSpotDiagnosticMXBean#dumpThreads`) at ERROR level, flushes the log4j2 context synchronously, and
+  calls `Runtime.getRuntime().halt(3)`.
+  `[verified: core/src/test/java/org/pragmatica/lang/PromiseAllOfCarrierStarvationTest.java` — proves the
+  underlying bounded-timeout mechanism `Main#shutdownNode` relies on holds under carrier saturation;
+  `[verified: aether/node/src/test/java/org/pragmatica/aether/MainShutdownTest.java]` — pins that the
+  expiry path flushes logs before halting, with its own exit code, via an injected seam; the real 30s
+  wall-clock wait itself is `[design intent — unverified]`, not covered by an end-to-end test]`.
+
+**Why `Runtime.getRuntime().halt(3)` and not `System.exit(3)`:** `System.exit()` runs the JVM's own
+shutdown-hook machinery — but this code already runs *from inside* a shutdown hook, on the thread that
+`Shutdown.runHooks()` uses to run every hook to completion. `System.exit()`'s `Shutdown.exit()` blocks
+waiting for that same thread's hook-running lock, so the hook thread joins itself and the process
+hangs — proven by driving this exact call and observing the process survive past two minutes,
+ignoring `SIGTERM`, until a `SIGKILL`. `Runtime.getRuntime().halt(int)` stops the JVM immediately
+without running the shutdown-hook machinery at all, the same mechanism the membership v2 drain
+procedure already uses for its own self-exit (code `2`, above) — at the cost of running no further
+hooks and flushing no log appenders on its own, both of which `Main#shutdownNode` therefore does
+explicitly, synchronously, immediately before the halt call.
+
+**Why 30 seconds:** generous relative to `EmberCluster`'s 10-second per-node stop bound in tests (that
+bound covers one node among several stopping in parallel; this bound covers a single node stopping
+alone), while still short enough that a container orchestrator's own stop/restart grace period is
+violated loudly — an ERROR log, a full thread dump, and exit `3` — rather than the previous behavior,
+an unbounded hook that could park forever with no signal to the operator at all.
+
+**What the thread dump does and does not tell you:** it is the raw material for diagnosing *which*
+call inside `node.stop()` blocked. As of this writing that question is explicitly **open** — #749's
+root-cause investigation established that the hang mechanism exists (virtual-thread carrier
+starvation could make even a `.timeout()`-guarded operation fail to fire, which #749/#750's fix
+addresses at the `Promise` layer) but did not identify a specific blocking call inside
+`AetherNode#stop()` from a real occurrence. The dump is the mechanism that will eventually answer that
+from a live incident, not a diagnosis already reached here.
+
+## Related
+
+- [#749](https://github.com/pragmaticalabs/pragmatica/issues/749) — shutdown hook had no bound at all.
+- [#750](https://github.com/pragmaticalabs/pragmatica/issues/750) — `Promise#timeout()`'s own delayed-failure
+  task shared a carrier pool it could be starved out of, which the bound above depends on.
+- [#838](https://github.com/pragmaticalabs/pragmatica/pull/838) — review round 1 found the original fix's
+  `System.exit(2)` deadlocked from inside the shutdown hook, and that it collided with drain's own exit
+  code `2`; this page's exit-code table and halt-vs-exit explanation reflect that round's fixes.
+- [Management API — Node shutdown](management-api.md#post-apiv1nodesshutdownid) — the cluster-coordinated
+  DRAIN path, distinct from the local JVM shutdown hook this page describes.

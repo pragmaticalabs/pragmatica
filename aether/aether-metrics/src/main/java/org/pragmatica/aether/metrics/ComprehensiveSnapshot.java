@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
 import java.util.Map;
@@ -9,7 +8,6 @@ import java.util.Map;
 import org.pragmatica.aether.metrics.consensus.RabiaMetrics;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
-import org.pragmatica.aether.metrics.network.NetworkMetrics;
 
 
 public record ComprehensiveSnapshot(long timestamp,
@@ -18,7 +16,6 @@ public record ComprehensiveSnapshot(long timestamp,
                                     long heapMax,
                                     GCMetrics gc,
                                     EventLoopMetrics eventLoop,
-                                    NetworkMetrics network,
                                     RabiaMetrics consensus,
                                     long totalInvocations,
                                     long successfulInvocations,
@@ -31,7 +28,6 @@ public record ComprehensiveSnapshot(long timestamp,
                                                                                 0,
                                                                                 GCMetrics.EMPTY,
                                                                                 EventLoopMetrics.EMPTY,
-                                                                                NetworkMetrics.EMPTY,
                                                                                 RabiaMetrics.EMPTY,
                                                                                 0,
                                                                                 0,

@@ -6,31 +6,28 @@ package org.pragmatica.aether.worker.governor;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
-import org.pragmatica.aether.slice.generation.Epoch;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
-import org.pragmatica.cluster.node.ClusterNode;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.hlc.HlcClock;
-import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.swim.SwimMember;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-
+/// Worker-side nomination and renewal. Only a core-committed response activates a governor.
 public interface GovernorAnnouncer {
+    AtomicLong REQUEST_IDS = new AtomicLong();
     TimeSpan DEFAULT_REANNOUNCE_INTERVAL = TimeSpan.timeSpan(30).seconds();
+    String communityId();
 
     @Contract
     void start();
@@ -39,207 +36,132 @@ public interface GovernorAnnouncer {
     void stop();
 
     @Contract
-    void onMembershipChange(List<SwimMember> swimMembers);
+    void onMembershipChange(List<SwimMember> members);
 
     boolean isGovernor();
     Option<NodeId> currentGovernor();
 
     static GovernorAnnouncer governorAnnouncer(NodeId self,
-                                               ClusterNode<KVCommand<AetherKey>> cluster,
-                                               HlcClock hlcClock,
-                                               Supplier<String> communityIdSupplier,
-                                               Supplier<String> tcpAddressSupplier,
-                                               Supplier<Epoch> observedCoreEpochSupplier) {
-        return governorAnnouncer(self,
-                                 cluster,
-                                 hlcClock,
-                                 communityIdSupplier,
-                                 tcpAddressSupplier,
-                                 observedCoreEpochSupplier,
-                                 DEFAULT_REANNOUNCE_INTERVAL);
-    }
+                                               Supplier<String> community,
+                                               Supplier<String> address,
+                                               Supplier<Option<GovernorAnnouncementValue>> committed,
+                                               BooleanSupplier eligible,
+                                               Function<GovernorAuthorityMessage.Request, Promise<GovernorAuthorityMessage.Response>> request) {
+        record announcer(NodeId self,
+                         Supplier<String> community,
+                         Supplier<String> address,
+                         Supplier<Option<GovernorAnnouncementValue>> committed,
+                         BooleanSupplier eligible,
+                         Function<GovernorAuthorityMessage.Request, Promise<GovernorAuthorityMessage.Response>> request,
+                         AtomicBoolean started,
+                         AtomicBoolean pending,
+                         AtomicLong sequence,
+                         AtomicReference<List<SwimMember>> members,
+                         AtomicReference<Option<GovernorAnnouncementValue>> granted,
+                         CancellableTask timer) implements GovernorAnnouncer {
+            @Override
+            public String communityId() {
+                return community.get();
+            }
 
-    static GovernorAnnouncer governorAnnouncer(NodeId self,
-                                               ClusterNode<KVCommand<AetherKey>> cluster,
-                                               HlcClock hlcClock,
-                                               Supplier<String> communityIdSupplier,
-                                               Supplier<String> tcpAddressSupplier,
-                                               Supplier<Epoch> observedCoreEpochSupplier,
-                                               TimeSpan reannounceInterval) {
-        return new GovernorAnnouncerRecord(self,
-                                           cluster,
-                                           hlcClock,
-                                           communityIdSupplier,
-                                           tcpAddressSupplier,
-                                           observedCoreEpochSupplier,
-                                           reannounceInterval,
-                                           new AtomicBoolean(false),
-                                           new AtomicReference<>(Option.none()),
-                                           new AtomicReference<>(List.of()),
-                                           new AtomicReference<>(GovernorAnnouncementValue.governorAnnouncementValue(self,
-                                                                                                                     0)),
-                                           CancellableTask.cancellableTask());
-    }
-}
+            @Override
+            @Contract
+            public void start() {
+                if (started.compareAndSet(false, true)) {
+                    timer.set(SharedScheduler.scheduleAtFixedRate(this::nominate, DEFAULT_REANNOUNCE_INTERVAL));
+                }
+            }
 
-record GovernorAnnouncerRecord(NodeId self,
-                               ClusterNode<KVCommand<AetherKey>> cluster,
-                               HlcClock hlcClock,
-                               Supplier<String> communityIdSupplier,
-                               Supplier<String> tcpAddressSupplier,
-                               Supplier<Epoch> observedCoreEpochSupplier,
-                               TimeSpan reannounceInterval,
-                               AtomicBoolean started,
-                               AtomicReference<Option<NodeId>> currentGovernorRef,
-                               AtomicReference<List<NodeId>> lastAliveMembers,
-                               AtomicReference<GovernorAnnouncementValue> lastAnnouncement,
-                               CancellableTask periodicTask) implements GovernorAnnouncer {
-    private static final Logger log = LoggerFactory.getLogger(GovernorAnnouncerRecord.class);
+            @Override
+            @Contract
+            public void stop() {
+                started.set(false);
+                sequence.set(-1);
+                granted.set(Option.none());
+                timer.cancel();
+            }
 
-    @Contract
-    @Override
-    public void start() {
-        started.set(true);
-    }
+            @Override
+            public boolean isGovernor() {
+                return started.get()
+                       && eligible.getAsBoolean()
+                       && authority().filter(value -> !value.dissolved() && value.governorId()
+                                                                                 .equals(self))
+                                   .isPresent();
+            }
 
-    @Contract
-    @Override
-    public void stop() {
-        started.set(false);
-        periodicTask.cancel();
-    }
+            @Override
+            public Option<NodeId> currentGovernor() {
+                return authority().filter(value -> !value.dissolved())
+                                .map(GovernorAnnouncementValue::governorId);
+            }
 
-    @Override
-    public boolean isGovernor() {
-        return currentGovernorRef.get()
-                                 .filter(self::equals)
-                                 .isPresent();
-    }
+            private Option<GovernorAnnouncementValue> authority() {
+                var local = committed.get();
+                var acknowledged = granted.get();
 
-    @Override
-    public Option<NodeId> currentGovernor() {
-        return currentGovernorRef.get();
-    }
+                return local.filter(value -> value.communityTerm() >= acknowledged.map(GovernorAnnouncementValue::communityTerm)
+                                                                                  .or(-1L))
+                            .orElse(acknowledged);
+            }
 
-    @Contract
-    @Override
-    public void onMembershipChange(List<SwimMember> swimMembers) {
-        if (!started.get()) {
-            return;
-        }
+            @Override
+            @Contract
+            public void onMembershipChange(List<SwimMember> alive) {
+                members.set(List.copyOf(alive));
+                nominate();
+            }
 
-        var previous = currentGovernorRef.get();
-        var elected = GovernorElection.evaluateElection(self, swimMembers, previous);
-        var aliveMembers = swimMembers.stream()
-                                      .filter(m -> m.state() == SwimMember.MemberState.ALIVE)
-                                      .map(SwimMember::nodeId)
-                                      .toList();
+            @Contract
+            private void nominate() {
+                if (!started.get() || !eligible.getAsBoolean() || pending.get()) {
+                    return;
+                }
 
-        lastAliveMembers.set(List.copyOf(aliveMembers));
-        switch (elected) {
-            case GovernorState.Governor g -> onSelfElected(previous, aliveMembers);
-            case GovernorState.Follower f -> onFollowerElected(previous, f.governorId(), aliveMembers);
-        }
-    }
+                var election = GovernorElection.evaluateReadyNomination(self, members.get(), currentGovernor());
 
-    @Contract
-    private void onSelfElected(Option<NodeId> previous, List<NodeId> aliveMembers) {
-        if (aliveMembers.isEmpty()) {
-            log.debug("Self elected but community has no alive members — skipping announcement");
+                if (! (election instanceof GovernorState.Governor) || !pending.compareAndSet(false, true)) {
+                    return;
+                }
 
-            return;
-        }
+                var id = REQUEST_IDS.incrementAndGet();
 
-        currentGovernorRef.set(Option.some(self));
-        if (previous.filter(self::equals).isPresent()) {
-            return;
-        }
+                sequence.set(id);
+                var proposal = new GovernorAuthorityMessage.Request(self,
+                                                                    community.get(),
+                                                                    id,
+                                                                    authority().map(GovernorAnnouncementValue::communityTerm)
+                                                                             .or(0L),
+                                                                    address.get());
 
-        writeGovernorChange(aliveMembers);
-        startPeriodicReannouncement();
-    }
+                request.apply(proposal)
+                       .onSuccess(response -> accept(id, response))
+                       .onFailure(cause -> org.slf4j.LoggerFactory.getLogger(GovernorAnnouncer.class)
+                                                                  .debug("Governor nomination deferred: {}",
+                                                                         cause.message()))
+                       .onResultRun(() -> pending.set(false));
+            }
 
-    @Contract
-    private void onFollowerElected(Option<NodeId> previous, NodeId governorId, List<NodeId> aliveMembers) {
-        currentGovernorRef.set(Option.some(governorId));
-        if (previous.filter(self::equals).isPresent()) {
-            periodicTask.cancel();
-            if (aliveMembers.isEmpty()) {
-                writeDissolved();
+            @Contract
+            private void accept(long id, GovernorAuthorityMessage.Response response) {
+                if (started.get() && sequence.get() == id && response.requestId() == id && response.communityId()
+                                                                                                   .equals(community.get())) {
+                    granted.set(response.authority());
+                }
             }
         }
-    }
 
-    @Contract
-    private void writeGovernorChange(List<NodeId> aliveMembers) {
-        var priorValue = lastAnnouncement.get();
-        var updated = priorValue.withGovernorChange(self,
-                                                    aliveMembers,
-                                                    tcpAddressSupplier.get(),
-                                                    observedCoreEpochSupplier.get(),
-                                                    hlcClock.now());
-
-        applyAnnouncement(updated, "governor-change");
-    }
-
-    @Contract
-    private void writeReannouncement() {
-        var current = lastAnnouncement.get();
-        var refreshed = current.withMembers(lastAliveMembers.get(), tcpAddressSupplier.get());
-
-        applyAnnouncement(refreshed, "reannounce");
-    }
-
-    @Contract
-    private void writeDissolved() {
-        var current = lastAnnouncement.get();
-        var dissolved = current.withDissolved();
-
-        applyAnnouncement(dissolved, "dissolved");
-    }
-
-    @Contract
-    private void applyAnnouncement(GovernorAnnouncementValue value, String reason) {
-        var communityId = communityIdSupplier.get();
-
-        if (communityId == null || communityId.isEmpty()) {
-            log.warn("Cannot announce governor: communityId is blank ({})", reason);
-
-            return;
-        }
-
-        var key = GovernorAnnouncementKey.forCommunity(communityId);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-
-        cluster.apply(List.<KVCommand<AetherKey>> of(command))
-               .onFailure(cause -> log.warn("Failed to write GovernorAnnouncementKey({}) [{}]: {}",
-                                            communityId,
-                                            reason,
-                                            cause.message()))
-               .onSuccess(_ -> lastAnnouncement.set(value));
-    }
-
-    @Contract
-    private void startPeriodicReannouncement() {
-        periodicTask.cancel();
-        periodicTask.set(SharedScheduler.scheduleAtFixedRate(this::tickReannounce, reannounceInterval));
-    }
-
-    @Contract
-    private void tickReannounce() {
-        if (!started.get() || !isGovernor()) {
-            return;
-        }
-
-        var alive = lastAliveMembers.get();
-
-        if (alive.isEmpty()) {
-            writeDissolved();
-            periodicTask.cancel();
-
-            return;
-        }
-
-        writeReannouncement();
+        return new announcer(self,
+                             community,
+                             address,
+                             committed,
+                             eligible,
+                             request,
+                             new AtomicBoolean(),
+                             new AtomicBoolean(),
+                             new AtomicLong(),
+                             new AtomicReference<>(List.of()),
+                             new AtomicReference<>(Option.none()),
+                             CancellableTask.cancellableTask());
     }
 }

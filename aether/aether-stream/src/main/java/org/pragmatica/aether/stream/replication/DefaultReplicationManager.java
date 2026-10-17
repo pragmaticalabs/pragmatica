@@ -4,23 +4,39 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream.replication;
 
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.StreamOwnerEpochSource;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.NOT_ENOUGH_REPLICAS;
 import static org.pragmatica.aether.stream.replication.ReplicationError.General.REPLICATION_TIMEOUT;
-import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents.replicateEvents;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
@@ -29,14 +45,34 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 final class DefaultReplicationManager implements ReplicationManager {
-    private static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    private static final Logger log = LoggerFactory.getLogger(DefaultReplicationManager.class);
+    /// How long the owner waits for a replica's ack. Replication does not retransmit on its own: a replica that misses a
+    /// chunk is repaired by catch-up, so this wait is the only deadline a replicate frame has, and the offline buffer
+    /// must not hold the frame past it (#1996).
+    static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    private static final Runnable NO_OP = DefaultReplicationManager::noOp;
 
     private final NodeId governorId;
+    private volatile StreamOwnerEpochSource ownerEpochs = StreamOwnerEpochSource.zero();
     private final ReplicaRegistry registry;
     private final ReplicationTransport transport;
     private final Option<ReplicationBatcher> batcher;
     private final EarliestRetainedOffset earliestRetained;
-    private final ConcurrentHashMap<PendingAckKey, PendingAck> pendingAcks = new ConcurrentHashMap<>();
+
+    /// Pending awaits indexed per partition, ordered by awaited offset (#1260): an ack for a partition
+    /// walks only that partition's waiters at or below its confirmed offset. Each await is its own entry
+    /// — the sequence in [WaiterKey] keeps two awaits on one offset from overwriting each other (#1259).
+    private final ConcurrentHashMap<PartitionKey, ConcurrentSkipListMap<WaiterKey, PendingAck>> pendingAcks = new ConcurrentHashMap<>();
+
+    private final AtomicLong waiterSequence = new AtomicLong();
+    private final Runnable betweenSteps;
+    private final Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler;
+    /// Test probe (#1260). A `LongAdder`, not an `AtomicLong`: it is bumped per visited waiter on the ack
+    /// hot path of every partition, and a single CAS'd counter would reintroduce cross-partition contention.
+    private final LongAdder ackVisits = new LongAdder();
+    private volatile Option<AckObserver> ackObserver = none();
+    /// #1730: the committed ISR of each partition; [ReplicationManager#UNMANAGED] until the node binds it.
+    private volatile InSyncReplicas inSync = UNMANAGED;
 
     DefaultReplicationManager(NodeId governorId, ReplicaRegistry registry, ReplicationTransport transport) {
         this(governorId, registry, transport, none(), ALWAYS_PROMOTE);
@@ -64,17 +100,49 @@ final class DefaultReplicationManager implements ReplicationManager {
         this(governorId, registry, transport, some(batcher), earliestRetained);
     }
 
+    /// Test seam (#1259/#1260): `betweenSteps` runs inside [#awaitReplication] right after the registry
+    /// snapshot, so a test can land an ack at exactly that point; `timerScheduler` replaces the shared
+    /// scheduler so a test can observe whether the ack timer is cancelled. Production passes a no-op and
+    /// [SharedScheduler#schedule].
+    DefaultReplicationManager(NodeId governorId,
+                              ReplicaRegistry registry,
+                              ReplicationTransport transport,
+                              Runnable betweenSteps,
+                              Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler) {
+        this(governorId, registry, transport, none(), ALWAYS_PROMOTE, betweenSteps, timerScheduler);
+    }
+
     private DefaultReplicationManager(NodeId governorId,
                                       ReplicaRegistry registry,
                                       ReplicationTransport transport,
                                       Option<ReplicationBatcher> batcher,
                                       EarliestRetainedOffset earliestRetained) {
+        this(governorId, registry, transport, batcher, earliestRetained, NO_OP, SharedScheduler::schedule);
+    }
+
+    private DefaultReplicationManager(NodeId governorId,
+                                      ReplicaRegistry registry,
+                                      ReplicationTransport transport,
+                                      Option<ReplicationBatcher> batcher,
+                                      EarliestRetainedOffset earliestRetained,
+                                      Runnable betweenSteps,
+                                      Fn2<ScheduledFuture<?>, Runnable, TimeSpan> timerScheduler) {
         this.governorId = governorId;
         this.registry = registry;
         this.transport = transport;
         this.batcher = batcher;
         this.earliestRetained = earliestRetained;
+        this.betweenSteps = betweenSteps;
+        this.timerScheduler = timerScheduler;
     }
+
+    /// Estimated bytes per `ReplicateEvents` chunk: half the transport frame limit. The other half
+    /// leaves headroom for fixed fields and the envelope; this is a chosen margin, not a measured
+    /// bound on serialized messages. A single event larger than this budget is still sent alone.
+    static final long MAX_REPLICATE_MESSAGE_BYTES = QuicClusterServer.MAX_FRAME_LENGTH / 2;
+    /// Per-event accounting allowance added to payload bytes so tiny events also consume the chunk
+    /// budget. The allowance is not verified here against the complete codec/envelope encoding.
+    static final long PER_EVENT_ENCODING_BYTES = 32;
 
     @Contract
     @Override
@@ -84,19 +152,122 @@ final class DefaultReplicationManager implements ReplicationManager {
                                byte[] payload,
                                long timestamp,
                                Epoch ownerEpoch) {
-        batcher.onPresent(b -> b.add(streamName, partition, offset, payload, timestamp, ownerEpoch))
-               .onEmpty(() -> replicateImmediately(streamName, partition, offset, payload, timestamp, ownerEpoch));
+        // FER: `replicateEvent` is fire-and-forget (void); the only refusal is BATCHER_CLOSED after close(),
+        // when this manager is shutting down and no replica may be sent to — logged, then dropped.
+        batcher.onPresent(b -> addOne(b, streamName, partition, offset, payload, timestamp, ownerEpoch))
+               .onEmpty(() -> replicateImmediately(streamName,
+                                                   partition,
+                                                   offset,
+                                                   List.of(payload),
+                                                   List.of(timestamp),
+                                                   ownerEpoch));
+    }
+
+    /// #1245: a contiguous run goes out in as few `ReplicateEvents` messages per replica as the frame limit
+    /// allows — one, below it (the receive handler already applies multi-record batches and acks their
+    /// last offset). With a batcher wired, the run is handed to it event by event, as single publishes are.
+    @Contract
+    @Override
+    public void replicateEvents(String streamName,
+                                int partition,
+                                long fromOffset,
+                                List<byte[]> payloads,
+                                List<Long> timestamps,
+                                Epoch ownerEpoch) {
+        batcher.onPresent(b -> addRun(b, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch))
+               .onEmpty(() -> replicateImmediately(streamName, partition, fromOffset, payloads, timestamps, ownerEpoch));
+    }
+
+    @Contract
+    private static void addRun(ReplicationBatcher batcher,
+                               String streamName,
+                               int partition,
+                               long fromOffset,
+                               List<byte[]> payloads,
+                               List<Long> timestamps,
+                               Epoch ownerEpoch) {
+        IntStream.range(0,
+                        payloads.size())
+                 .forEach(i -> addOne(batcher,
+                                      streamName,
+                                      partition,
+                                      fromOffset + i,
+                                      payloads.get(i),
+                                      timestamps.get(i),
+                                      ownerEpoch));
+    }
+
+    /// One event into the batcher; its only refusal (BATCHER_CLOSED) is logged and dropped, see [#replicateEvent].
+    @Contract
+    private static void addOne(ReplicationBatcher batcher,
+                               String streamName,
+                               int partition,
+                               long offset,
+                               byte[] payload,
+                               long timestamp,
+                               Epoch ownerEpoch) {
+        batcher.add(streamName, partition, offset, payload, timestamp, ownerEpoch)
+               .onFailure(cause -> log.warn("Event {}[{}]@{} not replicated: {}",
+                                            streamName,
+                                            partition,
+                                            offset,
+                                            cause.message()));
+    }
+
+    @Contract
+    @Override
+    public void announceCommitted(String streamName, int partition, long committedThrough, Epoch ownerEpoch) {
+        var message = ReplicationMessage.CommitAdvance.commitAdvance(governorId,
+                                                                     streamName,
+                                                                     partition,
+                                                                     committedThrough,
+                                                                     ownerEpoch);
+
+        replicationTargets(streamName, partition).forEach(replica -> transport.send(replica,
+                                                                                    message,
+                                                                                    DEFAULT_ACK_TIMEOUT));
     }
 
     @Contract
     @Override
     public void handleAck(ReplicationMessage.ReplicateAck ack) {
+        notifyObserver(ack);
         registry.updateWatermark(ack.streamName(),
                                  ack.partition(),
                                  ack.replicaId(),
                                  ack.confirmedOffset(),
-                                 promotionState(ack));
-        resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+                                 promotionState(ack),
+                                 ack.ownerEpoch());
+        notifyObserver(ack);
+        if (underCurrentEpoch(ack.streamName(), ack.partition(), ack.ownerEpoch())) {
+            resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+        }
+    }
+
+    /// B11 (#1730 phase 2): a confirmation counts toward this owner's acknowledgements only while it was made under the owner epoch
+    /// now in force. A row, or an ack, from an earlier tenure describes records the replica held under another lineage, and must
+    /// not resolve an await of a later one.
+    private boolean underCurrentEpoch(String streamName, int partition, Epoch epoch) {
+        return epoch.equals(ownerEpochs.currentOwnerEpoch(streamName, partition));
+    }
+
+    @Contract
+    @Override
+    public void ownerEpochs(StreamOwnerEpochSource source) {
+        this.ownerEpochs = source;
+    }
+
+    /// Called BEFORE the registry update, so no waiter a registry read could resolve is resolved before the
+    /// observer sees the ack; and again AFTER it, see [AckObserver].
+    @Contract
+    private void notifyObserver(ReplicationMessage.ReplicateAck ack) {
+        ackObserver.onPresent(observer -> observer.acked(ack));
+    }
+
+    @Contract
+    @Override
+    public void observeAcks(AckObserver observer) {
+        ackObserver = some(observer);
     }
 
     /// A live ack promotes the replica to CAUGHT_UP only when its confirmed offset reaches back to the
@@ -125,9 +296,9 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     private void replicateImmediately(String streamName,
                                       int partition,
-                                      long offset,
-                                      byte[] payload,
-                                      long timestamp,
+                                      long fromOffset,
+                                      List<byte[]> payloads,
+                                      List<Long> timestamps,
                                       Epoch ownerEpoch) {
         var replicas = replicationTargets(streamName, partition);
 
@@ -135,7 +306,7 @@ final class DefaultReplicationManager implements ReplicationManager {
             return;
         }
 
-        sendToAllReplicas(replicas, streamName, partition, offset, payload, timestamp, ownerEpoch);
+        sendToAllReplicas(replicas, streamName, partition, fromOffset, payloads, timestamps, ownerEpoch);
     }
 
     /// The set of nodes an owner replicates a published event to: the registered replica set MINUS
@@ -151,74 +322,230 @@ final class DefaultReplicationManager implements ReplicationManager {
                        .toList();
     }
 
+    @Contract
+    @Override
+    public void inSyncReplicaSource(InSyncReplicas source) {
+        this.inSync = source;
+    }
+
+    /// Who must confirm an offset of `(stream, partition)`, and how many of them (#1730). With a committed ISR:
+    /// every member other than this owner, all of them, and the set must hold at least `minAcks` (min-ISR = the
+    /// confirmation factor). Without one, or when no confirmation is required (`minAcks <= 0`, CF 1): any `minAcks`
+    /// of the registered replicas, as before #1730.
+    private AckSet ackSet(String streamName, int partition, int minAcks) {
+        var registered = new AckSet(replicationTargets(streamName, partition), minAcks, Set.of());
+
+        return minAcks <= 0
+               ? registered
+               : inSync.inSyncReplicas(streamName, partition)
+                       .map(isr -> isrAckSet(isr, minAcks))
+                       .or(registered);
+    }
+
+    private AckSet isrAckSet(List<NodeId> isr, int minAcks) {
+        var peers = isr.stream().filter(nodeId -> !nodeId.equals(governorId)).toList();
+
+        return peers.size() < minAcks
+               ? new AckSet(peers, minAcks, Set.copyOf(peers))
+               : new AckSet(peers, peers.size(), Set.copyOf(peers));
+    }
+
+    /// `targets` are the replicas whose confirmations count, `required` how many must confirm, `eligible` the only
+    /// identities an ack may be counted from (empty: any registered replica).
+    private record AckSet(List<NodeId> targets, int required, Set<NodeId> eligible) {
+        boolean satisfiable() {
+            return targets.size() >= required;
+        }
+
+        /// Judged when an ack arrives, against the ISR in force THEN (#1730): an ack set taken at registration would
+        /// leave a member that joined the ISR meanwhile uncounted, and failover elects from the committed ISR.
+        boolean satisfiedBy(Set<NodeId> acked) {
+            return satisfiable() && acked.stream()
+                                         .filter(nodeId -> eligible.isEmpty() || eligible.contains(nodeId))
+                                         .count() >= required;
+        }
+    }
+
+    @Override
+    public Result<Unit> ensureReplicaFloor(String streamName, int partition, int minAcks) {
+        return minAcks > 0 && !ackSet(streamName, partition, minAcks).satisfiable()
+               ? NOT_ENOUGH_REPLICAS.result()
+               : Result.unitResult();
+    }
+
     @Override
     public Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks) {
-        var targets = replicationTargets(streamName, partition);
+        var ackSet = ackSet(streamName, partition, minAcks);
 
-        if (targets.size() < minAcks) {
+        if (!ackSet.satisfiable()) {
             return NOT_ENOUGH_REPLICAS.promise();
         }
-        // #262.3 (ack-before-register race): replication fires inside the publish onSuccess BEFORE the
-        // caller awaits, so a fast peer ack can land in the registry before this await is registered.
-        // The registry already records each replica's latest confirmed offset (updated in handleAck
-        // ahead of resolvePendingAck), so seed the distinct-ack set with peers that ALREADY cover the
-        // awaited offset — a race-won ack is honored instead of waiting out the 5s timeout.
+
+        return registerThenReconcile(ackSet, streamName, partition, offset, minAcks);
+    }
+
+    /// #1259: REGISTER the waiter first, THEN seed it from the registry. #262.3 seeded from the registry
+    /// so an ack that won the race against the await is honoured; but it sampled BEFORE registering, so an
+    /// ack landing between the sample and the registration found no waiter and was reflected in neither —
+    /// the await timed out on a replicated write. Registered first, every ack is caught by one of the two
+    /// paths: it either finds the waiter in [#pendingAcks], or it reached the registry before the
+    /// snapshot below read it. Both paths complete through [#complete], which resolves exactly once.
+    private Promise<Unit> registerThenReconcile(AckSet ackSet,
+                                                String streamName,
+                                                int partition,
+                                                long offset,
+                                                int minAcks) {
+        var targets = seedTargets(ackSet, streamName, partition);
+        var waiters = pendingAcks.computeIfAbsent(PartitionKey.partitionKey(streamName, partition),
+                                                  _ -> new ConcurrentSkipListMap<>());
+        var key = new WaiterKey(offset, waiterSequence.incrementAndGet());
+        var pending = PendingAck.pendingAck(streamName, partition, minAcks);
+
+        waiters.put(key, pending);
+        armTimer(pending,
+                 timerScheduler.apply(() -> complete(waiters, key, pending, REPLICATION_TIMEOUT.result()),
+                                      DEFAULT_ACK_TIMEOUT));
         var alreadyAcked = peersAtOrAbove(targets, streamName, partition, offset);
 
-        if (alreadyAcked.size() >= minAcks) {
-            return Promise.success(unit());
-        }
+        betweenSteps.run();
+        pending.ackedReplicas().addAll(alreadyAcked);
+        resolveIfSatisfied(waiters, key, pending);
 
-        return registerPendingAck(streamName, partition, offset, minAcks, alreadyAcked);
+        return pending.promise();
+    }
+
+    /// #1730: seed from every replica that may count by the time the await resolves — the ISR peers and the
+    /// registered replicas (one proposed into the ISR meanwhile) — because the ack set is judged at resolution.
+    private List<NodeId> seedTargets(AckSet ackSet, String streamName, int partition) {
+        return Stream.concat(ackSet.targets().stream(),
+                             replicationTargets(streamName, partition).stream())
+                     .distinct()
+                     .toList();
     }
 
     /// Distinct non-self replicas whose registry-recorded confirmed offset already reaches `offset`.
     private Set<NodeId> peersAtOrAbove(List<NodeId> targets, String streamName, int partition, long offset) {
-        var byNode = registry.replicasFor(streamName, partition)
-                             .stream()
-                             .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
-                                                       ReplicaDescriptor::confirmedOffset,
-                                                       Math::max));
+        var byNode = confirmedByNode(streamName, partition);
 
         return targets.stream()
                       .filter(nodeId -> byNode.getOrDefault(nodeId, -1L) >= offset)
                       .collect(Collectors.toSet());
     }
 
+    /// Reads the SAME registry rows [#awaitReplication] seeds from, so an offset reported here is one an
+    /// await for it would resolve on at once. With a committed ISR (#1730) it is the high-water mark: the lowest
+    /// offset every ISR member other than the owner has confirmed.
+    @Override
+    public long replicatedThrough(String streamName, int partition, int minAcks) {
+        return minAcks <= 0
+               ? Long.MAX_VALUE
+               : confirmedThrough(ackSet(streamName, partition, minAcks), confirmedByNode(streamName, partition));
+    }
+
+    @Override
+    public long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks) {
+        return minAcks <= 0
+               ? Long.MAX_VALUE
+               : confirmedThrough(ackSet(pending.streamName(), pending.partition(), minAcks),
+                                  withAck(pending));
+    }
+
+    private static long confirmedThrough(AckSet ackSet, Map<NodeId, Long> byNode) {
+        return ackSet.satisfiable()
+               ? minAcksConfirmedOffset(peerConfirmedDescending(ackSet.targets(), byNode), ackSet.required())
+               : -1L;
+    }
+
+    /// The registry rows with `pending` overlaid — a row is only ever raised, as the registry update would.
+    private Map<NodeId, Long> withAck(ReplicationMessage.ReplicateAck pending) {
+        var byNode = new HashMap<>(confirmedByNode(pending.streamName(), pending.partition()));
+
+        if (underCurrentEpoch(pending.streamName(), pending.partition(), pending.ownerEpoch())) {
+            byNode.merge(pending.replicaId(), pending.confirmedOffset(), Math::max);
+        }
+
+        return byNode;
+    }
+
+    /// The `minAcks`-th highest confirmed offset among the non-self replicas: every offset at or below it
+    /// is covered by at least `minAcks` distinct peers.
+    private static long minAcksConfirmedOffset(List<Long> descending, int minAcks) {
+        return descending.size() >= minAcks
+               ? descending.get(minAcks - 1)
+               : -1L;
+    }
+
+    private static List<Long> peerConfirmedDescending(List<NodeId> targets, Map<NodeId, Long> byNode) {
+        return targets.stream()
+                      .map(nodeId -> byNode.getOrDefault(nodeId, -1L))
+                      .sorted(Comparator.reverseOrder())
+                      .toList();
+    }
+
+    /// The confirmed offset of each replica as THIS owner may count it: a peer's row counts only when it was confirmed under the
+    /// owner epoch now in force (B11); a row of another epoch reads as unknown (-1), so the peer must confirm again. The
+    /// owner's own row is its own.
+    private Map<NodeId, Long> confirmedByNode(String streamName, int partition) {
+        var current = ownerEpochs.currentOwnerEpoch(streamName, partition);
+
+        return registry.replicasFor(streamName, partition)
+                       .stream()
+                       .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
+                                                 descriptor -> descriptor.nodeId()
+                                                                         .equals(governorId) || descriptor.epoch()
+                                                                                                          .equals(current)
+                                                               ? descriptor.confirmedOffset()
+                                                               : -1L,
+                                                 Math::max));
+    }
+
+    /// #1287 review K3: one run is sent as consecutive chunks, each at most [#MAX_REPLICATE_MESSAGE_BYTES]
+    /// of payload, so no message exceeds the cluster transport's frame limit. Chunks go out in offset
+    /// order; the receive handler verifies each chunk's `fromOffset`, and the owner still awaits one
+    /// cumulative ack on the run's last offset.
     private void sendToAllReplicas(List<NodeId> replicas,
                                    String streamName,
                                    int partition,
-                                   long offset,
-                                   byte[] payload,
-                                   long timestamp,
+                                   long fromOffset,
+                                   List<byte[]> payloads,
+                                   List<Long> timestamps,
                                    Epoch ownerEpoch) {
-        var message = replicateEvents(governorId,
-                                      streamName,
-                                      partition,
-                                      offset,
-                                      List.of(payload),
-                                      List.of(timestamp),
-                                      ownerEpoch);
+        for (int start = 0; start < payloads.size();) {
+            var end = chunkEnd(payloads, start);
 
-        replicas.forEach(replica -> transport.send(replica, message));
+            sendChunk(replicas,
+                      ReplicationMessage.ReplicateEvents.replicateEvents(governorId,
+                                                                         streamName,
+                                                                         partition,
+                                                                         fromOffset + start,
+                                                                         List.copyOf(payloads.subList(start, end)),
+                                                                         List.copyOf(timestamps.subList(start, end)),
+                                                                         ownerEpoch));
+            start = end;
+        }
     }
 
-    private Promise<Unit> registerPendingAck(String streamName,
-                                             int partition,
-                                             long offset,
-                                             int minAcks,
-                                             Set<NodeId> alreadyAcked) {
-        Promise<Unit> promise = Promise.promise();
-        var key = new PendingAckKey(streamName, partition, offset);
-        var acked = ConcurrentHashMap.<NodeId> newKeySet();
+    @Contract
+    private void sendChunk(List<NodeId> replicas, ReplicationMessage.ReplicateEvents message) {
+        replicas.forEach(replica -> transport.send(replica, message, DEFAULT_ACK_TIMEOUT));
+    }
 
-        acked.addAll(alreadyAcked);
-        var pending = new PendingAck(promise, acked, minAcks);
+    /// Exclusive end of the chunk starting at `start`: as many events as fit the accounting budget, and at least
+    /// one — a single event above the cap goes out alone, as every event did before batching.
+    private static long encodedSize(byte[] payload) {
+        return payload.length + PER_EVENT_ENCODING_BYTES;
+    }
 
-        pendingAcks.put(key, pending);
-        SharedScheduler.schedule(() -> timeoutPendingAck(key), DEFAULT_ACK_TIMEOUT);
+    private static int chunkEnd(List<byte[]> payloads, int start) {
+        var end = start + 1;
+        var bytes = encodedSize(payloads.get(start));
 
-        return promise;
+        while (end < payloads.size() && bytes + encodedSize(payloads.get(end)) <= MAX_REPLICATE_MESSAGE_BYTES) {
+            bytes += encodedSize(payloads.get(end));
+            end++;
+        }
+
+        return end;
     }
 
     /// Resolve every pending await whose awaited offset is at or below `confirmedOffset` for this
@@ -233,40 +560,104 @@ final class DefaultReplicationManager implements ReplicationManager {
             return;  // a self-ack never counts toward minAcks (#262.2/.5)
         }
 
-        pendingAcks.entrySet()
-                   .stream()
-                   .filter(entry -> matchesAwait(entry.getKey(),
-                                                 streamName,
-                                                 partition,
-                                                 confirmedOffset))
-                   .forEach(entry -> recordAndResolve(entry.getKey(),
-                                                      entry.getValue(),
-                                                      replicaId));
+        option(pendingAcks.get(PartitionKey.partitionKey(streamName, partition))).onPresent(waiters -> recordAck(waiters,
+                                                                                                                 replicaId,
+                                                                                                                 confirmedOffset));
     }
 
-    private static boolean matchesAwait(PendingAckKey key, String streamName, int partition, long confirmedOffset) {
-        return key.streamName()
-                  .equals(streamName)
-               && key.partition() == partition
-               && key.offset() <= confirmedOffset;
+    /// #1260: only this partition's waiters, and only those awaiting an offset the ack covers.
+    private void recordAck(ConcurrentSkipListMap<WaiterKey, PendingAck> waiters,
+                           NodeId replicaId,
+                           long confirmedOffset) {
+        waiters.headMap(WaiterKey.lastAt(confirmedOffset),
+                        true)
+               .forEach((key, pending) -> recordAndResolve(waiters, key, pending, replicaId));
     }
 
-    private void recordAndResolve(PendingAckKey key, PendingAck pending, NodeId replicaId) {
+    private void recordAndResolve(ConcurrentSkipListMap<WaiterKey, PendingAck> waiters,
+                                  WaiterKey key,
+                                  PendingAck pending,
+                                  NodeId replicaId) {
+        ackVisits.increment();
         pending.ackedReplicas().add(replicaId);
-        if (pending.ackedReplicas().size() >= pending.minAcks()) {
-            pendingAcks.remove(key);
-            pending.promise().resolve(success(unit()));
+        resolveIfSatisfied(waiters, key, pending);
+    }
+
+    private void resolveIfSatisfied(ConcurrentSkipListMap<WaiterKey, PendingAck> waiters,
+                                    WaiterKey key,
+                                    PendingAck pending) {
+        if (ackSet(pending.streamName(), pending.partition(), pending.minAcks()).satisfiedBy(pending.ackedReplicas())) {
+            complete(waiters, key, pending, success(unit()));
         }
     }
 
-    private void timeoutPendingAck(PendingAckKey key) {
-        option(pendingAcks.remove(key)).onPresent(pending -> pending.promise()
-                                                                    .resolve(REPLICATION_TIMEOUT.result()));
+    /// The single completion path (#1259): only the caller whose conditional remove succeeds resolves the
+    /// promise, so an ack, the post-registration reconcile and the timeout can race without a double
+    /// resolution. A completed await cancels its timer (#1260) rather than leaving it queued for 5 s.
+    private void complete(ConcurrentSkipListMap<WaiterKey, PendingAck> waiters,
+                          WaiterKey key,
+                          PendingAck pending,
+                          Result<Unit> outcome) {
+        if (waiters.remove(key, pending)) {
+            pending.promise().resolve(outcome);
+            cancelTimer(pending);
+        }
     }
 
-    record PendingAckKey(String streamName, int partition, long offset) {}
+    /// Store the timer, then cancel it at once if the await completed before the timer existed —
+    /// completion and arming each check the other, so the timer is cancelled whichever runs last.
+    private static void armTimer(PendingAck pending, ScheduledFuture<?> scheduled) {
+        pending.timer().set(some(scheduled));
+        if (pending.promise().isResolved()) {
+            cancelTimer(pending);
+        }
+    }
+
+    private static void cancelTimer(PendingAck pending) {
+        pending.timer().get().onPresent(scheduled -> scheduled.cancel(false));
+    }
+
+    private static void noOp() {}
+
+    /// Test probe (#1260): pending-await entries visited by ack resolution since construction.
+    long ackVisitCount() {
+        return ackVisits.sum();
+    }
+
+    /// Orders a partition's waiters by awaited offset; `sequence` makes each await a distinct entry.
+    record WaiterKey(long offset, long sequence) implements Comparable<WaiterKey> {
+        /// The greatest possible key at `offset` — the inclusive bound for "awaits at or below `offset`".
+        static WaiterKey lastAt(long offset) {
+            return new WaiterKey(offset, Long.MAX_VALUE);
+        }
+
+        @Override
+        public int compareTo(WaiterKey other) {
+            return offset != other.offset
+                   ? Long.compare(offset, other.offset)
+                   : Long.compare(sequence, other.sequence);
+        }
+    }
 
     /// `ackedReplicas` is the set of DISTINCT non-self replica identities that have acked at-or-past the
-    /// awaited offset; the await resolves once it reaches `minAcks` (#262.1).
-    record PendingAck(Promise<Unit> promise, Set<NodeId> ackedReplicas, int minAcks) {}
+    /// awaited offset; the await resolves once it reaches `minAcks` (#262.1). `timer` holds the ack
+    /// timeout so completion can cancel it (#1260).
+    /// #1730: every non-self ack is recorded; which of them count, and how many are needed, is decided at resolution
+    /// against the partition's ISR then ([AckSet#satisfiedBy]), so a replica outside it never completes a confirmation
+    /// and a member that joined after registration is still waited for.
+    record PendingAck(Promise<Unit> promise,
+                      Set<NodeId> ackedReplicas,
+                      String streamName,
+                      int partition,
+                      int minAcks,
+                      AtomicReference<Option<ScheduledFuture<?>>> timer) {
+        static PendingAck pendingAck(String streamName, int partition, int minAcks) {
+            return new PendingAck(Promise.promise(),
+                                  ConcurrentHashMap.newKeySet(),
+                                  streamName,
+                                  partition,
+                                  minAcks,
+                                  new AtomicReference<>(none()));
+        }
+    }
 }

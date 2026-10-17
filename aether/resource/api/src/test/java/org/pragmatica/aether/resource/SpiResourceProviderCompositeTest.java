@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.resource;
 
@@ -43,14 +42,27 @@ class SpiResourceProviderCompositeTest {
         assertThat(fallbackCalled.get()).isFalse();
     }
 
+    /// The mirror of the test above: with no `ConfigurationProvider` in play, the
+    /// constructor-supplied fallback loader IS the one consulted.
+    ///
+    /// This previously asserted that two calls returned the same promise. That was a proxy for
+    /// "the no-context overload caches", but `String.class` has no factory, so what it actually
+    /// pinned was a memoized FAILURE — #268 R4. Asserting the loader routing directly tests the
+    /// property this case is named for and is indifferent to caching.
     @Test
-    void provide_withoutCompositeExtension_doesNotEnableCompositePath() {
-        // Verify the no-context overload caches and uses fallback configLoader as before.
-        var provider = spiResourceProvider((section, configClass) -> Result.success("dummy"));
+    void provide_withoutCompositeExtension_usesConstructorSuppliedLoader() {
+        var fallbackCalled = new AtomicBoolean(false);
+        var provider = spiResourceProvider((section, configClass) -> {
+            fallbackCalled.set(true);
+            return Result.success(new RecordedResourceConfig(section));
+        });
 
-        var p1 = provider.provide(String.class, "test.section");
-        var p2 = provider.provide(String.class, "test.section");
+        // RecordedResource, not String: a type with NO registered factory fails before the config
+        // loader is ever consulted, so `fallbackCalled` would stay false for the wrong reason.
+        var result = provider.provide(RecordedResource.class, "test.section")
+                             .await(TIMEOUT);
 
-        assertThat(p1).isSameAs(p2);
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(fallbackCalled.get()).isTrue();
     }
 }

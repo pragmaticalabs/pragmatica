@@ -25,7 +25,19 @@ public interface BuiltinRepository extends Repository {
 
     static BuiltinRepository builtinRepository(ArtifactStore store) {
         return artifact -> store.resolveWithMetadata(artifact)
+                                .mapError(BuiltinRepository::answerOf)
                                 .flatMap(resolved -> writeToTempFile(artifact, resolved));
+    }
+
+    /// The store's own "no such artifact" is an ANSWER, and so is "archived" (#1778: archived means
+    /// unavailable on purpose); a timeout or DHT error is not, and passes through unchanged so the composite
+    /// can tell the two apart.
+    private static Cause answerOf(Cause cause) {
+        return switch (cause) {
+            case ArtifactStore.ArtifactStoreError.NotFound notFound -> new RepositoryError.NotInStore(notFound.message());
+            case ArtifactStore.ArtifactStoreError.Archived archived -> new RepositoryError.NotInStore(archived.message());
+            default -> cause;
+        };
     }
 
     private static Promise<Location> writeToTempFile(Artifact artifact, ResolvedArtifact resolved) {
@@ -46,6 +58,13 @@ public interface BuiltinRepository extends Repository {
     }
 
     sealed interface RepositoryError extends Cause {
+        record NotInStore(String detail) implements RepositoryError, Absent {
+            @Override
+            public String message() {
+                return "Artifact not found in built-in repository: " + detail;
+            }
+        }
+
         record WriteFailed(Artifact artifact, Throwable cause) implements RepositoryError {
             @Override
             public String message() {

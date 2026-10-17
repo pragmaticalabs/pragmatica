@@ -1,8 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
-
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.test.full.delegation;
 
 import org.pragmatica.aether.slice.annotation.Slice;
@@ -14,10 +12,13 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 
-@Slice public interface DelegationSlice {
+@Slice
+public interface DelegationSlice {
     record TaskResponse(String taskGroup, String nodeId) {
         public static TaskResponse taskResponse() {
-            var nodeId = System.getProperty("NODE_ID", System.getenv().getOrDefault("NODE_ID", "unknown"));
+            var nodeId = System.getProperty("NODE_ID",
+                                            System.getenv().getOrDefault("NODE_ID", "unknown"));
+
             return new TaskResponse("default", nodeId);
         }
     }
@@ -26,8 +27,11 @@ import org.pragmatica.lang.utils.Causes;
         private static final Fn1<Cause, String> PAYLOAD_REQUIRED = Causes.forOneValue("Payload is required, got: '%s'");
 
         public static Result<WorkRequest> workRequest(String payload) {
-            return Verify.ensure(payload, Verify.Is::notNull, PAYLOAD_REQUIRED.apply(payload))
-                         .filter(p -> PAYLOAD_REQUIRED.apply(p), Verify.Is::notBlank)
+            return Verify.ensure(payload,
+                                 Verify.Is::notNull,
+                                 PAYLOAD_REQUIRED.apply(payload))
+                         .filter(p -> PAYLOAD_REQUIRED.apply(p),
+                                 Verify.Is::notBlank)
                          .map(String::trim)
                          .map(WorkRequest::new);
         }
@@ -35,7 +39,9 @@ import org.pragmatica.lang.utils.Causes;
 
     record WorkResponse(String status, String nodeId) {
         public static WorkResponse workResponse() {
-            var nodeId = System.getProperty("NODE_ID", System.getenv().getOrDefault("NODE_ID", "unknown"));
+            var nodeId = System.getProperty("NODE_ID",
+                                            System.getenv().getOrDefault("NODE_ID", "unknown"));
+
             return new WorkResponse("accepted", nodeId);
         }
     }
@@ -48,11 +54,13 @@ import org.pragmatica.lang.utils.Causes;
     }
 
     record delegationSlice() implements DelegationSlice {
-        @Override public Promise<TaskResponse> task() {
+        @Override
+        public Promise<TaskResponse> task() {
             return Promise.success(TaskResponse.taskResponse());
         }
 
-        @Override public Promise<WorkResponse> work(WorkRequest request) {
+        @Override
+        public Promise<WorkResponse> work(WorkRequest request) {
             return Promise.success(WorkResponse.workResponse());
         }
     }

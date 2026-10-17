@@ -9,9 +9,9 @@ Global rules (git, delegation, challenge mode, ndx, consult-before-action) live 
 | `core/` | `Result`, `Option`, `Promise` |
 | `integrations/` | Jackson, Micrometer, DB, HTTP, consensus, statemachine, swim, storage |
 | `jbct/` | Formatting, linting, Maven plugin, slice-processor |
-| `aether/` | Distributed runtime (BSL 1.1; rest of repo is Apache-2.0) |
+| `aether/` | Distributed runtime (Apache-2.0, except the BSL 1.1 modules listed in `tools/license/bsl-modules.txt`) |
 
-**Version:** `1.0.0-rc3` on branch `release-1.0.0-rc3`.
+**Version:** `1.0.0-rc4` on branch `release-1.0.0-rc4`.
 
 **Priorities & roadmap:**
 - V1 roadmap: [`aether/docs/.internal/progress/v1-roadmap.md`](aether/docs/.internal/progress/v1-roadmap.md)
@@ -48,13 +48,20 @@ The only valid use of `-Djbct.skip=true` is building `jbct/` itself during boots
 
 ```
 main (stable — latest published release only)
-  └── release-X.Y.Z (active development — commit directly)
+  └── release-X.Y.Z (active development — short-lived PR branches, reviewed, merged by the owner)
 ```
 
-- **NEVER create feature branches on a release branch.** Commit directly — the branch exists to prevent divergence.
+- **One PR branch per ticket, off the release branch, merged back within the day.** Name it
+  `fix/<issue>-<slug>` (or `feat/`, `chore/`, `docs/`). Every PR gets an adversarial review before the
+  owner's merge (owner ruling 2026-09-05; the reviews found blocking defects in most PRs of the first
+  week, which is the reason for the step). No long-lived branches: a branch that outlives its review
+  round is rebased or re-merged onto the release tip, never left to diverge. Empty `know:` commits
+  recording rulings go straight onto the release branch.
+- **Never edit `CHANGELOG.md` in a PR.** Add `changelog.d/<issue>-<slug>.md` (see
+  [`changelog.d/README.md`](changelog.d/README.md)); the CI check refuses a direct edit and a source
+  change without a fragment.
 - **"Fixes #N" never auto-closes here** — GitHub only auto-closes on the default branch, and all work merges to the release branch. Close referenced issues manually (with a PR-citing comment) as part of every merge round.
 - **Closing comments name the stale surfaces.** When a fix lands, the closing comment must name (and the fix should sweep) the docstrings, comments, and docs that described the OLD behavior — stale descriptions mint wrong tickets. Evidence: 2026-08-27, four tickets in one day carried materially wrong premises because fixes landed and the describing surfaces did not move; one stale docstring propagated its obsolete model into its ticket's own diagnosis.
-- `feat/*` / `fix/*` branches are allowed only when working off `main` with no active release branch.
 - Release branch merges to `main` when ready → tag `vX.Y.Z` → publish to Maven Central.
 - Slash commands: `/new-release-branch`, `/pre-release-check`, `/release-check`, `/release`, `/wrap-up`.
 
@@ -141,7 +148,7 @@ Adding a Management API endpoint requires updating ALL four layers or the featur
 Changes to `slice-processor` code generation (`FactoryGenerator`, `ManifestGenerator` output structure) require bumping `ENVELOPE_FORMAT_VERSION` in `ManifestGenerator.java`. See [`aether/docs/contributors/envelope-versioning.md`](aether/docs/contributors/envelope-versioning.md).
 
 ### 4. BSL license headers
-Files under `aether/**`, `jbct/slice-processor/`, `jbct/slice-processor-tests/` carry the SPDX `BUSL-1.1` header template at `docs/legal/bsl-header.txt`. Bulk applicator: `tools/license/apply-bsl.sh`. Don't re-license or drop these headers without explicit approval.
+Only the modules in `tools/license/bsl-modules.txt` carry the SPDX `BUSL-1.1` header template at `docs/legal/bsl-header.txt`; everything else is Apache-2.0. `python3 tools/license/relicense.py` applies the boundary (idempotent), and `tools/check-licence-closure.py` (CI) fails if an Apache module depends on a BSL one or a header sits on the wrong side. Don't re-license or drop these headers without explicit approval.
 
 ### 5. Integration test environment
 - Remote host reachable as `$TARGET_HOST`, SSH key at `$AETHER_SSH_KEY`, user `$AETHER_SSH_USER`. Never inline these values — reference by name only.

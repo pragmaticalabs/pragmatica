@@ -31,6 +31,7 @@ import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
@@ -235,6 +236,64 @@ class QuicClusterNetworkReconcilerTest {
         assertThat(stub.lookups.getOrDefault(departedPeer, 0L))
             .as("SWIM-departed configured peer (absent from coreNodes) must not be re-dialed")
             .isEqualTo(0L);
+    }
+
+    /// #1558 — the missing-peer reconciler skips a NodeId retired by a boot-token conflict: no topology
+    /// lookup, so no dial. Paired with [#reconcileMissingPeersTick_swimPresentButDisconnectedPeer_isRedialed],
+    /// the identical fixture without the retirement, which dials.
+    @Test
+    void reconcileMissingPeersTick_retiredIdentity_isNotDialed() {
+        var self = new NodeId("aaa-self");
+        var retiredPeer = new NodeId("zzz-retired");
+        var peerInfo = NodeInfo.nodeInfo(retiredPeer, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, retiredPeer));
+        var clock = new AtomicLong(1_000_000L);
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        network.overrideWallClockForTests(clock::get);
+        network.setBootTokens(retiredRegistry(retiredPeer));
+
+        network.reconcileMissingPeersTick();
+
+        assertThat(stub.lookups.getOrDefault(retiredPeer, 0L))
+            .as("a retired identity must never be dialed by the reconciler")
+            .isZero();
+    }
+
+    /// #1558 — `connectPeer` never dials a retired identity, whatever asked for the connection. Control:
+    /// the same explicit connect to a live identity starts a dial (CONNECTING).
+    @Test
+    void connect_retiredIdentity_isNotDialed_liveIdentityIs() {
+        var self = new NodeId("aaa-self");
+        var retiredPeer = new NodeId("zzz-retired");
+        var livePeer = new NodeId("zzz-live");
+        var stub = countingTopology(self, List.of());
+        var network = createNetwork(self, List.of(), MessageRouter.mutable(), stub);
+
+        network.setBootTokens(retiredRegistry(retiredPeer));
+
+        network.connect(NodeInfo.nodeInfo(retiredPeer, addressOf("127.0.0.1", 1)));
+        network.connect(NodeInfo.nodeInfo(livePeer, addressOf("127.0.0.1", 1)));
+
+        // The dial state appears only after the asynchronous address resolution; the live peer, dialed
+        // AFTER the retired one, is the clock: once it has a dial state, an unblocked retired dial would too.
+        var deadline = System.currentTimeMillis() + 5_000;
+
+        while (network.peerPhaseForTests(livePeer).isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        assertThat(network.peerPhaseForTests(livePeer).isPresent()).as("control: a live identity is dialed").isTrue();
+        assertThat(network.peerPhaseForTests(retiredPeer)).as("no dial state for a retired identity").isEqualTo(Option.none());
+    }
+
+    private static BootTokens retiredRegistry(NodeId peer) {
+        var tokens = BootTokens.bootTokens(0x5E1FL);
+
+        tokens.admit(peer, 0x0011L);
+        tokens.admit(peer, 0x0022L);
+
+        return tokens;
     }
 
     @Test
@@ -607,6 +666,30 @@ class QuicClusterNetworkReconcilerTest {
             .isEqualTo(0L);
     }
 
+    /// #1973: the same unicast to a null-state member, but a NoOfflineBuffering frame (an entity owner-forward): not buffered,
+    /// reported ConnectionDead (not sent), so it can never be delivered after the caller was told it was not.
+    @Test
+    void sendOutcome_toNullMemberPeer_noOfflineBufferingFrame_isNotBuffered_andReportsNotSent() {
+        var self = new NodeId("zzz-self");
+        var member = new NodeId("aaa-member");
+        var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        var outcome = network.sendOutcome(member, new UnbufferedStubMessage(self)).await(AWAIT_TIMEOUT);
+
+        outcome.onFailure(cause -> fail("sendOutcome should resolve: " + cause.message()))
+               .onSuccess(result -> assertThat(result).isInstanceOf(WriteOutcome.ConnectionDead.class));
+        assertThat(network.offlineBufferSizeForTests(member)).as("nothing held for a late delivery").isZero();
+    }
+
+    private record UnbufferedStubMessage(NodeId sender) implements ProtocolMessage, org.pragmatica.consensus.net.NoOfflineBuffering {
+        @Override
+        public StreamType streamType() {
+            return StreamType.FORWARD;
+        }
+    }
+
     @Test
     void sendOutcome_toNullMemberPeer_buffersAndReportsSent() {
         // #491: the outcome-tracking sendOutcome variant must ALSO buffer (not NoPeerState-drop) a unicast to
@@ -707,7 +790,7 @@ class QuicClusterNetworkReconcilerTest {
                                               MessageRouter router,
                                               TopologyObserver topology) {
         var network = new QuicClusterNetwork(topology, codec, codec, router, serverSsl, clientSsl,
-                                              ClusterFormationConfig.defaults(), QuicDisconnectListener.noop());
+                                              ClusterFormationConfig.defaults());
         networks.add(network);
         network.startOnPort(0).await(AWAIT_TIMEOUT).onFailure(cause -> fail("start failed: " + cause.message()));
         return network;
@@ -742,6 +825,9 @@ class QuicClusterNetworkReconcilerTest {
     /// "reconciler dispatched a dial" — `considerPeerForReconcile` calls `topologyManager.get`
     /// only after the backoff gate allows the attempt.
     private static final class CountingTopology implements TopologyObserver {
+            @Override
+            public org.pragmatica.lang.Unit setConsensusMembership(java.util.function.Predicate<NodeId> membership) { return org.pragmatica.lang.Unit.unit(); }
+
         private final NodeInfo selfInfo;
         private final List<NodeInfo> peers;
         private final boolean returnEmptyOnGet;

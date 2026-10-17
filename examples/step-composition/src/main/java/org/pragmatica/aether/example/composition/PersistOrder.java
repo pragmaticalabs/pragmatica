@@ -28,7 +28,6 @@ import org.pragmatica.lang.Promise;
 /// not on the slice's factory. The processor resolves it automatically by
 /// following the dependency chain: OrderProcessor -> PersistOrder -> @Sql.
 public interface PersistOrder {
-
     Promise<Order> apply(ValidateOrder.ValidOrder order);
 
     /// Persisted order record — the output of successful persistence.

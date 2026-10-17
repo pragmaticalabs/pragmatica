@@ -419,7 +419,7 @@ GovernorAnnouncementValue {
 - 5 core nodes, zero communities, zero workers.
 - Snapshot: `coreMembers[5]`, `communities = {}`, `partitions = { "default": owner = core-leader }`, `derivedMode = COREONLY`.
 - Only Tier 1 ping-pong active.
-- `/api/cluster/generation` exposes `mode: "core-only"`.
+- `/api/v1/cluster/generation` exposes `mode: "core-only"`.
 
 ### 11.2 Growth to HIERARCHICAL
 
@@ -495,14 +495,14 @@ Every node receives snapshots via ping and updates projections:
 | `HttpRouteRegistry` | `coreMembers` + `communities` for route presence | `NodeRoutesKey` watch stays, but ACTIVE transition is epoch-fenced |
 | `NodeDeploymentManager` | current `epoch` for ROUTING → ACTIVE gate | Timer-based ROUTING wait → epoch-fenced |
 | `QuicClusterNetwork` | informational only | No longer authoritative writer — emits only `TransportObservation` (local OBSERVATION stream); the cluster-canonical `MembershipDecision.NodeRemoved` comes exclusively from `TopologyObserver.publishMembershipDeltas`. See `membership-architecture-v2-spec.md` (typed-stream split). |
-| Dashboard / `/api/cluster/topology` | core+communities+partitions | Single source |
+| Dashboard / `/api/v1/cluster/topology` | core+communities+partitions | Single source |
 
 ## 13. What gets deleted
 
 ### 13.1 Code
 
 - `TopologyObserver`: `handleAddNodeMessage`, `handleRemoveNodeMessage`, `handleSetClusterSize`, `tombstonedNodes`, `evictLongSuspectedPeers`, `initReconcile` timer → DELETED. Becomes a thin projection of `ClusterGenerationSnapshot`.
-- `TopologyManagementMessage.AddNode / RemoveNode / SetClusterSize` records + their router wiring (`RabiaNode:197-199`, `PassiveNode:114-116`) → DELETED.
+- `TopologyManagementMessage.AddNode / RemoveNode / SetClusterSize` records + their router wiring (`RabiaNode:197-199`; `PassiveNode:114-116` too, a class removed in rc4 with no caller, #2033) → DELETED.
 - `QuicClusterNetwork`: `onPostEstablishGraceComplete` flush-nodeRemoved, `onQuorumLossConfirmed` flush, quorum-loss hysteresis buffers → DELETED or demoted to health hints.
 - `CoreSwimHealthDetector.onMemberFaulty`: no longer emits `RemoveNode` directly; emits `SwimHint` to HealthReconciler.
 - `ClusterTopologyManagerRecord`: `scheduleRecheck` timer, `attemptProvisionAfterHysteresis` timer, `deficitHysteresis` → REPLACED by snapshot-delta reactions.
@@ -552,7 +552,7 @@ Kept:
 
 ### 14.1 REST API
 
-**`GET /api/cluster/generation`** — returns the current snapshot as observed by the queried node:
+**`GET /api/v1/cluster/generation`** — returns the current snapshot as observed by the queried node:
 
 ```json
 {
@@ -582,7 +582,7 @@ Kept:
 }
 ```
 
-**`POST /api/cluster/await-quiesced?epoch={ t:c }&timeout=30s`** — blocks until the queried node has `observedEpoch ≥ requested` AND the leader reports cluster-wide quiescence at ≥ that epoch; returns 200 on success, 408 on timeout.
+**`POST /api/v1/cluster/await-quiesced?epoch={ i:t:c }&timeout=30s`** — blocks until the queried node has `observedEpoch ≥ requested` AND the leader reports cluster-wide quiescence at ≥ that epoch; returns 200 on success, 408 on timeout, 400 for an epoch not in `incarnation:term:counter` form (the pre-#1529 `t:c` form included).
 
 ### 14.2 Quiesced = what exactly?
 
@@ -598,12 +598,17 @@ Single scalar: `minOfAllAcks ≥ E AND noPending`.
 
 ```
 aether cluster generation [--json|--watch]
-aether cluster await-quiesced --epoch=7:142 [--timeout=30s]
+aether cluster await-quiesced --epoch=1:7:142 [--timeout=30s]   # incarnation:term:counter (#1529)
 ```
 
 ### 14.4 Events
 
-`/api/events` gains an event stream of `GenerationChanged(oldEpoch, newEpoch, reason)` so external observers can subscribe.
+`/api/v1/events` gains an event stream of `GenerationChanged(oldEpoch, newEpoch, reason)` so external observers can subscribe.
+
+*(Superseded by #722: never built. The event type, its `GenerationReason`, sink and aggregator route
+were deleted; the live epoch is `(leaderTerm, tenure-tick)` and advances once per ping interval of
+leadership — a 1 Hz "event" nobody should subscribe to — while leader changes already surface as
+`LEADER_ELECTED`/`LEADER_LOST`. Read the epoch on demand from `/api/v1/cluster/generation`.)*
 
 ## 15. Edge cases
 
@@ -683,7 +688,7 @@ aether cluster await-quiesced --epoch=7:142 [--timeout=30s]
 - `TopologyManagementMessage.AddNode/RemoveNode/SetClusterSize` records + all wiring removed.
 - `evictLongSuspectedPeers`, `tombstonedNodes`, deficit hysteresis, Quic flush hysteresis removed.
 - `GovernorCleanup` simplified (ownership-term fencing replaces manual dedup).
-- `/api/cluster/generation` + `POST /api/cluster/await-quiesced` routes added.
+- `/api/v1/cluster/generation` + `POST /api/v1/cluster/await-quiesced` routes added.
 - CLI: `aether cluster generation`, `await-quiesced`.
 
 ### Commit 6 — Test harness simplification + acceptance run

@@ -4,9 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.controller.fsm;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
+
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
@@ -43,24 +51,17 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
 
-
-import java.util.ArrayList;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.Supplier;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// Leader-side per-artifact attribution (#422/#423). Drives real per-artifact metric windows from
 /// ingested community snapshots and asserts a load spike scoped to ONE artifact scales only that
 /// artifact — the idle artifact never receives a SliceTarget write.
 class ControlLoopContextAttributionTest {
-
     private static final NodeId SELF = NodeId.nodeId("leader").unwrap();
     private static final NodeId WORKER = NodeId.nodeId("worker-1").unwrap();
     private static final Artifact HOT = Artifact.artifact("org.test:hot:1.0.0").unwrap();
@@ -74,20 +75,22 @@ class ControlLoopContextAttributionTest {
     void setUp() {
         cluster = new CapturingClusterNode();
         ctx = buildContext();
-        ctx.putBlueprint(HOT, 2, 1);
-        ctx.putBlueprint(IDLE, 2, 1);
-        ctx.setTopology(List.of(SELF, WORKER, NodeId.nodeId("n3").unwrap(),
-                                NodeId.nodeId("n4").unwrap(), NodeId.nodeId("n5").unwrap()));
+        ctx.putBlueprint(HOT, target(HOT, 2, 1));
+        ctx.putBlueprint(IDLE, target(IDLE, 2, 1));
+        ctx.setTopology(List.of(SELF,
+                                WORKER,
+                                NodeId.nodeId("n3").unwrap(),
+                                NodeId.nodeId("n4").unwrap(),
+                                NodeId.nodeId("n5").unwrap()));
     }
 
     @Test
     void runEvaluationCycle_loadSpikeOnHotArtifact_scalesOnlyHot() {
         fillWindows();
-
         ingest(100, 2);
         ctx.runEvaluationCycle();
-
         var scaledBases = cluster.putBases();
+
         assertThat(scaledBases).contains(HOT.base());
         assertThat(scaledBases).doesNotContain(IDLE.base());
     }
@@ -95,10 +98,8 @@ class ControlLoopContextAttributionTest {
     @Test
     void runEvaluationCycle_steadyLoad_scalesNothing() {
         fillWindows();
-
         ingest(2, 2);
         ctx.runEvaluationCycle();
-
         assertThat(cluster.putBases()).isEmpty();
     }
 
@@ -108,26 +109,95 @@ class ControlLoopContextAttributionTest {
     /// (without eviction the stale active=100 would persist and no scale-down could ever occur).
     @Test
     void onNodeDeparted_evictsDepartedNodeMetrics_enablesScaleDown() {
-        ctx.putBlueprint(HOT, 3, 1);
-
+        // Four instances, so the scale-down this proves has room above the #1495 runtime floor of three.
+        ctx.putBlueprint(HOT, target(HOT, 4, 2));
         for (int i = 0; i < WINDOW; i++) {
             ingest(100, 0);
             ctx.runEvaluationCycle();
         }
 
         assertThat(cluster.putBases()).describedAs("steady high load triggers no scaling").isEmpty();
-
-        ctx.onNodeDeparted(WORKER, List.of(SELF, NodeId.nodeId("n3").unwrap(),
-                                           NodeId.nodeId("n4").unwrap(), NodeId.nodeId("n5").unwrap()));
+        ctx.onNodeDeparted(WORKER,
+                           List.of(SELF,
+                                   NodeId.nodeId("n3").unwrap(),
+                                   NodeId.nodeId("n4").unwrap(),
+                                   NodeId.nodeId("n5").unwrap()));
         ctx.runEvaluationCycle();
-
         assertThat(cluster.putBases()).contains(HOT.base());
-        assertThat(cluster.lastTargetInstances()).isEqualTo(2);
+        assertThat(cluster.lastTargetInstances()).isEqualTo(3);
+    }
+
+    @Test
+    void workerDeparture_removesLoadWithoutReplacingCoreTopology() {
+        ctx.putBlueprint(HOT, target(HOT, 4, 2));
+        for (int i = 0; i < WINDOW; i++) { ingest(100, 0); ctx.runEvaluationCycle(); }
+        ctx.removeNodeMetrics(WORKER);
+        ctx.runEvaluationCycle();
+        assertThat(cluster.putBases()).contains(HOT.base());
+        assertThat(cluster.lastTargetInstances()).isEqualTo(3);
     }
 
     /// #424 leader cap: `maxInstances` bounds the autoscaler's requested instance count BEFORE the
     /// cluster-size cap. A stub controller emits a fixed ScaleUp so the cap arithmetic is isolated
     /// from metric-window composite scoring.
+    @Test
+    void sourceSnapshotsRejectDuplicatesAndOverlappingAggregates() {
+        var fresh = new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 10);
+
+        ctx.storeCommunitySnapshot(fresh);
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 9));
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 2, List.of(), ctx.nowMs(), 3, 1));
+        assertThat(ctx.communitySnapshots().get(WORKER.id())).isEqualTo(fresh);
+    }
+
+    /// The snapshot `incarnation` is the source's boot token — equality only (owner ruling, session 28).
+    /// The first token pins the source; a different token (lower or higher) is another process claiming
+    /// the NodeId and never supersedes. This replaced #1390's "old incarnation is rejected" ordering.
+    @Test
+    void sourceSnapshotWithDifferentBootToken_neverSupersedes() {
+        var pinned = new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 2, 10);
+
+        ctx.storeCommunitySnapshot(pinned);
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 99));
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 3, 99));
+        assertThat(ctx.communitySnapshots().get(WORKER.id())).isEqualTo(pinned);
+    }
+
+    @Test
+    void removedSourceCannotRepopulateFreshCoverageOrRelayCache() {
+        ctx.recordSliceState(new AetherKey.SliceNodeKey(HOT, WORKER), SliceState.ACTIVE);
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 1));
+        assertThat(ctx.hasMetricCoverage(HOT)).isTrue();
+        ctx.setMetricsProducerEligibility(_ -> false);
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 2));
+        assertThat(ctx.hasMetricCoverage(HOT)).isFalse();
+        assertThat(ctx.communitySnapshots()).isEmpty();
+    }
+
+    @Test
+    void expectedActiveProducerRequiresFreshSourceCoverage() {
+        ctx.recordSliceState(new AetherKey.SliceNodeKey(HOT, WORKER), SliceState.ACTIVE);
+        assertThat(ctx.hasMetricCoverage(HOT)).isFalse();
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community",
+                                                                WORKER,
+                                                                1,
+                                                                List.of(),
+                                                                ctx.nowMs() - 60_000,
+                                                                1,
+                                                                1));
+        assertThat(ctx.hasMetricCoverage(HOT)).isFalse();
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community",
+                                                                WORKER,
+                                                                1,
+                                                                List.of(),
+                                                                ctx.nowMs() + 60_000,
+                                                                1,
+                                                                2));
+        assertThat(ctx.hasMetricCoverage(HOT)).isFalse();
+        ctx.storeCommunitySnapshot(new CommunityMetricsSnapshot("community", WORKER, 1, List.of(), ctx.nowMs(), 1, 3));
+        assertThat(ctx.hasMetricCoverage(HOT)).isTrue();
+    }
+
     @Nested
     class MaxInstancesCap {
         private static final List<NodeId> FIVE_NODES = List.of(SELF,
@@ -141,11 +211,9 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(2));
 
-            capCtx.putBlueprint(HOT, 2, 1, Option.some(3), Option.none(), Option.none());
+            capCtx.putBlueprint(HOT, boundedTarget(HOT, 2, 1, 3));
             capCtx.setTopology(FIVE_NODES);
-
             capCtx.runEvaluationCycle();
-
             assertThat(cluster.putBases()).contains(HOT.base());
             assertThat(cluster.lastTargetInstances()).isEqualTo(3);
         }
@@ -155,11 +223,9 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(2));
 
-            capCtx.putBlueprint(HOT, 2, 1);
+            capCtx.putBlueprint(HOT, target(HOT, 2, 1));
             capCtx.setTopology(FIVE_NODES);
-
             capCtx.runEvaluationCycle();
-
             assertThat(cluster.putBases()).contains(HOT.base());
             assertThat(cluster.lastTargetInstances()).isEqualTo(4);
         }
@@ -188,11 +254,9 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(3), events::add);
 
-            capCtx.putBlueprint(HOT, 2, 1, Option.some(3), Option.none(), Option.none());
+            capCtx.putBlueprint(HOT, boundedTarget(HOT, 2, 1, 3));
             capCtx.setTopology(FIVE_NODES);
-
             capCtx.runEvaluationCycle();
-
             var capped = events.stream()
                                .filter(event -> event instanceof ScalingEvent.ScaleCapped)
                                .map(event -> (ScalingEvent.ScaleCapped) event)
@@ -203,7 +267,6 @@ class ControlLoopContextAttributionTest {
             assertThat(capped.requestedInstances()).isEqualTo(5);
             assertThat(capped.cappedAtInstances()).isEqualTo(3);
             assertThat(capped.reason()).isEqualTo("max-instances");
-
             var decision = capCtx.scalingDecisions().get(HOT);
 
             assertThat(decision.outcome()).isEqualTo(ScalingDecisionRecord.Outcome.CAPPED);
@@ -217,13 +280,10 @@ class ControlLoopContextAttributionTest {
             cluster = new CapturingClusterNode();
             var capCtx = buildContext(scaleUpBy(2), events::add);
 
-            capCtx.putBlueprint(HOT, 2, 1);
+            capCtx.putBlueprint(HOT, target(HOT, 2, 1));
             capCtx.setTopology(FIVE_NODES);
-
             capCtx.runEvaluationCycle();
-
             assertThat(events).noneMatch(event -> event instanceof ScalingEvent.ScaleCapped);
-
             var decision = capCtx.scalingDecisions().get(HOT);
 
             assertThat(decision.outcome()).isEqualTo(ScalingDecisionRecord.Outcome.SCALED_UP);
@@ -235,6 +295,26 @@ class ControlLoopContextAttributionTest {
         private ClusterController scaleUpBy(int additional) {
             return _ -> Promise.success(ControlDecisions.controlDecisions(new BlueprintChange.ScaleUp(HOT, additional)));
         }
+    }
+
+    /// Registrations go in as whole `SliceTargetValue`s, the way the production feeder supplies
+    /// them — the autoscaler's registration map holds the observed durable record, not a projection
+    /// of it (#698, #936, #937).
+    private static AetherValue.SliceTargetValue target(Artifact artifact, int instances, int minInstances) {
+        return AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances, minInstances);
+    }
+
+    private static AetherValue.SliceTargetValue boundedTarget(Artifact artifact,
+                                                              int instances,
+                                                              int minInstances,
+                                                              int maxInstances) {
+        return AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(),
+                                                             instances,
+                                                             minInstances,
+                                                             Option.none(),
+                                                             Option.some(maxInstances),
+                                                             Option.none(),
+                                                             Option.none());
     }
 
     private void fillWindows() {
@@ -252,7 +332,7 @@ class ControlLoopContextAttributionTest {
         var slices = List.of(PerSliceMetrics.perSliceMetrics(HOT, hotActive, 0.0, 0.0, hotActive),
                              PerSliceMetrics.perSliceMetrics(IDLE, idleActive, 0.0, 0.0, idleActive));
 
-        return CommunityMetricsSnapshot.communityMetricsSnapshot("community", WORKER, 1, slices);
+        return CommunityMetricsSnapshot.communityMetricsSnapshot("community", WORKER, 1, slices, System.currentTimeMillis(), 1, System.nanoTime());
     }
 
     private ControlLoopContext buildContext() {
@@ -260,14 +340,18 @@ class ControlLoopContextAttributionTest {
     }
 
     private ControlLoopContext buildContext(ClusterController controller) {
-        return buildContext(controller, _ -> {});
+        return buildContext(controller,
+                            _ -> {});
     }
 
     private ControlLoopContext buildContext(ClusterController controller, Consumer<ScalingEvent> sink) {
         var config = ControllerConfig.DEFAULT.withScalingConfig(smallWindowConfig());
         var ctxHolder = new AtomicReference<ControlLoopContext>();
-        Function<Fsm<ControlLoopState, ClusterFsmEvent>, ControlLoopState> factory =
-                fsm -> holdContext(ctxHolder, fsm, controller, config, sink);
+        Function<Fsm<ControlLoopState, ClusterFsmEvent>, ControlLoopState> factory = fsm -> holdContext(ctxHolder,
+                                                                                                        fsm,
+                                                                                                        controller,
+                                                                                                        config,
+                                                                                                        sink);
 
         Fsm.fsm("attribution-test", SELF.id(), factory);
 
@@ -289,6 +373,7 @@ class ControlLoopContextAttributionTest {
                                              config,
                                              sink);
 
+        context.setMetricsProducerEligibility(_ -> true);
         ctxHolder.set(context);
 
         return context.dormant();
@@ -306,7 +391,6 @@ class ControlLoopContextAttributionTest {
     }
 
     // --- Minimal stub collaborators ---
-
     static final class CapturingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final List<KVCommand<AetherKey>> commands = new ArrayList<>();
 
@@ -315,7 +399,7 @@ class ControlLoopContextAttributionTest {
                            .filter(command -> command instanceof KVCommand.Put)
                            .map(command -> ((KVCommand.Put<?, ?>) command).key())
                            .filter(key -> key instanceof SliceTargetKey)
-                           .map(key -> (Object) ((SliceTargetKey) key).artifactBase())
+                           .map(key -> (Object)((SliceTargetKey) key).artifactBase())
                            .toList();
         }
 
@@ -329,39 +413,105 @@ class ControlLoopContextAttributionTest {
                            .orElse(-1);
         }
 
-        @Override public NodeId self() { return SELF; }
-        @Override public TopologyManager topologyManager() { throw new UnsupportedOperationException("unused"); }
-        @Override public Promise<Unit> start() { return Promise.unitPromise(); }
-        @Override public Promise<Unit> stop() { return Promise.unitPromise(); }
+        @Override
+        public NodeId self() {
+            return SELF;
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            throw new UnsupportedOperationException("unused");
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.unitPromise();
+        }
 
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> toApply) {
             commands.addAll(toApply);
 
-            return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
+            return (Promise<List<R>>)(Promise<?>) Promise.success(List.of());
         }
     }
 
     static final class StubMetricsCollector implements ClusterSyncCollector {
-        @Override public Map<String, Double> collectLocal() { return Map.of(); }
-        @Override public void recordCall(MethodName method, long durationMs) {}
-        @Override public void recordCustom(String name, double value) {}
-        @Override public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {}
-        @Override public Map<NodeId, Map<String, Double>> allMetrics() { return Map.of(); }
-        @Override public Map<String, Double> metricsFor(NodeId nodeId) { return Map.of(); }
-        @Override public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() { return Map.of(); }
-        @Override public void removeNode(NodeId nodeId) {}
-        @Override public void onMembershipDecision(MembershipDecision decision) {}
-        @Override public void onClusterSyncPing(ClusterSyncPing ping) {}
-        @Override public void onClusterSyncPong(ClusterSyncPong pong) {}
-        @Override public long observedRabiaTerm() { return 0L; }
-        @Override public Epoch observedEpoch() { throw new UnsupportedOperationException("unused"); }
-        @Override public List<CommunityReport> collectCommunityReports() { return List.of(); }
-        @Override public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {}
-        @Override public void addPongListener(Consumer<ClusterSyncPong> listener) {}
-        @Override public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
-        @Override public void setPeerObservationBuffer(PeerObservationBuffer buffer) {}
-        @Override public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {}
+        @Override
+        public Map<String, Double> collectLocal() {
+            return Map.of();
+        }
+
+        @Override
+        public void recordCall(MethodName method, long durationMs) {}
+
+        @Override
+        public void recordCustom(String name, double value) {}
+
+        @Override
+        public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {}
+
+        @Override
+        public Map<NodeId, Map<String, Double>> allMetrics() {
+            return Map.of();
+        }
+
+        @Override
+        public Map<String, Double> metricsFor(NodeId nodeId) {
+            return Map.of();
+        }
+
+        @Override
+        public Map<NodeId, List<MetricsSnapshot>> historicalMetrics() {
+            return Map.of();
+        }
+
+        @Override
+        public void removeNode(NodeId nodeId) {}
+
+        @Override
+        public void onMembershipDecision(MembershipDecision decision) {}
+
+        @Override
+        public void onClusterSyncPing(ClusterSyncPing ping) {}
+
+        @Override
+        public void onClusterSyncPong(ClusterSyncPong pong) {}
+
+        @Override
+        public long observedRabiaTerm() {
+            return 0L;
+        }
+
+        @Override
+        public Epoch observedEpoch() {
+            throw new UnsupportedOperationException("unused");
+        }
+
+        @Override
+        public List<CommunityReport> collectCommunityReports() {
+            return List.of();
+        }
+
+        @Override
+        public void setCommunityReportSupplier(Supplier<List<CommunityReport>> supplier) {}
+
+        @Override
+        public void addPongListener(Consumer<ClusterSyncPong> listener) {}
+
+        @Override
+        public void setPongSignalFan(ClusterSyncPongSignalFan fan) {}
+
+        @Override
+        public void setPeerObservationBuffer(PeerObservationBuffer buffer) {}
+
+        @Override
+        public void emitPeriodicConnectivity(Set<NodeId> topology, Set<NodeId> connected, NodeId self, long nowMs) {}
     }
 }

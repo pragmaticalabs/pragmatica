@@ -14,6 +14,8 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.ember.EmberCluster;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.stream.StreamReadRouter.ReplicaSetView;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -24,8 +26,12 @@ import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.MatchResult;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -41,12 +47,18 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 /// on 3 of 5 nodes, the partition owner was not one of them, and three successfully-published events
 /// were delivered to NOBODY while every node truthfully reported `attachedSubscriptions: 0`.
 ///
-/// **Deterministic by counting, not by luck.** `streams.spread-events` declares 5 partitions and this
-/// blueprint deploys `instances = 1`, so the single slice-bearing node can own AT MOST one of them.
-/// At least four partitions are therefore guaranteed to have an owner that cannot run the consumer —
-/// no placement control, no owner pinning, and no arrangement in which the test silently degenerates
-/// into the already-covered co-located case. Compare a 1-partition stream at `instances = 1`, which
-/// would exercise the interesting case only 4 times in 5.
+/// **Uncovered by observation, not by counting.** `streams.spread-events` declares 5 partitions and this
+/// blueprint deploys `instances = 3` (the #1495 floor) on SEVEN nodes, so four nodes never host the
+/// slice. The first version of this test (one instance) argued "one host can own at most one of five,
+/// so at least four are forwarded" — a pigeonhole HRW never promised: HRW scores each partition
+/// independently, it is not a permutation of the nodes, and one node can own several. So
+/// [PlacementShape#placement_leavesMostPartitionOwnersWithoutTheSlice] reads the owner of every
+/// partition off the cluster instead — the owner-authoritative in-JVM `replicaSnapshot`, a sensor the
+/// consumer-assignment path does not use — and requires the forwarded count to equal the partitions
+/// whose owner is not among the hosts. With three hosts on seven nodes a placement can put every one
+/// of the five owners on a host (the co-located case #488 already covers); setup then undeploys and
+/// redeploys, at most [#MAX_PLACEMENT_ATTEMPTS] times, and asserts at least one forwarded partition
+/// AFTER the loop, so an exhausted budget fails loudly instead of passing for free.
 ///
 /// **Non-vacuity.** Two independent arms. Structurally, `onSpreadEvent` is absent from the fixture's
 /// `routes.toml`, so nothing but the framework's delivery path can invoke it. Behaviourally,
@@ -66,22 +78,29 @@ class DeclarativeConsumerPlacementTest {
     private static final int BASE_PORT = 18500;
     private static final int BASE_MGMT_PORT = 18600;
     private static final int BASE_APP_HTTP_PORT = 18700;
-    private static final int NODES = 5;
+    private static final int NODES = 7;
 
-    /// The whole point: ONE instance against a FIVE-partition stream. The single host can own at most
-    /// one partition, so at least four must be consumed by reading through their owners.
-    private static final int INSTANCES = 1;
+    /// Three instances (the #1495 floor) against a FIVE-partition stream on seven nodes: every partition
+    /// whose owner is not one of the three hosts must be consumed by reading through its owner.
+    private static final int INSTANCES = 3;
     private static final int SPREAD_PARTITIONS = 5;
 
-    /// Attachments expected cluster-wide once settled. The fixture slice declares THREE consumers —
-    /// `consumer-events` (1 partition), `order-events` (1) and `spread-events` (5) — and with a single
-    /// instance the sole candidate is assigned EVERY partition of all three, so the total is 7, not 5.
-    /// Gating on 5 was the first run's mistake: it never converged, because the true value settles at 7
-    /// and the assignment was in fact correct the whole time.
-    private static final int EXPECTED_ATTACHMENTS = 7;
-    private static final int EVENT_COUNT = 25;
+    /// Partitions of the three streams the fixture slice declares: `consumer-events` (1),
+    /// `order-events` (1) and `spread-events` (5).
+    private static final int DECLARED_PARTITIONS = 1 + 1 + SPREAD_PARTITIONS;
 
-    private static final String SPREAD_EVENTS_STREAM = "spread-events";
+    /// Attachments expected cluster-wide once settled, DERIVED from the assignment rule rather than
+    /// observed. `StreamConsumerManager.assignPartition` gives every partition of every declared stream
+    /// exactly one consumer — its HRW owner when the owner hosts the slice, else the HRW pick over the
+    /// hosts — and a node attaches one subscription per partition assigned to it
+    /// (`DeclarativeConsumersResponse.attachedSubscriptions`). Summed over the cluster that is the
+    /// declared partition count, independent of how many candidates exist: 7 with one instance, 7 with
+    /// three. What changes with three candidates is only WHICH nodes hold the 7, never the total.
+    private static final int EXPECTED_ATTACHMENTS = DECLARED_PARTITIONS;
+
+    /// Bound on redeploys while the placement is vacuous (every spread-events owner hosts the slice).
+    private static final int MAX_PLACEMENT_ATTEMPTS = 5;
+    private static final int EVENT_COUNT = 25;
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration DELIVERY_TIMEOUT = Duration.ofSeconds(90);
@@ -90,6 +109,11 @@ class DeclarativeConsumerPlacementTest {
     private static final String CONSUMER_SLICE = TestArtifacts.STREAM_CONSUMER_SLICE;
     private static final String BLUEPRINT_ID = "forge.test:declarative-consumer-placement:1.0.0";
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
+
+    /// The engine key the declarative consumer attaches under, as `/api/v1/streams/declarative-consumers`
+    /// reports it ([TestArtifacts#streamEngineKey]): the blueprint-qualified key, not the bare alias,
+    /// which matches nothing since #1041.
+    private static final String SPREAD_EVENTS_STREAM = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "spread-events");
 
     private static final Pattern COUNT_FIELD = Pattern.compile("\"count\"\\s*:\\s*(\\d+)");
     private static final Pattern ATTACHED_FIELD = Pattern.compile("\"attachedSubscriptions\"\\s*:\\s*(\\d+)");
@@ -115,11 +139,7 @@ class DeclarativeConsumerPlacementTest {
                                                   .build();
 
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "dcp", Option.some(configProvider));
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -129,7 +149,48 @@ class DeclarativeConsumerPlacementTest {
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
 
+        placeNonVacuously();
+    }
+
+    @AfterAll
+    void tearDown() {
+        if (cluster != null) {
+            var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+
+            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
+        }
+    }
+
+    /// Deploys and settles, then undeploys and redeploys while no spread-events owner lies outside the
+    /// hosts — the co-located case that would make every assertion below vacuous. Bounded by
+    /// [#MAX_PLACEMENT_ATTEMPTS]; non-vacuity is asserted AFTER the loop so an exhausted budget fails
+    /// the whole class loudly rather than letting it pass for free.
+    private void placeNonVacuously() {
+        var attempt = 1;
+
+        deployAndSettle();
+
+        while (expectedForwarded() == 0 && attempt < MAX_PLACEMENT_ATTEMPTS) {
+            undeployAndSettle();
+            deployAndSettle();
+            attempt++;
+        }
+
+        assertThat(expectedForwarded())
+                .describedAs("after %d placement attempt(s) every spread-events owner %s still hosts the slice %s — "
+                             + "the configuration under test was never reached",
+                             attempt, observedOwners(), hostNodes())
+                .isGreaterThanOrEqualTo(1);
+    }
+
+    private void deployAndSettle() {
         deployConsumerSlice();
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .failFast(this::failIfSliceFailed)
+               .until(this::hostsAgreedOnEveryNode);
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -141,24 +202,73 @@ class DeclarativeConsumerPlacementTest {
                .failFast(this::failIfSliceFailed)
                .until(this::publishReady);
 
-        // Gate on the consumer holding every partition of all three declared streams. With one instance
-        // the sole candidate is assigned all of them, so anything less means the assignment has not
-        // settled and a delivery assertion would be measuring attach timing.
+        // Gate on every partition of all three declared streams being held by exactly one assignee (see
+        // EXPECTED_ATTACHMENTS); anything less means the assignment has not settled and a delivery
+        // assertion would be measuring attach timing.
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .failFast(this::failIfSliceFailed)
                .until(() -> totalAttachedSubscriptions() == EXPECTED_ATTACHMENTS);
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> IntStream.range(0, SPREAD_PARTITIONS)
+                                     .mapToObj(this::observedOwner)
+                                     .noneMatch(String::isBlank));
     }
 
-    @AfterAll
-    void tearDown() {
-        if (cluster != null) {
-            var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+    private void undeployAndSettle() {
+        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
-            httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop()
-                   .await();
-        }
+        httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
+
+        await().atMost(WAIT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> hostNodes().isEmpty() && totalAttachedSubscriptions() == 0);
+    }
+
+    /// Spread-events partitions whose owner does not host the slice — the reads that must be forwarded.
+    private long expectedForwarded() {
+        var hosts = hostNodes();
+
+        return observedOwners().stream()
+                               .filter(owner -> !hosts.contains(owner))
+                               .count();
+    }
+
+    /// True once EVERY node's deployment map names the same [#INSTANCES] ACTIVE hosts. The consumer
+    /// assignment is computed per node from that node's own map (`StreamConsumerManager.candidateNodes`),
+    /// and the three instances turn ACTIVE at different moments, so a node still seeing one or two
+    /// candidates reports a different — equally valid for ITS inputs — assignment. Gating on one node's
+    /// view (as [EmberCluster#slicesStatus] reads) or on the attachment total (7 for ANY candidate count)
+    /// lets the shape assertions race that convergence; a run did exactly that, reporting 3 forwarded
+    /// partitions against 2 owners outside the hosts.
+    private boolean hostsAgreedOnEveryNode() {
+        var views = cluster.allNodes()
+                           .stream()
+                           .map(node -> node.deploymentMap()
+                                            .allDeployments()
+                                            .stream()
+                                            .filter(info -> info.artifact().equals(CONSUMER_SLICE))
+                                            .flatMap(info -> info.instances().stream())
+                                            .filter(instance -> instance.state() == SliceState.ACTIVE)
+                                            .map(instance -> instance.nodeId())
+                                            .collect(Collectors.toSet()))
+                           .distinct()
+                           .toList();
+
+        return views.size() == 1 && views.getFirst().size() == INSTANCES;
+    }
+
+    /// Nodes with an ACTIVE instance of the consumer slice.
+    private Set<String> hostNodes() {
+        return cluster.slicesStatus()
+                      .stream()
+                      .filter(status -> status.artifact().equals(CONSUMER_SLICE))
+                      .flatMap(status -> status.instances().stream())
+                      .filter(instance -> "ACTIVE".equals(instance.state()))
+                      .map(EmberCluster.SliceInstanceStatus::nodeId)
+                      .collect(Collectors.toSet());
     }
 
     /// The configuration under test really is the one that used to deliver nothing. These assertions
@@ -168,18 +278,29 @@ class DeclarativeConsumerPlacementTest {
 
         @Test
         void placement_leavesMostPartitionOwnersWithoutTheSlice() {
-            var hosts = cluster.slicesStatus()
-                               .stream()
-                               .filter(status -> status.artifact().equals(CONSUMER_SLICE))
-                               .flatMap(status -> status.instances().stream())
-                               .toList();
+            var hosts = hostNodes();
 
-            assertThat(hosts).describedAs("the pigeonhole depends on exactly one host against five partitions")
+            assertThat(hosts).describedAs("the placement argument depends on exactly %d hosts on %d nodes", INSTANCES, NODES)
                              .hasSize(INSTANCES);
+
+            var owners = observedOwners();
+            var expectedForwarded = owners.stream().filter(owner -> !hosts.contains(owner)).count();
+
+            assertThat(consumerNodes()).describedAs("every spread-events assignee must be a node hosting the slice")
+                                       .isSubsetOf(hosts);
             assertThat(forwardedPartitionCount())
-                    .describedAs("one host cannot own five partitions, so at least four MUST be read through their owners — "
-                                 + "this is the case #488 could not express and the live cluster failed")
-                    .isGreaterThanOrEqualTo(SPREAD_PARTITIONS - INSTANCES);
+                    .describedAs("the cluster places spread-events owners at %s and the slice on %s, so exactly "
+                                 + "the partitions whose owner is not a host MUST be read through their owners — "
+                                 + "this is the case #488 could not express and the live cluster failed "
+                                 + "(endpoint assignment rows: %s)",
+                                 owners, hosts, assignmentRows())
+                    .isEqualTo(expectedForwarded);
+            // Independent of any placement function: the configuration under test is uncovered only if
+            // at least one owner is not a host. Zero here would make every Delivery assertion vacuous.
+            assertThat(expectedForwarded)
+                    .describedAs("at least one spread-events owner must lack the slice, "
+                                 + "or this test is exercising the co-located case #488 already covers")
+                    .isGreaterThanOrEqualTo(1);
         }
 
         @Test
@@ -213,7 +334,7 @@ class DeclarativeConsumerPlacementTest {
     class Delivery {
 
         /// The headline #535 assertion: a default deployment delivers. Against the pre-fix runtime this
-        /// stays at 0 forever for every partition whose owner lacks the slice — four of five here.
+        /// stays at 0 forever for every partition whose owner lacks the slice.
         @Test
         void declaredConsumer_receivesEveryEvent_whenOwnersDoNotHostTheSlice() {
             var baseline = settledSpreadReceived();
@@ -223,7 +344,7 @@ class DeclarativeConsumerPlacementTest {
             await().atMost(DELIVERY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .untilAsserted(() -> assertThat(spreadReceived() - baseline)
-                           .describedAs("every published event must arrive even though four of five owners cannot run the consumer")
+                           .describedAs("every published event must arrive even though some owners cannot run the consumer")
                            .isEqualTo(EVENT_COUNT));
         }
 
@@ -258,17 +379,30 @@ class DeclarativeConsumerPlacementTest {
         }
     }
 
-    /// Deliveries recorded by the slice. With a SINGLE instance every node's app-HTTP route proxies to
-    /// the same slice object, so every port reports the same queue — summing would multiply the true
-    /// count by the number of routable ports (the first run reported 125 for 25 published). The max IS
-    /// the count. The #488 suite sums instead, correctly, because there every node has its own instance.
+    /// Deliveries recorded by the slice, summed over its three instances. Each instance keeps its own
+    /// queue, so the read goes to the app-HTTP port of each HOSTING node, where dispatch is local-first
+    /// (`AppHttpServer`) and therefore answers from that node's own instance. Reading every port instead
+    /// would count a non-host's forwarded answer on top of the host's own (the one-instance version of
+    /// this test hit exactly that — 125 for 25 published); the max over ports, which that version used,
+    /// would undercount now that three instances each hold a share.
     private int spreadReceived() {
-        return cluster.getAvailableAppHttpPorts()
+        return hostAppPorts().stream()
+                             .map(port -> httpPost(port, "/api/stream-consumer/received-spread", "{}"))
+                             .mapToInt(body -> firstInt(COUNT_FIELD, body))
+                             .sum();
+    }
+
+    /// App-HTTP port of every hosting node. Ember assigns each node one slot and derives both ports from
+    /// it, so the app port is the management port shifted by the base difference.
+    private List<Integer> hostAppPorts() {
+        var hosts = hostNodes();
+
+        return cluster.status()
+                      .nodes()
                       .stream()
-                      .map(port -> httpPost(port, "/api/stream-consumer/received-spread", "{}"))
-                      .mapToInt(body -> firstInt(COUNT_FIELD, body))
-                      .max()
-                      .orElse(0);
+                      .filter(node -> hosts.contains(node.id()))
+                      .map(node -> BASE_APP_HTTP_PORT + node.mgmtPort() - BASE_MGMT_PORT)
+                      .toList();
     }
 
     /// The delivered count once it has stopped moving — two consecutive samples equal. A baseline
@@ -295,9 +429,56 @@ class DeclarativeConsumerPlacementTest {
                           .sum();
     }
 
+    /// The owner of every spread-events partition as the CLUSTER reports it: the owner-authoritative
+    /// in-JVM `StreamReadRouter.replicaSnapshot` (the node answering `servedByOwner`), scanned across
+    /// all nodes as [AbstractMultiPartitionStream#ownerView] does. This is the expectation's source on
+    /// purpose — an owner list recomputed with the placement hash, or copied from its output, could
+    /// only agree with itself. The assignment rows the endpoint reports come from a different read path
+    /// (`StreamConsumerManager`'s `ownership.ownerOf`), so the two can disagree, which is what makes
+    /// the equality below a check rather than a restatement.
+    private List<String> observedOwners() {
+        var owners = IntStream.range(0, SPREAD_PARTITIONS)
+                              .mapToObj(this::observedOwner)
+                              .toList();
+
+        assertThat(owners).describedAs("every spread-events partition must have an owner-authoritative view (%s)", owners)
+                          .allSatisfy(owner -> assertThat(owner).isNotBlank());
+
+        return owners;
+    }
+
+    /// The owner named by the node that answers `servedByOwner` for the partition, or blank when no
+    /// node does (the bootstrap window, or a lookup under a spelling the ring is not keyed by).
+    private String observedOwner(int partition) {
+        return cluster.allNodes()
+                      .stream()
+                      .map(node -> node.streamReadRouter().replicaSnapshot(SPREAD_EVENTS_STREAM, partition))
+                      .filter(ReplicaSetView::servedByOwner)
+                      .findFirst()
+                      .flatMap(view -> view.ownerNodeId().toOptional())
+                      .orElse("");
+    }
+
+    /// The distinct nodes the spread-events partitions are assigned to, as the endpoint reports them.
+    private List<String> consumerNodes() {
+        return ASSIGNMENT_ROW.matcher(spreadFragment())
+                             .results()
+                             .map(match -> match.group(1))
+                             .distinct()
+                             .toList();
+    }
+
+    /// The endpoint's `partitionAssignments` rows, verbatim, so a red run carries its own picture.
+    private List<String> assignmentRows() {
+        return ASSIGNMENT_ROW.matcher(spreadFragment())
+                             .results()
+                             .map(MatchResult::group)
+                             .toList();
+    }
+
     /// Partitions of spread-events whose assigned consumer is NOT the owner — i.e. whose reads are
     /// forwarded. Counted off the endpoint's own assignment map rather than a log line, so the
-    /// pigeonhole is asserted structurally.
+    /// placement is asserted structurally.
     private long forwardedPartitionCount() {
         return ASSIGNMENT_ROW.matcher(spreadFragment())
                              .results()

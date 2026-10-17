@@ -1,19 +1,17 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.slice.kvstore;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
-import org.pragmatica.consensus.rabia.Phase;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -26,8 +24,7 @@ class ClusterConfigKVTest {
     private static final List<AetherValue.TopologyEntry> CORE_5 =
             List.of(new AetherValue.TopologyEntry("primary", "core", 5));
 
-    private static final Phase TEST_PHASE = Phase.phase(42L);
-    private static final Instant TEST_TIMESTAMP = Instant.parse("2026-03-26T12:00:00Z");
+    private static final BackupEntryCodec BACKUP = BackupEntryCodec.backupEntryCodec(BackupFixtures.codec());
 
     @Nested
     class KeyTests {
@@ -77,7 +74,7 @@ class ClusterConfigKVTest {
                 1,
                 1711461000000L
             );
-            assertThat(value.tomlContent()).isEqualTo("[cluster]\nname = \"test\"");
+            assertThat(value.tomlContent()).isEqualTo(Option.some("[cluster]\nname = \"test\""));
             assertThat(value.clusterName()).isEqualTo("test");
             assertThat(value.version()).isEqualTo("0.21.1");
             assertThat(value.coreCount()).isEqualTo(5);
@@ -102,7 +99,7 @@ class ClusterConfigKVTest {
     @Nested
     class SerializationRoundTrip {
         @Test
-        void toToml_fromToml_roundTrips() {
+        void backup_roundTrips() {
             var key = ClusterConfigKey.clusterConfigKey(3);
             var value = ClusterConfigValue.clusterConfigValue(
                 "name = \"test\"",
@@ -116,8 +113,9 @@ class ClusterConfigKVTest {
                 1711461000000L
             );
 
-            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .flatMap(KVStoreSerializer::fromToml)
+            BACKUP.encode(42L, Map.of(key, value))
+                             .flatMap(BACKUP::decode)
+                             .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(entries -> {
                                  assertThat(entries).hasSize(1);
@@ -134,24 +132,43 @@ class ClusterConfigKVTest {
                                  assertThat(parsedValue.deploymentType()).isEqualTo("hetzner");
                                  assertThat(parsedValue.configVersion()).isEqualTo(3);
                                  assertThat(parsedValue.updatedAt()).isEqualTo(1711461000000L);
-                                 assertThat(parsedValue.tomlContent()).isEqualTo("name = \"test\"");
+                                 assertThat(parsedValue.tomlContent()).isEqualTo(Option.some("name = \"test\""));
                              });
         }
 
         @Test
-        void toToml_fromToml_preservesTomlContentWithSpecialChars() {
+        void backup_preservesTomlContentWithSpecialChars() {
             var key = ClusterConfigKey.CURRENT;
             var tomlContent = "[deployment]\ntype = \"hetzner\"\n\n[cluster]\nname = \"prod\"";
             var value = ClusterConfigValue.clusterConfigValue(
                 tomlContent, "prod", "0.21.1", CORE_5, 3, 9, "hetzner", 1, 1711461000000L
             );
 
-            KVStoreSerializer.toToml(Map.of(key, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .flatMap(KVStoreSerializer::fromToml)
+            BACKUP.encode(42L, Map.of(key, value))
+                             .flatMap(BACKUP::decode)
+                             .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailureRun(Assertions::fail)
                              .onSuccess(entries -> {
                                  var parsedValue = (ClusterConfigValue) entries.values().iterator().next();
-                                 assertThat(parsedValue.tomlContent()).isEqualTo(tomlContent);
+                                 assertThat(parsedValue.tomlContent()).isEqualTo(Option.some(tomlContent));
+                             });
+        }
+
+        /// #1812: the bootstrap seed's "no source configuration" survives a backup round trip as the typed
+        /// empty value, never as a blank string a reader would have to recognise.
+        @Test
+        void backup_preservesBootstrapSeedAsNoSourceConfiguration() {
+            var key = ClusterConfigKey.CURRENT;
+            var seed = ClusterConfigValue.bootstrapSeed("prod", "1.0.0", CORE_5, 3, 9, "bootstrap-seed", 1);
+
+            BACKUP.encode(42L, Map.of(key, seed))
+                             .flatMap(BACKUP::decode)
+                             .map(BackupEntryCodec.BackupDocument::entries)
+                             .onFailureRun(Assertions::fail)
+                             .onSuccess(entries -> {
+                                 var parsedValue = (ClusterConfigValue) entries.values().iterator().next();
+                                 assertThat(parsedValue.tomlContent()).isEqualTo(Option.none());
+                                 assertThat(parsedValue.coreCount()).isEqualTo(5);
                              });
         }
     }
@@ -252,8 +269,9 @@ class ClusterConfigKVTest {
             var value = valueWith(java.util.List.of(new AetherValue.TopologyEntry("eu", "core", 3),
                                                     new AetherValue.TopologyEntry("us", "worker", 4)));
 
-            KVStoreSerializer.toToml(Map.of(ClusterConfigKey.CURRENT, value), TEST_PHASE, TEST_TIMESTAMP)
-                             .flatMap(KVStoreSerializer::fromToml)
+            BACKUP.encode(42L, Map.of(ClusterConfigKey.CURRENT, value))
+                             .flatMap(BACKUP::decode)
+                             .map(BackupEntryCodec.BackupDocument::entries)
                              .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()))
                              .onSuccess(restored -> {
                                  var config = (ClusterConfigValue) restored.get(ClusterConfigKey.CURRENT);

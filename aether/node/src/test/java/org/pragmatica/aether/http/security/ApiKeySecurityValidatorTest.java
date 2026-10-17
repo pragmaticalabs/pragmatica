@@ -214,13 +214,49 @@ class ApiKeySecurityValidatorTest {
     }
 
     @Test
-    void validate_passesThrough_forBearerTokenPolicy() {
+    void validate_denies_forBearerTokenPolicy_thisNodeCannotEnforceIt() {
+        // #866 review G1. This arm used to return SUCCESS with an anonymous, unauthenticated context
+        // and no credential inspected — the old test asserted exactly that ("wrong validator type
+        // passes through", isAuthenticated() == false) and so blessed a total authentication bypass.
+        //
+        // BEARER_TOKEN is unreachable from routes.toml (RouteSecurityLevel parses only
+        // public/authenticated/role/unspecified) and unreachable from globalSecurityPolicy(), which
+        // can only produce the policy matching the mode. Its ONE producer is an operator security
+        // override. So under security_mode = "api-key" an operator overriding a route to
+        // "bearer_token" — which reads as a lock-down, and which the routes listing then reports as
+        // BEARER_TOKEN — served the route to anyone. Denying is the honest outcome: this node cannot
+        // enforce what was asked for.
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
         validator.validate(request, SecurityPolicy.bearerTokenRequired())
-                 .onFailureRun(() -> fail("Expected success — wrong validator type passes through"))
-                 .onSuccess(context -> assertThat(context.isAuthenticated()).isFalse());
+                 .onSuccessRun(() -> fail("Expected failure — a policy this node cannot enforce must deny, not grant"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+    }
+
+    @Test
+    void validate_denies_forBearerTokenPolicy_evenWithAValidApiKeyPresented() {
+        // The bypass did not depend on the caller being anonymous: a valid API key is still not a
+        // bearer token, so presenting one must not satisfy a BEARER_TOKEN policy either.
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        validator.validate(request, SecurityPolicy.bearerTokenRequired())
+                 .onSuccessRun(() -> fail("Expected failure — an API key does not satisfy a BEARER_TOKEN policy"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
+    }
+
+    @Test
+    void validate_denies_forUnspecifiedPolicy() {
+        // #763/#772 review: Unspecified is a codegen-only sentinel that AppHttpServer resolves to a
+        // concrete policy before dispatch — it should never reach a validator directly. Pre-fix, the
+        // exhaustiveness-only `default` arm granted access unconditionally for it; it must deny.
+        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
+
+        validator.validate(request, SecurityPolicy.unspecified())
+                 .onSuccessRun(() -> fail("Expected failure — unresolved policy must deny, not grant"))
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class));
     }
 
     private HttpRequestContext createRequest(Map<String, List<String>> headers) {

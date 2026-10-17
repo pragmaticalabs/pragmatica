@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.security.MessageDigest;
@@ -89,10 +88,14 @@ public sealed interface BootstrapPhaseSshKey {
                                                              SourceProfile source,
                                                              Fn1<Result<HetznerClient>, SourceProfile> hetznerClientFactory) {
         return hetznerClientFactory.apply(source)
-                                   .flatMap(client -> uploadAllKeys(ctx, client));
+                                   .flatMap(client -> uploadAllKeys(ctx,
+                                                                    client,
+                                                                    source.name().value()));
     }
 
-    private static Result<BootstrapContext> uploadAllKeys(BootstrapContext ctx, HetznerClient client) {
+    private static Result<BootstrapContext> uploadAllKeys(BootstrapContext ctx,
+                                                          HetznerClient client,
+                                                          String sourceName) {
         var ids = new ArrayList<Long>();
         var nextCtx = ctx;
 
@@ -110,7 +113,7 @@ public sealed interface BootstrapPhaseSshKey {
             nextCtx = uploaded.contextAfter();
         }
 
-        return success(nextCtx.withSshKeyIds("hetzner", List.copyOf(ids)));
+        return success(nextCtx.withSshKeyIds(sourceName, List.copyOf(ids)));
     }
 
     @SuppressWarnings("JBCT-EX-01")

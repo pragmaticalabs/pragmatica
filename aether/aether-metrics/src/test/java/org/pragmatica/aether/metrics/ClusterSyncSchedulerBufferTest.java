@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
 import org.junit.jupiter.api.Test;
@@ -33,8 +32,8 @@ class ClusterSyncSchedulerBufferTest {
     void pushHealth_andDrain_returnsAllEntries_clearsBuffer() {
         var scheduler = newScheduler();
 
-        scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, 3L, 0L));
-        scheduler.pushHealth(new PeerHealthObservation(PEER_B, HealthHintWire.SUSPECTED, 7L, 4L, 0L));
+        scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 0L, 7L, 3L, 0L));
+        scheduler.pushHealth(new PeerHealthObservation(PEER_B, HealthHintWire.SUSPECTED, 0L, 7L, 4L, 0L));
 
         var first = scheduler.drainHealth();
         assertThat(first).hasSize(2);
@@ -48,7 +47,7 @@ class ClusterSyncSchedulerBufferTest {
     void pushConnectivity_andDrain_returnsAllEntries_clearsBuffer() {
         var scheduler = newScheduler();
 
-        scheduler.pushConnectivity(new PeerConnectivityObservation(PEER_A, ConnectivityState.DISCONNECTED, 7L, 3L, 0L));
+        scheduler.pushConnectivity(new PeerConnectivityObservation(PEER_A, ConnectivityState.DISCONNECTED, 0L, 7L, 3L, 0L));
 
         var drained = scheduler.drainConnectivity();
         assertThat(drained).singleElement()
@@ -69,7 +68,7 @@ class ClusterSyncSchedulerBufferTest {
         scheduler.onMembershipDecision(MembershipDecision.nodeJoined(PEER_A, List.of(SELF, PEER_A)));
 
         for (int i = 0; i < 80; i++) {
-            scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, i, 0L));
+            scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 0L, 7L, i, 0L));
         }
 
         var drained = scheduler.drainHealth();
@@ -82,8 +81,8 @@ class ClusterSyncSchedulerBufferTest {
     void stop_clearsBuffers() {
         var scheduler = newScheduler();
 
-        scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 7L, 3L, 0L));
-        scheduler.pushConnectivity(new PeerConnectivityObservation(PEER_A, ConnectivityState.DISCONNECTED, 7L, 3L, 0L));
+        scheduler.pushHealth(new PeerHealthObservation(PEER_A, HealthHintWire.FAULTY, 0L, 7L, 3L, 0L));
+        scheduler.pushConnectivity(new PeerConnectivityObservation(PEER_A, ConnectivityState.DISCONNECTED, 0L, 7L, 3L, 0L));
 
         scheduler.stop();
 

@@ -37,7 +37,7 @@ c8d6f6faa  fix(membership-fsm): route SlotClaimed through leader-writing path so
 
 ## Spec updates this session
 
-File: [`aether/docs/specs/cluster-convergence-reconciler-spec.md`](../../specs/cluster-convergence-reconciler-spec.md) (still untracked — commit when D-walks finish).
+File: `aether/docs/specs/cluster-convergence-reconciler-spec.md` (still untracked — commit when D-walks finish).
 
 ### D2 — Command persistence — RESOLVED
 **Choice: in-memory + audit-log every received command.**

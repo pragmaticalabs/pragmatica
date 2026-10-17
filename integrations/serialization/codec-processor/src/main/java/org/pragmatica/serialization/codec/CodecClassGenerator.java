@@ -302,6 +302,11 @@ public class CodecClassGenerator {
         if ("java.lang.String".equals(qualifiedName)) {
             return new ClassifiedField(component, FieldKind.STRING, null);
         }
+        // #1633: a @Codec sealed interface has no codec of its own, only its permitted subtypes do, so a
+        // field of that type is written with its runtime subtype's tag and read back by that tag.
+        if (element.getKind() == javax.lang.model.element.ElementKind.INTERFACE) {
+            return new ClassifiedField(component, FieldKind.DISPATCHED, null);
+        }
         // Check for @Codec annotation (same compilation round)
         if (hasCodecAnnotation(element)) {
             var codecFqn = computeCodecFqn(element);
@@ -485,9 +490,15 @@ public class CodecClassGenerator {
         writer.println("    }");
     }
 
+    /// Emits the bounds-checked read, never the raw `values()[readCompact(buf)]` index (#964).
+    ///
+    /// The sentinel argument is `UNKNOWN`, and `CodecProcessor.validateEnumSentinel` has already
+    /// refused to reach here for an enum that does not declare it as its LAST constant — so this
+    /// reference always compiles, and the wire contract "an ordinal I do not know decodes to UNKNOWN"
+    /// holds for every framework `@Codec` enum without exception.
     private static void writeEnumReadBody(PrintWriter writer, String typeRef) {
         writer.println("    static " + typeRef + " readBody(SliceCodec codec, ByteBuf buf) {");
-        writer.println("        return " + typeRef + ".values()[SliceCodec.readCompact(buf)];");
+        writer.println("        return SliceCodec.readEnum(buf, " + typeRef + ".values(), " + typeRef + ".UNKNOWN);");
         writer.println("    }");
     }
 

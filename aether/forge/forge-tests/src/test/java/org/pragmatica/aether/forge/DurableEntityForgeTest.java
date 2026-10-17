@@ -119,9 +119,13 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 class DurableEntityForgeTest {
     private static final System.Logger LOG = System.getLogger(DurableEntityForgeTest.class.getName());
 
-    private static final int BASE_PORT = 19000;
-    private static final int BASE_MGMT_PORT = 19100;
-    private static final int BASE_APP_HTTP_PORT = 19200;
+    /// Registered in `TEST_PORT_ALLOCATION.md` (#1627). This suite used to bind 19000/19100/19200, which
+    /// `DurableTopicDeliveryForgeTest` also binds. The block is compact because this cluster has 5 nodes:
+    /// the cluster ports are 24300-24304 and SWIM is +100 (UDP 24400-24404). Management is 24320-24324
+    /// and app HTTP is 24340-24344.
+    private static final int BASE_PORT = 24300;
+    private static final int BASE_MGMT_PORT = 24320;
+    private static final int BASE_APP_HTTP_PORT = 24340;
     private static final int NODES = 5;
     /// Deliberately FEWER instances than nodes (02w hosting-set fix): the leader must mint entity arc
     /// ownership over the nodes hosting the declaring slice, never the whole member view. With 5/5 the
@@ -177,11 +181,7 @@ class DurableEntityForgeTest {
                                                   .withEnvironment("AETHER_")
                                                   .build();
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "dur", Option.some(configProvider));
-        cluster.start()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Cluster start failed: " + cause.message());
-               });
+        LifecycleAwait.settled("cluster start in setUp()", cluster, cluster.start());
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -251,8 +251,7 @@ class DurableEntityForgeTest {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
-            cluster.stop()
-                   .await();
+            LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
         }
     }
 
@@ -635,11 +634,9 @@ class DurableEntityForgeTest {
 
         var ownerNodeId = nodeIdForAppPort(ownerPort);
 
-        cluster.killNode(ownerNodeId)
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Failed to stop node " + ownerNodeId + ": " + cause.message());
-               });
+        LifecycleAwait.nodeSettled("kill node " + ownerNodeId + " in state_survivesTheLossOfTheNodeThatOwnedIt()",
+                                   cluster,
+                                   cluster.killNode(ownerNodeId));
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -776,26 +773,26 @@ class DurableEntityForgeTest {
 
     private String create(int port, String key, String status, int amount) {
         return httpPost(port,
-                        "/api/v1/entity/create",
+                        "/api/entity/create",
                         "{\"orderId\":\"" + key + "\",\"status\":\"" + status + "\",\"amount\":" + amount + "}");
     }
 
     private String get(int port, String key) {
-        return httpPost(port, "/api/v1/entity/get", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/entity/get", "{\"orderId\":\"" + key + "\"}");
     }
 
     private String update(int port, String key, int amount) {
-        return httpPost(port, "/api/v1/entity/update", "{\"orderId\":\"" + key + "\",\"amount\":" + amount + "}");
+        return httpPost(port, "/api/entity/update", "{\"orderId\":\"" + key + "\",\"amount\":" + amount + "}");
     }
 
     private String delete(int port, String key) {
-        return httpPost(port, "/api/v1/entity/delete", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/entity/delete", "{\"orderId\":\"" + key + "\"}");
     }
 
     /// Schedules a timer with the fixture's default delay and no caller token — the entity mints one per
     /// call, so N calls are N timers.
     private String scheduleTimer(int port, String key) {
-        return httpPost(port, "/api/v1/entity/schedule-timer", "{\"orderId\":\"" + key + "\"}");
+        return httpPost(port, "/api/entity/schedule-timer", "{\"orderId\":\"" + key + "\"}");
     }
 
     /// Schedules a timer under a CALLER-minted token and an explicit delay. Re-sending the same token is
@@ -803,7 +800,7 @@ class DurableEntityForgeTest {
     /// appends nothing, so the schedule — and its effect — happen once.
     private String scheduleTimer(int port, String key, long delayMillis, String token) {
         return httpPost(port,
-                        "/api/v1/entity/schedule-timer",
+                        "/api/entity/schedule-timer",
                         "{\"orderId\":\"" + key + "\",\"delayMillis\":" + delayMillis + ",\"token\":\"" + token + "\"}");
     }
 

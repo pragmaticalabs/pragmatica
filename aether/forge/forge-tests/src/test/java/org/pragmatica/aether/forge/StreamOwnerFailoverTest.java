@@ -5,7 +5,6 @@
 
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
@@ -20,7 +19,10 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 /// cannot catch up from the data-bearing survivor). This class observes phase-9 convergence rather than
 /// asserting it; the membership-pinned variant ([StreamOwnerFailoverPinnedTest], @Disabled until #499) is
 /// the ready-made HARD acceptance gate for when those residuals close.
-@Tag("Heavy")
+///
+/// NOT tagged Heavy (#1550): it runs in the per-PR forge job. While it was Heavy, #1390 broke owner
+/// failover on the rc4 line and nothing noticed, because Heavy runs nightly on `main` only. The class
+/// takes about 28 s, and stream owner failover is release-critical.
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class StreamOwnerFailoverTest extends AbstractStreamOwnerFailover {

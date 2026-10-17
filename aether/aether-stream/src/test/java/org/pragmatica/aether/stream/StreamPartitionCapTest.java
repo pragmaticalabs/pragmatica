@@ -8,6 +8,7 @@ package org.pragmatica.aether.stream;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
@@ -96,6 +97,73 @@ class StreamPartitionCapTest {
         }
     }
 
+    /// #1564 R5 engine backstop: whatever path minted the config, the engine refuses only a pair outside
+    /// `1 <= confirmation_factor <= replication_factor`. "A factor below 3 only when declared" is a DECLARATION rule
+    /// (ReplicationDeclaration), so the engine accepts an RF of 2 a declaration let through.
+    @Nested
+    class ReplicationBackstop {
+
+        @Test
+        void createStream_rejected_whenConfirmationExceedsFactor() {
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            manager.placementRoleSupplier((_, _) -> Role.NONE);
+            try {
+                manager.createStream(replicasConfig("thin", 2, 3))
+                       .onSuccess(_ -> fail("Expected ReplicationRefused"))
+                       .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.ReplicationRefused("thin",
+                                                                                                        new ReplicationFactorsError.ConfirmationOutOfRange(2,
+                                                                                                                                                           3))));
+
+                assertThat(manager.hydrationSnapshot().streams()).isEmpty();
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// Mutation "restore the engine's RF >= 3 refusal" turns this red.
+        @Test
+        void createStream_accepted_forADeclaredFactorBelowThree() {
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            manager.placementRoleSupplier((_, _) -> Role.NONE);
+            try {
+                manager.createStream(replicasConfig("thin", 2, 1)).onFailure(cause -> fail(cause.message()));
+
+                assertThat(manager.hydrationSnapshot().streams()).hasSize(1);
+            } finally {
+                manager.close();
+            }
+        }
+
+        @Test
+        void createStream_accepted_atTheMinimum_andForSystemStreamsBelowIt() {
+            var manager = streamPartitionManager(Long.MAX_VALUE);
+            manager.placementRoleSupplier((_, _) -> Role.NONE);
+            try {
+                manager.createStream(replicasConfig("app", 3, 2)).onFailure(cause -> fail(cause.message()));
+                manager.createStream(replicasConfig("system:audit", 1, 1)).onFailure(cause -> fail(cause.message()));
+
+                assertThat(manager.hydrationSnapshot().streams()).hasSize(2);
+            } finally {
+                manager.close();
+            }
+        }
+
+        private static StreamConfig replicasConfig(String name, int replicas, int confirmation) {
+            var defaults = capConfig(name, 1);
+
+            return StreamConfig.streamConfig(name,
+                                             defaults.partitions(),
+                                             defaults.retention(),
+                                             defaults.autoOffsetReset(),
+                                             defaults.maxEventSizeBytes(),
+                                             defaults.consistencyMode(),
+                                             replicas,
+                                             confirmation,
+                                             defaults.compression(),
+                                             defaults.encryptionKeyId());
+        }
+    }
+
     @Nested
     class ClusterAggregateGuard {
 
@@ -103,22 +171,24 @@ class StreamPartitionCapTest {
         void createStream_aggregateBreach_rejected_existingStreamsCounted() {
             var manager = streamPartitionManager(Long.MAX_VALUE);
             manager.placementRoleSupplier((_, _) -> Role.NONE);
-            manager.clusterSizeSupplier(() -> 1);   // guard = 100 × 1 node × 1 max-replica = 100
+            // #1547: capConfig carries the default replicas = 3, so every partition is 3 slots and the guard is
+            // 100 × 1 node × 3 max-replicas = 300.
+            manager.clusterSizeSupplier(() -> 1);
             try {
-                manager.createStream(capConfig("alpha", 60)).onFailure(_ -> fail("Expected 60 slots within guard 100"));
+                manager.createStream(capConfig("alpha", 60)).onFailure(_ -> fail("Expected 180 slots within guard 300"));
 
-                // alpha already holds 60 slots; beta's 60 pushes the projected total to 120 > 100.
+                // alpha already holds 180 slots; beta's 180 pushes the projected total to 360 > 300.
                 manager.createStream(capConfig("beta", 60))
                        .onSuccess(_ -> fail("Expected PartitionCapExceeded"))
                        .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.PartitionCapExceeded("beta",
-                                                                                                            120L,
-                                                                                                            100L,
+                                                                                                            360L,
+                                                                                                            300L,
                                                                                                             1,
-                                                                                                            1)));
+                                                                                                            3)));
 
                 var snapshot = manager.hydrationSnapshot();
                 assertThat(snapshot.streams()).hasSize(1);
-                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(60L);
+                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(180L);
             } finally {
                 manager.close();
             }
@@ -136,7 +206,7 @@ class StreamPartitionCapTest {
                 var snapshot = manager.hydrationSnapshot();
                 assertThat(snapshot.clusterAggregateGuard()).isEqualTo(-1L);
                 assertThat(snapshot.aggregateHeadroom()).isEqualTo(-1L);
-                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(500L);
+                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(1500L);   // 500 × default replicas 3
             } finally {
                 manager.close();
             }
@@ -201,16 +271,16 @@ class StreamPartitionCapTest {
         void hydrationSnapshot_exposesDerivedCapValues() {
             var manager = streamPartitionManager(Long.MAX_VALUE);
             manager.placementRoleSupplier((_, _) -> Role.NONE);
-            manager.clusterSizeSupplier(() -> 5);   // guard = 100 × 5 nodes × 1 max-replica = 500
+            manager.clusterSizeSupplier(() -> 5);   // guard = 100 × 5 nodes × 3 max-replicas (the #1547 default) = 1500
             try {
                 manager.createStream(capConfig("orders", 4)).onFailure(_ -> fail("Expected success"));
 
                 var snapshot = manager.hydrationSnapshot();
 
                 assertThat(snapshot.perStreamCeiling()).isEqualTo(1024);
-                assertThat(snapshot.clusterAggregateGuard()).isEqualTo(500L);
-                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(4L);
-                assertThat(snapshot.aggregateHeadroom()).isEqualTo(496L);
+                assertThat(snapshot.clusterAggregateGuard()).isEqualTo(1500L);
+                assertThat(snapshot.currentAggregatePartitionSlots()).isEqualTo(12L);
+                assertThat(snapshot.aggregateHeadroom()).isEqualTo(1488L);
                 assertThat(snapshot.configOverCeilingStreams()).isEqualTo(0);
             } finally {
                 manager.close();

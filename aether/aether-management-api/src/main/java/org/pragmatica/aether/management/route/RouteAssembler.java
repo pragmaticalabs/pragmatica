@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.management.route;
 
 import java.net.URLEncoder;
@@ -23,9 +22,13 @@ public final class RouteAssembler {
         }
 
         var paramIndex = 0;
-
+        // #725: blank is missing. Rendering "" produces two adjacent slashes that the matcher
+        // round-trips without complaint, so the caller with an accidentally-empty value gets a
+        // malformed request instead of an error here, at the assembly site. `/` inside a value
+        // is deliberately NOT refused: the Maven repository routes' `groupPath` spans segments
+        // (`AetherCli` builds it as `group.replace('.', '/')`) -- see `encodeSegment`.
         for (var value : values) {
-            if (value == null) {
+            if (value == null || value.isBlank()) {
                 return ManagementRouteError.missingParam(route.name(),
                                                          route.paramNames().get(paramIndex))
                                            .result();
@@ -61,6 +64,12 @@ public final class RouteAssembler {
         return sb.toString();
     }
 
+    /// `%2F` is un-escaped on purpose: a `groupPath` value (`org/example`) must render as the
+    /// segments the `/repository/**` routes (`ARTIFACT_GET`/`PUT`/`DELETE`, `MAVEN_METADATA`) are
+    /// matched on, not as one percent-encoded segment. Every other route's values (node ids,
+    /// artifact coordinates, stream addresses) are expected to carry no `/`; nothing refuses one,
+    /// so such a value would silently become an extra segment — a per-parameter "spans segments"
+    /// marker on `ManagementRoute` is the follow-up that would let the rest refuse it.
     private static String encodeSegment(String value) {
         return URLEncoder.encode(value, StandardCharsets.UTF_8)
                          .replace("+", "%20")

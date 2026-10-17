@@ -39,6 +39,7 @@ public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     Map.entry("JBCT-EX-01", ScoreCategory.EXCEPTION_HYGIENE),
     Map.entry("JBCT-REC-01", ScoreCategory.EXCEPTION_HYGIENE),   // absorbed failure with no recorded reason
     Map.entry("JBCT-EX-02", ScoreCategory.EXCEPTION_HYGIENE),  // no orElseThrow
+    Map.entry("JBCT-EX-03", ScoreCategory.EXCEPTION_HYGIENE),  // catch only at a marked JDK boundary
     Map.entry("JBCT-STY-01", ScoreCategory.EXCEPTION_HYGIENE), // fluent failure (cause.result())
     Map.entry("JBCT-SEAL-01", ScoreCategory.EXCEPTION_HYGIENE),// sealed error interfaces
     Map.entry("JBCT-CAUSE-01", ScoreCategory.CAUSE),           // cause representation shape (absorbs SEAL-02)

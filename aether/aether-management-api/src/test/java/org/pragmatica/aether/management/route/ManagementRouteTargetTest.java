@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.management.route;
 
@@ -43,5 +42,26 @@ class ManagementRouteTargetTest {
         assertThat(ManagementRoute.STREAM_REPLICAS_LOCAL.target())
                 .as("STREAM_REPLICAS_LOCAL must be LOCAL so each node reports its own replica view")
                 .isEqualTo(RouteTarget.LOCAL);
+    }
+
+    @Test
+    void streamReplicas_routesToPartitionOwner() {
+        // #1039: taskGroup(STREAMING) dispatches to an ARBITRARY STREAMING-capable node, and the
+        // ReplicaRegistry is authoritative only ON the partition's HRW owner — so a non-owner answered
+        // servedByOwner=false with an empty ring, indistinguishable from a genuinely empty partition.
+        // Measured on a live 5-node cluster: servedByOwner=false from 5 of 5 ports, the owner's own
+        // included, while replicas-local on that same port reported the real offsets at that instant.
+        assertThat(ManagementRoute.STREAM_REPLICAS.target())
+                .as("STREAM_REPLICAS must forward to the partition's HRW owner — a non-owner's registry view is not authoritative")
+                .isEqualTo(RouteTarget.partitionOwner(3));
+    }
+
+    @Test
+    void streamReplicas_partitionOwnerIndexNamesThePartitionParam() {
+        // Without this the `3` above is an unfalsifiable magic number: a param reorder would keep the
+        // target assertion green while the dispatch path read `version` as the partition.
+        assertThat(ManagementRoute.STREAM_REPLICAS.paramNames())
+                .as("partitionOwner(3) must index the partition param, not another identity param")
+                .containsExactly("namespace", "stream", "version", "partition");
     }
 }

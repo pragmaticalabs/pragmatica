@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
 import org.pragmatica.aether.slice.resource.ResourceAddress;
@@ -41,6 +40,22 @@ class StreamRegistryEntryTest {
                                                    Instant.EPOCH);
 
         assertThat(entry.registeredBy()).isEqualTo(RegisteredByKind.BLUEPRINT);
+        assertThat(entry.refCount()).isEqualTo(1);
+    }
+
+    /// #1224: the operator-create factory — used by `aether stream create` / catalog `POST
+    /// /streams/{namespace}/{stream}/{version}` — carries the same single-ref shape as
+    /// [#blueprintFactorySetsRegisteredByAndInitialRef], distinguished only by
+    /// [RegisteredByKind#OPERATOR] so downstream (release paths, listings) can tell an
+    /// operator-owned entry apart from a deployment-owned one.
+    @Test
+    void operatorFactorySetsRegisteredByAndInitialRef() {
+        var entry = StreamRegistryEntry.operator(APP_ORDERS,
+                                                  RetentionPolicy.retentionPolicy(),
+                                                  Instant.EPOCH);
+
+        assertThat(entry.address()).isEqualTo(APP_ORDERS);
+        assertThat(entry.registeredBy()).isEqualTo(RegisteredByKind.OPERATOR);
         assertThat(entry.refCount()).isEqualTo(1);
     }
 

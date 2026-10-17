@@ -135,9 +135,9 @@ sequenceDiagram
 | 3 | LATENCY_MS | Average latency |
 | 4 | INVOCATIONS | Request count |
 | 5 | GC_PAUSE_MS | GC pause duration |
-| 6 | LATENCY_P50 | 50th percentile latency |
-| 7 | LATENCY_P95 | 95th percentile latency |
-| 8 | LATENCY_P99 | 99th percentile latency |
+| 6 | INTERVAL_MEAN_LATENCY_P50 | 50th percentile of interval mean latencies |
+| 7 | INTERVAL_MEAN_LATENCY_P95 | 95th percentile of interval mean latencies |
+| 8 | INTERVAL_MEAN_LATENCY_P99 | 99th percentile of interval mean latencies |
 | 9 | ERROR_RATE | Failure rate |
 | 10 | EVENT_COUNT | Event count |
 
@@ -265,3 +265,4 @@ The scaling story has two distinct dimensions, each with its **own** validation 
 - [05-worker-pools.md](05-worker-pools.md) - Two-layer topology, governors, and the community mechanism this section names
 - [14-consistency-and-partitions.md](14-consistency-and-partitions.md) - The partition contract the core's fault-tolerance math rests on
 - [../reference/known-limitations.md](../reference/known-limitations.md) - Single source for the scaling numbers and their validation status
+- [../specs/cluster-supervision-spec.md](../specs/cluster-supervision-spec.md) - **Planned, 1.0.0-rc5 (#1251), not implemented:** one supervision path for bounded recovery runbooks, the reactive tier above (kept continuously active) and calendar-aware predictive preparation; it would make TTM (Layer 2) a proposal-only forecast provider

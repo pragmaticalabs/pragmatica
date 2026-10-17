@@ -12,8 +12,9 @@ import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.config.ConfigurationProvider;
-import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.AlertConfig;
+import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.WorkerConfig;
 import org.pragmatica.aether.config.SliceConfig;
@@ -57,7 +58,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<TlsConfig> tls,
                                TlsConfig quicTls,
                                TtmConfig ttm,
-                               RollbackConfig rollback,
                                AppHttpConfig appHttp,
                                ControllerConfig controllerConfig,
                                Option<ConfigurationProvider> configProvider,
@@ -76,7 +76,10 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<MembershipConfig> membership,
                                StreamingConfig streaming,
                                ClusterFormationConfig clusterFormation,
-                               Option<ClusterName> clusterName) {
+                               Option<ClusterName> clusterName,
+                               Option<StorageEncryptionConfig> storageEncryption,
+                               Option<AlertConfig> alerts,
+                               Option<String> clusterSecret) {
     /// Cluster-wide deployment defaults. `canaryEvaluationInterval` / `defaultCanaryStages` drive
     /// progressive rollout; `communitySizing` is the leader's per-community target size and viability
     /// floor (worker-membership-spec §3.3 / §4.1) read by the cluster deployment FSM. A test/dev
@@ -93,11 +96,24 @@ public record AetherNodeConfig(TopologyConfig topology,
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
+    private static boolean configuredCore(NodeInfo info, NodeId self, boolean worker) {
+        var role = info.labels().getOrDefault(NodeInfo.LABEL_ROLE,
+                                              info.id().equals(self) && worker
+                                              ? "worker"
+                                              : "core");
+
+        return "core".equalsIgnoreCase(role);
+    }
+
     public static SelfStage builder() {
-        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> ttm -> rollback -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
-            var effectiveClusterSize = coreMax > 0
-                                       ? coreMax
-                                       : coreNodes.size();
+        return self -> coreNodes -> managementPort -> sliceConfig -> artifactRepo -> coreMax -> appHttp -> tls -> quicTls -> certificateProvider -> configProvider -> environment -> managementHttpProtocol -> storageConfig -> backupConfig -> membership -> streaming -> protocol -> sliceAction -> cache -> ttm -> controllerConfig -> autoHeal -> observability -> atomicity -> activationGated -> timeouts -> workerConfig -> deploymentDefaults -> clusterFormation -> {
+            // Capacity limits do not define the initial voting electorate.
+            var effectiveClusterSize = Math.max(1,
+                                                (int) coreNodes.stream()
+                                                               .filter(info -> configuredCore(info,
+                                                                                              self,
+                                                                                              workerConfig.isPresent()))
+                                                               .count());
             var topology = new TopologyConfig(self,
                                               effectiveClusterSize,
                                               timeSpan(5).seconds(),
@@ -119,7 +135,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         tls,
                                         quicTls,
                                         ttm,
-                                        rollback,
                                         appHttp,
                                         controllerConfig,
                                         configProvider,
@@ -138,6 +153,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                         membership,
                                         streaming,
                                         clusterFormation,
+                                        Option.empty(),
+                                        Option.empty(),
+                                        Option.empty(),
                                         Option.empty());
         };
     }
@@ -169,7 +187,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     quicTls,
                                     ttm,
-                                    rollback,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -188,7 +205,47 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     membership,
                                     streaming,
                                     clusterFormation,
-                                    clusterName);
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret);
+    }
+
+    /// #420 — replace the timeouts after construction; `timeouts` sits fourteen stages past
+    /// `environment`, where the boot fixtures stop. Same post-build shape as [#withAutoHeal].
+    public AetherNodeConfig withTimeouts(TimeoutsConfig timeouts) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret);
     }
 
     public AetherNodeConfig withClusterName(Option<ClusterName> clusterName) {
@@ -202,7 +259,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     quicTls,
                                     ttm,
-                                    rollback,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
@@ -221,7 +277,195 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     membership,
                                     streaming,
                                     clusterFormation,
-                                    clusterName);
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret);
+    }
+
+    /// #253 — the `[storage.encryption]` keyring, when configured. Same post-build shape as
+    /// [#withAutoHeal] / [#withClusterName]: optional and late-bound, so `Main` stamps it after
+    /// `build()` rather than forcing every caller of the staged builder through a stage it has no
+    /// opinion about. Defaults to [Option#empty()] in [#builder()] — encryption is opt-in.
+    public AetherNodeConfig withStorageEncryption(Option<StorageEncryptionConfig> storageEncryption) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret);
+    }
+
+    /// #957 — the `[alerts]` section: hysteresis margin (#969) and webhook delivery config. Same
+    /// post-build stamp as [#withStorageEncryption], and stamped from the same place in `Main`, after
+    /// [org.pragmatica.aether.config.AlertConfig#check] has validated it. Absent means the shipped
+    /// defaults: damping on, webhooks disabled.
+    public AetherNodeConfig withAlerts(Option<AlertConfig> alerts) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret);
+    }
+
+    /// #980 — this node's cluster secret, from which `BootstrapAdminKeyLeg` derives the
+    /// cluster-formation bootstrap admin API key. Same post-build stamp as [#withAlerts] /
+    /// [#withStorageEncryption], and stamped from the same place in `Main`, which resolves the
+    /// secret through the same [org.pragmatica.aether.config.TlsConfig] path the TLS setup uses —
+    /// so the key and the CA can never be derived from different secrets.
+    ///
+    /// Absent means no secret exists at all; the bootstrap key then stays random, as before #980.
+    /// Held as the raw `String` the config carries rather than a wrapper: `AetherNodeConfig` is
+    /// never logged, and adding a redacting type here would not change what
+    /// `TlsConfig.clusterSecret()` already exposes one field away.
+    public AetherNodeConfig withClusterSecret(Option<String> clusterSecret) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    cache,
+                                    tls,
+                                    quicTls,
+                                    ttm,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    environment,
+                                    autoHeal,
+                                    observability,
+                                    atomicity,
+                                    activationGated,
+                                    timeouts,
+                                    certificateProvider,
+                                    workerConfig,
+                                    deploymentDefaults,
+                                    managementHttpProtocol,
+                                    storageConfig,
+                                    backupConfig,
+                                    membership,
+                                    streaming,
+                                    clusterFormation,
+                                    clusterName,
+                                    storageEncryption,
+                                    alerts,
+                                    clusterSecret);
+    }
+
+    /// #980 — the generated `toString()` rendered the cluster secret in PLAINTEXT, and after this
+    /// ticket that secret IS the cluster's ADMIN credential: `BootstrapAdminKeyLeg` derives the
+    /// bootstrap admin API key from it. So any line that dumps this config — a debug log, an
+    /// exception message, a test failure report, a transcript — leaks an admin credential.
+    ///
+    /// Before #980 the same value bought transport compromise but not the management API, which is
+    /// why the generated rendering was survivable then and is not now. This change raised the
+    /// severity of a pre-existing shape, so this change is where it is handled.
+    ///
+    /// Presence is still shown, because an operator debugging a boot needs to know whether a secret
+    /// was resolved at all — only the VALUE is withheld. Everything else renders exactly as the
+    /// generated form did.
+    ///
+    /// **Adding a record component means adding it here too.** The generated `toString` covered new
+    /// components automatically; this override does not. `AetherNodeConfigRedactionTest#
+    /// toString_componentCount_matchesThisOverride` is the tripwire for that drift — it fails with
+    /// instructions rather than letting a new field silently vanish from the rendering.
+    @Override
+    public String toString() {
+        return "AetherNodeConfig[topology=" + topology
+             + ", protocol=" + protocol
+             + ", sliceAction=" + sliceAction
+             + ", sliceConfig=" + sliceConfig
+             + ", managementPort=" + managementPort
+             + ", artifactRepo=" + artifactRepo
+             + ", cache=" + cache
+             + ", tls=" + tls
+             + ", quicTls=" + quicTls
+             + ", ttm=" + ttm
+             + ", appHttp=" + appHttp
+             + ", controllerConfig=" + controllerConfig
+             + ", configProvider=" + configProvider
+             + ", environment=" + environment
+             + ", autoHeal=" + autoHeal
+             + ", observability=" + observability
+             + ", atomicity=" + atomicity
+             + ", activationGated=" + activationGated
+             + ", timeouts=" + timeouts
+             + ", certificateProvider=" + certificateProvider
+             + ", workerConfig=" + workerConfig
+             + ", deploymentDefaults=" + deploymentDefaults
+             + ", managementHttpProtocol=" + managementHttpProtocol
+             + ", storageConfig=" + storageConfig
+             + ", backupConfig=" + backupConfig
+             + ", membership=" + membership
+             + ", streaming=" + streaming
+             + ", clusterFormation=" + clusterFormation
+             + ", clusterName=" + clusterName
+             + ", storageEncryption=" + storageEncryption
+             + ", alerts=" + alerts
+             + ", clusterSecret=" + redactedSecret()
+             + "]";
+    }
+
+    /// Presence without value. `Some(<redacted>)` mirrors the shape the generated form would have
+    /// produced for an `Option`, so the rendering stays readable.
+    private String redactedSecret() {
+        return clusterSecret.isPresent()
+               ? "Some(<redacted>)"
+               : "None";
     }
 
     public interface SelfStage {
@@ -373,18 +617,10 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public interface WithTtm {
-        WithRollback ttm(TtmConfig config);
+        WithControllerConfig ttm(TtmConfig config);
 
         default AetherNodeConfig build() {
             return ttm(TtmConfig.ttmConfig()).build();
-        }
-    }
-
-    public interface WithRollback {
-        WithControllerConfig rollback(RollbackConfig config);
-
-        default AetherNodeConfig build() {
-            return rollback(RollbackConfig.rollbackConfig()).build();
         }
     }
 

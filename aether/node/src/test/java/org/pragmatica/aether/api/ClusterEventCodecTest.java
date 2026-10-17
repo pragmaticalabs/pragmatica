@@ -6,6 +6,19 @@ package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
+import org.pragmatica.aether.api.ClusterEvent.ThresholdBreached;
+import org.pragmatica.aether.api.ClusterEvent.ThresholdCleared;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft;
+import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
+import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
+import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
+import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
+import org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged;
+import org.pragmatica.aether.api.ClusterEvent.OperatorWarning;
 import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
 import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
@@ -19,7 +32,6 @@ import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
-import org.pragmatica.aether.api.ClusterEvent.GenerationChanged;
 import org.pragmatica.aether.api.ClusterEvent.LeaderElected;
 import org.pragmatica.aether.api.ClusterEvent.LeaderLost;
 import org.pragmatica.aether.api.ClusterEvent.NodeFailed;
@@ -34,6 +46,7 @@ import org.pragmatica.aether.api.ClusterEvent.ScaleUp;
 import org.pragmatica.aether.api.ClusterEvent.SelfDrainInitiated;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
+import org.pragmatica.aether.api.ClusterEvent.AutoRollback;
 import org.pragmatica.aether.api.ClusterEvent.StreamDeleted;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.api.ClusterEvent.StreamRegistered;
@@ -334,6 +347,7 @@ class ClusterEventCodecTest {
                        new ScaleUp(ts, sev, "ScaleUp", d),
                        new ScaleDown(ts, sev, "ScaleDown", d),
                        new SliceFailure(ts, sev, "SliceFailure", d),
+                       new AutoRollback(ts, sev, "AutoRollback", d),
                        new ConnectionEstablished(ts, sev, "ConnectionEstablished", d),
                        new ConnectionFailed(ts, sev, "ConnectionFailed", d),
                        new CommunityScaleRequest(ts, sev, "CommunityScaleRequest", d),
@@ -345,7 +359,6 @@ class ClusterEventCodecTest {
                        new BackupRestored(ts, sev, "BackupRestored", d),
                        new BlueprintDeployed(ts, sev, "BlueprintDeployed", d),
                        new BlueprintDeleted(ts, sev, "BlueprintDeleted", d),
-                       new GenerationChanged(ts, sev, "GenerationChanged", d),
                        new StreamRegistered(ts, sev, "StreamRegistered", d, addr),
                        new StreamDeleted(ts, sev, "StreamDeleted", d, addr),
                        new AlertInjected(ts, sev, "AlertInjected", d),
@@ -353,7 +366,58 @@ class ClusterEventCodecTest {
                        new SelfDrainInitiated(ts, sev, "SelfDrainInitiated", d),
                        new StreamMemoryExceeded(ts, sev, "StreamMemoryExceeded", d),
                        new DeparturePushIncomplete(ts, sev, "DeparturePushIncomplete", d),
-                       new ScaleCapped(ts, sev, "ScaleCapped", d));
+                       new ScaleCapped(ts, sev, "ScaleCapped", d),
+                       new ThresholdBreached(ts, sev, "ThresholdBreached", d),
+                       new ThresholdCleared(ts, sev, "ThresholdCleared", d),
+                       new CommunityMinted(ts, sev, "CommunityMinted", d),
+                       new CommunityStateChanged(ts, sev, "CommunityStateChanged", d),
+                       new CommunityMemberJoined(ts, sev, "CommunityMemberJoined", d),
+                       new CommunityMemberLeft(ts, sev, "CommunityMemberLeft", d),
+                       new OperatorWarning(ts, sev, "OperatorWarning", d),
+                       new ClusterEvent.DhtReplicationUnsettled(ts, sev, "DhtReplicationUnsettled", d),
+                       new ClusterEvent.DhtReplicationSettled(ts, sev, "DhtReplicationSettled", d),
+                       new ClusterEvent.DhtWriterStale(ts, sev, "DhtWriterStale", d),
+                       new ClusterEvent.DhtWriterStaleResolved(ts, sev, "DhtWriterStaleResolved", d),
+                       new StreamFailoverRefused(ts, sev, "StreamFailoverRefused", d),
+                       new StreamFailoverResolved(ts, sev, "StreamFailoverResolved", d),
+                       new StreamIsrBelowMinimum(ts, sev, "StreamIsrBelowMinimum", d),
+                       new StreamIsrRestored(ts, sev, "StreamIsrRestored", d),
+                       new StreamLineageRestarted(ts, sev, "StreamLineageRestarted", d),
+                       new StreamConfigChangeNotApplied(ts, sev, "StreamConfigChangeNotApplied", d),
+                       new ClusterEvent.ScheduledTaskOutcomeUnknown(ts, sev, "ScheduledTaskOutcomeUnknown", d),
+                       new ClusterEvent.ScheduledTaskOutcomeRestored(ts, sev, "ScheduledTaskOutcomeRestored", d),
+                       new ClusterEvent.ScheduledTaskFireHeld(ts, sev, "ScheduledTaskFireHeld", d),
+                       new ClusterEvent.ScheduledTaskFireReleased(ts, sev, "ScheduledTaskFireReleased", d),
+                       new ClusterEvent.RoutePrefixCollision(ts, sev, "RoutePrefixCollision", d),
+                       new ClusterEvent.RoutePrefixCollisionCleared(ts, sev, "RoutePrefixCollisionCleared", d));
+    }
+
+    /// Guards [#allClosedVariants] against silent drift.
+    ///
+    /// That list is hand-maintained, and nothing checked it against the sealed hierarchy before #957.
+    /// A new variant therefore escaped codec round-trip coverage by simply not being added — the suite
+    /// stayed green and reported nothing, because a list that is too short still round-trips everything
+    /// in it. Adding `ThresholdBreached`/`ThresholdCleared` was the second time this list needed a
+    /// manual edit that no instrument would have demanded.
+    ///
+    /// `ExtendedEvent` is excluded by design: it is the non-sealed extension hatch and gets no
+    /// parent-level codec, which `extendedEvent_roundTrips_viaOwnCodec` covers separately.
+    ///
+    /// Mirrors the same guard `KVStoreSerializerTest.permittedKeyTypes` applies to `AetherKey`.
+    @Test
+    void allClosedVariants_coversEveryPermittedSubclass() {
+        var covered = allClosedVariants().stream()
+                                         .map(event -> event.getClass().getSimpleName())
+                                         .collect(java.util.stream.Collectors.toSet());
+        var permitted = java.util.Arrays.stream(ClusterEvent.class.getPermittedSubclasses())
+                                        .map(Class::getSimpleName)
+                                        .filter(name -> !"ExtendedEvent".equals(name))
+                                        .collect(java.util.stream.Collectors.toSet());
+
+        assertThat(covered)
+                .describedAs("every sealed ClusterEvent variant must appear in allClosedVariants(),"
+                             + " or it crosses the wire with no round-trip coverage")
+                .containsExactlyInAnyOrderElementsOf(permitted);
     }
 
     /// `ExtendedEvent` is the non-sealed extension hatch: it gets NO parent-level codec (the

@@ -31,6 +31,10 @@ public interface MetadataStore {
     /// (i.e. the write never progressed past the claim). If a concurrent caller
     /// advanced the lifecycle past the sentinel, the entry is preserved.
     /// Returns true if the claim was released.
+    ///
+    /// The same compare-and-remove is what GC uses to take an orphan record it scanned (#801):
+    /// `sentinel` is then the record as scanned, and a `false` means something touched the block
+    /// after the scan and it must not be collected on that verdict.
     boolean releaseClaim(BlockId blockId, BlockLifecycle sentinel);
     /// Atomically update lifecycle metadata using the provided function.
     /// Returns the updated lifecycle, or none if the block does not exist.
@@ -48,6 +52,9 @@ public interface MetadataStore {
     Option<BlockId> resolveRef(String refName);
     /// Remove a named reference. Returns the previously mapped block ID, if any.
     Option<BlockId> removeRef(String refName);
+    /// Atomically point `refName` at `blockId`, returning whatever it previously pointed to, if any.
+    /// Pure ref-pointer swap -- does not touch reference counts; callers own the counting.
+    Option<BlockId> replaceRef(String refName, BlockId blockId);
     /// Check whether lifecycle metadata exists for a block.
     boolean containsBlock(BlockId blockId);
     /// The name of the storage instance this metadata store belongs to.
@@ -68,4 +75,11 @@ public interface MetadataStore {
     /// Restore named references from a snapshot (bulk load).
     @Contract
     void restoreRefs(Map<String, BlockId> refs);
+
+    /// Restore the mutation epoch from a snapshot (bulk load), so a restarted store continues the
+    /// pre-restart sequence instead of counting up from zero (#1012). Raises the epoch to the
+    /// snapshot's value and NEVER lowers it: the epoch also names snapshot files, and a store that
+    /// has already moved past the snapshot must not be rewound into reusing names it has retired.
+    @Contract
+    void restoreEpoch(long epoch);
 }

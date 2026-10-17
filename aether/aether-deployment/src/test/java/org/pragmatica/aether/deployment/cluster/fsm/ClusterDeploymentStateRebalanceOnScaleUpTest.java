@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
@@ -72,6 +73,8 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
     void setUp() {
         var router = MessageRouter.mutable();
         kvStore = new InMemoryKvStore(router);
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
         cluster = new RecordingClusterNode(SELF);
         countedMembersRef = new AtomicReference<>(Set.of());
         readyNodes = ConcurrentHashMap.newKeySet();
@@ -119,6 +122,9 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         // this test class exercises rebalancing, not schema gating, and the value is orthogonal
         // to every assertion below.
         activeState().blueprints().put(artifact, Blueprint.blueprint(artifact, instances, 1, Option.empty(), true));
+        // #1109: the leader allocates only for a COMMITTED target, so the seeded blueprint needs its target in the applied store.
+        kvStore.put(AetherKey.SliceTargetKey.sliceTargetKey(artifact.base()),
+                    AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances));
     }
 
     private void seedSliceActive(Artifact artifact, NodeId node) {
@@ -166,6 +172,94 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         assertThat(cluster.commands)
                 .as("second imbalanced tick must dispatch a single rebalance move")
                 .isNotEmpty();
+    }
+
+    /// #850: a worker-hosted instance now COUNTS for reconcile, but the load a rebalance levels is
+    /// the core (allocatable) load, so a worker must never be picked as the donor — otherwise a
+    /// placement the allocation policy put on a worker is pulled back onto core. NODE_A carries two
+    /// artifacts and SELF/NODE_NEW none, so the core imbalance opens the rebalance path on every
+    /// tick; the worker carries two of its own. Six ticks are enough for both core moves to land and
+    /// for a worker donor to have been chosen had it been eligible.
+    @Test
+    void rebalance_neverPicksAWorkerAsDonor() {
+        var worker = new NodeId("node-worker");
+        var artifactA = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
+        var artifactD = Artifact.artifact("org.example:slice-d:1.0.0").unwrap();
+        var artifactE = Artifact.artifact("org.example:slice-e:1.0.0").unwrap();
+        var artifactF = Artifact.artifact("org.example:slice-f:1.0.0").unwrap();
+
+        seedNodeOnDuty(SELF); seedNodeOnDuty(NODE_A); seedNodeOnDuty(NODE_NEW);
+        publishSnapshot(List.of(SELF, NODE_A, NODE_NEW));
+        harness.dispatch(new Activate());
+        activeState().workerNodes().add(worker);
+        cluster.commands.clear();
+
+        for (var artifact : List.of(artifactA, artifactD, artifactE, artifactF)) {
+            seedBlueprint(artifact, 1);
+        }
+        for (var artifact : List.of(artifactA, artifactD)) {
+            kvStore.put(AetherKey.SliceTargetKey.sliceTargetKey(artifact.base()),
+                AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), 1, 1, "WORKERS_ONLY"));
+        }
+        seedSliceActive(artifactA, worker);
+        seedSliceActive(artifactD, worker);
+        seedSliceActive(artifactE, NODE_A);
+        seedSliceActive(artifactF, NODE_A);
+
+        for (int i = 0; i < 6; i++) {activeState().reconcile();}
+
+        assertThat(activeState().sliceStates().keySet())
+                .as("#850: the worker's two placements must still be on the worker after six rebalance ticks")
+                .contains(SliceNodeKey.sliceNodeKey(artifactA, worker), SliceNodeKey.sliceNodeKey(artifactD, worker));
+        assertThat(cluster.commands.stream()
+                                   .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                        && put.key() instanceof NodeArtifactKey nak
+                                                        && (nak.artifact().equals(artifactA) || nak.artifact().equals(artifactD))))
+                .as("#850: no LOAD may be issued for a worker-hosted artifact anywhere — the worker is never a donor")
+                .isFalse();
+        assertThat(cluster.commands.stream()
+                                   .anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                        && put.key() instanceof NodeArtifactKey nak
+                                                        && (nak.artifact().equals(artifactE) || nak.artifact().equals(artifactF))
+                                                        && !nak.nodeId().equals(NODE_A)))
+                .as("control: the core imbalance itself was rebalanced (a core donor moved E or F), so the path was live")
+                .isTrue();
+    }
+
+    @Test
+    void workersOnlyRetriesPlacementWhenCommunityBecomesEligibleAndRetiresCoreAfterActivation() {
+        var worker = new NodeId("node-worker");
+        seedNodeOnDuty(SELF);
+        publishSnapshot(List.of(SELF));
+        harness.dispatch(new Activate());
+        seedBlueprint(ARTIFACT, 1);
+        seedSliceActive(ARTIFACT, SELF);
+        kvStore.put(AetherKey.SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+            AetherValue.SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1, 1, "WORKERS_ONLY"));
+        cluster.commands.clear();
+        activeState().reconcile();
+        assertThat(cluster.commands).as("unavailable worker audience must not fall back or retire serving core").isEmpty();
+
+        activeState().workerNodes().add(worker);
+        seedNodeOnDuty(worker);
+        kvStore.put(new AetherKey.CommunityKey("community"), new AetherValue.CommunityValue("source", "WORKER", 100,
+            org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE, 1L, Option.none()));
+        kvStore.put(AetherKey.GovernorAnnouncementKey.forCommunity("community"),
+            AetherValue.GovernorAnnouncementValue.governorAnnouncementValue(worker, 1, List.of(worker), "", 1L));
+        activeState().reconcile();
+        assertThat(activeState().sliceStates().get(SliceNodeKey.sliceNodeKey(ARTIFACT, worker))).isEqualTo(SliceState.LOAD);
+        assertThat(cluster.commands).noneMatch(command -> command instanceof KVCommand.Put<?, ?> put
+            && put.key().equals(new NodeArtifactKey(SELF, ARTIFACT))
+            && put.value() instanceof AetherValue.NodeArtifactValue value && value.state() == SliceState.UNLOAD);
+        activeState().sliceStates().put(SliceNodeKey.sliceNodeKey(ARTIFACT, worker), SliceState.ACTIVE);
+        cluster.commands.clear();
+        // Keep this committed eligibility fact stable while isolating placement reconciliation.
+        kvStore.put(new AetherKey.CommunityKey("community"), new AetherValue.CommunityValue("source", "WORKER", 100,
+            org.pragmatica.aether.slice.kvstore.CommunityState.ACTIVE, 1L, Option.none()));
+        activeState().reconcile();
+        assertThat(cluster.commands).anyMatch(command -> command instanceof KVCommand.Put<?, ?> put
+            && put.key().equals(new NodeArtifactKey(SELF, ARTIFACT))
+            && put.value() instanceof AetherValue.NodeArtifactValue value && value.state() == SliceState.UNLOAD);
     }
 
     /// Balanced spread: instances are evenly distributed across allocatable nodes —
@@ -346,7 +440,15 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         }
 
         void put(AetherKey key, AetherValue value) {
-            process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            if (value instanceof org.pragmatica.cluster.state.kvstore.LeaderAuthorized) {
+                var leader = getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                    org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+                process(createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                    java.util.UUID.randomUUID().toString(), leader, List.of(),
+                    List.of(new KVCommand.Mutation<>(key, get(key), Option.some(value)))))));
+            } else {
+                process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            }
         }
     }
 

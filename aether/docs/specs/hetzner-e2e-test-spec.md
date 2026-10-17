@@ -1,5 +1,7 @@
 # Hetzner Cloud End-to-End Test Specification
 
+> **Path note (2026-10-03, #960):** this document predates the `/api/v1` migration (#300). A node serves `/api/v1/health` and `/api/v1/cluster/topology` (leader-bound, authenticated) and the unversioned probes `/health/live` and `/health/ready`; the unversioned `/api/health`, `/api/cluster/topology` and `/health` paths below return 404. Kept as written for history.
+
 **Version:** 1.0
 **Status:** Draft
 **Target Release:** 0.21.0
@@ -328,6 +330,7 @@ Idempotency: If firewall exists, skip creation. Always verify rules are present.
 ### REQ-SETUP-05: PostgreSQL VM Provisioning
 
 ```bash
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 hcloud server create \
   --name pg-e2e \
   --type cx22 \
@@ -369,6 +372,7 @@ Create 5 Aether nodes sequentially (to get predictable private IPs) or in parall
 For each node `i` (1-5):
 
 ```bash
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 hcloud server create \
   --name aether-e2e-$i \
   --type cx22 \
@@ -396,6 +400,7 @@ After cloud-init completes:
 ### REQ-SETUP-07: k6 VM Provisioning
 
 ```bash
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 hcloud server create \
   --name k6-e2e \
   --type cx22 \
@@ -1069,8 +1074,10 @@ provider = "hetzner"
 [environment.hetzner]
 api_token = "${HETZNER_TOKEN}"
 cluster_name = "e2e-test"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx32"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "nbg1"
 ```
 

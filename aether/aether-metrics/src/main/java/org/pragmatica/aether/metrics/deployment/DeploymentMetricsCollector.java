@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics.deployment;
 
 import java.util.*;
@@ -62,6 +61,7 @@ public interface DeploymentMetricsCollector {
     @Contract
     void onMembershipDecision(MembershipDecision decision);
 
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
     Map<String, List<DeploymentMetricsEntry>> collectLocalEntries();
 
     record DeploymentKey(Artifact artifact, NodeId nodeId) {}
@@ -260,15 +260,17 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
     @Contract
     public void onMembershipDecision(MembershipDecision decision) {
         switch (decision) {
-            case MembershipDecision.NodeRemoved(NodeId removedNode, _, _, _) -> removeMetricsForNode(removedNode);
-            case MembershipDecision.NodeDecommissioned(NodeId decommissioned, _, _, _) -> removeMetricsForNode(decommissioned);
+            case MembershipDecision.NodeRemoved(NodeId removedNode, _, _, _) -> onNodeDeparture(removedNode);
+            case MembershipDecision.NodeDecommissioned(NodeId decommissioned, _, _, _) -> onNodeDeparture(decommissioned);
             default -> {}
         }
     }
 
-    private void removeMetricsForNode(NodeId nodeId) {
+    public org.pragmatica.lang.Unit onNodeDeparture(NodeId nodeId) {
         removeInProgressForNode(nodeId);
         removeRemoteMetricsForNode(nodeId);
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     private void removeInProgressForNode(NodeId nodeId) {

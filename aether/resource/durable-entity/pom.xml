@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>resource</artifactId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
     </parent>
 
     <artifactId>resource-durable-entity</artifactId>
@@ -29,6 +29,10 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>utility</artifactId>
         </dependency>
 
         <!-- Fenced durable backing: StorageEngine + OwnerEpochGate/OwnerEpochSource SPI (#345 1c). -->

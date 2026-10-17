@@ -18,12 +18,16 @@ package org.pragmatica.consensus.net.quic;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.QuicClusterServer.MessageReceiver;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.UnknownTypeTagException;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.socket.ChannelInputShutdownReadComplete;
+import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.slf4j.Logger;
 
 
@@ -40,6 +44,7 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     private final NodeId peerId;
     private final StreamType lane;
     private final Deserializer deserializer;
+    private final QuicTransportMetrics quicMetrics;
     private final MessageReceiver messageReceiver;
     private final Logger log;
     private final Runnable onWritable;
@@ -47,11 +52,13 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     QuicLaneDataHandler(NodeId peerId,
                         StreamType lane,
                         Deserializer deserializer,
+                        QuicTransportMetrics quicMetrics,
                         MessageReceiver messageReceiver,
                         Logger log) {
         this(peerId,
              lane,
              deserializer,
+             quicMetrics,
              messageReceiver,
              log,
              () -> {});
@@ -60,12 +67,14 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     QuicLaneDataHandler(NodeId peerId,
                         StreamType lane,
                         Deserializer deserializer,
+                        QuicTransportMetrics quicMetrics,
                         MessageReceiver messageReceiver,
                         Logger log,
                         Runnable onWritable) {
         this.peerId = peerId;
         this.lane = lane;
         this.deserializer = deserializer;
+        this.quicMetrics = quicMetrics;
         this.messageReceiver = messageReceiver;
         this.log = log;
         this.onWritable = onWritable;
@@ -75,13 +84,40 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     @Contract
     @SuppressWarnings("JBCT-PAT-01")  // Adapter boundary: catch deserialization errors from external input
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
+        if (!buf.isReadable()) {
+            // #1727 (M1) — the lane-end marker (see QuicPeerConnection#laneEndFrame): the other side
+            // finished this lane. Released here, not on the FIN, which quiche may never surface.
+            streamEnded(ctx);
+
+            return;
+        }
+
         var bytes = new byte[buf.readableBytes()];
 
         buf.readBytes(bytes);
+        // #726: PAYLOAD bytes at the lane boundary — after the pipeline has already stripped
+        // QUIC/TLS overhead, before deserialization. Not a wire-byte or bandwidth figure.
+        quicMetrics.onBytesReceived(bytes.length);
         try {
             var message = deserializer.decode(bytes);
 
             messageReceiver.onMessage(peerId, message);
+        } catch (UnknownTypeTagException e) {
+            // #964: split out of the generic arm below. Dropping a message whose TYPE this node does
+            // not have is correct — an old node is not expected to handle a new message type — but the
+            // drop used to be indistinguishable from a corrupt frame, logged with a stack trace under
+            // the same sentence, and counted nowhere. An operator saw "failed to deserialize" and had
+            // no way to reach "this cluster is running mixed codec versions". WARN and not ERROR
+            // because during a rolling upgrade this is expected and self-resolving; the counter is
+            // what carries the volume.
+            quicMetrics.onUnknownTypeTagDrop();
+            log.warn("Dropped a message from peer {} on lane {}: wire tag {} names no codec on this node."
+                    + " The peer is running a codec version this node does not have — finish the rolling"
+                    + " upgrade, or check that both nodes ship the same blueprint. Counter:"
+                    + " quic_unknown_type_tag_drops_total.",
+                     peerId,
+                     lane,
+                     e.tag());
         } catch (Exception e) {
             log.error("Failed to deserialize message from peer {} on lane {}", peerId, lane, e);
         }
@@ -97,10 +133,40 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
         super.channelWritabilityChanged(ctx);
     }
 
+    /// #1578 — the other side finished this stream (its FIN arrived, after every frame it wrote). Under
+    /// QUIC half-closure the stream stays active here, so without this the lane could keep resolving
+    /// to a stream the other side has stopped reading from, and the stream would never end.
+    @Override
+    @Contract
+    public void userEventTriggered(ChannelHandlerContext ctx, Object event) throws Exception {
+        if (event instanceof ChannelInputShutdownReadComplete) {
+            streamEnded(ctx);
+        }
+
+        super.userEventTriggered(ctx, event);
+    }
+
+    /// #1578 — the stream ended outright (reset, or the connection closed): the lane must not keep
+    /// resolving to it.
+    @Override
+    @Contract
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        streamEnded(ctx);
+        super.channelInactive(ctx);
+    }
+
+    @Contract
+    private void streamEnded(ChannelHandlerContext ctx) {
+        if (ctx.channel() instanceof QuicStreamChannel stream) {
+            Option.option(stream.parent().attr(PeerOpenedLaneRouter.PEER_CONNECTION).get()).onPresent(connection -> connection.streamEnded(lane,
+                                                                                                                                           stream));
+        }
+    }
+
     @Override
     @Contract
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("Error processing message from peer {} on lane {}", peerId, lane, cause);
-        ctx.close();
+        QuicPeerConnection.endLaneThenClose(ctx);
     }
 }

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
 import org.pragmatica.lang.Option;
@@ -30,5 +29,11 @@ public record RuntimeProfile(@ConfigKeyLive("#693: parsed but never read — Clu
                                                 Option<String> jvmArgs,
                                                 Option<String> jarUrl) {
         return new RuntimeProfile(name, type, image, jvmArgs, jarUrl);
+    }
+
+    /// Mirrors the renderer's launch choice: container runtimes (and an absent profile, handled by the caller)
+    /// launch `image`, everything else launches `jarUrl`.
+    public boolean isContainer() {
+        return type == RuntimeType.CONTAINER || type == RuntimeType.DOCKER || type == RuntimeType.MANAGED_CONTAINER;
     }
 }

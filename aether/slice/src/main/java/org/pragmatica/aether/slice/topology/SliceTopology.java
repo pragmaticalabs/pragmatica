@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.topology;
 
 import java.util.List;
@@ -22,7 +21,13 @@ public record SliceTopology(String sliceName,
         subscribes = List.copyOf(subscribes);
     }
 
-    public record Route(String method, String path, String handler) {}
+    /// `version` is the API version the route was declared under (`0`: unversioned). A versioned route's `path` is composed
+    /// `{apiPrefix}/v{version}{template}`, the form it has when mounted in path mode.
+    public record Route(String method, String path, String handler, int version) {
+        public Route(String method, String path, String handler) {
+            this(method, path, handler, 0);
+        }
+    }
 
     public record SliceDep(String interfaceName, String artifact) {}
 

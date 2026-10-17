@@ -1,0 +1,125 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.node;
+
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+import org.pragmatica.aether.stream.OwnerActivation;
+import org.pragmatica.aether.stream.OwnerActivation.ActivationBlock;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
+/// #1937 (owner rule: every operator-facing condition raises on the transition AND recovers on the opposite one): the owner-promotion
+/// block alarm maps the oversized-event refusal and the unreachable-members wait to their codes, and each block's end to the code that
+/// recovers it. Subjects match, so the event layer publishes the recovery only after the raise (#752).
+class OwnerPromotionAlarmTest {
+    private static final NodeId PEER = NodeId.randomNodeId();
+    private final List<OperatorWarning> published = new CopyOnWriteArrayList<>();
+    private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(published::add);
+
+    @Test
+    void oversizedEventBlock_raisesItsCode_andItsEndRaisesTheRecovery_onTheSameSubject() {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var block = new ActivationBlock.PeerEventExceedsReadCap("orders", 3, PEER, 7L);
+
+        alarm.raise(block);
+        alarm.resolved(block);
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::code)
+                             .containsExactly(OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP, OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED);
+        assertThat(published).extracting(OperatorWarning::subject).containsOnly("orders[3]");
+        assertThat(OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED.recoveryOf()).isEqualTo(org.pragmatica.lang.Option.some(OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP));
+    }
+
+    @Test
+    void holdersUnreachableBlock_raisesAnOperatorEvent_notOnlyALog_andItsEndRaisesTheRecovery() {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var block = new ActivationBlock.HoldersUnreachable("orders", 3, List.of(PEER), List.of(), TimeSpan.timeSpan(30).seconds());
+
+        alarm.raise(block);
+        alarm.resolved(block);
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::code)
+                             .containsExactly(OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING);
+        assertThat(published).extracting(OperatorWarning::subject).containsOnly("orders[3]");
+        assertThat(OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING.recoveryOf())
+            .isEqualTo(org.pragmatica.lang.Option.some(OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE));
+    }
+
+    /// #1976: a refused lineage commit raises its CRITICAL code, and the end of the episode raises the paired INFO recovery on the
+    /// same subject, so the event layer publishes the recovery only after the raise (#752).
+    @Test
+    void lineageRefusedBlock_raisesItsCode_andItsEndRaisesTheRecovery_onTheSameSubject() {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var block = new ActivationBlock.LineageRefused("orders", 3, 5);
+
+        alarm.raise(block);
+        alarm.resolved(block);
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::code)
+                             .containsExactly(OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED, OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED);
+        assertThat(published).extracting(OperatorWarning::subject).containsOnly("orders[3]");
+        assertThat(OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED.recoveryOf())
+            .isEqualTo(org.pragmatica.lang.Option.some(OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED));
+    }
+
+    /// #2080: an escape is a CRITICAL point event naming the partition, the candidate, the skipped members and the gate, with no
+    /// recovery code; two escapes of one partition for different members are two subjects, so the event layer's throttle keeps both.
+    @Test
+    void promotionEscape_raisesItsCriticalCode_naming_thePartition_theCandidate_andTheSkippedMembers() {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var other = NodeId.randomNodeId();
+        var candidate = NodeId.randomNodeId();
+
+        alarm.escaped(new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, candidate, List.of(PEER), TimeSpan.timeSpan(120).seconds(), TimeSpan.timeSpan(121).seconds()));
+        alarm.escaped(new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, candidate, List.of(other), TimeSpan.timeSpan(120).seconds(), TimeSpan.timeSpan(122).seconds()));
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS);
+        assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.recoveryOf()).isEqualTo(org.pragmatica.lang.Option.none());
+        assertThat(published.get(0).message()).contains("orders[3]").contains(candidate.toString()).contains(PEER.toString()).contains("promotion_escape_after");
+        assertThat(published).extracting(OperatorWarning::subject).doesNotHaveDuplicates().allMatch(subject -> subject.startsWith("orders[3]/OWNER_ACTIVATION"));
+    }
+
+    /// The same escape raised twice (a second tenure, same partition, gate and skipped members) must not collapse into one subject: the
+    /// event layer throttles per (code, subject) for 60 s, and every escape is to be an event. The subject carries the instant.
+    @Test
+    void promotionEscape_sameEscapeTwice_hasDistinctSubjects() throws InterruptedException {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var escape = new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, NodeId.randomNodeId(), List.of(PEER), TimeSpan.timeSpan(120).seconds(), TimeSpan.timeSpan(121).seconds());
+
+        alarm.escaped(escape);
+        Thread.sleep(20);
+        alarm.escaped(escape);
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::subject).doesNotHaveDuplicates();
+    }
+
+    /// The blocks that still have no code stay a log line: ending one raises no event, there is nothing to recover.
+    @Test
+    void otherBlock_endingRaisesNoEvent() throws InterruptedException {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+
+        alarm.resolved(new ActivationBlock.DivergentPeer("orders", 3, PEER, 5L, 6L));
+        Thread.sleep(200);
+
+        assertThat(published).isEmpty();
+    }
+}

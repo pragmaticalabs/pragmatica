@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
@@ -27,12 +28,19 @@ import static org.pragmatica.lang.Result.unitResult;
 final class SecretResolvingConfigurationProvider implements ConfigurationProvider {
     private static final Pattern SECRET_PATTERN = Pattern.compile("\\$\\{secrets:([^}]+)}");
 
+    private static final Cause NO_SECRETS_PROVIDER = Causes.cause("no secrets provider configured to resolve it"
+                                                                 + " (the placeholder would otherwise be used as the literal value)");
+
     private final ConfigurationProvider delegate;
     private final Map<String, String> resolvedValues;
+    private final Fn1<Promise<String>, String> secretResolver;
 
-    private SecretResolvingConfigurationProvider(ConfigurationProvider delegate, Map<String, String> resolvedValues) {
+    private SecretResolvingConfigurationProvider(ConfigurationProvider delegate,
+                                                 Map<String, String> resolvedValues,
+                                                 Fn1<Promise<String>, String> secretResolver) {
         this.delegate = delegate;
         this.resolvedValues = Map.copyOf(resolvedValues);
+        this.secretResolver = secretResolver;
     }
 
     /// Resolve all ${secrets:path} placeholders in the provider's values.
@@ -42,11 +50,33 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
     /// @return New ConfigurationProvider with all secrets resolved, or failure
     static Result<ConfigurationProvider> resolve(ConfigurationProvider provider,
                                                  Fn1<Promise<String>, String> secretResolver) {
-        return resolveAllEntries(provider, secretResolver).map(resolved -> wrapProvider(provider, resolved));
+        return resolveAllEntries(provider, secretResolver).map(resolved -> wrapProvider(provider,
+                                                                                        resolved,
+                                                                                        secretResolver));
     }
 
-    private static ConfigurationProvider wrapProvider(ConfigurationProvider provider, Map<String, String> resolved) {
-        return new SecretResolvingConfigurationProvider(provider, resolved);
+    /// #904: the caller has NO resolver. Succeeds with `provider` itself -- never wrapped, so a
+    /// placeholder-free provider is served exactly as before -- when no value carries a
+    /// `${secrets:path}` placeholder; fails with [ConfigError.SecretResolutionFailed] naming the
+    /// first offending key and path otherwise. Without this, the placeholder text passed through as
+    /// the literal value and the failure surfaced later as an auth error naming nothing about
+    /// secrets. Same [#SECRET_PATTERN] as resolution, so "present" here and "resolved" there agree.
+    static Result<ConfigurationProvider> requireNoPlaceholders(ConfigurationProvider provider) {
+        for (var entry : provider.asMap().entrySet()) {
+            var matcher = SECRET_PATTERN.matcher(entry.getValue());
+
+            if (matcher.find()) {
+                return secretFailure(entry.getKey(), matcher.group(1), NO_SECRETS_PROVIDER).map(_ -> provider);
+            }
+        }
+
+        return success(provider);
+    }
+
+    private static ConfigurationProvider wrapProvider(ConfigurationProvider provider,
+                                                      Map<String, String> resolved,
+                                                      Fn1<Promise<String>, String> secretResolver) {
+        return new SecretResolvingConfigurationProvider(provider, resolved, secretResolver);
     }
 
     private static Result<Map<String, String>> resolveAllEntries(ConfigurationProvider provider,
@@ -161,6 +191,14 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
         return resolvedValues.keySet();
     }
 
+    /// Delegates unchanged: this decorator resolves `${secrets:...}` VALUES, one-for-one over
+    /// `delegate.asMap()`'s existing keys — it never adds, drops, or renames a key, so
+    /// `delegate.staticKeys()` names the same static subset here as it does on the delegate.
+    @Override
+    public Set<String> staticKeys() {
+        return delegate.staticKeys();
+    }
+
     @Override
     public Map<String, String> asMap() {
         return new LinkedHashMap<>(resolvedValues);
@@ -171,8 +209,25 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
         return "SecretResolvingConfigurationProvider[" + delegate.name() + "]";
     }
 
+    /// #1326: the delegate's reload returns a NEW undecorated provider carrying raw `${secrets:...}`
+    /// placeholders. Re-resolve it with the same resolver, so the returned provider keeps the decorator
+    /// and observes a rotated secret rather than a stale snapshot. A resolution failure is the reload's
+    /// failure, naming key and path only (see [ConfigError.SecretResolutionFailed]). A reloaded source
+    /// that is not a [ConfigurationProvider] is wrapped as one first, so its placeholders are resolved
+    /// too rather than escaping as literal values.
     @Override
     public Result<ConfigSource> reload() {
-        return delegate.reload();
+        return delegate.reload()
+                       .flatMap(this::reResolve);
+    }
+
+    private Result<ConfigSource> reResolve(ConfigSource reloaded) {
+        return resolve(asProvider(reloaded), secretResolver).map(ConfigSource.class::cast);
+    }
+
+    private static ConfigurationProvider asProvider(ConfigSource source) {
+        return source instanceof ConfigurationProvider provider
+               ? provider
+               : ConfigurationProvider.configurationProvider(source);
     }
 }

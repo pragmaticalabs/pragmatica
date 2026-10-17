@@ -4,23 +4,37 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.resource.DurableTopicSpec;
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.TopicConfig;
+import org.pragmatica.aether.resource.TopicConfigError;
+import org.pragmatica.aether.resource.TopicDurability;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.Publisher;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.stream.topic.DurableTopicSubstrate;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 public final class PublisherFactory implements ResourceFactory<Publisher, TopicConfig> {
+    private static final Logger LOG = LoggerFactory.getLogger(PublisherFactory.class);
+
     private static final Cause REQUIRES_CONTEXT = Causes.cause("Publisher requires ProvisioningContext with runtime extensions");
 
     @Override
@@ -40,9 +54,43 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
 
     @Override
     public Promise<Publisher> provision(TopicConfig config, ProvisioningContext context) {
-        return config.durableSpec()
-                     .fold(cause -> cause.promise(),
-                           spec -> provisionForTier(config, spec, context));
+        return durableSpec(config, context).fold(cause -> cause.promise(),
+                                                 spec -> provisionForTier(config, spec, context));
+    }
+
+    /// #1564: a DURABLE topic's factors are resolved against the node's [ReplicationContext] — the committed
+    /// cluster defaults and desired core count — and the declaration's warnings are logged here, at activation.
+    /// An ephemeral topic has no factors, so it needs no context.
+    private static Result<Option<DurableTopicSpec>> durableSpec(TopicConfig config, ProvisioningContext context) {
+        return config.durability() == TopicDurability.DURABLE
+               ? context.extension(ReplicationContext.Source.class)
+                        .mapError(_ -> new TopicConfigError.ReplicationContextUnavailable(config.topicName()))
+                        .flatMap(ReplicationContext.Source::current)
+                        .flatMap(config::durableSpec)
+                        .onSuccess(spec -> spec.onPresent(durable -> raiseWarnings(config, durable, context)))
+               : config.durableSpec(ReplicationContext.BUILT_IN);
+    }
+
+    /// #1564 / #1617: raised as `replication-policy-warning` operator warnings through the node's sink, when the
+    /// node supplies one; the WARN log is written either way.
+    private static void raiseWarnings(TopicConfig config, DurableTopicSpec spec, ProvisioningContext context) {
+        var resource = "topic '" + config.topicName() + "'";
+        var sink = context.extension(OperatorWarningSink.class).or(OperatorWarningSink.logOnly());
+
+        spec.replicationWarnings()
+            .forEach(warning -> OperatorWarnings.raise(LOG,
+                                                       sink,
+                                                       warning.loud()
+                                                       ? OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE
+                                                       : OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                       resource,
+                                                       "{}durable topic replication warning [{}]: {}",
+                                                       warning.loud()
+                                                       ? "LOUD: "
+                                                       : "",
+                                                       warning.code(),
+                                                       warning.message(resource,
+                                                                       spec.replication())));
     }
 
     /// The D1 tier switch (durable-pubsub-spec §5, ratified on #386): the declared durability class
@@ -56,14 +104,26 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
                                 spec -> provisionDurable(config, spec, context));
     }
 
+    /// The slice-id extension is absent only outside a deployment (unit tests, minimal runtimes);
+    /// the placeholder keeps the #1216 WARN honest about that rather than naming a slice it never had.
+    static final String UNSCOPED_PUBLISHER = "<no slice id in provisioning context>";
+
+    /// The node's real `MeterRegistry` reaches resource provisioning as a context extension (#278,
+    /// `AetherNode`), the same seam `MetricsInterceptorFactory` reads; absent outside a deployment, in
+    /// which case the publisher keeps the WARN and skips the counter.
     private Promise<Publisher> provisionEphemeral(TopicConfig config, ProvisioningContext context) {
         var topicAddress = resolveTopicAddress(config, context);
+        var publisherSlice = context.extension(String.class).or(UNSCOPED_PUBLISHER);
+        var meters = context.extension(MeterRegistry.class).option();
 
         return context.extension(TopicSubscriptionRegistry.class)
                       .flatMap(registry -> context.extension(SliceInvoker.class)
-                                                  .map(invoker -> (Publisher) new TopicPublisher<>(topicAddress,
-                                                                                                   registry,
-                                                                                                   invoker)))
+                                                  .map(invoker -> (Publisher) TopicPublisher.topicPublisher(config.topicName(),
+                                                                                                            topicAddress,
+                                                                                                            publisherSlice,
+                                                                                                            registry,
+                                                                                                            invoker,
+                                                                                                            meters)))
                       .async();
     }
 
@@ -85,16 +145,42 @@ public final class PublisherFactory implements ResourceFactory<Publisher, TopicC
     /// the deployment FSM applies to subscriptions, so a co-deployed pub/sub pair always agrees on
     /// the namespace (RC2 #274). The owning slice's [Artifact] is read from the provisioning
     /// context's slice-id extension (set by `SliceLoadingContext`); a bare topic name derives its
-    /// namespace from that artifact's blueprint coordinates. When the slice-id is absent or
+    /// namespace from the BLUEPRINT that owns that slice. When the slice-id is absent or
     /// unparseable, falls back to the config's own default-namespace resolution so the address is
     /// always deterministic.
-    private static String resolveTopicAddress(TopicConfig config, ProvisioningContext context) {
+    ///
+    /// #1216: this previously namespaced by the slice artifact itself. `DependencyResolver` builds
+    /// "one loading context per slice", so the slice-id extension is the PUBLISHING slice — and the
+    /// subscriber side symmetrically used its own. Two distinct co-deployed slices therefore derived
+    /// two namespaces and, since `TopicSubscriptionRegistry` matches on exact string equality, never
+    /// met: `TopicPublisher` returned a SUCCESSFUL promise having delivered nothing, with no log line
+    /// on either side. The blueprint is now an explicit input, obtained from the node-supplied
+    /// [OwningBlueprintResolver] over the same `SliceTargetValue.owningBlueprint` the subscriber
+    /// reads, so the two ends agree by construction instead of by coincidence.
+    ///
+    /// Public for #1333: `ProjectionRuntimeFactory` (aether-node) resolves the projection's topic
+    /// stream through this SAME rule, so the registry keys on exactly the stream the group consumes.
+    public static String resolveTopicAddress(TopicConfig config, ProvisioningContext context) {
         return context.extension(String.class)
-                      .flatMap(Artifact::artifact)
-                      .flatMap(artifact -> TopicAddressResolver.resolve(artifact,
-                                                                        config.topicName()))
+                      .flatMap(sliceId -> Artifact.artifact(sliceId).flatMap(artifact -> TopicAddressResolver.resolve(owningBlueprintOf(context,
+                                                                                                                                        sliceId),
+                                                                                                                      artifact,
+                                                                                                                      config.topicName())))
                       .orElse(config::address)
                       .map(ResourceAddress::asString)
                       .or(config.topicName());
+    }
+
+    /// The blueprint owning `sliceId`, or [Option#none] when this runtime carries no deployment.
+    ///
+    /// Two absences are folded deliberately, exactly as `StreamAddressResolver.resolvedKey` folds
+    /// them: no resolver (unit test / minimal runtime) and a resolver that finds no owning blueprint.
+    /// Neither can name a blueprint, so neither may guess at one — and unlike the stream path there is
+    /// nothing to refuse, because the slice's own coordinates remain a spelling both ends derive
+    /// identically. See [OwningBlueprintResolver].
+    private static Option<Artifact> owningBlueprintOf(ProvisioningContext context, String sliceId) {
+        return context.extension(OwningBlueprintResolver.class)
+                      .option()
+                      .flatMap(resolver -> resolver.owningBlueprintOf(sliceId));
     }
 }

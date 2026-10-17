@@ -32,6 +32,9 @@ public interface DeadLetterHandler {
     /// redrive is group-targeted, so the attribution must survive into the entry; a dead letter
     /// without its group could only be redriven by re-publishing, duplicating to groups that
     /// already processed the event).
+    ///
+    /// `rawEvent` (#1266): `true` when the event could not be decoded and was quarantined as its raw
+    /// source bytes — `payload` is then NOT an application payload and must not be decoded as one.
     record DeadLetterEntry(String streamName,
                            int partition,
                            long offset,
@@ -39,7 +42,8 @@ public interface DeadLetterHandler {
                            byte[] payload,
                            String errorMessage,
                            int attemptCount,
-                           long timestamp) {
+                           long timestamp,
+                           boolean rawEvent) {
         public DeadLetterEntry {
             payload = payload.clone();
         }
@@ -59,7 +63,8 @@ public interface DeadLetterHandler {
                    && streamName.equals(other.streamName)
                    && failingGroup.equals(other.failingGroup)
                    && Arrays.equals(payload, other.payload)
-                   && errorMessage.equals(other.errorMessage);
+                   && errorMessage.equals(other.errorMessage)
+                   && rawEvent == other.rawEvent;
         }
 
         @Override
@@ -73,6 +78,7 @@ public interface DeadLetterHandler {
             result = 31 * result + errorMessage.hashCode();
             result = 31 * result + attemptCount;
             result = 31 * result + Long.hashCode(timestamp);
+            result = 31 * result + Boolean.hashCode(rawEvent);
 
             return result;
         }
@@ -85,6 +91,26 @@ public interface DeadLetterHandler {
                                                       String errorMessage,
                                                       int attemptCount,
                                                       long timestamp) {
+            return deadLetterEntry(streamName,
+                                   partition,
+                                   offset,
+                                   failingGroup,
+                                   payload,
+                                   errorMessage,
+                                   attemptCount,
+                                   timestamp,
+                                   false);
+        }
+
+        public static DeadLetterEntry deadLetterEntry(String streamName,
+                                                      int partition,
+                                                      long offset,
+                                                      String failingGroup,
+                                                      byte[] payload,
+                                                      String errorMessage,
+                                                      int attemptCount,
+                                                      long timestamp,
+                                                      boolean rawEvent) {
             return new DeadLetterEntry(streamName,
                                        partition,
                                        offset,
@@ -92,7 +118,8 @@ public interface DeadLetterHandler {
                                        payload,
                                        errorMessage,
                                        attemptCount,
-                                       timestamp);
+                                       timestamp,
+                                       rawEvent);
         }
     }
 

@@ -6,6 +6,7 @@ package org.pragmatica.aether.worker.isolation;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Delayed;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -19,6 +20,9 @@ import org.pragmatica.aether.deployment.membership.ntt.NttTimerScheduler;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -90,6 +94,37 @@ class CoreAbsenceDetectorTest {
 
             assertFalse(detector.isFenced());
             assertEquals(0, fenceCount.get());
+        }
+
+        /// #1574: the fence is reported to the event log through the wired sink, exactly once, naming the
+        /// core as its subject. Without the sink the fence would be visible only in this node's log.
+        @Test
+        void evaluate_fenceFires_raisesOneCoreAbsenceOperatorWarning() {
+            var warnings = new CopyOnWriteArrayList<OperatorWarning>();
+
+            detector.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            detector.recordCorePing();
+            timeSource.advanceTimeMillis(10_000);
+
+            for (var tick = 0; tick < 5; tick++) {
+                scheduler.fireAll();
+                timeSource.advanceTimeMillis(1_000);
+            }
+
+            awaitWarnings(warnings, 1);
+            assertEquals(1, warnings.size());
+            assertEquals(OperatorWarningCode.CORE_ABSENCE_FENCE, warnings.getFirst().code());
+            assertEquals("core", warnings.getFirst().subject());
+            assertTrue(warnings.getFirst().message().startsWith("CORE ABSENCE fence firing: no accepted ClusterSyncPing for 10000 ms"));
+        }
+
+        /// The sink hands off to its own thread, so the warning arrives asynchronously; bounded wait.
+        private static void awaitWarnings(List<OperatorWarning> warnings, int expected) {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+
+            while (warnings.size() < expected && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
         }
 
         @Test

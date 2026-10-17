@@ -121,7 +121,7 @@ Aether isn't magic--it's careful engineering applied to problems that have been 
 
 At its core, Aether uses the Rabia consensus protocol--a crash-fault-tolerant algorithm that ensures all nodes agree on cluster state without requiring a persistent event log. When you change a blueprint or deploy a new slice version, that change propagates through consensus. Every node sees the same state.
 
-This matters because it means there's no split-brain scenario where different parts of your cluster think different things are true. The cluster either agrees, or it doesn't proceed. Simple.
+This matters because a change commits only when a majority of the core nodes agrees, so two disconnected parts of your cluster cannot both commit conflicting cluster state. The cluster either agrees, or it doesn't proceed. The price is on the other side of the same rule: if a network event leaves no group of nodes with a majority for long enough, every core node shuts itself down, and the cluster state that lived only in memory is gone unless you configured a backup (see [known limitations](../reference/known-limitations.md#no-majority-network-cut-halts-every-core)).
 
 The consensus layer powers a distributed key-value store that holds all cluster metadata: blueprints, slice states, endpoint registrations, and configuration. When you issue a command through the CLI, it becomes a proposal that nodes vote on. Once consensus is reached, the change takes effect atomically across the cluster.
 
@@ -131,7 +131,7 @@ Aether borrows the reconciliation model from Kubernetes but strips away the comp
 
 ```
 slice org.example:order-service:1.0.0 instances=3
-slice org.example:inventory-service:1.0.0 instances=2
+slice org.example:inventory-service:1.0.0 instances=3
 ```
 
 The runtime continuously reconciles actual state with desired state. If a node fails, instances are automatically redistributed. If you scale up, new instances appear on available nodes. The system converges toward what you declared, handling the messy details internally.
@@ -150,7 +150,7 @@ You configure it through thresholds:
 
 ```bash
 aether thresholds set cpu_high 0.8 --action scale_up
-aether thresholds set latency_p99 500ms --action alert
+aether thresholds set interval_mean_latency_p99 500ms --action alert
 ```
 
 These rules run locally on every node. There's no central controller that becomes a single point of failure.
@@ -194,10 +194,10 @@ Here's something you won't find in most distributed systems: a tool that runs a 
 
 ```bash
 # Start a 5-node cluster with load generation
-java -jar aether-forge.jar
+aether-forge
 
 # Or configure it
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar aether-forge.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 aether-forge
 ```
 
 Open your browser to `http://localhost:8888` and you'll see a live dashboard showing cluster health, request throughput, latency distributions, and node status. The load generator hammers your slices with configurable traffic patterns while you watch metrics respond.
@@ -309,7 +309,7 @@ Let me walk you through what developing with Aether actually looks like.
 You're building an order processing system. You've written your OrderService slice and want to see how it behaves. You start Forge:
 
 ```bash
-java -jar aether-forge.jar
+aether-forge
 ```
 
 Within seconds, you have a 5-node cluster running on your laptop. The dashboard opens automatically--you see five green nodes, consensus established, leader elected.
@@ -317,7 +317,7 @@ Within seconds, you have a 5-node cluster running on your laptop. The dashboard 
 You deploy your slice:
 
 ```bash
-aether-cli deploy target/order-service-1.0.0.jar
+aether deploy target/order-service-1.0.0.jar
 ```
 
 The dashboard updates. Your slice appears across the cluster. The load generator starts sending requests--place order, check status, cancel. You watch latency graphs respond.
@@ -414,4 +414,4 @@ Learn more at [pragmaticalabs.io](https://pragmaticalabs.io/)
 
 ---
 
-*Pragmatica Aether is licensed under the Business Source License 1.1, converting to Apache 2.0 after four years. It's free for internal organizational use and non-production evaluation.*
+*Pragmatica Aether is Apache-2.0, except the runtime core modules, which are licensed under the Business Source License 1.1 and convert to Apache 2.0 on January 1, 2030. They are free for internal organizational use and non-production evaluation.*

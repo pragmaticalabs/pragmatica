@@ -98,6 +98,83 @@ class SecurityOverrideApplierTest {
             assertThat(result).hasSize(1);
             assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.BearerTokenRequired.class);
         }
+
+        @Test
+        void applyOverrides_rejectsOverride_onUnspecifiedRoute_withStrengthenOnly() {
+            // #772 review item 3: Unspecified.strength() is -1, so comparing the raw declared
+            // strength let ANY override (even "public", strength 0) pass as "stronger" on an
+            // undeclared route. `public` is the floor under every global mode, so it is the one
+            // override that weakens unconditionally and the one this rule refuses. Pin: an override
+            // to "public" on an undeclared route under a global API_KEY/JWT mode must not succeed.
+            // The two tests below pin the other half — strengthening MUST still apply (#866 F1).
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.unspecified()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "public")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Unspecified.class);
+        }
+
+        @Test
+        void applyOverrides_appliesAuthenticated_onUnspecifiedRoute_withStrengthenOnly() {
+            // #866 review F1: refusing EVERY override on an undeclared route was a
+            // privilege-escalation regression, not a conservative choice. The refused route stays
+            // Unspecified, isExplicitPolicy filters it, and resolveEffectivePolicy falls back to the
+            // global policy — so the operator's lock-down silently becomes whatever the global mode
+            // happens to be. Strengthening must apply.
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.unspecified()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "authenticated")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Authenticated.class);
+        }
+
+        @Test
+        void applyOverrides_appliesRoleRequired_onUnspecifiedRoute_withStrengthenOnly() {
+            // The scenario F1 names outright: an operator pins an admin route to role:admin under
+            // the DEFAULT override policy. Dropping this override leaves the route on the shipped
+            // api-key global default, where enforceRoleIfRequired checks nothing because the
+            // effective policy is not RoleRequired — any valid API key reaches an admin-only route.
+            var routes = List.of(route("GET", "/api/v1/admin/", SecurityPolicy.unspecified()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/admin/*", "role:admin")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.RoleRequired.class);
+            assertThat(result.getFirst().security().asString()).isEqualTo("ROLE:admin");
+        }
+
+        @Test
+        void applyOverrides_refusesEveryOverride_onUnusedPlaceholderRoute_withStrengthenOnly() {
+            // #866 review G5. unused() is NOT Unspecified, so it never reaches applyToUndeclaredRoute
+            // and is judged purely by the strength comparison below. Its strength is Integer.MAX_VALUE
+            // precisely so that comparison refuses everything: nothing is >= MAX_VALUE. With the old
+            // value of -1 this same override to "public" would have been APPLIED (0 >= -1) — the
+            // fail-open side of a guard that exists to prevent exactly that.
+            var routes = List.of(route("GET", "/api/v1/urls/", new SecurityPolicy.unused()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "public")),
+                SecurityOverridePolicy.STRENGTHEN_ONLY
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.unused.class);
+        }
     }
 
     @Nested
@@ -167,6 +244,102 @@ class SecurityOverrideApplierTest {
             assertThat(result.get(0).security()).isInstanceOf(SecurityPolicy.Authenticated.class);
             assertThat(result.get(1).security()).isInstanceOf(SecurityPolicy.Public.class);
             assertThat(result.get(2).security()).isInstanceOf(SecurityPolicy.Public.class);
+        }
+    }
+
+    /// #964, fail closed. `applyWithPolicy` switches on the policy, and before the sentinel existed a
+    /// policy decoded from a peer running a newer `SecurityOverridePolicy` could not be represented at
+    /// all. Now it can, and what it must mean is REFUSE: an unreadable policy is not authority to
+    /// weaken a route's security.
+    ///
+    /// Asserted against the WEAKENING case specifically, because that is the one where a wrong answer
+    /// is a security regression — a `FULL`-shaped fall-through here would silently downgrade an
+    /// authenticated route to public on the say-so of a value this node never understood.
+    @Nested
+    class UnknownPolicyRefusesEveryOverride {
+
+        @Test
+        void applyOverrides_refusesWeakening_withUnknownPolicy() {
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.authenticated()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "public")),
+                SecurityOverridePolicy.UNKNOWN
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Authenticated.class);
+        }
+
+        /// Refusal is total, not "refuse only downgrades". STRENGTHEN_ONLY would have allowed this one,
+        /// so this is what separates UNKNOWN from the nearest legitimate policy rather than merely
+        /// showing it is not FULL.
+        @Test
+        void applyOverrides_refusesStrengthening_withUnknownPolicy() {
+            var routes = List.of(route("GET", "/api/v1/urls/", SecurityPolicy.publicRoute()));
+            var overrides = SecurityOverrides.securityOverrides(
+                List.of(SecurityOverrides.Entry.entry("GET /api/v1/urls/*", "authenticated")),
+                SecurityOverridePolicy.UNKNOWN
+            );
+
+            var result = SecurityOverrideApplier.applyOverrides(routes, overrides);
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().security()).isInstanceOf(SecurityPolicy.Public.class);
+        }
+    }
+
+    /// #1659: the remote-route form an ingress uses for a route another node serves. The override replaces the
+    /// DECLARED policy (subject to STRENGTHEN_ONLY against that declared policy) -- never "the max of the override
+    /// and a previously published one" -- so a relaxed override relaxes at the ingress immediately.
+    @Nested
+    class RemoteRouteForm {
+        private static SecurityOverrides overrides(String pattern, String level, SecurityOverridePolicy policy) {
+            return SecurityOverrides.securityOverrides(List.of(SecurityOverrides.Entry.entry(pattern, level)), policy);
+        }
+
+        @Test
+        void matchingOverride_onUndeclaredRoute_isTheEffectivePolicy() {
+            var result = SecurityOverrideApplier.overriddenPolicy("GET",
+                                                                  "/echo/",
+                                                                  SecurityPolicy.unspecified(),
+                                                                  overrides("GET /echo/*", "role:admin", SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(result.map(SecurityPolicy::asString).or("none")).isEqualTo("ROLE:admin");
+        }
+
+        @Test
+        void noMatchingOverride_isEmpty() {
+            var result = SecurityOverrideApplier.overriddenPolicy("GET",
+                                                                  "/other/",
+                                                                  SecurityPolicy.unspecified(),
+                                                                  overrides("GET /echo/*", "role:admin", SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(result.isEmpty()).isTrue();
+        }
+
+        /// Relaxation: an override weakened from `role:admin` to `authenticated` resolves against the DECLARED
+        /// (undeclared) policy, so the ingress relaxes at once whatever peers still advertise.
+        @Test
+        void relaxedOverride_resolvesAgainstTheDeclaredPolicy() {
+            var result = SecurityOverrideApplier.overriddenPolicy("GET",
+                                                                  "/echo/",
+                                                                  SecurityPolicy.unspecified(),
+                                                                  overrides("GET /echo/*", "authenticated", SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(result.map(SecurityPolicy::asString).or("none")).isEqualTo("AUTHENTICATED");
+        }
+
+        /// STRENGTHEN_ONLY still never weakens the declared policy.
+        @Test
+        void strengthenOnly_keepsAStrongerDeclaredPolicy() {
+            var result = SecurityOverrideApplier.overriddenPolicy("GET",
+                                                                  "/echo/",
+                                                                  SecurityPolicy.roleRequired("admin"),
+                                                                  overrides("GET /echo/*", "authenticated", SecurityOverridePolicy.STRENGTHEN_ONLY));
+
+            assertThat(result.map(SecurityPolicy::asString).or("none")).isEqualTo("ROLE:admin");
         }
     }
 }

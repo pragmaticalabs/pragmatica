@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.DoubleSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -64,6 +65,8 @@ public final class LeaderElectionContext {
     /// Production callers can override via the full-arity factory; the default is intentionally
     /// conservative so a misconfiguration doesn't introduce a deadlock-shaped bug.
     public static final TimeSpan DEFAULT_KV_SYNC_GRACE_DELAY = TimeSpan.timeSpan(3).seconds();
+    /// How many grace windows a pending sync may stretch the `AwaitingKvSync` wait to (#1803).
+    static final long KV_SYNC_MAX_WAIT_GRACES = 10L;
     /// Cadence for the independent peer-observation timer scheduled in
     /// [`LeaderElectionState.Electing`] / [`LeaderElectionState.ReElecting`]. Names a real
     /// architectural smell: `Electing.handle` previously conflated "drive my own proposal" with
@@ -148,6 +151,36 @@ public final class LeaderElectionContext {
     private final NodeId self;
     private final Option<LeaderProposalHandler> proposalHandler;
     private final List<NodeId> expectedCluster;
+
+    private final AtomicReference<Option<List<NodeId>>> installedVoters = new AtomicReference<>(Option.none());
+
+    public org.pragmatica.lang.Unit installVoters(List<NodeId> voters) {
+        installedVoters.set(Option.some(voters.stream().sorted().toList()));
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// The voters a pre-vote is counted over: the installed voter set, else the configured cluster, else the
+    /// transport view — always including this node.
+    public List<NodeId> electorate() {
+        var base = installedVoters.get().or(expectedCluster.isEmpty()
+                                            ? currentTopology()
+                                            : expectedCluster);
+
+        return base.contains(self)
+               ? base
+               : Stream.concat(base.stream(),
+                               Stream.of(self))
+                       .sorted()
+                       .toList();
+    }
+
+    public boolean isEligible(NodeId node) {
+        return installedVoters.get()
+                              .map(voters -> voters.contains(node))
+                              .or(true);
+    }
+
     private final MessageRouter router;
     private final TimeSpan proposalRetryDelay;
     private final TimeSpan baseElectionDelay;
@@ -177,11 +210,20 @@ public final class LeaderElectionContext {
     // factory. Replaces the global static FSM_REF.
     private final Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
+    private final AtomicReference<Option<NodeId>> lastAdoptedLeader = new AtomicReference<>(Option.none());
 
     private final AtomicReference<Option<NodeId>> lastNotifiedLeader = new AtomicReference<>(Option.none());
 
     private final AtomicReference<List<NodeId>> currentTopology = new AtomicReference<>(List.of());
     private final AtomicBoolean hasEverHadLeader = new AtomicBoolean(false);
+    /// Whether this node's KV state still trails the cluster's committed frontier (#1803). Consulted by
+    /// [`LeaderElectionState.AwaitingKvSync`] so a joiner whose state is still being delivered waits for
+    /// that delivery instead of electing on the grace's wall clock. Installed by the consensus wiring
+    /// ([`#installKvSyncPending`]); the default reports no pending sync, which keeps the plain grace.
+    private final AtomicReference<Supplier<Boolean>> kvSyncPending = new AtomicReference<>(() -> false);
+    /// Leader pre-vote (#1748). Absent until [`#enablePreVote`]: without it a follower that loses the leader
+    /// re-elects immediately, which is what local-election mode and the stubs that never wire a network need.
+    private final AtomicReference<Option<LeaderPreVote>> preVote = new AtomicReference<>(Option.none());
     private final AtomicBoolean proposalInFlight = new AtomicBoolean(false);
     private final AtomicInteger electionRetryCount = new AtomicInteger(0);
     private final AtomicInteger stuckElectionCount = new AtomicInteger(0);
@@ -561,7 +603,8 @@ public final class LeaderElectionContext {
     }
 
     public List<NodeId> expectedCluster() {
-        return expectedCluster;
+        return installedVoters.get()
+                              .or(expectedCluster);
     }
 
     public MessageRouter router() {
@@ -589,6 +632,47 @@ public final class LeaderElectionContext {
     /// fall-through deterministically.
     public TimeSpan kvSyncGraceDelay() {
         return kvSyncGraceDelay;
+    }
+
+    /// Longest an [`LeaderElectionState.AwaitingKvSync`] wait may be stretched while sync is still pending
+    /// ([`#isKvSyncPending`]): ten grace windows. A sync signal that never settles can delay an election by
+    /// this much, never forbid it.
+    public TimeSpan kvSyncMaxWait() {
+        return TimeSpan.timeSpan(kvSyncGraceDelay.millis() * KV_SYNC_MAX_WAIT_GRACES).millis();
+    }
+
+    /// Wires the signal that this node's KV state is still catching up with the committed frontier
+    /// (production: the consensus engine's pending-catch-up flag). Replaces the no-sync-pending default.
+    @Contract
+    public void installKvSyncPending(Supplier<Boolean> pending) {
+        kvSyncPending.set(pending);
+    }
+
+    /// `true` while the node's KV state still trails the committed frontier, so a committed leader may
+    /// yet arrive through KV sync.
+    /// Turns the leader pre-vote on (#1748). Called by the consensus wiring, the only place a network exists
+    /// to ask over; idempotent.
+    @Contract
+    public void enablePreVote() {
+        enablePreVote(LeaderPreVote.DEFAULT_TIMEOUT);
+    }
+
+    /// As [`#enablePreVote()`] with an explicit round timeout — tests drive short rounds.
+    @Contract
+    public void enablePreVote(TimeSpan roundTimeout) {
+        if (preVote.get().isEmpty()) {
+            preVote.set(Option.some(LeaderPreVote.leaderPreVote(this, roundTimeout)));
+        }
+    }
+
+    /// The pre-vote coordinator, present once [`#enablePreVote`] ran.
+    public Option<LeaderPreVote> preVote() {
+        return preVote.get();
+    }
+
+    public boolean isKvSyncPending() {
+        return kvSyncPending.get()
+                            .get();
     }
 
     /// Observation cadence for the independent peer-observation timer scheduled in
@@ -628,12 +712,19 @@ public final class LeaderElectionContext {
 
     // --- Mutable state accessors ---
     public Option<NodeId> currentLeader() {
-        return currentLeader.get();
+        return currentLeader.get()
+                            .filter(this::isEligible);
     }
 
     @Contract
     public void setCurrentLeader(Option<NodeId> leader) {
         currentLeader.set(leader);
+        leader.onPresent(node -> lastAdoptedLeader.set(Option.some(node)));
+    }
+
+    /// Retained across quorum loss solely to validate an equal-sequence committed replay.
+    public Option<NodeId> lastAdoptedLeader() {
+        return lastAdoptedLeader.get();
     }
 
     /// Dedup helper: returns `true` iff `leader` differs from the last notified leader and
@@ -646,7 +737,10 @@ public final class LeaderElectionContext {
     }
 
     public List<NodeId> currentTopology() {
-        return currentTopology.get();
+        return currentTopology.get()
+                              .stream()
+                              .filter(this::isEligible)
+                              .toList();
     }
 
     @Contract
@@ -675,7 +769,8 @@ public final class LeaderElectionContext {
     /// `KVStoreNotification.ValuePut<LeaderKey>` listener — the FSM never gets stuck waiting
     /// for a notification that already fired (or never will).
     public Supplier<Option<NodeId>> currentLeaderFromKvSupplier() {
-        return currentLeaderFromKvSupplier;
+        return () -> currentLeaderFromKvSupplier.get()
+                                                .filter(this::isEligible);
     }
 
     public boolean hasEverHadLeader() {
@@ -817,16 +912,16 @@ public final class LeaderElectionContext {
     // --- Derived helpers ---
     /// Candidate pool for leader election.
     public List<NodeId> candidatePool() {
-        if (expectedCluster.isEmpty() || stuckElectionCount.get() >= stuckElectionThreshold) {
-            return currentTopology.get();
+        if (expectedCluster().isEmpty() || stuckElectionCount.get() >= stuckElectionThreshold) {
+            return currentTopology();
         }
 
         if (!hasEverHadLeader.get()) {
-            return expectedCluster;
+            return expectedCluster();
         }
 
-        var topology = currentTopology.get();
-        var filtered = expectedCluster.stream().filter(topology::contains).toList();
+        var topology = currentTopology();
+        var filtered = expectedCluster().stream().filter(topology::contains).toList();
 
         return filtered.isEmpty()
                ? topology
@@ -834,9 +929,9 @@ public final class LeaderElectionContext {
     }
 
     public int rankOfSelf() {
-        var pool = expectedCluster.isEmpty()
-                   ? currentTopology.get()
-                   : expectedCluster;
+        var pool = expectedCluster().isEmpty()
+                   ? currentTopology()
+                   : expectedCluster();
         var sorted = pool.stream().sorted().toList();
         var rank = sorted.indexOf(self);
 
@@ -846,8 +941,7 @@ public final class LeaderElectionContext {
     }
 
     public boolean isLeader() {
-        return currentLeader.get()
-                            .filter(self::equals)
+        return currentLeader().filter(self::equals)
                             .isPresent();
     }
 }

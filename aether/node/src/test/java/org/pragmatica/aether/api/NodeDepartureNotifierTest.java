@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.api;
+
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
+import org.pragmatica.aether.node.NodeCodecs;
+import org.pragmatica.aether.slice.ConsistencyMode;
+import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
+import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.SystemStreamFactories;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
+
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+
+
+/// #926 round 2 — pins the COMPOSITION on the confirmed-departure edge.
+///
+/// An adversarial probe deleted `alertManager.onNodeFailed(...)` from the `AetherNode` boot lambda and
+/// **all 1217 tests still passed**. `AlertManager`'s behaviour was pinned in isolation and the
+/// aggregator's was too, but nothing pinned that one confirmed departure reaches BOTH. A mutation that
+/// leaves every gate green is an unpinned behaviour, not an independent one.
+///
+/// These tests drive the real production factory, a real `StreamPartitionManager`, the real node codec
+/// and a real `AlertManager` — no stubs on the path under test — so deleting either call inside
+/// [`NodeDepartureNotifier#onConfirmedDeparture`] turns them red.
+class NodeDepartureNotifierTest {
+
+    private static final NodeId SELF = new NodeId("observer-node");
+    private static final NodeId DEAD = new NodeId("dead-node");
+    private static final SliceCodec CODEC = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+
+    private record Fixture(NodeDepartureNotifier notifier, ClusterEventAggregator aggregator, AlertManager alerts) {
+        @SuppressWarnings("unchecked")
+        static Fixture create() {
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+            var retention = RetentionPolicy.retentionPolicy(10_000, 64L * 1024 * 1024, Long.MAX_VALUE, RetentionMode.ANY);
+            var config = StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString(),
+                                                   1,
+                                                   retention,
+                                                   "earliest",
+                                                   64L * 1024,
+                                                   ConsistencyMode.EVENTUAL,
+                                                   1);
+            var publisher = SystemStreamFactories.<ClusterEvent> systemStreamPublisher(SystemStreams.CLUSTER_EVENTS,
+                                                                                       manager,
+                                                                                       CODEC,
+                                                                                       config)
+                                                 .unwrap();
+            var consumer = SystemStreamFactories.<ClusterEvent> systemStreamConsumer(SystemStreams.CLUSTER_EVENTS,
+                                                                                     manager,
+                                                                                     CODEC,
+                                                                                     CODEC,
+                                                                                     config)
+                                                .unwrap();
+            var pubRef = new AtomicReference<FrameworkStreamPublisher<ClusterEvent>>(publisher);
+            var conRef = new AtomicReference<FrameworkStreamConsumer<ClusterEvent>>(consumer);
+            // Never leader, never owner — the #926 condition. Both surfaces must respond anyway.
+            var aggregator = ClusterEventAggregator.clusterEventAggregator(pubRef::get,
+                                                                           conRef::get,
+                                                                           () -> false,
+                                                                           SELF,
+                                                                           HlcClock.hlcClock(SELF),
+                                                                           () -> 1,
+                                                                           () -> false,
+                                                                           () -> false);
+            var alerts = AlertManager.readOnly((KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class));
+
+            return new Fixture(NodeDepartureNotifier.nodeDepartureNotifier(aggregator,
+                                                                                    alerts,
+                                                                                    SELF,
+                                                                                    OperatorWarningSink.handingOffTo(aggregator::onOperatorWarning)), aggregator, alerts);
+        }
+
+        List<ClusterEvent> events() {
+            return aggregator.events().await().or(List.of());
+        }
+    }
+
+    /// Deleting the aggregator call from the notifier turns this red.
+    @Test
+    void confirmedDeparture_reachesTheEventStream() {
+        var f = Fixture.create();
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        var events = f.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(events.getFirst().details()).containsEntry("nodeId", DEAD.id());
+        assertThat(events.getFirst().details()).containsEntry("observedBy", SELF.id());
+    }
+
+    /// Deleting the alert call from the notifier turns this red — this is the exact mutation that
+    /// previously left all 1217 tests green.
+    @Test
+    void confirmedDeparture_reachesTheAlertSurface() {
+        var f = Fixture.create();
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        var active = f.alerts().getActiveNodeHealthAlerts();
+        assertThat(active).hasSize(1);
+        assertThat(active.getFirst().nodeId()).isEqualTo(DEAD);
+        assertThat(active.getFirst().observedBy()).isEqualTo(SELF);
+        assertThat(active.getFirst().severity()).isEqualTo(AlertEvent.Severity.CRITICAL);
+    }
+
+    /// Both, from ONE departure, with no leader and no ownership. Deleting EITHER call turns this red,
+    /// which is the property the two tests above cannot express individually.
+    @Test
+    void oneDeparture_reachesBothSurfaces_withNoLeaderAndNoOwnership() {
+        var f = Fixture.create();
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events()).hasSize(1);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
+    }
+
+    /// #2014 — a planned departure announced to this observer (here by the broadcast drain set, not by
+    /// its own FSM) must not page: no CRITICAL `NodeFailed`, no CRITICAL alert. It stays in the stream as
+    /// an INFO `NodeLeft`. Reverting the announced branch in the notifier turns this red.
+    @Test
+    void announcedDeparture_raisesNoCriticalEvent_noAlert_staysInStreamAsInfoNodeLeft() {
+        var f = Fixture.create();
+        f.alerts().noteMembershipTransition(DEAD, "DrainRequested");
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events()).noneMatch(e -> e instanceof ClusterEvent.NodeFailed);
+        assertThat(f.events()).noneMatch(e -> e.severity() == ClusterEvent.Severity.CRITICAL);
+        assertThat(f.events()).hasSize(1);
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeLeft.class);
+        assertThat(f.events().getFirst().severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
+    }
+
+    /// The safety property: with NO announcement an unplanned death still raises CRITICAL on both
+    /// surfaces. (Pinned beside the announced case so a blanket suppression turns one of the two red.)
+    @Test
+    void unannouncedDeparture_stillRaisesCriticalNodeFailedAndAlert() {
+        var f = Fixture.create();
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(f.events().getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
+    }
+
+    /// #2014 supersedes the earlier "drain keeps a NodeFailed record": that was the defect (a planned drain
+    /// recorded as CRITICAL `NodeFailed`). The record stays, as INFO `NodeLeft`; no alert. The earlier
+    /// test was wrong, not the fix: it asserted the CRITICAL event as intended behaviour.
+    ///
+    /// **This test previously fed `"SwimDeparted"`** and asserted no alert — encoding the round-2
+    /// blocking defect as the specification. `SwimDeparted` is SWIM's death broadcast, not a graceful
+    /// goodbye; `DrainRequested` is the only cause that genuinely means "announced".
+    @Test
+    void drainedDeparture_reachesTheStreamAsInfoButRaisesNoAlert() {
+        var f = Fixture.create();
+        f.alerts().noteMembershipTransition(DEAD, "DrainRequested");
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events()).hasSize(1);
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeLeft.class);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
+    }
+
+    /// Regression pin at the composition level: a SWIM-confirmed death must reach BOTH surfaces. While
+    /// `SwimDeparted` sat in the graceful set, this path produced an event and no alert — `kill -9` was
+    /// silent on the alert surface.
+    @Test
+    void swimDeath_reachesBothSurfaces_notJustTheStream() {
+        var f = Fixture.create();
+        f.alerts().noteMembershipTransition(DEAD, "SwimDeparted");
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events()).hasSize(1);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
+        assertThat(f.alerts().getActiveNodeHealthAlerts().getFirst().severity()).isEqualTo(AlertEvent.Severity.CRITICAL);
+    }
+
+    /// #1835: a death with no reachability evidence is "never joined", not "failed". The operator still sees
+    /// it (WARNING operator-warning event) but there is NO `NodeFailed` event and NO CRITICAL node-health alert.
+    /// The fixture's aggregator and alert manager are the real ones, so routing it through
+    /// [`NodeDepartureNotifier#onConfirmedDeparture`] instead turns this red.
+    @Test
+    void neverJoined_raisesWarningOnly_noNodeFailedNoCriticalAlert() {
+        var f = Fixture.create();
+        f.notifier().onNeverJoined(DEAD);
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(f.events()).hasSize(1));
+        var event = f.events().getFirst();
+        assertThat(event).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(event.severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(event.details()).containsEntry("code", OperatorWarningCode.NODE_NEVER_JOINED.code());
+        assertThat(event.details()).containsEntry("subject", DEAD.id());
+        assertThat(f.events()).noneMatch(e -> e instanceof ClusterEvent.NodeFailed);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
+    }
+}

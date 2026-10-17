@@ -1,0 +1,40 @@
+{
+  "id": 11713049,
+  "name": "aether-partition-x",
+  "labels": {},
+  "created": "2026-10-01T00:00:00Z",
+  "rules": [
+    {
+      "direction": "in",
+      "source_ips": [
+        "0.0.0.0/0"
+      ],
+      "destination_ips": [],
+      "protocol": "tcp",
+      "port": "22",
+      "description": null
+    }
+  ],
+  "applied_to": [
+    {
+      "type": "server",
+      "server": {
+        "id": 168166138
+      }
+    },
+    {
+      "type": "label_selector",
+      "label_selector": {
+        "selector": "aether-node-id=x"
+      },
+      "applied_to_resources": [
+        {
+          "type": "server",
+          "server": {
+            "id": 555
+          }
+        }
+      ]
+    }
+  ]
+}

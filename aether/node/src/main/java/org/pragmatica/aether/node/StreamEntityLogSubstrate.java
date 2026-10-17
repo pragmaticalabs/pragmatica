@@ -6,6 +6,8 @@ package org.pragmatica.aether.node;
 
 import java.util.List;
 import java.util.function.Function;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.entity.EntityLogError;
@@ -13,17 +15,22 @@ import org.pragmatica.aether.resource.entity.EntityLogSubstrate;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamCompression;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.TierAwareRetention;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.StreamCatalog;
+import org.pragmatica.aether.stream.segment.SegmentError;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -32,8 +39,14 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Retry;
+import org.pragmatica.lang.utils.Retry.BackoffStrategy;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.StorageInstance;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /// The node's [EntityLogSubstrate]: an entity keyspace's durable log IS a stream named
@@ -60,6 +73,16 @@ import org.pragmatica.storage.StorageInstance;
 /// taking the partition over. The pointer therefore goes into consensus KV, which every node can read,
 /// and only the pointer does: the folded state itself stays out of consensus.
 public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
+    private static final Logger LOG = LoggerFactory.getLogger(StreamEntityLogSubstrate.class);
+
+    /// How long a read waits in place for an in-flight seal before reporting
+    /// [EntityLogError.FoldInProgress]: 20 attempts 100 ms apart, about 2 seconds (#1240). A seal that
+    /// lands inside the window costs the fold nothing; past it, the fold's next access restarts the
+    /// rebuild from the checkpoint.
+    private static final Retry IN_FLIGHT_RETRY = Retry.retry()
+                                                      .attempts(20)
+                                                      .strategy(BackoffStrategy.fixed().interval(TimeSpan.timeSpan(100).millis()));
+
     private static final int ENTITY_MAX_EVENT_SIZE_BYTES = 4 * 1024 * 1024;
     private static final String AUTO_OFFSET_RESET_EARLIEST = "earliest";
     /// Ring capacity per entity partition — index slots allocated UP FRONT at `INDEX_ENTRY_SIZE` (24)
@@ -68,9 +91,10 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// the `RetentionPolicy` default of 100k would be ~154 MB for the same keyspace, which is why this
     /// deliberately does not inherit it.
     ///
-    /// It also sets the recovery safety margin: a partition must not wrap more than one checkpoint
-    /// interval's worth of writes, or the fold's gap check refuses. 10k records against a 30-second
-    /// checkpoint tolerates a sustained ~330 writes/sec on a single partition before that margin closes.
+    /// It no longer bounds recovery on the node that sealed the history (#1240): records the ring evicts are
+    /// sealed by the segment sealer and [#read] serves them from there. It still bounds recovery on a node
+    /// taking the partition over, which reads no other node's segments — there the fold refuses once the
+    /// checkpoint lags further behind than this node's ring reaches.
     private static final long ENTITY_RING_CAPACITY = 10_000L;
     /// Data-region CAP, not an up-front allocation: the ring grows one segment at a time toward it.
     private static final long ENTITY_RING_BYTES = 64L * 1024 * 1024;
@@ -80,17 +104,26 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
 
     private final StreamPartitionManager partitionManager;
     private final StreamPartitionManager.ReplicaCatchupSource catchupSource;
+    private final TieredStreamReader tieredReader;
+    private final SegmentIndex segmentIndex;
+    private final EvictionListener evictionListener;
     private final StorageInstance storage;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier;
 
     private StreamEntityLogSubstrate(StreamPartitionManager partitionManager,
                                      StreamPartitionManager.ReplicaCatchupSource catchupSource,
+                                     TieredStreamReader tieredReader,
+                                     SegmentIndex segmentIndex,
+                                     EvictionListener evictionListener,
                                      StorageInstance storage,
                                      KVStore<AetherKey, AetherValue> kvStore,
                                      Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
         this.partitionManager = partitionManager;
         this.catchupSource = catchupSource;
+        this.tieredReader = tieredReader;
+        this.segmentIndex = segmentIndex;
+        this.evictionListener = evictionListener;
         this.storage = storage;
         this.kvStore = kvStore;
         this.applier = applier;
@@ -98,21 +131,29 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
 
     public static EntityLogSubstrate streamEntityLogSubstrate(StreamPartitionManager partitionManager,
                                                               StreamPartitionManager.ReplicaCatchupSource catchupSource,
+                                                              TieredStreamReader tieredReader,
+                                                              SegmentIndex segmentIndex,
+                                                              EvictionListener evictionListener,
                                                               StorageInstance storage,
                                                               KVStore<AetherKey, AetherValue> kvStore,
                                                               Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier) {
-        return new StreamEntityLogSubstrate(partitionManager, catchupSource, storage, kvStore, applier);
+        return new StreamEntityLogSubstrate(partitionManager,
+                                            catchupSource,
+                                            tieredReader,
+                                            segmentIndex,
+                                            evictionListener,
+                                            storage,
+                                            kvStore,
+                                            applier);
     }
 
     @Override
-    public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
-        return StreamCreateOutcome.tolerateAlreadyExists(partitionManager.createStream(entityStreamConfig(keyspace,
-                                                                                                          partitionCount,
-                                                                                                          replicationFactor,
-                                                                                                          minSyncReplicas))).flatMap(_ -> assertExistingShape(keyspace,
-                                                                                                                                                              partitionCount,
-                                                                                                                                                              replicationFactor,
-                                                                                                                                                              minSyncReplicas));
+    public Result<Unit> ensureLog(String keyspace, int partitionCount, ReplicationFactors replication) {
+        return StreamCreateOutcome.tolerateAlreadyExists(partitionManager.createDeclaredStream(entityStreamConfig(keyspace,
+                                                                                                                  partitionCount,
+                                                                                                                  replication))).flatMap(_ -> assertExistingShape(keyspace,
+                                                                                                                                                                  partitionCount,
+                                                                                                                                                                  replication));
     }
 
     /// `tolerateAlreadyExists` makes ensure idempotent — and, unguarded, it also made it SHAPE-BLIND
@@ -122,11 +163,11 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// declared shape must MATCH the stream that actually exists, or provisioning fails naming both.
     ///
     /// The check runs on the freshly-created stream too, where it trivially passes — cheaper than
-    /// threading "was it created or found" out of the outcome classification.
-    private Result<Unit> assertExistingShape(String keyspace,
-                                             int partitionCount,
-                                             int replicationFactor,
-                                             int minSyncReplicas) {
+    /// threading "was it created or found" out of the outcome classification. #1564 R8: different replication
+    /// factors are refused typed ([org.pragmatica.aether.slice.ReplicationFactorsError.ChangedOnLiveResource]),
+    /// for a local entry not yet committed as well as the committed one
+    /// [StreamPartitionManager#createDeclaredStream] already refuses.
+    private Result<Unit> assertExistingShape(String keyspace, int partitionCount, ReplicationFactors replication) {
         var streamName = EntityPartitionArc.arcName(keyspace);
 
         return partitionManager.replicaCatalog()
@@ -135,27 +176,25 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                .filter(spec -> spec.name()
                                                    .equals(streamName))
                                .findFirst()
-                               .map(spec -> matchShape(spec, partitionCount, replicationFactor, minSyncReplicas))
+                               .map(spec -> matchShape(spec, partitionCount, replication))
                                .orElseGet(Result::unitResult);
     }
 
     private static Result<Unit> matchShape(StreamCatalog.StreamSpec spec,
                                            int partitionCount,
-                                           int replicationFactor,
-                                           int minSyncReplicas) {
-        if (spec.partitions() == partitionCount && spec.replicas() == replicationFactor && spec.minSyncReplicas() == minSyncReplicas) {
-            return Result.unitResult();
+                                           ReplicationFactors replication) {
+        if (spec.partitions() != partitionCount) {
+            return Causes.cause("entity log for '" + spec.name()
+                               + "' already exists with partitions=" + spec.partitions()
+                               + " but this deployment declares partitions=" + partitionCount
+                               + " — a changed partition_count re-hashes keys onto partitions whose history"
+                               + " lives elsewhere, so the mismatch is refused rather than served wrong").result();
         }
 
-        return Causes.cause("entity log for '" + spec.name()
-                           + "' already exists with shape (partitions=" + spec.partitions()
-                           + ", replicas=" + spec.replicas()
-                           + ", minSync=" + spec.minSyncReplicas()
-                           + ") but this deployment declares (partitions=" + partitionCount
-                           + ", replicas=" + replicationFactor
-                           + ", minSync=" + minSyncReplicas
-                           + ") — a changed partition_count re-hashes keys onto partitions whose history"
-                           + " lives elsewhere, so the mismatch is refused rather than served wrong").result();
+        return replication.sameAsCommitted("entity log '" + spec.name() + "'",
+                                           new ReplicationFactors(spec.replicationFactor(),
+                                                                  spec.confirmationFactor()))
+                          .mapToUnit();
     }
 
     /// The backing stream's shape.
@@ -176,16 +215,16 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// recovery floor in `RetentionEnforcer`, not this policy.
     ///
     /// ## What the ring window has to be big enough for
-    /// A recovering owner replays from its checkpoint forward using what its own ring still holds, so the
-    /// window must stay comfortably ahead of the checkpoint interval — if the checkpoint falls further
-    /// behind than the ring reaches back, the fold refuses rather than serving state missing writes.
-    /// Age-based eviction is therefore pushed far out (a finite value, NOT `Long.MAX_VALUE`, because
-    /// `evictByAge` computes `now - maxAgeMs` and would underflow); size and count do the bounding, and
-    /// tier-aware retention keeps the ring from dropping anything not yet sealed.
+    /// A recovering owner replays from its checkpoint forward through its ring and the segments it sealed
+    /// (#1240), so on that node the window no longer has to cover the checkpoint lag. A node taking the
+    /// partition over reads only its own ring, so there the window must stay ahead of the checkpoint
+    /// interval, or the fold refuses rather than serving state missing writes. Age-based eviction is
+    /// pushed far out (a finite value, NOT `Long.MAX_VALUE`, because `evictByAge` computes
+    /// `now - maxAgeMs` and would underflow); size and count do the bounding, and every evicted record is
+    /// handed to the segment sealer, which retains it until it is sealed (#1234).
     private static StreamConfig entityStreamConfig(String keyspace,
                                                    int partitionCount,
-                                                   int replicationFactor,
-                                                   int minSyncReplicas) {
+                                                   ReplicationFactors replication) {
         return StreamConfig.streamConfig(EntityPartitionArc.arcName(keyspace),
                                          partitionCount,
                                          RetentionPolicy.retentionPolicy(ENTITY_RING_CAPACITY,
@@ -195,8 +234,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                          AUTO_OFFSET_RESET_EARLIEST,
                                          ENTITY_MAX_EVENT_SIZE_BYTES,
                                          ConsistencyMode.EVENTUAL,
-                                         replicationFactor,
-                                         minSyncReplicas,
+                                         replication.replicationFactor(),
+                                         replication.confirmationFactor(),
                                          StreamCompression.NONE,
                                          Option.none());
     }
@@ -210,7 +249,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// caller believe it had lost a write it actually has. [EntityLogError.ReplicationBarrierUnmet] says
     /// exactly which of the two happened.
     ///
-    /// `minSyncReplicas <= 1` skips the barrier entirely rather than awaiting zero acks — the declared
+    /// `confirmationFactor <= 1` skips the barrier entirely rather than awaiting zero acks — the declared
     /// single-replica mode, where the honest guarantee is restart-durability and nothing more.
     @Override
     public Promise<Long> append(String keyspace, int partition, byte[] record) {
@@ -229,59 +268,266 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// no dependency on stream error types. `StaleEpochAppend` is what `ensureNotStale` raises when a
     /// deposed owner's epoch is older than the partition's committed high-water — the same condition the
     /// storage engine's gate enforced before I3 moved the fence to the log.
+    ///
+    /// #1230: `NotOwnerAppend` — the stream's owner-write admission found the committed record naming another
+    /// node — is the same stale-owner condition reached by a different check: `EntityOwnerAdmission` passed
+    /// on a read the record has since moved past. It too becomes `StaleOwnerAppend`, naming the committed
+    /// owner, so the caller re-resolves instead of seeing an opaque `StorageFailed`.
     private static Cause translateAppendFailure(String keyspace, int partition, Cause cause) {
-        return cause instanceof StreamError.StaleEpochAppend stale
-               ? new EntityLogError.StaleOwnerAppend(keyspace, partition, staleDetail(stale))
-               : cause;
+        return switch (cause) {
+            case StreamError.StaleEpochAppend stale -> new EntityLogError.StaleOwnerAppend(keyspace,
+                                                                                           partition,
+                                                                                           staleDetail(stale));
+            case StreamError.NotOwnerAppend notOwner -> new EntityLogError.StaleOwnerAppend(keyspace,
+                                                                                            partition,
+                                                                                            notOwnerDetail(notOwner));
+            default -> cause;
+        };
     }
 
     private static String staleDetail(StreamError.StaleEpochAppend stale) {
         return "presented " + stale.presented() + ", current " + stale.current();
     }
 
-    /// `minSyncReplicas` COUNTS THE OWNER; `awaitReplication` counts DISTINCT NON-SELF acks. The two
-    /// differ by exactly one, and this call passed the raw value — so a keyspace configured for `2`
-    /// ("the owner plus one peer", per [DurableEntityConfig#minSyncReplicas]) waited for TWO peers.
+    private static String notOwnerDetail(StreamError.NotOwnerAppend notOwner) {
+        return "the committed owner is " + notOwner.committedOwner()
+                                                   .id();
+    }
+
+    /// The confirmation factor COUNTS THE OWNER; `awaitReplication` counts DISTINCT NON-SELF acks. The two
+    /// differ by exactly one, and this call once passed the raw value — so a keyspace configured for `2`
+    /// ("the owner plus one peer") waited for TWO peers.
     ///
     /// At the default `replicationFactor = 3` that is satisfiable only while BOTH peers are alive and
     /// caught up, so losing a single peer failed every entity write with `ReplicationBarrierUnmet` —
     /// precisely the failure replication is there to survive. At `replicationFactor = 2` there is only
     /// one non-self replica in existence, so no entity write could ever succeed.
     ///
-    /// Both stream writers already subtract: `StreamWriteRouter:78` and
+    /// Both stream writers already subtract: `StreamWriteRouter.awaitMinSync` and
     /// `StreamForwardHandler.awaitMinSync`. This is the third writer on the same barrier and it was the
     /// odd one out.
     private Promise<Long> awaitBarrier(String keyspace, String stream, int partition, long offset) {
-        var minSyncReplicas = partitionManager.minSyncReplicasFor(stream);
+        var confirmationFactor = partitionManager.confirmationFactorFor(stream);
 
-        if (minSyncReplicas <= 1) {
+        if (confirmationFactor <= 1) {
             return Promise.success(offset);
         }
 
-        return partitionManager.awaitReplication(stream, partition, offset, minSyncReplicas - 1)
+        return partitionManager.awaitReplication(stream, partition, offset, confirmationFactor - 1)
                                .map(_ -> offset)
                                .mapError(cause -> new EntityLogError.ReplicationBarrierUnmet(keyspace,
                                                                                              partition,
                                                                                              offset,
-                                                                                             minSyncReplicas,
+                                                                                             confirmationFactor,
                                                                                              cause));
     }
 
-    /// Reads come from the local ring alone, and that is a consequence of the fold's own precondition
-    /// rather than a limitation: the fold refuses unless it can start at or above
-    /// [#earliestRetainedOffset], so every offset it asks for is one the ring still holds. Falling back to
-    /// the tiered segment reader would be dead code that looked like a safety net — worse, it would look
-    /// like one on a node where the segment index cannot resolve another node's segments anyway.
+    /// Reads span both tiers this node holds (#1240), as contract item 3 of [EntityLogSubstrate] requires.
+    /// An offset the ring still holds is read from the ring. An offset below the ring's earliest was
+    /// evicted and handed to the segment sealer, so it is read from the segments this node sealed. Before
+    /// #1240 every read went to the ring, so a partition whose checkpoint lagged further than the ring
+    /// reaches (10k records, or fewer large ones) refused every operation although its history sat sealed
+    /// in local storage.
+    ///
+    /// A sealed read is capped at the ring's earliest offset, so the two tiers never overlap, and the
+    /// records it returns must sit at exactly `fromOffset, fromOffset + 1, …`: the fold assigns offsets by
+    /// position, so a skipped or repeated record would silently fold every later record at the wrong
+    /// offset. A mismatch is refused, never repaired.
+    ///
+    /// Both tiers hold APPENDED records, as the #1274 ruling requires of entity folds: the ring read uses
+    /// [StreamPartitionManager#readAppended], bounded by the APPENDED head rather than the stream-consumer
+    /// visible position (#1235), and a sealed record was appended before it was evicted. Entity-log
+    /// visibility is the fold's own contract, not a stream consumer's.
+    ///
+    /// A node reads only the segments IT sealed — the index is node-local — so a node that never held the
+    /// partition still refuses exactly as before: [#earliestRetainedOffset] stays at its ring. A PROMOTED
+    /// REPLICA is the case this widens: replica rings are materialized with the same node-wide eviction
+    /// listener as owner rings, so a replica has sealed segments of the partition, and after promotion it
+    /// can rebuild from that history where it previously refused. A suffix sealed only after it joined
+    /// leaves a hole below, and the read that reaches the hole refuses loudly rather than folding around it.
     @Override
     public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
-        return partitionManager.readLocal(EntityPartitionArc.arcName(keyspace),
-                                          partition,
-                                          fromOffset,
-                                          maxRecords)
-                               .map(events -> events.stream()
-                                                    .map(RawEvent::data)
-                                                    .toList())
-                               .async();
+        var stream = EntityPartitionArc.arcName(keyspace);
+        var ringEarliest = partitionManager.earliestRetainedOffset(stream, partition);
+
+        return belowRing(fromOffset, ringEarliest)
+               ? readSealed(keyspace, stream, partition, fromOffset, sealedBound(fromOffset, maxRecords, ringEarliest))
+               : readRing(keyspace, stream, partition, fromOffset, maxRecords);
+    }
+
+    private static boolean belowRing(long fromOffset, long ringEarliest) {
+        return ringEarliest < 0 || fromOffset < ringEarliest;
+    }
+
+    private static int sealedBound(long fromOffset, int maxRecords, long ringEarliest) {
+        return ringEarliest < 0
+               ? maxRecords
+               : (int) Math.min(maxRecords, ringEarliest - fromOffset);
+    }
+
+    private Promise<List<byte[]>> readRing(String keyspace,
+                                           String stream,
+                                           int partition,
+                                           long fromOffset,
+                                           int maxRecords) {
+        return partitionManager.readAppended(stream, partition, fromOffset, maxRecords)
+                               .fold(cause -> evictedDuringRead(keyspace,
+                                                                stream,
+                                                                partition,
+                                                                fromOffset,
+                                                                maxRecords,
+                                                                cause),
+                                     events -> Promise.success(payloads(events)));
+    }
+
+    /// The ring evicted `fromOffset` between the tier choice and the ring read — a real race under a
+    /// concurrently appending partition, and the reroute is what absorbs it. The offset is then in the
+    /// sealer or in a segment, and the sealed read picks it up.
+    ///
+    /// The bound comes from the refusal's own `tailOffset` rather than a fresh
+    /// `earliestRetainedOffset` read: the two can differ, and a ring replaced between them would answer
+    /// `-1`, which would make the bound negative.
+    private Promise<List<byte[]>> evictedDuringRead(String keyspace,
+                                                    String stream,
+                                                    int partition,
+                                                    long fromOffset,
+                                                    int maxRecords,
+                                                    Cause cause) {
+        return switch (cause) {
+            case StreamError.CursorExpired expired -> readSealed(keyspace,
+                                                                 stream,
+                                                                 partition,
+                                                                 fromOffset,
+                                                                 sealedBound(fromOffset,
+                                                                             maxRecords,
+                                                                             expired.tailOffset()));
+            default -> cause.promise();
+        };
+    }
+
+    /// An evicted offset whose seal has not landed is IN FLIGHT (#1234): the sealer retains it and the WAL
+    /// holds it, and it becomes readable once the seal lands. The read waits for it in place for about two
+    /// seconds ([#IN_FLIGHT_RETRY]); a seal still pending after that is reported as the transient
+    /// [EntityLogError.FoldInProgress]. The offset is never skipped. The cost of the fallback: the fold
+    /// discards its partial rebuild, so its next access re-reads everything from the checkpoint.
+    private Promise<List<byte[]>> readSealed(String keyspace,
+                                             String stream,
+                                             int partition,
+                                             long fromOffset,
+                                             int count) {
+        return IN_FLIGHT_RETRY.execute(() -> readSealedOnce(keyspace, stream, partition, fromOffset, count),
+                                       SegmentError.SealInFlight.class::isInstance).mapError(cause -> stillInFlight(keyspace,
+                                                                                                                    stream,
+                                                                                                                    partition,
+                                                                                                                    cause));
+    }
+
+    /// The in-flight check runs before the segment read: the sink indexes a segment before the sealer
+    /// releases it, so no evicted offset is in neither place.
+    private Promise<List<byte[]>> readSealedOnce(String keyspace,
+                                                 String stream,
+                                                 int partition,
+                                                 long fromOffset,
+                                                 int count) {
+        if (evictionListener.holdsUnsealed(stream, partition, fromOffset)) {
+            return new SegmentError.SealInFlight(stream, partition, fromOffset).promise();
+        }
+
+        return tieredReader.read(stream, partition, fromOffset, count)
+                           .mapError(cause -> sealedReadFailure(keyspace, stream, partition, cause))
+                           .flatMap(events -> contiguousPayloads(keyspace, stream, partition, fromOffset, events));
+    }
+
+    private static Cause stillInFlight(String keyspace, String stream, int partition, Cause cause) {
+        return switch (cause) {
+            case SegmentError.SealInFlight inFlight -> foldInProgress(keyspace, stream, partition, inFlight);
+            default -> cause;
+        };
+    }
+
+    private static Cause foldInProgress(String keyspace,
+                                        String stream,
+                                        int partition,
+                                        SegmentError.SealInFlight inFlight) {
+        LOG.info("Entity log {}/{} offset {} is still being sealed; the fold retries on the next access",
+                 stream,
+                 partition,
+                 inFlight.fromOffset());
+
+        return new EntityLogError.FoldInProgress(keyspace, partition);
+    }
+
+    /// A hole in the sealed range, or a range retention already reclaimed, cannot be read around: the fold
+    /// would serve state missing committed writes. Both refuse the fold loudly. Any other failure (a storage
+    /// read error) keeps its own cause and classification.
+    private static Cause sealedReadFailure(String keyspace, String stream, int partition, Cause cause) {
+        return switch (cause) {
+            case SegmentError.SealedRangeMissing missing -> refused(keyspace, stream, partition, missing);
+            case StreamError.CursorExpired expired -> refused(keyspace, stream, partition, expired);
+            default -> cause;
+        };
+    }
+
+    private Promise<List<byte[]>> contiguousPayloads(String keyspace,
+                                                     String stream,
+                                                     int partition,
+                                                     long fromOffset,
+                                                     List<RawEvent> events) {
+        if (events.isEmpty()) {
+            return emptySealedRead(keyspace, stream, partition, fromOffset);
+        }
+
+        return firstMisplaced(events, fromOffset).map(position -> notContiguous(keyspace,
+                                                                                stream,
+                                                                                partition,
+                                                                                fromOffset + position,
+                                                                                events.get(position).offset()))
+                             .or(() -> Promise.success(payloads(events)));
+    }
+
+    private static Option<Integer> firstMisplaced(List<RawEvent> events, long fromOffset) {
+        return Option.from(IntStream.range(0,
+                                           events.size())
+                                    .filter(position -> events.get(position)
+                                                              .offset() != fromOffset + position)
+                                    .boxed()
+                                    .findFirst());
+    }
+
+    private static Promise<List<byte[]>> notContiguous(String keyspace,
+                                                       String stream,
+                                                       int partition,
+                                                       long expected,
+                                                       long found) {
+        return refused(keyspace,
+                       stream,
+                       partition,
+                       new EntityLogError.MalformedRecord("sealed history is not contiguous: expected offset " + expected
+                                                         + ", found " + found)).promise();
+    }
+
+    /// Nothing sealed at or above `fromOffset`, not in flight, and below the ring: no tier holds it. Past
+    /// the head that is simply the end of the log; at or below it, it is a refusal.
+    private Promise<List<byte[]>> emptySealedRead(String keyspace, String stream, int partition, long fromOffset) {
+        return fromOffset > headOffset(keyspace, partition)
+               ? Promise.success(List.of())
+               : refused(keyspace,
+                         stream,
+                         partition,
+                         new EntityLogError.MalformedRecord("offset " + fromOffset
+                                                           + " is in neither the ring, the sealer nor a sealed segment")).promise();
+    }
+
+    private static Cause refused(String keyspace, String stream, int partition, Cause reason) {
+        LOG.error("Entity log {}/{} cannot be rebuilt from its sealed history: {}", stream, partition, reason.message());
+
+        return new EntityLogError.FoldFailed(keyspace, partition, reason);
+    }
+
+    private static List<byte[]> payloads(List<RawEvent> events) {
+        return events.stream()
+                     .map(RawEvent::data)
+                     .toList();
     }
 
     @Override
@@ -290,8 +536,73 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     }
 
     @Override
+    public long cutGeneration(String keyspace, int partition) {
+        return partitionManager.cutGeneration(EntityPartitionArc.arcName(keyspace), partition);
+    }
+
+    /// The log's COMMITTED position (#2087): the ring's visible position, i.e. durable here AND acknowledged by the keyspace's
+    /// confirmation peers on an owner, or reported visible by the owner on a replica. Never above the appended head.
+    @Override
+    public long committedOffset(String keyspace, int partition) {
+        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace),
+                                                partition)
+                               .map(ring -> Math.min(ring.headOffset(),
+                                                     ring.visibleOffset()))
+                               .or(-1L);
+    }
+
+    /// Resolves once the committed position reaches `offset`, woken by the ring's own visible-advance listener (which runs on
+    /// the ring's notifier, never under its append lock); fails after `timeout`. The listener is registered BEFORE the position
+    /// is re-read, so an advance between the first check and the registration is not missed.
+    @Override
+    public Promise<Unit> awaitCommitted(String keyspace, int partition, long offset, TimeSpan timeout) {
+        if (committedOffset(keyspace, partition) >= offset) {
+            return Promise.unitPromise();
+        }
+
+        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace),
+                                                partition)
+                               .fold(() -> Causes.cause("partition " + partition
+                                                       + " of '" + keyspace
+                                                       + "' is not held here").<Unit> promise(),
+                                     ring -> awaitVisible(ring,
+                                                          () -> committedOffset(keyspace, partition) >= offset,
+                                                          timeout));
+    }
+
+    static Promise<Unit> awaitVisible(org.pragmatica.aether.stream.OffHeapRingBuffer ring,
+                                      java.util.function.BooleanSupplier reached,
+                                      TimeSpan timeout) {
+        var committed = Promise.<Unit> promise();
+        java.util.function.LongConsumer listener = _ -> {
+            if (reached.getAsBoolean()) {
+                committed.resolve(Result.unitResult());
+            }
+        };
+
+        ring.addAppendListener(listener);
+        if (reached.getAsBoolean()) {
+            committed.resolve(Result.unitResult());
+        }
+
+        return committed.timeout(timeout)
+                        .onResultRun(() -> ring.removeAppendListener(listener));
+    }
+
+    /// The earliest offset [#read] can serve here (#1240): the lowest of the offsets this node sealed, the
+    /// offsets its sealer still holds in flight, and the ring's earliest. A hole between those tiers is not
+    /// hidden by this answer: the read that reaches it fails `SealedRangeMissing`, which refuses the fold.
+    @Override
     public long earliestRetainedOffset(String keyspace, int partition) {
-        return partitionManager.earliestRetainedOffset(EntityPartitionArc.arcName(keyspace), partition);
+        var stream = EntityPartitionArc.arcName(keyspace);
+        var ringEarliest = partitionManager.earliestRetainedOffset(stream, partition);
+
+        return Stream.of(segmentIndex.nextSealedOffset(stream, partition, -1L),
+                         evictionListener.lowestUnsealed(stream, partition))
+                     .flatMap(Option::stream)
+                     .filter(offset -> belowRing(offset, ringEarliest))
+                     .min(Long::compare)
+                     .orElse(ringEarliest);
     }
 
     /// Answered from the replica catch-up view, which is the cluster's existing statement that this
@@ -324,6 +635,81 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// would leave a committed pointer to a block that does not exist, which a recovering node could not
     /// distinguish from corruption.
     @Override
+    public Promise<Unit> saveCheckpoint(String keyspace,
+                                        int partition,
+                                        long throughOffset,
+                                        byte[] snapshot,
+                                        Option<byte[]> lineage) {
+        return storage.put(CheckpointFrame.frame(snapshot, lineage))
+                      .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
+    }
+
+    @Override
+    public boolean recordsLineage() {
+        return true;
+    }
+
+    /// The identity of this node's records ending at `offset` (#2087 B4-cut): the owner epoch it knows for it and, for each of up to the last
+    /// [CheckpointFrame#LINEAGE_WINDOW] records ending there (those it still retains), its offset and a hash of its bytes. A window rather than the one
+    /// record: after a cut a new lineage can write byte-identical records, and a checkpoint folded over the removed records would still differ in the
+    /// earlier ones. [#UNVOUCHED] when the epoch is not known here; none when the claim record is not readable.
+    @Override
+    public Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+        var floor = partitionManager.sealedFloor(EntityPartitionArc.arcName(keyspace), partition);
+
+        return offset <= floor
+               ? Option.some(CheckpointFrame.withFloor(floor, new byte[0]))
+               : windowIdentity(keyspace, partition, offset).map(body -> body.length == 0
+                                                                         ? body
+                                                                         : CheckpointFrame.withFloor(floor, body));
+    }
+
+    /// The owner epoch this copy knows for the claim record and, for each of the records it still retains of the window ending there, its offset
+    /// and a hash of its bytes ([UNVOUCHED], empty, when the epoch is not known here; none when the claim record is not readable).
+    private Option<byte[]> windowIdentity(String keyspace, int partition, long offset) {
+        var stream = EntityPartitionArc.arcName(keyspace);
+        var from = Math.max(0L, offset - CheckpointFrame.LINEAGE_WINDOW + 1L);
+
+        return readableWindow(stream, partition, from, offset).filter(events -> CheckpointFrame.endsAt(events, offset))
+                             .flatMap(events -> partitionManager.epochAt(stream, partition, offset)
+                                                                .fold(() -> Option.some(UNVOUCHED),
+                                                                      epoch -> CheckpointFrame.lineageOf(events, epoch)));
+    }
+
+    /// The records of `[from, offset]` this copy still retains: the whole window, or -- when its start was evicted -- the part from the ring's
+    /// tail. None when the claim record itself is not readable.
+    private Option<List<RawEvent>> readableWindow(String stream, int partition, long from, long offset) {
+        return partitionManager.readAppended(stream,
+                                             partition,
+                                             from,
+                                             (int)(offset - from + 1L))
+                               .fold(cause -> retainedPart(cause, stream, partition, offset),
+                                     Option::some);
+    }
+
+    private Option<List<RawEvent>> retainedPart(Cause cause, String stream, int partition, long offset) {
+        return cause instanceof StreamError.CursorExpired expired && expired.tailOffset() <= offset
+               ? partitionManager.readAppended(stream,
+                                               partition,
+                                               expired.tailOffset(),
+                                               (int)(offset - expired.tailOffset() + 1L))
+                                 .option()
+               : Option.none();
+    }
+
+    /// A claim at or below the sealed floor the checkpoint's WRITER saw is accepted without validation: that region was sealed before the
+    /// checkpoint was taken, the floor only rises, and a cut is refused at or below it, so it was never cut. The CURRENT floor proves nothing: a
+    /// cut can rewrite the claim record and the floor can then rise over the new lineage. Otherwise the copy validates over the records of the
+    /// window it still holds, the claim record included; if it holds none, or cannot vouch for the owner epoch, the answer is no.
+    @Override
+    public boolean lineageHolds(String keyspace, int partition, long offset, byte[] recorded) {
+        return CheckpointFrame.floorOf(recorded)
+                              .filter(written -> offset <= written)
+                              .isPresent() || windowIdentity(keyspace, partition, offset).map(local -> CheckpointFrame.agree(CheckpointFrame.bodyOf(recorded),
+                                                                                                                             local))
+                                                            .or(false);
+    }
+
     public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
         return storage.put(snapshot)
                       .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
@@ -365,8 +751,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return BlockId.fromHex(pointer.blockIdHex())
                       .async()
                       .flatMap(storage::get)
-                      .map(bytes -> bytes.map(snapshot -> EntityCheckpoint.entityCheckpoint(pointer.throughOffset(),
-                                                                                            snapshot)))
+                      .map(bytes -> bytes.map(block -> CheckpointFrame.unframe(pointer.throughOffset(),
+                                                                               block)))
                       .recover(_ -> Option.none());
     }
 }

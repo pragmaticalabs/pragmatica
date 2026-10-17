@@ -38,11 +38,10 @@ Pattern: `Generator.generate(AetherConfig, Path) -> Result<GeneratorOutput>`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/deploy` | POST | Deploy slice |
-| `/api/scale` | POST | Scale instances |
-| `/api/undeploy` | POST | Undeploy slice |
-| `/api/blueprints` | POST | Apply blueprint |
-| `/api/nodes` | GET | List nodes |
+| `/api/v1/deploy` | POST | Deploy slice |
+| `/api/v1/scale` | POST | Scale instances |
+| `/api/v1/blueprints` | POST | Apply blueprint |
+| `/api/v1/nodes` | GET | List nodes |
 | `/health` | GET | Health check |
 
 ---
@@ -191,7 +190,7 @@ Dependencies:
 Integration:
 - Add `CloudManager` to `AetherNode`
 - Extend `Controller` to trigger cloud scaling
-- Add `/api/cloud/*` endpoints to ManagementServer
+- Add `/api/v1/cloud/*` endpoints to ManagementServer (none exist yet)
 
 ### Phase 3: GCP/Azure/DO Support
 
@@ -208,6 +207,7 @@ Add generators and CloudManager implementations for other providers.
 provider = "aws"  # aws | gcp | azure | digitalocean
 
 [cloud.aws]
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-west-2"
 vpc_cidr = "10.0.0.0/16"
 instance_type = "m6i.large"
@@ -218,6 +218,7 @@ certificate_arn = "arn:aws:acm:..."  # For HTTPS
 
 [cloud.gcp]
 project = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-central1"
 zone = "us-central1-a"
 machine_type = "e2-standard-4"
@@ -225,6 +226,7 @@ machine_type = "e2-standard-4"
 [cloud.azure]
 subscription_id = "..."
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "westus2"
 vm_size = "Standard_D4s_v3"
 ```

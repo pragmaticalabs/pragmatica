@@ -79,6 +79,56 @@ class LeaderAdoptionSequenceGateTest {
                 .isInstanceOf(LeaderElectionState.Electing.class);
     }
 
+    @Test
+    void excludedCoreObservesVerifiedLeaderWithoutReenteringElection() {
+        var h = harness(new AtomicReference<>(Option.<NodeId>none()));
+        var ctx = ctxOf(h);
+        var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        manager.onLeaderCommitted(LEADER, 5);
+        assertThat(manager.leader()).isEqualTo(Option.some(LEADER));
+
+        h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+        assertThat(manager.leader()).isEqualTo(Option.none());
+        manager.installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration.voterConfiguration(1, List.of(LEADER, SUCCESSOR)).unwrap());
+        manager.onLeaderCommitted(LEADER, 5);
+        assertThat(manager.leader()).isEqualTo(Option.some(LEADER));
+        manager.onLeaderCommitted(SUCCESSOR, 5);
+        assertThat(manager.leader()).isEqualTo(Option.some(LEADER));
+        h.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+        manager.onLeaderCommitted(SUCCESSOR, 6);
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.Passive.class);
+        assertThat(manager.leader()).isEqualTo(Option.some(SUCCESSOR));
+        manager.onLeaderCommitted(SELF, 7);
+        manager.onLeaderCommitted(LEADER, 5);
+        manager.onLeaderCommitted(LEADER);
+        assertThat(manager.leader()).isEqualTo(Option.some(SUCCESSOR));
+        manager.stop();
+    }
+
+    @Test
+    void readmittedObserverWaitsForConsensusReadinessBeforeElection() {
+        var ready = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var h = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness(
+            "readmitted-voter", fsm -> new LeaderElectionContext(fsm,
+                SELF, Option.some((LeaderProposalHandler) (candidate, sequence) -> Promise.promise()),
+                List.of(SELF, LEADER, SUCCESSOR), MessageRouter.mutable(), LONG, LONG, LONG, LONG,
+                LeaderElectionContext.DEFAULT_STUCK_ELECTION_THRESHOLD,
+                LeaderElectionContext.DEFAULT_JITTER_SOURCE,
+                LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER, ready::get, Option::none, LONG, LONG).dormant());
+        var ctx = ctxOf(h);
+        var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        manager.installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration.voterConfiguration(1, List.of(LEADER, SUCCESSOR)).unwrap());
+        manager.installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration.voterConfiguration(2, List.of(SELF, LEADER, SUCCESSOR)).unwrap());
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumWaiting.class);
+        h.dispatch(new KvSyncGraceTimeout());
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumWaiting.class);
+        ready.set(true);
+        h.dispatch(new ConsensusReady());
+        assertThat(h.state()).isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
+        manager.stop();
+    }
+
     /// Scenario 1 — dead-leader re-election. Electing snapshots baseline N; the stale pre-death
     /// commit (still seq N) is IGNORED; the fresh successor commit (N+1) is adopted.
     @Test

@@ -1,12 +1,12 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapResult;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
+import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.FloatingIpProvider;
 import org.pragmatica.aether.environment.SourceName;
@@ -60,8 +60,10 @@ sealed interface BootstrapPhasePost {
                                             BootstrapContext ctx) {
         var targetNode = ctx.nodes()
                             .stream()
-                            .filter(n -> n.nodeId()
-                                          .startsWith(sourceName.value() + "-core-"))
+                            .filter(n -> BootstrapPhaseProvision.parseNodeId(n.nodeId())
+                                                                .map(parsed -> parsed.source()
+                                                                                     .equals(sourceName.value()) && parsed.role() == NodeRole.CORE)
+                                                                .or(false))
                             .findFirst();
 
         targetNode.ifPresent(node -> attachLoadBalancerIps(fip, source, node.nodeId()));
@@ -79,22 +81,44 @@ sealed interface BootstrapPhasePost {
 
     @Contract
     private static void registerClusterLocally(BootstrapContext ctx) {
+        registerClusterLocally(ctx, ClusterRegistry.load());
+    }
+
+    /// Package-visible seam over the loaded registry so the whole step — register, activate, save,
+    /// announce — is pinnable against a scratch file (`BootstrapPhasePostContextTest`) without
+    /// writing the operator's `~/.aether/clusters.toml`. The one-arg form above is the only
+    /// production caller and only supplies the default registry.
+    @Contract
+    static void registerClusterLocally(BootstrapContext ctx, Result<ClusterRegistry> loaded) {
         var clusterName = ctx.config().cluster().name();
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
         // #209: register the endpoint with the scheme the cluster actually serves. When TLS is
         // auto-generated the management plane is HTTPS, so the persisted endpoint (the single source of
         // truth operational commands read) must be `https://`, not a hardcoded `http://`.
-        var scheme = managementScheme(ctx);
-        var endpoint = ctx.addresses().isEmpty()
-                       ? scheme + "://localhost:9090"
-                       : scheme + "://" + ctx.addresses().getFirst().publicIp();
+        // #998: and with the PORT the management plane actually listens on — see [#managementEndpoint].
+        var endpoint = managementEndpoint(ctx);
 
-        ClusterRegistry.load()
-                       .map(registry -> registry.add(clusterName.value(),
-                                                     endpoint,
-                                                     Option.some(apiKeyEnvName)))
-                       .flatMap(ClusterRegistry::save)
-                       .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+        loaded.flatMap(registry -> registerAndActivate(registry,
+                                                       clusterName.value(),
+                                                       endpoint,
+                                                       Option.some(apiKeyEnvName)))
+              .flatMap(ClusterRegistry::save)
+              .onSuccess(_ -> System.out.printf("Active cluster context: %s%n", clusterName))
+              .onFailure(cause -> System.err.println("Warning: failed to register cluster locally: " + cause.message()));
+    }
+
+    /// #584 — the cluster just bootstrapped becomes the ACTIVE context. `ClusterRegistry.add` keeps
+    /// whatever context was current (that is its contract, pinned by `ClusterRegistryTest`), so a
+    /// fresh bootstrap used to leave `[current] context` on whatever was active before — in the live
+    /// case a cluster dead for a month — and the first context-routed command afterwards dialled the
+    /// wrong cluster with a bare `ConnectException`. Package-visible so the step is pinnable without
+    /// writing the operator's real `~/.aether/clusters.toml` — the same reason [#managementEndpoint] is.
+    static Result<ClusterRegistry> registerAndActivate(ClusterRegistry registry,
+                                                       String name,
+                                                       String endpoint,
+                                                       Option<String> apiKeyEnv) {
+        return registry.add(name, endpoint, apiKeyEnv)
+                       .use(name);
     }
 
     private static String managementScheme(BootstrapContext ctx) {
@@ -104,6 +128,36 @@ sealed interface BootstrapPhasePost {
                   .autoGenerate()
                ? "https"
                : "http";
+    }
+
+    /// #998 — ONE construction of the management endpoint, read by BOTH the persisted registry entry and
+    /// the returned [BootstrapResult]. They used to be built separately and they disagreed:
+    /// `buildResult` appended `operations.ports.management`, `registerClusterLocally` appended nothing.
+    /// So every bootstrapped cluster was REGISTERED as `<scheme>://<ip>` with no port, and every later
+    /// registry-based management call resolved that entry and targeted the scheme default — 443 under
+    /// auto-generated TLS — while the management API listened on 8080. Observed on a live Hetzner cluster
+    /// on 2026-09-11: `cluster destroy` could not enumerate nodes, so DRAIN_NODES and SHUTDOWN_NODES were
+    /// skipped and the VMs were deleted without a graceful drain. `resolveEndpoint` is shared by
+    /// `getPath`/`postPath`/`putPath`, so the same entry broke every other registry-based command too.
+    ///
+    /// The fix belongs HERE rather than in [ClusterHttpClient#resolveEndpoint]: the reader is shared by
+    /// commands that never load a cluster config, so it cannot know this cluster's management port — and
+    /// appending a default there would silently rewrite a deliberately port-less endpoint (a management
+    /// plane behind a reverse proxy on 443 is a legitimate entry).
+    ///
+    /// The localhost branch carried a hardcoded `9090`, which is not the management port under any
+    /// configuration — `PortMapping.defaultPortMapping()` is 8080 — and is now read from config like the
+    /// other branch. Two constructions of one value is what let them drift; there is now one.
+    static String managementEndpoint(BootstrapContext ctx) {
+        var scheme = managementScheme(ctx);
+        var port = ctx.config().operations().ports().management();
+
+        return ctx.addresses()
+                  .isEmpty()
+               ? scheme + "://localhost:" + port
+               : scheme + "://" + ctx.addresses()
+                                     .getFirst()
+                                     .managementHostPort(port);
     }
 
     @Contract
@@ -119,14 +173,11 @@ sealed interface BootstrapPhasePost {
                                                ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName)));
     }
 
-    private static BootstrapResult buildResult(BootstrapContext ctx) {
+    /// Package-visible so a test asserts the returned endpoint against [#managementEndpoint] — the
+    /// symmetry #998 was the absence of. Nothing else calls it.
+    static BootstrapResult buildResult(BootstrapContext ctx) {
         var clusterName = ctx.config().cluster().name();
-        var mgmtPort = ctx.config().operations().ports().management();
-        // #209: surface the actual scheme (HTTPS under auto-generated TLS) in the result endpoint too.
-        var scheme = managementScheme(ctx);
-        var endpoint = ctx.addresses().isEmpty()
-                       ? scheme + "://localhost:" + mgmtPort
-                       : scheme + "://" + ctx.addresses().getFirst().publicIp() + ":" + mgmtPort;
+        var endpoint = managementEndpoint(ctx);
         var apiKey = ctx.apiKey().or("");
         var apiKeyEnvName = ClusterBootstrapOrchestrator.deriveApiKeyEnvName(clusterName);
 

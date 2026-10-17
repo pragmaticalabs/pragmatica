@@ -15,9 +15,11 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -46,11 +48,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// the A/B lifecycle writer (`AbTestManager.targetPreservingOverrides`, exercised via promote) must
 /// re-read the current `SliceTargetValue` and carry the operator's per-slice autoscaler overrides
 /// onto the rewritten version instead of resetting them to `none()`.
+///
+/// #698 extends the same requirement to `owningBlueprint`, which `targetPreservingOverrides` was
+/// dropping while carefully preserving every override beside it — despite its name and its javadoc
+/// both promising preservation. The seeded fixture is therefore blueprint-owned, and every path
+/// below asserts the owner survives alongside the overrides. The consequence of losing it is not
+/// visible here: `ClusterDeploymentState` resolves a slice's `schemaRequired` through its owner, so
+/// an erased owner silently flips a `schema_required = false` slice to `true` on the next restore.
 class SliceTargetOverridePreservationTest {
     static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
     static final ArtifactBase BASE = Artifact.artifact("org.test:my-slice:2.0.0").unwrap().base();
     static final Version V1 = Version.version("1.0.0").unwrap();
     static final Version V2 = Version.version("2.0.0").unwrap();
+    static final BlueprintId OWNER = BlueprintId.blueprintId("org.test:owning-app:1.0.0").unwrap();
+    /// A real `PlacementPolicy` constant that is not the default, so a reset to `CORE_ONLY` is
+    /// observable rather than indistinguishable from a correct carry (#937).
+    static final String PLACEMENT = "WORKERS_ONLY";
 
     @Nested
     class DeploymentUpdatePreservesOverrides {
@@ -88,7 +101,38 @@ class SliceTargetOverridePreservationTest {
                 assertThat(target.maxInstances()).isEqualTo(Option.some(5));
                 assertThat(target.scaleUpThreshold()).isEqualTo(Option.some(0.8));
                 assertThat(target.scaleDownThreshold()).isEqualTo(Option.some(0.2));
+                assertThat(target.owningBlueprint()).as("#698: the deployment-update writer must not erase the slice's owner")
+                                                    .isEqualTo(Option.some(OWNER));
             });
+        }
+
+        /// #1068: a rolled-back rolling update must not leave its `VersionRoutingKey` behind — while it
+        /// exists the rolled-back NEW version stays permitted to start and allocated. The removal must
+        /// follow the old-target restore in the same batch: the leader's routing-removal handler
+        /// deallocates every version the committed target does not name at that moment.
+        @Test
+        void rollback_removesTheRoutingEntry_afterRestoringTheOldTarget() {
+            manager.rollback(DEPLOYMENT_ID).onFailure(cause -> Assertions.fail(cause.message()));
+
+            var commands = rabiaNode.appliedCommands;
+            var routingKey = VersionRoutingKey.versionRoutingKey(BASE);
+            var targetPutIndex = indexOf(commands, c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(SliceTargetKey.sliceTargetKey(BASE)));
+            var routingRemoveIndex = indexOf(commands, c -> c instanceof KVCommand.Remove<AetherKey> remove && remove.key().equals(routingKey));
+
+            assertThat(routingRemoveIndex).as("the rollback batch removes the routing entry").isNotNegative();
+            assertThat(commands).as("and never rewrites it").noneMatch(c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(routingKey));
+            assertThat(targetPutIndex).as("the old target is restored in the same batch").isNotNegative();
+            assertThat(routingRemoveIndex).as("target restore precedes the routing removal").isGreaterThan(targetPutIndex);
+        }
+
+        private static int indexOf(List<KVCommand<AetherKey>> commands, java.util.function.Predicate<KVCommand<AetherKey>> test) {
+            for (var i = 0; i < commands.size(); i++) {
+                if (test.test(commands.get(i))) {
+                    return i;
+                }
+            }
+
+            return -1;
         }
 
         private DeploymentValue deployedDeploymentValue() {
@@ -158,18 +202,78 @@ class SliceTargetOverridePreservationTest {
                 assertThat(target.maxInstances()).isEqualTo(Option.some(5));
                 assertThat(target.scaleUpThreshold()).isEqualTo(Option.some(0.8));
                 assertThat(target.scaleDownThreshold()).isEqualTo(Option.some(0.2));
+                assertThat(target.owningBlueprint()).as("#698: AbTestManager.targetPreservingOverrides must not erase the slice's owner")
+                                                    .isEqualTo(Option.some(OWNER));
             });
+        }
+
+        /// #937: placement is not an autoscaler override in #424's sense — it decides **where** the
+        /// slice runs. `ClusterDeploymentState` feeds `effectivePlacement()` into the allocation
+        /// engine, so a reset here relocates an operator's workload onto the core on the first A/B
+        /// write. `targetPreservingOverrides` enumerated the fields it carried and placement was not
+        /// among them, which is why its own javadoc could read as exhaustive while it was not.
+        @Test
+        void concludeTest_preservesOperatorPlacement_onPromotedVersion() {
+            var testId = manager.createTest(BASE,
+                                            Map.of("canary", V2),
+                                            SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2))
+                                .await()
+                                .onFailure(cause -> Assertions.fail(cause.message()))
+                                .unwrap()
+                                .testId();
+
+            rabiaNode.appliedCommands.clear();
+
+            manager.concludeTest(testId, "canary")
+                   .await()
+                   .onFailure(cause -> Assertions.fail(cause.message()));
+
+            var promoted = capturedSliceTargets(rabiaNode.appliedCommands).stream()
+                                                                          .filter(target -> target.currentVersion()
+                                                                                                  .equals(V2))
+                                                                          .toList();
+
+            assertThat(promoted).isNotEmpty();
+            assertThat(promoted).allSatisfy(target -> assertThat(target.effectivePlacement())
+                    .as("#937: the A/B writer must not reset the operator's placement")
+                    .isEqualTo(PLACEMENT));
+        }
+
+        /// The canary deploy is the earlier of the two A/B writes and carries the same defect, so
+        /// pinning only the promotion would leave the first write that touches a live slice unpinned.
+        @Test
+        void createTest_preservesOperatorPlacement_onTheVariantVersion() {
+            manager.createTest(BASE,
+                               Map.of("canary", V2),
+                               SplitRule.HeaderHashSplit.headerHashSplit("X-Request-Id", 2))
+                   .await()
+                   .onFailure(cause -> Assertions.fail(cause.message()));
+
+            var variants = capturedSliceTargets(rabiaNode.appliedCommands).stream()
+                                                                          .filter(target -> target.currentVersion()
+                                                                                                  .equals(V2))
+                                                                          .toList();
+
+            assertThat(variants).isNotEmpty();
+            assertThat(variants).allSatisfy(target -> assertThat(target.effectivePlacement())
+                    .as("#937: the A/B canary write must not reset the operator's placement")
+                    .isEqualTo(PLACEMENT));
         }
     }
 
+    /// Owner-bearing since #698: a blueprint-owned slice is what both writers actually receive in
+    /// production, and an unowned fixture cannot observe an owner being dropped. Operator-placed
+    /// since #937, for the same reason — the creation factory below cannot express a placement, so
+    /// it is applied through `withPlacement` exactly as `SliceRoutes.applyScaleToExisting` does.
     static SliceTargetValue targetWithOverrides(Version version) {
         return SliceTargetValue.sliceTargetValue(version,
                                                  3,
                                                  1,
-                                                 Option.none(),
+                                                 Option.some(OWNER),
                                                  Option.some(5),
                                                  Option.some(0.8),
-                                                 Option.some(0.2));
+                                                 Option.some(0.2))
+                               .withPlacement(PLACEMENT);
     }
 
     static void seed(KVStore<AetherKey, AetherValue> kvStore, AetherKey key, AetherValue value) {

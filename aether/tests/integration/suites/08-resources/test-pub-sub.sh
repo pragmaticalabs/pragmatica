@@ -15,18 +15,23 @@ test_cluster_ready() {
 }
 
 test_stream_exists_or_created() {
-    local streams
-    streams=$(stream_list)
-    # Match exact JSON field "name":"<STREAM_NAME>" (with optional whitespace) so
-    # that a different stream whose name is a prefix of $STREAM_NAME (or contains
-    # $STREAM_NAME inside another field, e.g. a description) does NOT cause a
-    # false positive. Allow optional whitespace between the colon and the value.
-    if printf '%s' "$streams" | grep -qE "\"name\"[[:space:]]*:[[:space:]]*\"${STREAM_NAME}\""; then
-        log_pass "Stream ${STREAM_NAME} already exists"
-    else
-        log_info "Stream ${STREAM_NAME} not found — publishing will auto-create"
-        log_pass "Stream list endpoint responds"
-    fi
+    # #1224. This function previously could not fail, for two independent reasons:
+    #
+    #   1. It grepped the catalog listing for `"name":"<stream>"`. The listing emits
+    #      `"stream":"..."`, never `"name"`, so the match could never succeed and the else
+    #      branch was taken on every run, in every environment, since the 2026-09-02 migration.
+    #   2. BOTH branches called log_pass. A found stream passed; a missing stream passed as
+    #      "Stream list endpoint responds". No outcome reddened it.
+    #
+    # Its else branch also asserted something untrue: "publishing will auto-create". Publishing
+    # resolves a name to a catalog coordinate FIRST (stream_coordinate), so a publish cannot
+    # create what the lookup has to find. Every publish then reported zero acks and the real
+    # failure surfaced four assertions later as `expected '25', got '0'`.
+    #
+    # Create it explicitly and assert against the CATALOG, which is the store publish reads.
+    stream_create "$STREAM_NAME" 1 > /dev/null 2>&1 || true   # idempotent; a repeat is not a failure
+    assert_ne "$(stream_coordinate "$STREAM_NAME" 2>/dev/null)" "" \
+              "Stream ${STREAM_NAME} resolvable in catalog before publishing"
 }
 
 # Bounded transient-only retry for a single publish (#460 gap 3). Under parallel
@@ -88,14 +93,24 @@ test_subscriber_receives_events() {
     # Allow replication / partition routing to settle.
     sleep 2
 
-    # Read events back via the streams read CLI (STREAM_READ → /api/v1/streams/read/<name>/<partition>).
-    local result event_count
-    result=$(aether_json streams read "$STREAM_NAME" 0) || {
-        log_fail "streams read failed for ${STREAM_NAME} partition 0"
+    # Read events back via the streams read CLI
+    # (STREAM_READ → /api/v1/streams/{namespace}/{stream}/{version}/read/<partition>).
+    #
+    # The CLI takes the CATALOG IDENTITY, never a bare name: #1044 made a bare name a hard error
+    # ("is a bare stream name, which is ambiguous: it names no namespace"), because the bare form
+    # used to default to `system:`, which holds no app stream. `stream_identity` resolves it from
+    # the live catalog, so this cannot drift again.
+    local result event_count identity
+    identity=$(stream_identity "$STREAM_NAME") || {
+        log_fail "stream_identity ${STREAM_NAME} failed — stream absent from the catalog"
+        return 1
+    }
+    result=$(aether_json streams read "$identity" 0) || {
+        log_fail "streams read failed for ${identity} partition 0"
         return 1
     }
     if [ -z "$result" ]; then
-        log_fail "streams read returned empty response for ${STREAM_NAME} partition 0"
+        log_fail "streams read returned empty response for ${identity} partition 0"
         return 1
     fi
     # ReadEventsResponse → {"events":[{"offset":..., "data":..., "timestamp":...}]}.

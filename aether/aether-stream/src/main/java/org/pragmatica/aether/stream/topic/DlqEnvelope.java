@@ -17,6 +17,14 @@ import org.pragmatica.serialization.Codec;
 /// died at, the FAILING GROUP (redrive is group-targeted — re-injection reaches only the group
 /// that exhausted its retries, so groups that already processed the event are untouched by
 /// construction), the attempt count, the last failure cause, and both ends of the failure window.
+///
+/// `rawEvent` (#1266) discriminates the two things `payload` can hold. `false`: the ORIGINAL
+/// application payload, as the publishing slice's codec encoded it (what redrive and a reader expect).
+/// `true`: a QUARANTINED event whose topic envelope did not decode — `payload` is the raw source event
+/// bytes, `messageId` is synthetic (`undecodable:<stream>:<partition>:<offset>`), and `publishedAtMs`
+/// is `0` because the envelope that carried it is exactly what could not be read. A reader must not
+/// hand a raw payload to a slice codec. Adding the component changes this tag-pinned (111) wire shape;
+/// pre-GA, no migration is provided for DLQ entries written by an earlier build.
 @Codec
 public record DlqEnvelope(String messageId,
                           String sourceTopic,
@@ -27,7 +35,8 @@ public record DlqEnvelope(String messageId,
                           String lastFailureCause,
                           long publishedAtMs,
                           long deadLetteredAtMs,
-                          byte[] payload) {
+                          byte[] payload,
+                          boolean rawEvent) {
     public DlqEnvelope {
         payload = payload.clone();
     }
@@ -49,7 +58,8 @@ public record DlqEnvelope(String messageId,
                && sourceTopic.equals(other.sourceTopic)
                && failingGroup.equals(other.failingGroup)
                && lastFailureCause.equals(other.lastFailureCause)
-               && Arrays.equals(payload, other.payload);
+               && Arrays.equals(payload, other.payload)
+               && rawEvent == other.rawEvent;
     }
 
     @Override
@@ -65,6 +75,7 @@ public record DlqEnvelope(String messageId,
         result = 31 * result + Long.hashCode(publishedAtMs);
         result = 31 * result + Long.hashCode(deadLetteredAtMs);
         result = 31 * result + Arrays.hashCode(payload);
+        result = 31 * result + Boolean.hashCode(rawEvent);
 
         return result;
     }

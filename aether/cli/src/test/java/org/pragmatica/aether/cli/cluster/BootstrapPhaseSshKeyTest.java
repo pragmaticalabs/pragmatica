@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Test;
@@ -97,13 +96,23 @@ class BootstrapPhaseSshKeyTest {
                                                               Map.of("eu-1", cloudHetznerSource()),
                                                               Map.of(),
                                                               InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
-                                                              OperationsConfig.defaultOperationsConfig());
+                                                              OperationsConfig.defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static BootstrapContext contextWithKeys(List<SshPublicKey> keys) {
         var config = configWithCloudSource();
         var state = BootstrapState.initialState(clusterName("test").unwrap(), "h", "now");
         return BootstrapContext.bootstrapContext(config, state, List.of(), List.of()).withSshPublicKeys(keys);
+    }
+
+    @Test
+    void sourceResourceIdsRemainIndependentForSameProvider() {
+        var context = contextWithKeys(List.of())
+            .withSshKeyIds("eu-1", List.of(11L))
+            .withSshKeyIds("us-1", List.of(22L));
+        assertEquals(List.of(11L), context.sshKeyIdsFor("eu-1"));
+        assertEquals(List.of(22L), context.sshKeyIdsFor("us-1"));
+        assertEquals(List.of(), context.sshKeyIdsFor("hetzner"));
     }
 
     @Test
@@ -116,7 +125,7 @@ class BootstrapPhaseSshKeyTest {
 
         assertTrue(result.isSuccess(), () -> "phase should succeed: " + result);
         var newCtx = result.unwrap();
-        assertEquals(List.of(1L), newCtx.sshKeyIdsFor("hetzner"),
+        assertEquals(List.of(1L), newCtx.sshKeyIdsFor("eu-1"),
                      "First created key must get id 1 from the stub");
         assertEquals(1, stub.createdKeys.size(), "Should have called createSshKey once");
         assertEquals(VALID_KEY, stub.createdKeys.getFirst().publicKey());
@@ -136,7 +145,7 @@ class BootstrapPhaseSshKeyTest {
         var result = BootstrapPhaseSshKey.execute(ctx, _ -> org.pragmatica.lang.Result.success(stub));
 
         assertTrue(result.isSuccess());
-        assertEquals(List.of(42L), result.unwrap().sshKeyIdsFor("hetzner"),
+        assertEquals(List.of(42L), result.unwrap().sshKeyIdsFor("eu-1"),
                      "Pre-existing key id must be reused, not a new upload");
         assertTrue(stub.createdKeys.isEmpty(), "createSshKey must NOT be called when fingerprint matches");
     }
@@ -183,7 +192,7 @@ class BootstrapPhaseSshKeyTest {
         var result = BootstrapPhaseSshKey.execute(ctx, _ -> org.pragmatica.lang.Result.success(stub));
 
         assertTrue(result.isSuccess());
-        assertEquals(List.of(1L, 2L), result.unwrap().sshKeyIdsFor("hetzner"),
+        assertEquals(List.of(1L, 2L), result.unwrap().sshKeyIdsFor("eu-1"),
                      "Two keys uploaded should yield two ids in order");
     }
 

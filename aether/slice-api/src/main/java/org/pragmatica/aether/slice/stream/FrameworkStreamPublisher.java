@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
 import java.util.List;
@@ -30,7 +29,7 @@ import org.pragmatica.lang.Unit;
 /// SPI split lands the compile-time half ahead of the resolver wiring.
 ///
 /// Method shape mirrors {@link StreamPublisher}: a single `publish(T event)` returning
-/// `Promise<Unit>`, with a default `publishBatch(List<T>)` derived from it.
+/// `Promise<Unit>`, and `publishBatch(List<T>)` returning one {@link PublishOutcome} per event (#1342).
 ///
 /// Permitted impls:
 ///   - {@link SystemStreamPublisher} — production: delegates to a transport `StreamPublisher<T>`.
@@ -39,7 +38,8 @@ import org.pragmatica.lang.Unit;
 public sealed interface FrameworkStreamPublisher<T> permits SystemStreamPublisher, TestSystemStreamPublisher {
     Promise<Unit> publish(T event);
 
-    default Promise<Unit> publishBatch(List<T> events) {
-        return Promise.allOf(events.stream().map(this::publish).toList()).mapToUnit();
-    }
+    /// One [PublishOutcome] per event, in input order; see {@link StreamPublisher#publishBatch(List)} for the
+    /// guarantee. The former default folded per-event results with `allOf(...).mapToUnit()` and acknowledged a
+    /// batch with refused events as success (#1342).
+    Promise<List<PublishOutcome>> publishBatch(List<T> events);
 }

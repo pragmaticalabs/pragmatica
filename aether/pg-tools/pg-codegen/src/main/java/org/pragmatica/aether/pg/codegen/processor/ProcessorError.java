@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.pg.codegen.processor;
 
 public final class ProcessorError {
@@ -23,6 +22,17 @@ public final class ProcessorError {
 
     public static String unusedMethodParameter(String param) {
         return PREFIX + "Method parameter '" + param + "' is not used in the query";
+    }
+
+    public static String mixedPlaceholderStyles() {
+        return PREFIX + "The query mixes named (:name) and positional ($n) placeholders; use one style";
+    }
+
+    public static String positionalParameterCountMismatch(int highestPlaceholder, int parameterCount) {
+        return PREFIX
+             + "Positional placeholders go up to $" + highestPlaceholder
+             + " but the method declares " + parameterCount
+             + " parameter(s); each $n binds the n-th declared parameter";
     }
 
     public static String typeMismatch(String param, String javaType, String column, String table, String pgType) {

@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import java.io.IOException;
 import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -18,6 +18,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.repository.Location;
+import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.config.ConfigurationProvider;
@@ -30,6 +31,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
@@ -122,7 +124,62 @@ public interface SliceStore {
             public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
                 return NOT_CONFIGURED.promise();
             }
+
+            /// Deliberate no-op, not an inherited one (#892): this provider refuses every
+            /// provisioning, so there is provably nothing for a release to close.
+            @Override
+            public Promise<Unit> releaseAll(String sliceId) {
+                return Promise.unitPromise();
+            }
         };
+    }
+
+    /// The slice-intrinsic config layer a slice's `META-INF/resources.toml` text contributes, parsed and
+    /// flattened exactly as the loader does it at slice load, with `${secrets:...}` placeholders left
+    /// unresolved — resolving them is the loader's own later, per-node step (#269).
+    ///
+    /// - No file: an empty layer, so the slice composite answers from the node composite alone.
+    /// - A file that does not parse: `Option.none()`. The loader then attaches NO slice composite, and
+    ///   resource provisioning falls back to the node-wide `ConfigService` — the node composite alone.
+    ///
+    /// Public, with [#layerSliceComposite] and [#readSliceResourcesToml], so the deploy-time
+    /// config-section pre-flight evaluates a slice's sections over the layering this loader applies
+    /// rather than over a copy of it (#1067).
+    static Option<ConfigurationProvider> sliceIntrinsicLayer(Artifact artifact, Option<String> resourcesToml) {
+        return resourcesToml.fold(() -> Option.some(IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(),
+                                                                                                    Map.of())),
+                                  content -> sliceStore.parseToFlatMap(artifact, content)
+                                                       .map(values -> IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(),
+                                                                                                                      values)));
+    }
+
+    /// The slice composite's layering. Override precedence: the node-composite (operator KV-overlay ⊕
+    /// node.toml) WINS over the slice's intrinsic resources.toml. The slice ships LOCAL defaults that each
+    /// deployment overrides with environment-specific values (see the resources.toml header and
+    /// `sliceStore.logShadowedKeys` — "intrinsic shadowed by operator override"). Since
+    /// LayeredConfigProvider is first-wins (index 0 = top priority), the composite must come FIRST;
+    /// slice.toml is the fallback only for keys the deployment does not override. (Identical
+    /// local/deployment values — e.g. docker's node aether.toml matching the slice — make the order moot,
+    /// which is why this was latent until a divergent cloud deployment exercised it.) Presence is
+    /// order-independent: a section is in the composite iff it is in either layer.
+    static ConfigurationProvider layerSliceComposite(ConfigurationProvider intrinsic,
+                                                     ConfigurationProvider nodeComposite) {
+        var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
+
+        return LayeredConfigProvider.layered(List.of(nodeComposite, labelledIntrinsic));
+    }
+
+    /// The text of `META-INF/resources.toml` shipped in the slice jar at `sliceJarUrl` — and in that jar
+    /// ALONE: a classloader over the one url with the platform loader as parent, closed once the entry
+    /// is read. The loader reads a slice's intrinsic layer through this at load, and the deploy-time
+    /// pre-flight through the same function, so the two cannot disagree on which file is the slice's
+    /// (#1067). The slice classloader is composed over the own jar, conflicting shared jars and every
+    /// `[slices]` dependency jar, and a lookup THROUGH it answers from the first jar that ships the entry
+    /// — which made a dependency's file this slice's layer whenever the own jar had none. A jar that
+    /// cannot be opened or an entry that cannot be read reads as absent — an empty layer, never a dropped
+    /// composite.
+    static Option<String> readSliceResourcesToml(URL sliceJarUrl) {
+        return sliceStore.readSliceResourcesTomlFromJar(sliceJarUrl);
     }
 
     interface LoadedSlice {
@@ -211,8 +268,7 @@ public interface SliceStore {
                                                          sharedLibraryLoader,
                                                          invokerFacade,
                                                          resourceFacade,
-                                                         Option.some(classLoader -> buildSliceCompositeFromClassLoader(artifact,
-                                                                                                                       classLoader)),
+                                                         Option.some(this::buildSliceCompositeFromClassLoader),
                                                          nodeCodec,
                                                          resourceOverlayBuilder)
                                      .map(resolved -> {
@@ -251,30 +307,26 @@ public interface SliceStore {
         /// Emits one INFO log per intrinsic key whose value is shadowed by an existing KV
         /// override at slice-load time (operator override preceded slice deploy) — see
         /// [#logShadowedKeys].
-        private Option<ConfigurationProvider> buildSliceCompositeFromClassLoader(Artifact artifact,
-                                                                                 ClassLoader classLoader) {
+        ///
+        /// Package-private (not private) so SliceStoreTest can pin the absence branches directly:
+        /// a malformed `resources.toml` drops the WHOLE composite, node keys included, and the
+        /// refusal a slice then receives from `ctx.config()` has to be true for that branch too
+        /// (#889 review S1).
+        Option<ConfigurationProvider> buildSliceCompositeFromClassLoader(Artifact artifact, ClassLoader classLoader) {
             return nodeComposite.flatMap(composite -> loadSliceIntrinsicProviderFromClassLoader(artifact, classLoader).map(intrinsic -> assembleSliceComposite(artifact,
                                                                                                                                                                intrinsic,
                                                                                                                                                                composite)));
         }
 
         // Package-private (not private) so SliceStoreTest can pin the override precedence
-        // directly — this ordering is load-bearing and was previously inverted.
+        // directly — this ordering is load-bearing and was previously inverted. The ordering itself
+        // lives in SliceStore.layerSliceComposite, which the deploy-time pre-flight shares (#1067).
         static ConfigurationProvider assembleSliceComposite(Artifact artifact,
                                                             ConfigurationProvider intrinsic,
                                                             ConfigurationProvider composite) {
             logShadowedKeys(artifact, intrinsic, composite);
-            var labelledIntrinsic = NamedConfigProvider.namedConfigProvider("slice.toml", intrinsic);
-            // Override precedence: the node-composite (operator KV-overlay ⊕ node.toml) WINS over
-            // the slice's intrinsic resources.toml. The slice ships LOCAL defaults that each
-            // deployment overrides with environment-specific values (see the resources.toml header
-            // and logShadowedKeys above — "intrinsic shadowed by operator override"). Since
-            // LayeredConfigProvider is first-wins (index 0 = top priority), the composite must come
-            // FIRST; slice.toml is the fallback only for keys the deployment does not override.
-            // (Identical local/deployment values — e.g. docker's node aether.toml matching the
-            // slice — make the order moot, which is why this was latent until a divergent cloud
-            // deployment exercised it.)
-            return LayeredConfigProvider.layered(List.of(composite, labelledIntrinsic));
+
+            return SliceStore.layerSliceComposite(intrinsic, composite);
         }
 
         /// Emit one INFO log entry per intrinsic key whose value is shadowed by an existing
@@ -320,20 +372,15 @@ public interface SliceStore {
             if (tomlContent.isEmpty()) {
                 log.debug("Slice {} has no {}; intrinsic config provider omitted", artifact, SLICE_RESOURCES_TOML);
 
-                return Option.some(IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(), Map.of()));
+                return SliceStore.sliceIntrinsicLayer(artifact, tomlContent);
             }
 
-            return tomlContent.flatMap(content -> parseToFlatMap(artifact, content))
-                              .flatMap(values -> {
-                                           log.info("Slice {} intrinsic config loaded from {}: {} keys",
-                                                    artifact,
-                                                    SLICE_RESOURCES_TOML,
-                                                    values.size());
-                                           var intrinsic = IntrinsicConfigProvider.intrinsicConfigProvider(artifact.asString(),
-                                                                                                           values);
-
-                                           return resolveIntrinsicSecrets(artifact, intrinsic, secretResolver);
-                                       });
+            return SliceStore.sliceIntrinsicLayer(artifact, tomlContent)
+                             .onPresent(intrinsic -> log.info("Slice {} intrinsic config loaded from {}: {} keys",
+                                                              artifact,
+                                                              SLICE_RESOURCES_TOML,
+                                                              intrinsic.keys().size()))
+                             .flatMap(intrinsic -> resolveIntrinsicSecrets(artifact, intrinsic, secretResolver));
         }
 
         /// Resolve `${secrets:...}` placeholders in the slice-intrinsic layer, when a secret
@@ -378,8 +425,44 @@ public interface SliceStore {
                  + "this slice's resources.toml will fail as not-configured at provision time";
         }
 
-        @SuppressWarnings("JBCT-EX-01")
+        /// A [SliceClassLoader] is asked for its OWN jar and that jar is read alone (see
+        /// [SliceStore#readSliceResourcesToml(URL)]); one without a jar has no intrinsic file. Any other
+        /// loader — the in-memory stubs `SliceStoreTest` hands in — is asked directly, since it has no
+        /// own-jar notion to separate.
         private static Option<String> readSliceResourcesTomlFromClassLoader(ClassLoader classLoader) {
+            if (classLoader instanceof SliceClassLoader sliceClassLoader) {
+                return sliceClassLoader.sliceJarUrl()
+                                       .flatMap(sliceStore::readSliceResourcesTomlFromJar);
+            }
+
+            return readSliceResourcesTomlThrough(classLoader);
+        }
+
+        private static Option<String> readSliceResourcesTomlFromJar(URL sliceJarUrl) {
+            var jarClassLoader = new UncachedResourceClassLoader(new URL[]{sliceJarUrl},
+                                                                 ClassLoader.getPlatformClassLoader());
+            var resourcesToml = readSliceResourcesTomlThrough(jarClassLoader);
+
+            closeJarClassLoader(sliceJarUrl, jarClassLoader);
+
+            return resourcesToml;
+        }
+
+        /// FER: the entry has already been read in full, so a failing close changes nothing the reader
+        /// returns. Guarantee earned: the intrinsic layer is unaffected; what is given up is at most one
+        /// jar handle held until the classloader is collected. Mechanism: logged, then the failure is
+        /// dropped.
+        private static Unit closeJarClassLoader(URL sliceJarUrl, URLClassLoader jarClassLoader) {
+            return Result.lift(Causes::fromThrowable, jarClassLoader::close)
+                         .onFailure(cause -> log.warn("Could not close the classloader over slice jar {} after reading {}: {}",
+                                                      sliceJarUrl,
+                                                      SLICE_RESOURCES_TOML,
+                                                      cause.message()))
+                         .or(Unit.unit());
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private static Option<String> readSliceResourcesTomlThrough(ClassLoader classLoader) {
             try (var in = classLoader.getResourceAsStream(SLICE_RESOURCES_TOML)) {
                 if (in == null) {
                     return Option.none();
@@ -588,24 +671,8 @@ public interface SliceStore {
                          .flatMap(LoadedSliceEntry::sliceConfig);
         }
 
-        private Promise<Location> locateInRepositories(Artifact artifact) {
-            return locateInRepositories(artifact, repositories);
-        }
-
-        private Promise<Location> locateInRepositories(Artifact artifact, List<Repository> remainingRepos) {
-            if (remainingRepos.isEmpty()) {
-                return ARTIFACT_NOT_FOUND.apply(artifact.asString()).promise();
-            }
-
-            var repo = remainingRepos.getFirst();
-            var rest = remainingRepos.subList(1, remainingRepos.size());
-
-            return repo.locate(artifact)
-                       .orElse(() -> locateInRepositories(artifact, rest));
-        }
-
         private Repository compositeRepository() {
-            return this::locateInRepositories;
+            return CompositeRepository.compositeRepository(repositories);
         }
 
         private void closeClassLoader(SliceClassLoader classLoader) {
@@ -619,7 +686,5 @@ public interface SliceStore {
         private static final Fn1<Cause, String> SLICE_NOT_LOADED = Causes.forOneValue("Slice not loaded: %s");
 
         private static final Fn1<Cause, String> INVALID_STATE_TRANSITION = Causes.forOneValue("Invalid state transition: %s");
-
-        private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = SliceLoadingFailure.Intermittent.ArtifactNotFound::new;
     }
 }

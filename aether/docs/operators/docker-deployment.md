@@ -19,13 +19,25 @@ Two container images are available:
 
 ## Quick Start
 
-### Run 3-Node Cluster
+### Single machine (three containers)
 
-Requires a cluster secret; there is no shipped default:
+A cluster is at least three nodes — there is no supported single-node topology. On one
+machine, this compose file runs all three as containers. Requires a cluster secret; there is
+no shipped default:
 
 ```bash
-cd docker
+cd aether/docker                              # from the repository root; the compose file lives in aether/docker/
 export AETHER_CLUSTER_SECRET=<your-secret>
+export AETHER_VERSION=<image-tag>             # required, no default is shipped
+```
+
+`AETHER_VERSION` is the image tag. There is deliberately no default: a hard-coded one silently
+runs a previous release from a newer checkout. For the pull path set it to a **published** release
+(an unpublished tag fails with a 404 rather than substituting another). For the `--build` path set
+it to the checkout's own version (the root `pom.xml` project version):
+
+```bash
+export AETHER_VERSION=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' ../../pom.xml | head -1)
 ```
 
 Pull the published images (no local build):
@@ -50,12 +62,12 @@ This starts:
 Only needed for the `--build` path above; the pull path needs neither Java nor Maven.
 
 ```bash
-# Build from project root
-
-# Build JARs first
+# From the repository root: build the JARs first
 mvn package -DskipTests
 
-# Build container images
+# Then build the container images from aether/ -- the Docker build context, which is
+# where docker/aether-node/Dockerfile and the COPY targets (node/target, forge/...) resolve
+cd aether
 docker build -f docker/aether-node/Dockerfile -t aether-node:latest .
 docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
 ```
@@ -70,7 +82,7 @@ Access Forge dashboard at http://localhost:8888
 
 ## Docker Compose Configuration
 
-The `docker/docker-compose.yml` defines a 3-node cluster:
+The `aether/docker/docker-compose.yml` defines a 3-node cluster:
 
 ```yaml
 version: "3.9"
@@ -88,7 +100,7 @@ services:
       MANAGEMENT_PORT: "8080"
       CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
       AETHER_CLUSTER_NAME: "aether-dev"
-      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"
@@ -121,7 +133,7 @@ networks:
 | `CLUSTER_PEERS` | (required) | Cluster peer list |
 | `AETHER_CLUSTER_NAME` | (required) | Cluster name; boot aborts if unset. Lowercase DNS-label format (`[a-z]([-a-z0-9]{0,61}[a-z0-9])?`), e.g. `aether-dev` |
 | `AETHER_CLUSTER_SECRET` | (required) | Shared secret used to generate TLS certificates; boot aborts if unset and no `cluster_secret` is configured in the `[tls]` TOML section |
-| `JAVA_OPTS` | `-Xmx256m` | JVM options |
+| `JAVA_OPTS` | `-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true` | JVM options |
 
 ### Peer List Format
 
@@ -141,28 +153,13 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 | `FORGE_PORT` | 8888 | Dashboard port |
 | `CLUSTER_SIZE` | 5 | Simulated cluster size |
 | `LOAD_RATE` | 1000 | Requests per second |
-| `JAVA_OPTS` | `-Xmx1g` | JVM options |
+| `JAVA_OPTS` | `-Xmx1g -XX:+UseZGC` | JVM options |
 
 ## Running Individual Containers
 
-### Single Node
-
-**Not operational in 1.0.0-rc3.** A single node reaches quorum but never elects a leader, so
-every management route beyond `/health/live` returns 503, and the bootstrap admin key is never
-printed (#782). Run three nodes (see below), or wait for rc4.
-
-```bash
-docker run -d \
-  --name aether-node-1 \
-  -e NODE_ID=node-1 \
-  -e CLUSTER_PORT=8090 \
-  -e CLUSTER_PEERS="node-1:localhost:8090" \
-  -e AETHER_CLUSTER_NAME=aether-dev \
-  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
-  -p 8080:8080 \
-  -p 8090:8090 \
-  aether-node:latest
-```
+For a single machine, use the compose quick start above — it already runs the required three
+containers. The manual `docker run` form below is for wiring nodes across separate hosts (or a
+hand-built bridge network) without compose.
 
 ### Multi-Node with Docker Network
 
@@ -198,8 +195,8 @@ docker run -d --name node3 --network aether-net \
 Containers include health checks:
 
 ```dockerfile
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
-    CMD wget --spider -q http://localhost:8080/health/live || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/health/live || exit 1
 ```
 
 Check health status:
@@ -248,7 +245,7 @@ fallback for `tls.cluster_secret`):
 services:
   aether-node-1:
     environment:
-      AETHER_CLUSTER_SECRET: "change-me-dev-secret"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
     volumes:
       - ./aether.toml:/config/aether.toml:ro
       - ./certs:/config/certs:ro

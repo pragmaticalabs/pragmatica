@@ -37,7 +37,7 @@ test_mgmt_nodes_json() {
 
 test_mgmt_content_type() {
     local headers
-    headers=$(curl -sf -D - -o /dev/null -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/api/v1/nodes/status")
+    headers=$(curl -sf -D - -o /dev/null -H "X-API-Key: ${API_KEY}" "$(_resolve_live_endpoint)/api/v1/nodes/status")
     assert_contains "$headers" "application/json" "Status response has JSON content-type"
 }
 
@@ -47,7 +47,7 @@ test_mgmt_invalid_path() {
     # (intentional: don't leak which paths exist to unauthenticated callers). Pass the
     # API key so the request reaches the router and surfaces the genuine "no such route"
     # 404 we're asserting against.
-    assert_http_status "${CLUSTER_ENDPOINT}/api/nonexistent-endpoint-xyz" "404" \
+    assert_http_status "$(_resolve_live_endpoint)/api/nonexistent-endpoint-xyz" "404" \
         "Invalid management path returns 404" \
         -H "X-API-Key: ${API_KEY}"
 }

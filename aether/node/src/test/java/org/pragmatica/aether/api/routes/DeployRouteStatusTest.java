@@ -8,6 +8,7 @@ import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -18,9 +19,11 @@ import org.pragmatica.aether.update.CleanupPolicy;
 import org.pragmatica.aether.update.Deployment;
 import org.pragmatica.aether.update.DeploymentError;
 import org.pragmatica.aether.update.DeploymentManager;
+import org.pragmatica.aether.update.DeploymentState;
 import org.pragmatica.aether.update.DeploymentStrategy;
 import org.pragmatica.aether.update.HealthThresholds;
 import org.pragmatica.aether.update.StrategyConfig;
+import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -82,6 +85,8 @@ class DeployRouteStatusTest {
 
     private static final Cause CONSENSUS_FAILURE = DeploymentError.ConsensusFailure.consensusFailure(Causes.cause(
         "quorum not reached"));
+
+    private static final int NOT_STARTED = -1;
 
     private static final Cause NOT_CALLED = Causes.cause("DeploymentManager.start must not be reached by this request");
 
@@ -181,6 +186,21 @@ class DeployRouteStatusTest {
         }
     }
 
+    /// The other half of the status contract: a deployment the manager reports, terminal or not, is
+    /// answered with its response (the route yields a success `Result`, which `asJson` writes as 200),
+    /// not with `DeploymentNotFound`. A terminal deployment is the case the manager used to lose after a
+    /// STRATEGIES reassignment.
+    @Nested
+    class DeploymentPresent {
+        @Test
+        void statusRoute_answersWithTheTerminalDeployment_whenManagerReportsIt() {
+            var response = statusResponseFrom(rolledBackDeployment());
+
+            assertThat(response.deploymentId()).isEqualTo(DEPLOYMENT_ID);
+            assertThat(response.state()).isEqualTo("ROLLED_BACK");
+        }
+    }
+
     /// A body missing a required field is the caller's error. `parseBlueprint` runs before
     /// `buildParsedRequest`, so its cause reaches the funnel through a plain `flatMap` and survives.
     @Nested
@@ -276,6 +296,45 @@ class DeployRouteStatusTest {
         }
     }
 
+    /// #1495: a rollout writes `instances` onto every slice target of the blueprint, so the route applies
+    /// the blueprint floor. Absent means 3 (was 1); fewer than 3 is the caller's error and never reaches
+    /// the manager.
+    @Nested
+    class InstanceFloor {
+        @Test
+        void startRoute_instancesTwo_refusedBadRequestBeforeManager() {
+            var manager = new StubDeploymentManager(NOT_CALLED);
+            var cause = startCauseFrom(manager, rollingRequestWithInstances(2));
+
+            assertThat(cause).isEqualTo(DeployRouteError.INSTANCES_BELOW_MINIMUM);
+            assertThat(statusOf(cause, START_INSTANCE)).isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(manager.startedWith().get()).as("a refused request must not reach the manager")
+                      .isEqualTo(NOT_STARTED);
+        }
+
+        @Test
+        void startRoute_instancesOmitted_startsWithThree() {
+            var manager = new StubDeploymentManager(CONSENSUS_FAILURE);
+
+            startCauseFrom(manager, ROLLING_REQUEST);
+
+            assertThat(manager.startedWith().get()).isEqualTo(3);
+        }
+
+        @Test
+        void startRoute_instancesThree_reachesManager() {
+            var manager = new StubDeploymentManager(CONSENSUS_FAILURE);
+
+            startCauseFrom(manager, rollingRequestWithInstances(3));
+
+            assertThat(manager.startedWith().get()).isEqualTo(3);
+        }
+
+        private static DeployRoutes.DeployRequest rollingRequestWithInstances(int instances) {
+            return new DeployRoutes.DeployRequest(COORDS, "rolling", instances, null, null, null, null, null);
+        }
+    }
+
     /// Load-bearing negative control. Without it, the 404s above could equally be explained by the
     /// change having blanket-downgraded every failure into a 4xx. A genuine cluster fault must still
     /// answer 500 — that is what makes the other codes informative.
@@ -317,8 +376,12 @@ class DeployRouteStatusTest {
     }
 
     private static Cause startCauseFrom(Cause managerFailure, DeployRoutes.DeployRequest request) {
+        return startCauseFrom(new StubDeploymentManager(managerFailure), request);
+    }
+
+    private static Cause startCauseFrom(DeploymentManager manager, DeployRoutes.DeployRequest request) {
         return causeFrom(ManagementRoute.DEPLOY_START,
-                         new StubDeploymentManager(managerFailure),
+                         manager,
                          new StubRequestContext(List.of(), Option.some(request), START_INSTANCE));
     }
 
@@ -326,6 +389,39 @@ class DeployRouteStatusTest {
         return causeFrom(ManagementRoute.DEPLOY_STATUS,
                          new StubDeploymentManager(NOT_CALLED),
                          new StubRequestContext(List.of(deploymentId), Option.none(), STATUS_INSTANCE));
+    }
+
+    private static Deployment rolledBackDeployment() {
+        var now = System.currentTimeMillis();
+
+        return new Deployment(DEPLOYMENT_ID,
+                              COORDS,
+                              Version.version("1.0.0").unwrap(),
+                              Version.version("2.0.0").unwrap(),
+                              DeploymentState.ROLLED_BACK,
+                              DeploymentStrategy.BLUE_GREEN,
+                              new StrategyConfig.RollingConfig(false),
+                              VersionRouting.ALL_OLD,
+                              HealthThresholds.DEFAULT,
+                              CleanupPolicy.GRACE_PERIOD,
+                              List.of(),
+                              3,
+                              now,
+                              now);
+    }
+
+    private static DeployRoutes.DeploymentResponse statusResponseFrom(Deployment known) {
+        var holder = new AtomicReference<Object>();
+
+        deployRoute(ManagementRoute.DEPLOY_STATUS, new StubDeploymentManager(NOT_CALLED, Option.some(known))).handler()
+                                                                                                             .handle(new StubRequestContext(List.of(DEPLOYMENT_ID),
+                                                                                                                                            Option.none(),
+                                                                                                                                            STATUS_INSTANCE))
+                                                                                                             .await()
+                                                                                                             .onFailure(cause -> Assertions.fail(cause.message()))
+                                                                                                             .onSuccess(holder::set);
+
+        return (DeployRoutes.DeploymentResponse) holder.get();
     }
 
     /// Drives the REAL route handler and returns the cause the routing layer would hand to
@@ -367,9 +463,18 @@ class DeployRouteStatusTest {
     }
 
     /// Fails every operation the tests exercise with the supplied cause, and reports every deployment
-    /// id as unknown. `status` returning `none()` is precisely what `getDeployment` converts into
+    /// id as `known` (unknown unless a deployment is supplied), recording the instance count `start` was
+    /// handed. `status` returning `none()` is precisely what `getDeployment` converts into
     /// `DeploymentNotFound(id)`.
-    private record StubDeploymentManager(Cause failure) implements DeploymentManager {
+    private record StubDeploymentManager(Cause failure, AtomicInteger startedWith, Option<Deployment> known) implements DeploymentManager {
+        StubDeploymentManager(Cause failure) {
+            this(failure, new AtomicInteger(NOT_STARTED), Option.none());
+        }
+
+        StubDeploymentManager(Cause failure, Option<Deployment> known) {
+            this(failure, new AtomicInteger(NOT_STARTED), known);
+        }
+
         @Override
         public Promise<Unit> activate() {
             return unsupported("activate");
@@ -393,6 +498,7 @@ class DeployRouteStatusTest {
                                         HealthThresholds thresholds,
                                         CleanupPolicy cleanupPolicy,
                                         int instances) {
+            startedWith.set(instances);
             return failure.result();
         }
 
@@ -413,7 +519,7 @@ class DeployRouteStatusTest {
 
         @Override
         public Option<Deployment> status(String deploymentId) {
-            return Option.none();
+            return known;
         }
 
         @Override

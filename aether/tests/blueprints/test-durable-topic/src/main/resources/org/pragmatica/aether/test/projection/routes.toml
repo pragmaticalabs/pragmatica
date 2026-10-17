@@ -1,0 +1,19 @@
+prefix = "/api/projection"
+
+[security]
+# Test fixture: public routes so the forge proof can drive publish/arm/status without auth setup.
+default = "public"
+override_policy = "strengthen_only"
+
+# onProjectionEvent is deliberately absent — it is the durable subscriber the projection rides,
+# reachable only through the runtime's dispatch path. Routable, the rebuild proof would be vacuous.
+[routes]
+publish = "POST /publish"
+armPoison = "POST /arm-poison"
+status = "POST /status"
+
+[errors]
+default = 500
+# PoisonRefused never travels an HTTP path (its method is unroutable); declared so the processor does
+# not warn about an unmapped cause, with the fall-through recorded as intended.
+HTTP_500 = ["PoisonRefused"]

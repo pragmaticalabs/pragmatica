@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jdbc;
 
 import javax.sql.DataSource;
@@ -16,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
@@ -78,6 +78,11 @@ public final class JdbcSqlConnector implements SqlConnector {
     @Override
     public DatabaseConnectorConfig config() {
         return config;
+    }
+
+    @Override
+    public DatabaseType databaseType() {
+        return config.effectiveType(DatabaseConnectorConfig.Transport.JDBC);
     }
 
     @Override
@@ -191,7 +196,7 @@ public final class JdbcSqlConnector implements SqlConnector {
 
     private void applyParameters(PreparedStatement stmt, Object[] params) throws SQLException {
         for (int i = 0; i < params.length; i++) {
-            stmt.setObject(i + 1, params[i]);
+            org.pragmatica.jdbc.JdbcParameters.bind(stmt, i + 1, params[i]);
         }
     }
 
@@ -363,7 +368,7 @@ public final class JdbcSqlConnector implements SqlConnector {
 
         private void txApplyParameters(PreparedStatement stmt, Object[] params) throws SQLException {
             for (int i = 0; i < params.length; i++) {
-                stmt.setObject(i + 1, params[i]);
+                org.pragmatica.jdbc.JdbcParameters.bind(stmt, i + 1, params[i]);
             }
         }
     }

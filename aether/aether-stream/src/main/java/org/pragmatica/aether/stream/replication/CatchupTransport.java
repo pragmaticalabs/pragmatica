@@ -17,6 +17,15 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Catchu
 public interface CatchupTransport {
     Promise<CatchupResponse> requestCatchup(NodeId target, ReplicationMessage.CatchupRequest request);
 
+    /// [#requestCatchup(NodeId, ReplicationMessage.CatchupRequest)], reporting each page received through `onPage`
+    /// (#1638 B2), so a long catch-up that keeps moving is seen as progressing. A transport that does not page reports
+    /// nothing until its one response.
+    default Promise<CatchupResponse> requestCatchup(NodeId target,
+                                                    ReplicationMessage.CatchupRequest request,
+                                                    Runnable onPage) {
+        return requestCatchup(target, request);
+    }
+
     CatchupTransport NOOP = (_, request) -> Promise.success(catchupResponse(request.replicaId(),
                                                                             request.streamName(),
                                                                             request.partition(),

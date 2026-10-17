@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>examples</artifactId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
     </parent>
 
     <groupId>org.pragmatica.aether.example</groupId>
@@ -20,7 +20,6 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
-        <maven.deploy.skip>true</maven.deploy.skip>
         <jbct.skip>false</jbct.skip>
     </properties>
 

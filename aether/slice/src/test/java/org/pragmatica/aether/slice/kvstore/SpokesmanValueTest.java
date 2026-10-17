@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
 import org.junit.jupiter.api.Nested;
@@ -22,7 +21,7 @@ class SpokesmanValueTest {
     class Factory {
         @Test
         void spokesmanValue_withFields_populatesRecord() {
-            var epoch = Epoch.epoch(3L, 10L);
+            var epoch = Epoch.epoch(0L, 3L, 10L);
             var hlc = new HlcTimestamp(50L, new NodeId("core-1"));
 
             var v = SpokesmanValue.spokesmanValue(List.of("community-a", "community-b"), epoch, hlc, 2L);

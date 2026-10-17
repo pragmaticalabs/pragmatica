@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import org.junit.jupiter.api.Nested;
@@ -33,7 +32,7 @@ class ClusterInitCommandNonInteractiveTest {
                               .execute("init",
                                        "--non-interactive",
                                        "--name", "test-cluster",
-                                       "--nodes", "5",
+                                       "--core-nodes", "5",
                                        "--output", output.toString());
 
             assertThat(exit).isEqualTo(0);
@@ -48,7 +47,7 @@ class ClusterInitCommandNonInteractiveTest {
                                        "--non-interactive",
                                        "--target", "docker",
                                        "--name", "test-cluster",
-                                       "--nodes", "3",
+                                       "--core-nodes", "5",
                                        "--output", output.toString());
 
             assertThat(exit).isEqualTo(0);
@@ -85,11 +84,200 @@ class ClusterInitCommandNonInteractiveTest {
                               .execute("init",
                                        "--target", "docker",
                                        "--name", "test-cluster",
-                                       "--nodes", "3",
+                                       "--core-nodes", "5",
                                        "--output", output.toString());
 
             assertThat(exit).isEqualTo(0);
             assertThat(Files.exists(output)).isTrue();
+        }
+    }
+
+    /// The cloud batch path, driven end to end through picocli.
+    ///
+    /// Each guard is asserted on the MESSAGE, not merely on a non-zero exit: every failure exits
+    /// non-zero, so an exit code alone cannot tell one guard from another and every test here would
+    /// pass for the wrong reason.
+    @Nested
+    class CloudBatchModeGuards {
+
+        private static final String KEY = "~/.ssh/id_ed25519.pub";
+
+        /// Everything except the flag under test, so the named guard is the only thing that can fire.
+        private static String[] cloudArgs(Path output, String... extra) {
+            var base = new java.util.ArrayList<>(java.util.List.of("init",
+                                                                   "--non-interactive",
+                                                                   "--target", "cloud",
+                                                                   "--provider", "hetzner",
+                                                                   "--region", "hel1",
+                                                                   "--instance-type", "cpx32",
+                                                                   "--credential-env", "HCLOUD_TOKEN",
+                                                                   "--ssh-public-key", KEY,
+                                                                   "--admin-cidr", "203.0.113.0/24",
+                                                                   "--core-nodes", "5",
+                                                                   "--name", "prod-eu",
+                                                                   "--output", output.toString()));
+
+            base.addAll(java.util.List.of(extra));
+
+            return base.toArray(new String[0]);
+        }
+
+        private static String runCapturingStderr(String... args) {
+            var captured = new java.io.ByteArrayOutputStream();
+            var original = System.err;
+
+            System.setErr(new java.io.PrintStream(captured, true, java.nio.charset.StandardCharsets.UTF_8));
+
+            try {
+                new CommandLine(new ClusterCommand()).execute(args);
+            } finally {
+                System.setErr(original);
+            }
+
+            return captured.toString(java.nio.charset.StandardCharsets.UTF_8);
+        }
+
+        private static String[] without(Path output, String flag) {
+            var all = java.util.Arrays.asList(cloudArgs(output));
+            var idx = all.indexOf(flag);
+            var kept = new java.util.ArrayList<>(all);
+
+            kept.subList(idx, idx + 2).clear();
+
+            return kept.toArray(new String[0]);
+        }
+
+        /// The R6 gap: `--ssh-key` names the PRIVATE key and did nothing here, silently. Every other
+        /// required flag is supplied, so this can only fail because the flag was refused.
+        @Test
+        void cloudInit_withSshKey_isRefused_ratherThanSilentlyIgnored(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(cloudArgs(output, "--ssh-key", "~/.ssh/id_ed25519"));
+
+            assertThat(err).contains("--ssh-key")
+                           .contains("--ssh-public-key");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        @Test
+        void cloudInit_withoutSshPublicKey_namesTheFlag(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(without(output, "--ssh-public-key"));
+
+            assertThat(err).contains("--ssh-public-key");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        @Test
+        void cloudInit_withoutAdminCidr_namesTheFlag(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(without(output, "--admin-cidr"));
+
+            assertThat(err).contains("--admin-cidr");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        /// The same cloud args for another provider: no hetzner token env var, `extra` appended.
+        private static String[] argsFor(Path output, String provider, String... extra) {
+            var kept = new java.util.ArrayList<>(java.util.Arrays.asList(without(output, "--credential-env")));
+
+            kept.set(kept.indexOf("--provider") + 1, provider);
+            kept.addAll(java.util.List.of(extra));
+
+            return kept.toArray(new String[0]);
+        }
+
+        /// #2059 — gcp's integration requires a zone and none is derived: a `<region>-a` default names a zone that does not exist
+        /// for some regions, validates, and fails only at VM create.
+        @Test
+        void gcpCloudInit_withoutZone_namesTheFlag(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(argsFor(output, "gcp"));
+
+            assertThat(err).contains("--zone");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        @Test
+        void gcpCloudInit_withZone_writesItVerbatim(@TempDir Path tmp) throws Exception {
+            var output = tmp.resolve("cluster-config.toml");
+
+            runCapturingStderr(argsFor(output, "gcp", "--zone", "europe-west1-b"));
+
+            assertThat(Files.readString(output)).contains("zone = \"europe-west1-b\"");
+        }
+
+        @Test
+        void awsCloudInit_withZone_isRefused_ratherThanSilentlyIgnored(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(argsFor(output, "aws", "--zone", "eu-west-1a"));
+
+            assertThat(err).contains("--zone");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        /// #2059 — the env var the operator names for a credential key is the one the generated config references.
+        @Test
+        void awsCloudInit_credentialEnvForAKey_reachesTheGeneratedReference(@TempDir Path tmp) throws Exception {
+            var output = tmp.resolve("cluster-config.toml");
+
+            runCapturingStderr(argsFor(output, "aws", "--credential-env", "secret_access_key=MY_AWS_SECRET"));
+
+            assertThat(Files.readString(output)).contains("secret_access_key = \"${env:MY_AWS_SECRET}\"")
+                                                .contains("access_key_id = \"${env:AWS_ACCESS_KEY_ID}\"");
+        }
+
+        @Test
+        void awsCloudInit_credentialEnvForAnUnknownKey_isRefused(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(argsFor(output, "aws", "--credential-env", "api_token=X"));
+
+            assertThat(err).contains("api_token");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        @Test
+        void cloudInit_withoutRegion_namesTheFlagAndTheResidencyReason(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(without(output, "--region"));
+
+            assertThat(err).contains("--region")
+                           .contains("jurisdiction");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        @Test
+        void cloudInit_withoutInstanceType_namesTheFlagAndTheCatalogue(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(without(output, "--instance-type"));
+
+            assertThat(err).contains("--instance-type")
+                           .contains("catalogue");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        /// The positive case, and the one that proves the guards are not merely refusing everything:
+        /// a complete cloud invocation writes a file carrying BOTH the admin-scoped firewall rules
+        /// (ports 22 and 8080, absent before this change on the STANDARD default) and the SSH
+        /// section `SshKeyResolver` reads.
+        ///
+        /// Named for what it asserts — TOML CONTENT. It does not run the resolver, so it cannot
+        /// claim the config is bootstrappable; `ClusterInitBootstrapPairTest` does that and is where
+        /// that claim belongs.
+        @Test
+        void cloudInit_withEveryRequiredFlag_writesTheAdminRulesAndSshSection(@TempDir Path tmp) throws Exception {
+            var output = tmp.resolve("cluster-config.toml");
+            var exit = new CommandLine(new ClusterCommand()).execute(cloudArgs(output));
+
+            assertThat(exit).isEqualTo(0);
+
+            var toml = Files.readString(output);
+
+            assertThat(toml).contains("[infrastructure.ssh]")
+                            .contains("public_key_file")
+                            .contains("port = 22")
+                            .contains("port = 8080")
+                            .contains("203.0.113.0/24");
         }
     }
 }

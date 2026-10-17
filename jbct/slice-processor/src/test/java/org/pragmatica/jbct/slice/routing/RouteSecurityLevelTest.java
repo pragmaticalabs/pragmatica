@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.jbct.slice.routing;
 
@@ -59,6 +58,17 @@ class RouteSecurityLevelTest {
 
             assertThat(result.isSuccess()).isTrue();
             result.onSuccess(level -> assertThat(level).isEqualTo(RouteSecurityLevel.PUBLIC));
+        }
+
+        @Test
+        void parse_returnsUnspecified_forUnspecifiedString() {
+            // #772 review item 4: toConfigString() can emit "unspecified" into the generated
+            // manifest (ManifestGenerator); parse() must round-trip it back rather than falling
+            // through to "Unknown security level".
+            var result = RouteSecurityLevel.parse("unspecified");
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(level -> assertThat(level).isEqualTo(RouteSecurityLevel.UNSPECIFIED));
         }
 
         @Test
@@ -167,6 +177,20 @@ class RouteSecurityLevelTest {
         @Test
         void toConfigString_returnsRoleWithName() {
             assertThat(new RouteSecurityLevel.Role("admin").toConfigString()).isEqualTo("role:admin");
+        }
+
+        @Test
+        void toConfigString_returnsUnspecified() {
+            assertThat(RouteSecurityLevel.UNSPECIFIED.toConfigString()).isEqualTo("unspecified");
+        }
+
+        @Test
+        void roundTrip_unspecified_parseOfToConfigString() {
+            // Pins the #772 review item 4 fix both ways: what codegen emits, parse() accepts back.
+            var result = RouteSecurityLevel.parse(RouteSecurityLevel.UNSPECIFIED.toConfigString());
+
+            assertThat(result.isSuccess()).isTrue();
+            result.onSuccess(level -> assertThat(level).isEqualTo(RouteSecurityLevel.UNSPECIFIED));
         }
     }
 }

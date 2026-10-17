@@ -8,7 +8,9 @@ import java.util.Map;
 import java.util.function.BiFunction;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
+import org.pragmatica.http.HttpError;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCancelTimerForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCreateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityDeleteForward;
@@ -18,6 +20,7 @@ import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntitySched
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForwardResponse;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse;
+import org.pragmatica.aether.resource.entity.EntityError;
 import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
 import org.pragmatica.aether.resource.entity.EntityOwnerForward;
 import org.pragmatica.consensus.NodeId;
@@ -53,10 +56,16 @@ import org.slf4j.LoggerFactory;
 /// double-applied one is not.
 public final class EntityForwardService implements EntityOwnerForward, EntityForwardRegistry {
     private static final Logger log = LoggerFactory.getLogger(EntityForwardService.class);
+    /// The wire `failureType` of the handoff answer — the entity-side class's simple name, which is what
+    /// the sender's `retypeForwarded` matches on.
+    static final String OWNER_TRANSITIONING = EntityError.OwnerTransitioning.class.getSimpleName();
 
     private final NodeId selfNodeId;
     private final Sender sender;
     private final TimeSpan timeout;
+    /// Whether the COMMITTED cluster state still makes this node answerable for a keyspace — see
+    /// [CommittedEntityStake]. Consulted only when there is no local target.
+    private final Predicate<String> committedStake;
     private final Map<String, ForwardTarget> targets = new ConcurrentHashMap<>();
     private final Map<String, Promise<byte[]>> pending = new ConcurrentHashMap<>();
     /// The read half's correlation map, distinct from [#pending] because a read's answer is an
@@ -78,14 +87,26 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         Promise<WriteOutcome> send(NodeId target, EntityForwardMessage message);
     }
 
-    private EntityForwardService(NodeId selfNodeId, Sender sender, TimeSpan timeout) {
+    private EntityForwardService(NodeId selfNodeId, Sender sender, TimeSpan timeout, Predicate<String> committedStake) {
         this.selfNodeId = selfNodeId;
         this.sender = sender;
         this.timeout = timeout;
+        this.committedStake = committedStake;
     }
 
+    /// A service that never claims a stake: a keyspace with no local target is unknown, terminally.
     public static EntityForwardService entityForwardService(NodeId selfNodeId, Sender sender, TimeSpan timeout) {
-        return new EntityForwardService(selfNodeId, sender, timeout);
+        return new EntityForwardService(selfNodeId, sender, timeout, _ -> false);
+    }
+
+    /// `committedStake` answers "does committed cluster state still name this node as host or owner of
+    /// this keyspace" — what separates a handoff window (transient) from a keyspace nobody provisioned
+    /// here (terminal).
+    public static EntityForwardService entityForwardService(NodeId selfNodeId,
+                                                            Sender sender,
+                                                            TimeSpan timeout,
+                                                            Predicate<String> committedStake) {
+        return new EntityForwardService(selfNodeId, sender, timeout, committedStake);
     }
 
     // --- registry (receiving side) ---
@@ -473,10 +494,7 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
         var target = targets.get(keyspace);
 
         if (target == null) {
-            log.warn("Entity owner-forward: no target for keyspace '{}' (correlationId={})", keyspace, correlationId);
-            answer(requester,
-                   correlationId,
-                   failure.apply("UnknownKeyspace", "no entity registered for keyspace " + keyspace));
+            answerNoTarget(requester, correlationId, keyspace, failure);
 
             return;
         }
@@ -485,10 +503,47 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                  .onSuccess(value -> answer(requester,
                                             correlationId,
                                             success.apply(value)))
-                 .onFailure(cause -> answer(requester,
-                                            correlationId,
-                                            failure.apply(cause.getClass().getSimpleName(),
-                                                          cause.message())));
+                 .onFailure(cause -> answerFailure(requester, correlationId, failure, cause));
+    }
+
+    private void answerFailure(NodeId requester,
+                               String correlationId,
+                               Fn2<EntityForwardMessage, String, String> failure,
+                               Cause cause) {
+        log.warn("Entity owner-forward failure correlationId={} (cause chain: {})",
+                 correlationId,
+                 HttpError.causeChain(cause));
+        answer(requester,
+               correlationId,
+               failure.apply(cause.getClass().getSimpleName(),
+                             HttpError.clientMessage(cause)));
+    }
+
+    /// No local target. Whether that is a handoff or a mistake is decided from COMMITTED state, never from
+    /// the absence itself: a node the cluster still counts as host or owner of the keyspace has just
+    /// unloaded its slice and answers with the transient [EntityError.OwnerTransitioning] — the caller's
+    /// retry lands on the re-minted owner. A node with no stake has never been told it serves this
+    /// keyspace, and a genuinely unknown keyspace stays terminal (`UnknownKeyspace`).
+    private void answerNoTarget(NodeId requester,
+                                String correlationId,
+                                String keyspace,
+                                Fn2<EntityForwardMessage, String, String> failure) {
+        var handoff = committedStake.test(keyspace);
+
+        log.warn("Entity owner-forward: no target for keyspace '{}' — {} (correlationId={})",
+                 keyspace,
+                 handoff
+                 ? "committed host/owner is transitioning (loading or handing off), answering transient"
+                 : "not a committed host or owner, answering terminal",
+                 correlationId);
+        answer(requester,
+               correlationId,
+               handoff
+               ? failure.apply(OWNER_TRANSITIONING,
+                               "keyspace " + keyspace
+                              + " owner is transitioning (loading or handing off) on this node:"
+                              + " retry once ownership has settled")
+               : failure.apply("UnknownKeyspace", "no entity registered for keyspace " + keyspace));
     }
 
     /// A refused RESPONSE send is logged and nothing more: the requester's own timeout (or its own
@@ -575,16 +630,21 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     /// interface rather than through this receiver.
     private static final byte[] NO_PAYLOAD = new byte[0];
 
-    private static final BiFunction<String, WriteOutcome, Cause> FORWARD_SEND_REFUSED = (owner, outcome) -> Causes.cause("entity owner-forward to " + owner
-                                                                                                                        + " refused at send (" + outcome
-                                                                                                                        + ") — the owner was never reached");
+    /// Typed transient (#1973): a send this node's transport refused delivered nothing, so a retry is safe and the caller
+    /// must be able to tell it from a final failure.
+    private static final BiFunction<String, WriteOutcome, Cause> FORWARD_SEND_REFUSED = (owner, outcome) -> new EntityOwnerForward.ForwardNotSent("entity owner-forward to " + owner
+                                                                                                                                                 + " refused at send (" + outcome
+                                                                                                                                                 + ") — the owner was never reached and nothing was applied; safe to retry");
 
-    private static final BiFunction<String, String, Cause> FORWARD_TIMED_OUT = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
-                                                                                                                + " for keyspace " + keyspace
-                                                                                                                + " timed out — NOT applied on this node; the owner may or may not have"
-                                                                                                                + " applied it (outcome unknown, a blind retry can double-apply)");
+    /// Transient, but NOT safe to retry blindly: the command was sent, so the owner may have applied it. The message must say
+    /// so, in words that differ from [#FORWARD_SEND_REFUSED]'s, because both answer 503 and the body is what tells them apart.
+    private static final BiFunction<String, String, Cause> FORWARD_TIMED_OUT = (owner, keyspace) -> new EntityOwnerForward.ForwardTimedOut("entity owner-forward to " + owner
+                                                                                                                                          + " for keyspace " + keyspace
+                                                                                                                                          + " timed out after the send — outcome unknown: the owner may have applied the command"
+                                                                                                                                          + " (it was not applied on this node); retry only an idempotent operation, a blind retry can double-apply");
 
-    private static final BiFunction<String, String, Cause> FORWARD_BUDGET_EXHAUSTED = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
-                                                                                                                       + " for keyspace " + keyspace
-                                                                                                                       + " refused: request budget exhausted — the command was never sent");
+    /// Typed transient (#1973): refused before the send, so nothing left this node.
+    private static final BiFunction<String, String, Cause> FORWARD_BUDGET_EXHAUSTED = (owner, keyspace) -> new EntityOwnerForward.ForwardNotSent("entity owner-forward to " + owner
+                                                                                                                                                + " for keyspace " + keyspace
+                                                                                                                                                + " refused: request budget exhausted — the command was never sent; safe to retry with a fresh budget");
 }

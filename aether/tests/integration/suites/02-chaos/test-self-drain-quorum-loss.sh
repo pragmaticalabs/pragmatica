@@ -1,8 +1,7 @@
 #!/bin/bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-# Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-# See LICENSE in the repository root for full terms.
+# Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 #
 # test-self-drain-quorum-loss.sh — Spec §16 rows S19 + S20.
 #
@@ -81,7 +80,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0: identical for a direct run, and correct when
+# test/test-chaos-harness.sh sources this file to drive its functions.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 source "${SCRIPT_DIR}/../../lib/topology.sh"
@@ -96,8 +97,37 @@ SURVIVOR_EXIT_BUDGET_S=45
 
 # Post-restart cluster-recovery budget. 5 fresh JVMs cold-boot, SWIM
 # converges, aggregator emits its first periodic snapshot, NORMAL phase
-# is reached. Spec §16 row S20 sets 60s as the contract.
+# is reached. Spec §16 row S20 sets 60s as the contract. Applies to
+# docker/remote and to the cloud quorum-held branch (restart_all_nodes, then a
+# wait_for that scales it by TIMEOUT_SCALE) — NOT to a confirmed cloud full
+# self-drain, which uses CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S below (#1051).
 RECOVERY_BUDGET_S=60
+
+# #1051 (owner ruling 2026-09-13): on cloud, S20 after a full self-drain recovers by
+# reap + fresh bootstrap (_cloud_full_drain_recover, lib/cluster.sh) within a budget
+# sized to provisioning, ~10 minutes. It is measured from the START of drain
+# confirmation to 5 healthy cores, so it covers drain confirmation, reap, bootstrap
+# and the core-count wait. Parts:
+#   - drain confirmation: at most CLOUD_DRAIN_CONFIRM_BOUND_S (120s, below);
+#   - reap + bootstrap + reaching 5 cores: the one recorded cloud full-drain S20 (the
+#     2026-09-13 --runtime jvm 02-chaos run behind #1051) took 614s, 369s of which was
+#     the partial-drain probe this path no longer runs, leaving at most 245s for the
+#     revive loop, reap, bootstrap and barriers.
+# 120 + 245 = 365s worst observed; 600s is the ruling's ~10 minutes, about 1.6x that
+# single sample. NOT scaled by TIMEOUT_SCALE: the figure is already a cloud wall-clock
+# measurement and the ruling is stated in wall-clock time, so the cloud default scale
+# of 3 would turn ~10 minutes into 30. The bootstrap's own `--timeout 600` is an inner
+# ceiling, not a part of this sum: a bootstrap needing most of it has already overrun
+# the ruling, and S20 records that as a FAIL printing the measured elapsed time.
+CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S=600
+
+# Bound on starting another drain-confirmation round (#1051), spent inside the budget
+# above and likewise unscaled. A round is one hcloud listing (<=10s) plus one SSH read
+# per labelled VM (<=20s each; S19 deletes the 3 victims and leaves the 2 survivors),
+# about 50s plus a 5s pause, so 120s allows a second round for a VM whose first read
+# failed. It is checked BETWEEN rounds, so confirmation can overrun it by one pause
+# plus one round; the 600s budget above is the enforced ceiling.
+CLOUD_DRAIN_CONFIRM_BOUND_S=120
 
 # Files ferrying state between test functions. run_test isolates each
 # function in its own shell context, so env vars don't survive.
@@ -122,6 +152,10 @@ EVENT_BASELINE_FILE="/tmp/s19-event-baseline.$$"
 # test_survivors_self_drain_and_exit.
 PRE_KILL_ROSTER_FILE="/tmp/s19-pre-kill-roster.$$"
 VERDICT_FILE="/tmp/s19-verdict.$$"
+# Set by _s19_survivor_membership_direct when a membership read comes back from a node that is
+# NOT the survivor we addressed. A FILE, not a variable: that function runs inside $( ), i.e. a
+# subshell, so an assignment there would never reach the arbitration loop.
+IDENTITY_VIOLATION_FILE="/tmp/s19-identity-violation.$$"
 # #441 run 8 (Defect C): the local ssh CLIENT's own stderr (host-key banner,
 # PAM password-expiry refusal text) is captured here rather than left to
 # bleed unrouted into the suite log — see the tier-2 comment in
@@ -500,14 +534,13 @@ _s19_cached_survivor_ip() {
 # #441 run 9 (Defect 1): survivor IP resolution for every S19 corroboration
 # call site below. Cache-first (_s19_cached_survivor_ip) — the pre-kill
 # resolution is reliable because it runs while the cluster is still healthy.
-# On a cache miss, falls back to a live cloud_public_ip lookup, but NEVER
-# lets that helper's own log_fail-tagged diagnostic text surface as a
-# latching failure here: cloud_public_ip legitimately hard-fails for OTHER
-# callers elsewhere in the harness (its log_fail semantics are intentionally
-# left untouched globally), but a corroboration TIER failing to resolve an
-# IP mid-quorum-loss is expected, recoverable degradation — callers must
-# fall through to their next corroboration tier, not report a hard failure.
-# Prints the IP on stdout; rc=1 (nothing printed, only a log_warn emitted)
+# On a cache miss, falls back to a live cloud_public_ip lookup. A miss there is a
+# probe miss (stderr log_warn + rc 1, never a counted [FAIL] — since the fail-file latch of
+# #1511 a log_fail captured by $(...) would count even though its text is swallowed): a
+# corroboration TIER failing to resolve an IP mid-quorum-loss is expected, recoverable
+# degradation — callers must fall through to their next corroboration tier, not report a
+# hard failure.
+# Prints the IP on stdout; rc=1 (nothing on stdout; the log_warn goes to stderr, because callers capture stdout)
 # if no IP could be resolved by either path.
 _s19_resolve_survivor_ip() {
     local survivor="$1" ip ip_rc
@@ -519,10 +552,39 @@ _s19_resolve_survivor_ip() {
     ip=$(cloud_public_ip "$survivor" 2>/dev/null)
     ip_rc=$?
     if [ "$ip_rc" -ne 0 ] || [ -z "$ip" ]; then
-        log_warn "Survivor ${survivor} IP unavailable (no pre-kill cache entry AND live cloud_public_ip lookup failed, rc=${ip_rc}) — degrading to next corroboration tier"
+        log_warn "Survivor ${survivor} IP unavailable (no pre-kill cache entry AND live cloud_public_ip lookup failed, rc=${ip_rc}) — degrading to next corroboration tier" >&2
         return 1
     fi
     printf '%s' "$ip"
+    return 0
+}
+
+# The cloud runtime this run provisioned, which selects how a VM's drain state is
+# read (#1051). run-tests.sh exports CLOUD_RUNTIME from --runtime. On cloud an unset
+# or unknown value is refused, never defaulted: defaulting to `container` sent a JVM
+# run's reads to docker inspect and turned its halt-reason step into a SKIP.
+_s19_require_cloud_runtime() {
+    case "${CLOUD_RUNTIME:-}" in
+        jvm|container) return 0 ;;
+    esac
+    log_fail "CLOUD_RUNTIME is '${CLOUD_RUNTIME:-<unset>}' on a cloud run — expected 'jvm' or 'container' (run-tests.sh exports it from --runtime; a standalone suite run must export it)"
+    return 1
+}
+
+# <survivor> <observed id read from the VM> <ip>: rc 0 when the VM at the (cached, possibly recycled) address is the survivor;
+# otherwise a counted log_fail and rc 1 — a recycled address answers with a stranger's unit state, and a read that SUCCEEDS
+# from the wrong subject is a false pass, not a degraded tier. An unreadable id is void evidence, not a pass.
+_s19_survivor_identity_ok() {
+    local survivor="$1" observed="$2" ip="$3" expected="$1"
+    [[ "$expected" =~ ^node-([0-9]+)$ ]] && expected="${CLOUD_SOURCE_NAME}-core-$(( ${BASH_REMATCH[1]} - 1 ))"
+    if [ -z "$observed" ]; then
+        log_fail "S19 tier-2 identity indeterminate: ${ip} returned no node id for expected survivor '${expected}', so it cannot be shown WHICH VM answered — the read is void, not a pass"
+        return 1
+    fi
+    if [ "$observed" != "$expected" ]; then
+        log_fail "S19 tier-2 identity violation: read ${ip} expecting survivor '${expected}' but node '${observed}' answered — the cached survivor IP has been recycled onto another VM; its exit state says nothing about ${expected}"
+        return 1
+    fi
     return 0
 }
 
@@ -538,8 +600,8 @@ _s19_resolve_survivor_ip() {
 #      window, tier 1 structurally cannot observe it — by the time either
 #      survivor is checked, the OTHER may already be dead too, leaving no live
 #      core to answer membership/events at all. Reach past the mgmt API
-#      entirely: SSH to the survivor's own VM (cloud_ssh, reuses
-#      $AETHER_SSH_KEY) and read the DESIGNED drain-halt state directly from
+#      entirely: SSH to the survivor's own VM (cloud_ssh_ip at the pre-kill
+#      cached address, reuses $AETHER_SSH_KEY) and read the DESIGNED drain-halt state directly from
 #      `docker inspect aether-node` — exit code 2 (Runtime.halt(2), the exact
 #      halt reason SelfDrainCoordinator wires) with a non-zero FinishedAt is
 #      authoritative: this is a direct read of the actual JVM exit state, not
@@ -587,7 +649,18 @@ _confirm_survivor_departure() {
         return 0
     fi
 
-    # Tier 2: SSH + docker inspect on the survivor's own VM.
+    # Tier 2: SSH + a runtime-specific direct read of the drain-halt state on
+    # the survivor's own VM.
+    #   --runtime container: `docker inspect` (unchanged, existing behaviour).
+    #   --runtime jvm (H1, 2026-09-13): a JVM-runtime cloud VM has NO docker
+    #     daemon at all — the node runs as systemd unit `aether-node` — so the
+    #     unconditional `docker inspect` here used to fail every time with
+    #     "docker: command not found" (rc=127), scoring a real S19 violation
+    #     regardless of what the product did (#1051). Read `systemctl show`
+    #     instead: ActiveState=failed + ExecMainStatus=2 is the drain-halt
+    #     signature (jvm_unit_is_drain_halt, lib/common.sh) — `Restart=no` is
+    #     deliberate product design, so a self-drained unit stays
+    #     ActiveState=failed rather than being relaunched.
     #
     # #441 run 8 (Defect C): the REMOTE command's own stderr is already
     # merged into $insp via the inline `2>&1` above (inside the quoted
@@ -601,17 +674,59 @@ _confirm_survivor_departure() {
     # was bleeding straight into the suite log. Redirect it into
     # SSH_STDERR_FILE and surface it via log_info (attributed, not a raw
     # passthrough) instead of silently discarding it.
-    local insp ssh_rc code finished_at ssh_stderr
-    insp=$(cloud_ssh "$survivor" "docker inspect --format '{{.State.ExitCode}}|{{.State.FinishedAt}}' aether-node 2>&1" 2>"$SSH_STDERR_FILE")
-    ssh_rc=$?
-    if [ -s "$SSH_STDERR_FILE" ]; then
-        ssh_stderr=$(tr '\n' ' ' < "$SSH_STDERR_FILE" | head -c 300)
-        log_info "cloud_ssh(${survivor}) local client diagnostics (host-key banner / PAM text, not part of the remote command's own output): ${ssh_stderr}"
+    _s19_require_cloud_runtime || return 1
+    local insp="" ssh_rc="none" ssh_attempted=false ssh_stderr remote_cmd runtime="$CLOUD_RUNTIME" ip mgmt_port status
+    if [ "$runtime" = "jvm" ]; then
+        remote_cmd="grep -m1 '^AETHER_NODE_ID=' /etc/aether/node.env 2>&1; systemctl show aether-node --property=ActiveState,ExecMainStatus 2>&1"
+    else
+        remote_cmd="docker inspect --format '{{.State.ExitCode}}|{{.State.FinishedAt}}|{{index .Config.Labels \"aether-node-id\"}}' aether-node 2>&1"
     fi
-    rm -f "$SSH_STDERR_FILE"
-    if [ "$ssh_rc" -eq 0 ]; then
+    # Resolve through the pre-kill cache first (_s19_resolve_survivor_ip) and SSH to that address: a live
+    # cloud_public_ip lookup mid-quorum-loss cannot resolve a CTM-replacement survivor (it is not in
+    # bootstrap-state.json and the endpoint API died with the quorum), so tier 2 never ran for them.
+    ip=$(_s19_resolve_survivor_ip "$survivor")
+    if [ -n "$ip" ]; then
+        ssh_attempted=true
+        insp=$(cloud_ssh_ip "$ip" "$remote_cmd" 2>"$SSH_STDERR_FILE")
+        ssh_rc=$?
+        if [ -s "$SSH_STDERR_FILE" ]; then
+            ssh_stderr=$(tr '\n' ' ' < "$SSH_STDERR_FILE" | head -c 300)
+            log_info "ssh(${survivor} @ ${ip}) local client diagnostics (host-key banner / PAM text, not part of the remote command's own output): ${ssh_stderr}"
+        fi
+        rm -f "$SSH_STDERR_FILE"
+    else
+        log_warn "Survivor ${survivor} tier-2 (SSH drain-state read, ${runtime} runtime) skipped: IP unresolvable — SSH not attempted — falling through to mgmt-port/VM-existence corroboration"
+    fi
+    if [ "$ssh_attempted" = true ] && [ "$ssh_rc" -eq 0 ]; then
+        # The address came from a PRE-KILL cache and cloud IPs are recycled: prove WHICH VM answered before trusting its
+        # exit state. Identity source on both runtimes is the id the node's user-data gave it: JVM /etc/aether/node.env
+        # AETHER_NODE_ID, container the `aether-node-id` label of the aether-node container (NodeUserDataRenderer).
+        local observed_id
+        if [ "$runtime" = "jvm" ]; then
+            observed_id=$(jvm_unit_field "$insp" "AETHER_NODE_ID" | tr -d '"')
+        else
+            observed_id=$(printf '%s' "$insp" | tr -d '\r' | awk -F'|' 'NF >= 3 { print $3; exit }')
+        fi
+        _s19_survivor_identity_ok "$survivor" "$observed_id" "$ip" || return 1
+        if [ "$runtime" = "jvm" ]; then
+            local active_state exec_status
+            # jvm_unit_field and jvm_unit_is_drain_halt (lib/common.sh) are
+            # shared with jvm_unit_assert_drain_halt, which
+            # test_survivor_exit_codes_are_two below uses, so both read and judge
+            # the halt reason the same way.
+            active_state=$(jvm_unit_field "$insp" "ActiveState")
+            exec_status=$(jvm_unit_field "$insp" "ExecMainStatus")
+            if jvm_unit_is_drain_halt "$active_state" "$exec_status"; then
+                log_info "Survivor ${survivor} systemd unit ActiveState=failed ExecMainStatus=2 (Runtime.halt(2)) — designed drain halt confirmed via SSH systemctl-show (event/membership signal was unavailable, consistent with simultaneous last-survivor drain)"
+                return 0
+            fi
+            log_fail "S19 violation (cloud/jvm): survivor ${survivor} reachable via SSH but systemd unit reports ActiveState='${active_state}' ExecMainStatus='${exec_status}' — not a designed drain halt (expected ActiveState=failed, ExecMainStatus=2)"
+            return 1
+        fi
+        local code finished_at
         code="${insp%%|*}"
         finished_at="${insp#*|}"
+        finished_at="${finished_at%%|*}"
         if [ "$code" = "2" ] && [ -n "$finished_at" ] && [ "$finished_at" != "0001-01-01T00:00:00Z" ]; then
             log_info "Survivor ${survivor} container exit code=2 (Runtime.halt(2)) FinishedAt=${finished_at} — designed drain halt confirmed via SSH docker-inspect (event/membership signal was unavailable, consistent with simultaneous last-survivor drain)"
             return 0
@@ -619,17 +734,17 @@ _confirm_survivor_departure() {
         log_fail "S19 violation (cloud): survivor ${survivor} reachable via SSH but docker inspect reports exit-code='${code}' FinishedAt='${finished_at}' — not a designed drain halt (expected exit code 2)"
         return 1
     fi
-    if [ "$ssh_rc" -ne 255 ] && [ -n "$insp" ]; then
+    if [ "$ssh_attempted" = true ] && [ "$ssh_rc" -ne 255 ] && [ -n "$insp" ]; then
         # SSH connected and returned real diagnostic output; the REMOTE
-        # command itself failed (e.g. docker daemon error, unexpected
-        # container name). Distinct from the known #441 item 3 lockout AND
-        # from the no-evidence probe-infrastructure case below — surface
-        # loudly rather than silently degrading to the approximate mgmt-port
-        # proof.
-        log_fail "S19 violation (cloud): survivor ${survivor} SSH connected but the remote docker-inspect command failed (rc=${ssh_rc}): ${insp}"
+        # command itself failed (e.g. docker daemon error / missing systemd
+        # unit, unexpected container/unit name). Distinct from the known #441
+        # item 3 lockout AND from the no-evidence probe-infrastructure case
+        # below — surface loudly rather than silently degrading to the
+        # approximate mgmt-port proof.
+        log_fail "S19 violation (cloud): survivor ${survivor} SSH connected but the remote drain-state read (${runtime} runtime) failed (rc=${ssh_rc}): ${insp}"
         return 1
     fi
-    if [ "$ssh_rc" -ne 0 ]; then
+    if [ "$ssh_attempted" = true ] && [ "$ssh_rc" -ne 0 ]; then
         # Tier-2 corroboration is unavailable/ambiguous, not a genuine,
         # interpretable command failure: rc=255 is the known #441 item 3
         # SSH transport/auth lockout; any OTHER non-zero rc with EMPTY
@@ -641,7 +756,7 @@ _confirm_survivor_departure() {
         # anything to interpret, so both degrade to a warning instead of a
         # hard S19 violation, and fall through to the remaining
         # corroboration tiers.
-        log_warn "Survivor ${survivor} tier-2 (SSH docker-inspect) corroboration unavailable (rc=${ssh_rc}, no interpretable output — likely #441 item 3 SSH lockout or a non-TTY PAM exec gate, not a genuine command failure) — falling through to mgmt-port/VM-existence corroboration"
+        log_warn "Survivor ${survivor} tier-2 (SSH drain-state read, ${runtime} runtime) corroboration unavailable (rc=${ssh_rc}, no interpretable output — likely #441 item 3 SSH lockout or a non-TTY PAM exec gate, not a genuine command failure) — falling through to mgmt-port/VM-existence corroboration"
     fi
 
     # Tier 3 (approximate, log_warn): SSH-based corroboration above was
@@ -650,15 +765,12 @@ _confirm_survivor_departure() {
     # here. Check the survivor's own mgmt endpoint directly for a
     # transport-dead signal.
     #
-    # #441 run 9 (Defect 1): resolve via the pre-kill IP cache first
+    # #441 run 9 (Defect 1): the address is the one tier 2 already resolved via the pre-kill IP cache
     # (_s19_resolve_survivor_ip), not a live cloud_public_ip call — a
     # CTM-replacement survivor's live /api/v1/nodes/endpoint lookup depends on
     # the very cluster that just lost quorum, which is exactly when this
-    # tier runs. The wrapper already degrades to a clean log_warn (never a
-    # latching log_fail, never leaks cloud_public_ip's own [FAIL]-tagged
-    # diagnostic text into this suite's log) on any resolution failure.
-    local ip mgmt_port status
-    ip=$(_s19_resolve_survivor_ip "$survivor")
+    # tier runs. A resolution miss degrades with a log_warn (cloud_public_ip no longer
+    # counts a miss as a [FAIL]).
     if [ -z "$ip" ]; then
         log_info "Survivor ${survivor} public IP could not be resolved (cache miss + live lookup failed) — tier 3 unavailable, falling through to VM-existence tier"
     fi
@@ -674,10 +786,21 @@ _confirm_survivor_departure() {
     fi
 
     # Tier 4: last-resort VM-existence fallback (pre-existing).
-    if ! cloud_server_id "$survivor" >/dev/null 2>&1; then
-        log_info "Survivor ${survivor} VM no longer resolves — already departed (event lost to publish-vs-halt race or pre-baseline); treating as satisfied departure"
-        return 0
-    fi
+    # Only rc 1 (address known, no server holds it) is POSITIVE evidence the VM is gone. rc 3 = UNKNOWN (address
+    # unresolvable / hcloud list failed): says nothing about the VM, so departure is unproven — a visible failure.
+    local sid_rc=0
+    cloud_server_id "$survivor" >/dev/null 2>&1 || sid_rc=$?
+    case "$sid_rc" in
+        0) ;;
+        1)
+            log_info "Survivor ${survivor} VM no longer resolves — already departed (event lost to publish-vs-halt race or pre-baseline); treating as satisfied departure"
+            return 0
+            ;;
+        *)
+            log_fail "S19 violation (cloud): survivor ${survivor} departure UNPROVEN — no departure event, SSH proof unavailable (rc=${ssh_rc}), mgmt endpoint unresolvable, and its VM's existence is UNKNOWN (cloud_server_id rc=${sid_rc}: address unresolvable or hcloud list failed), which is not evidence of departure"
+            return 1
+            ;;
+    esac
     log_fail "S19 violation (cloud): survivor ${survivor} did not DEPART membership within ${SURVIVOR_EXIT_BUDGET_S}s — no NODE_LEFT/NODE_FAILED on /api/v1/events, SSH docker-inspect proof unavailable (rc=${ssh_rc}) with mgmt endpoint unresolvable, and its VM still resolves (still running)"
     return 1
 }
@@ -690,12 +813,41 @@ _confirm_survivor_departure() {
 # #441 run 9 (Defect 1): IP resolution goes through the pre-kill cache
 # (_s19_resolve_survivor_ip) — same rationale as tier 3 above.
 # Usage: _s19_survivor_membership_direct "$survivor"
+# Reads a survivor's LOCAL membership view AND proves the survivor is what answered.
+#
+# The IP comes from a pre-kill cache, and cloud providers recycle public IPs across recreated
+# VMs — run 3 (2026-09-14) had two IPs serving SIX distinct VMs each. Without this check a
+# replacement landing on a cached survivor IP answers happily with belowThreshold=false, the
+# read SUCCEEDS, and therefore neither the empty-read degrade path nor the survivor-2 fallback
+# (gated on an EMPTY read) ever fires: the arbitration spends its whole budget interrogating a
+# stranger and calls it "quorum held". A read that FAILS is suspicious; a read that SUCCEEDS
+# from the wrong subject is not, which is why identity is asserted rather than assumed.
 _s19_survivor_membership_direct() {
     local survivor="$1"
-    local ip
+    local ip body observed rc
     ip=$(_s19_resolve_survivor_ip "$survivor") || return 1
     [ -z "$ip" ] && return 1
-    curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/api/v1/cluster/membership" 2>/dev/null
+    body=$(curl -sfk -m 3 -H "X-API-Key: ${API_KEY}" "${MGMT_SCHEME:-http}://${ip}:${CLOUD_MGMT_PORT:-8080}/api/v1/cluster/membership" 2>/dev/null) || return 1
+    [ -z "$body" ] && return 1
+
+    observed=$(membership_identity_matches "$body" "$survivor")
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        printf '%s' "$body"
+        return 0
+    fi
+    if [ "$rc" -eq 1 ]; then
+        # POSITIVE evidence we polled a stranger. Terminal: never retry, never fall through to
+        # a verdict, because every later reading from this address is equally untrustworthy.
+        printf 'MISMATCH survivor=%s ip=%s answered=%s\n' "$survivor" "$ip" "$observed" \
+            >> "$IDENTITY_VIOLATION_FILE"
+        log_fail "S19 identity violation: polled ${ip} expecting survivor '${survivor}' but node '${observed}' answered — the cached survivor IP has been recycled onto another VM. This round measures NOTHING about ${survivor}; scoring it would report a stranger's quorum state as the survivor's."
+        return 2
+    fi
+    printf 'INDETERMINATE survivor=%s ip=%s answered=%s\n' "$survivor" "$ip" "${observed:-<none>}" \
+        >> "$IDENTITY_VIOLATION_FILE"
+    log_fail "S19 identity indeterminate: membership body from ${ip} carries no usable top-level nodeId (expected survivor '${survivor}'). Cannot establish WHICH node answered, so the round is VOID rather than lost."
+    return 2
 }
 
 # #441 run 8 (Defect A): CLOUD-ONLY arbitration for the auto-heal race. The
@@ -758,6 +910,14 @@ test_confirm_quorum_loss_race() {
         # under `set -e` when the function returns 1 (no live read yet).
         membership=$(_s19_survivor_membership_direct "$s1" || true)
         [ -z "$membership" ] && membership=$(_s19_survivor_membership_direct "$s2" || true)
+        # An identity failure on EITHER survivor voids the round immediately. Continuing would
+        # accumulate polls whose subject is unknown, which is how run 3 produced 0/180 readings
+        # that turned out to be evidence of nothing.
+        if [ -s "$IDENTITY_VIOLATION_FILE" ]; then
+            verdict="void"
+            log_fail "Race-arbitration VOID: $(head -1 "$IDENTITY_VIOLATION_FILE") — this round is NOT a lost race and MUST NOT be counted as an attempt."
+            break
+        fi
         if [ -n "$membership" ]; then
             below=$(membership_bool_field "$membership" belowThreshold)
             if [ "$below" = "true" ]; then
@@ -902,19 +1062,35 @@ test_survivors_self_drain_and_exit() {
     log_pass "S19: both survivors (${s1}, ${s2}) exited within ${elapsed}s (budget=${SURVIVOR_EXIT_BUDGET_S}s)"
 }
 
+# H2 (#1051): on cloud --runtime jvm the HALT REASON is each survivor's systemd unit
+# state, asserted by jvm_unit_assert_drain_halt (lib/common.sh) — the JVM-runtime
+# analog of container_exit_code's `docker inspect .State.ExitCode`. Where it cannot be
+# read, _s19_record_exit_code_step records SKIPPED and never calls this function.
+
 test_survivor_exit_codes_are_two() {
-    # GAP-A (cloud): exit-code-2 is the self-drain HALT REASON, read from
-    # `docker inspect .State.ExitCode`. On cloud there is no docker access and a VM
-    # power-off would not yield an exit code anyway, so the halt-reason is unverifiable.
-    # The drain OUTCOME (survivors departed membership) is asserted on cloud in
-    # test_survivors_self_drain_and_exit; skip the docker-only reason check here.
+    # On cloud this runs only with --runtime jvm after a quorum-lost S19 (see
+    # _s19_exit_code_disposition): cloud --runtime container has no docker access
+    # from the test host, and a quorum-held run has no drained survivor to read.
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
-        log_info "GAP-A (cloud): skipping exit-code-2 halt-reason assertion (no docker; unverifiable) — drain outcome (membership departure) already asserted in the self-drain step"
-        return 0
+        local s1 s2
+        s1=$(sed -n '1p' "$SURVIVORS_FILE" 2>/dev/null)
+        s2=$(sed -n '2p' "$SURVIVORS_FILE" 2>/dev/null)
+        if [ -z "$s1" ] || [ -z "$s2" ]; then
+            log_fail "Survivors file missing entries (s1='${s1}', s2='${s2}') — no survivor to read the halt reason from"
+            return 1
+        fi
+        # Read at the PRE-KILL cached address, with the VM's identity proven (see jvm_unit_assert_drain_halt): after the
+        # quorum-loss drain a CTM survivor does not resolve live, which made this step FAIL on VMs that had halted with
+        # exit 2 (S19 tier 2 had already read ExecMainStatus=2 from the same VMs).
+        local ip1 ip2
+        ip1=$(_s19_resolve_survivor_ip "$s1") || ip1=""
+        ip2=$(_s19_resolve_survivor_ip "$s2") || ip2=""
+        jvm_unit_assert_drain_halt "$s1" "Survivor ${s1}" "$ip1"
+        jvm_unit_assert_drain_halt "$s2" "Survivor ${s2}" "$ip2"
+        return
     fi
-    # SelfDrainCoordinator.performExit() invokes the configured jvmExit
-    # runnable, which the production factory wires to
-    # `Runtime.getRuntime().halt(2)` (SelfDrainCoordinator.java:104).
+    # The node's DrainProcedure ends in its jvmExit hook, which
+    # AetherNode.aetherNode(...) wires to `Runtime.getRuntime().halt(2)`.
     # Any other exit code indicates a different shutdown path:
     #   0   — graceful clean shutdown (not self-drain)
     #   137 — SIGKILL from outside (e.g. docker kill itself)
@@ -925,8 +1101,8 @@ test_survivor_exit_codes_are_two() {
     s2=$(sed -n '2p' "$SURVIVORS_FILE")
     ec1=$(container_exit_code "$s1" || true)
     ec2=$(container_exit_code "$s2" || true)
-    assert_eq "$ec1" "2" "Survivor ${s1} exit code is 2 (Runtime.halt(2) from SelfDrainCoordinator)"
-    assert_eq "$ec2" "2" "Survivor ${s2} exit code is 2 (Runtime.halt(2) from SelfDrainCoordinator)"
+    assert_eq "$ec1" "2" "Survivor ${s1} exit code is 2 (Runtime.halt(2) via DrainProcedure)"
+    assert_eq "$ec2" "2" "Survivor ${s2} exit code is 2 (Runtime.halt(2) via DrainProcedure)"
 }
 
 test_drain_trigger_log_signature_present() {
@@ -966,16 +1142,9 @@ test_drain_trigger_log_signature_present() {
 }
 
 test_no_kv_writes_after_drain_trigger() {
-    # GAP-A / cross-cutting (cloud): this empirical check reads `docker logs` over SSH
-    # (verify_no_kv_writes_after_drain). On cloud there is no shared docker daemon and
-    # CTM-provisioned survivor VMs do not carry the operator SSH key, so docker-log
-    # inspection is impossible. The structural guarantee is already enforced at compile
-    # time by SelfDrainCoordinatorTest.noConsensusOrKvImports; skip the docker-log
-    # complement on cloud rather than fail on an unreachable SSH/docker call.
-    if [ "${CLOUD_MODE:-false}" = "true" ]; then
-        log_info "GAP-A (cloud): skipping post-drain docker-log KV-write negative check (no docker/SSH on cloud) — compile-time noConsensusOrKvImports remains the structural guarantee"
-        return 0
-    fi
+    # Docker only: the check reads `docker logs` (verify_no_kv_writes_after_drain). On cloud it is not
+    # run at all (_s19_record_no_kv_writes_step records a SKIP): an early `return 0` here was scored
+    # PASS with zero assertions.
     # Empirical complement to the compile-time assertion
     # `SelfDrainCoordinatorTest.noConsensusOrKvImports`. After the drain
     # signature line, the survivor MUST NOT log evidence of consensus/KV
@@ -1003,12 +1172,102 @@ test_no_kv_writes_after_drain_trigger() {
 }
 
 test_cluster_recovers_to_five_on_duty() {
-    # S20 contract: restart all 5 nodes via restart_all_nodes (compose
-    # cycle), then assert the cluster reaches 5 ON_DUTY healthy within
-    # RECOVERY_BUDGET_S. restart_all_nodes itself waits for cluster
-    # readiness + leader + generation quiescence + per-node /health/ready,
-    # so by the time it returns the cluster is mostly there; we add a
-    # final assertion on the ON_DUTY healthy count to pin the S20 contract.
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        local verdict
+        verdict=$(cat "$VERDICT_FILE" 2>/dev/null || echo "quorum-lost")
+        if [ "$verdict" = "quorum-held" ]; then
+            # test_confirm_quorum_loss_race found POSITIVE evidence that
+            # auto-heal refilled quorum before the survivors ever tripped
+            # self-drain (S19's quorum-held branch) — no full self-drain
+            # happened this run, so there is nothing to reap. The standard
+            # partial-drain/CTM-auto-heal recovery path applies unchanged.
+            log_info "S20 (cloud, quorum-held branch): S19's quorum-loss branch was not exercised this run — using the standard restart_all_nodes recovery path"
+            if ! restart_all_nodes; then
+                log_fail "S20 violation (cloud, quorum-held branch): restart_all_nodes returned non-zero"
+                return 1
+            fi
+            local held_budget=$((RECOVERY_BUDGET_S * ${TIMEOUT_SCALE:-1}))
+            if ! wait_for "5 healthy cores after restart (cloud, quorum-held branch)" \
+                '[ "$WAIT_FOR_VALUE" -eq 5 ]' "$RECOVERY_BUDGET_S" 2 "_cluster_active_core_count_checked"; then
+                log_fail "S20 violation (cloud, quorum-held branch): cluster did not return to 5 healthy cores within ${held_budget}s after restart_all_nodes (RECOVERY_BUDGET_S=${RECOVERY_BUDGET_S} x TIMEOUT_SCALE=${TIMEOUT_SCALE:-1}; last read in the line above)"
+                return 1
+            fi
+            assert_cluster_healthy "S20 (cloud, quorum-held branch): cluster recovered to 5 healthy cores within ${held_budget}s after restart_all_nodes"
+            return 0
+        fi
+
+        # H3 (#1051, owner ruling 2026-09-13). verdict="quorum-lost": S19 asserted
+        # both survivors departed, and the 3 victims were deleted — a full
+        # self-drain. restart_all_nodes' cloud path is built for a PARTIAL drain
+        # (a poweron that is a no-op for a VM whose JVM exited, then a 360s probe)
+        # and would spend most of any budget before reaching the reap. So: confirm
+        # the drain from per-VM evidence and reap + rebootstrap through
+        # _cloud_reap_after_confirmed_drain (an unreachable node is not a dead one, so
+        # management-API silence confirms nothing and any unreadable VM refuses the
+        # reap), then assert 5 healthy cores within CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S
+        # measured from the start of confirmation. The clock is SECONDS, not the scaled
+        # wait_for budget, so the figure printed is the figure enforced.
+        _s19_require_cloud_runtime || return 1
+        local cluster_name="${BOOTSTRAP_CLUSTER_NAME:-}" budget="$CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S"
+        local start=$SECONDS elapsed remaining recover_rc
+        log_info "S20 (cloud): confirming full self-drain of '${cluster_name}' from per-VM evidence (runtime ${CLOUD_RUNTIME}) before reap+rebootstrap — budget ${budget}s starts now"
+        _cloud_reap_after_confirmed_drain "S20 (cloud)" "$CLOUD_DRAIN_CONFIRM_BOUND_S" && recover_rc=0 || recover_rc=$?
+        case "$recover_rc" in
+            0) ;;
+            3)
+                log_fail "S20 violation (cloud): full self-drain not positively confirmed on every VM — did NOT reap (elapsed $((SECONDS - start))s, budget ${budget}s)"
+                return 1
+                ;;
+            2)
+                log_fail "S20 violation (cloud): full-drain recovery refused in preflight — nothing destroyed, no reap attempted (elapsed $((SECONDS - start))s, budget ${budget}s)"
+                return 1
+                ;;
+            *)
+                log_fail "S20 violation (cloud): full-drain recovery (reap + rebootstrap) failed (elapsed $((SECONDS - start))s, budget ${budget}s)"
+                return 1
+                ;;
+        esac
+        elapsed=$((SECONDS - start))
+        remaining=$((budget - elapsed))
+        if ! _s20_within_budget "$elapsed" "$budget"; then
+            log_fail "S20 violation (cloud): drain confirmation + reap + rebootstrap took ${elapsed}s, not under the ${budget}s budget, before 5 healthy cores could be checked"
+            return 1
+        fi
+        # TIMEOUT_SCALE=1: remaining is a slice of the unscaled budget.
+        # #1226/B8: a poll that starts inside this slice and finishes late is
+        # a real (slow) read, not a hang — wait_for now lets an in-flight poll
+        # run to completion rather than truncating it at the slice boundary,
+        # and it is THIS check plus the elapsed check below that judges
+        # timeliness against the ${budget}s S20 budget, not wait_for itself.
+        if ! TIMEOUT_SCALE=1 wait_for "5 healthy cores after full-drain rebootstrap (remaining ${remaining}s of the ${budget}s S20 budget)" \
+                '[ "$WAIT_FOR_VALUE" -eq 5 ]' "$remaining" 5 "_cluster_active_core_count_checked"; then
+            log_fail "S20 violation (cloud): cluster not back to 5 healthy cores (elapsed $((SECONDS - start))s, budget ${budget}s; last read in the line above)"
+            return 1
+        fi
+        elapsed=$((SECONDS - start))
+        if ! _s20_within_budget "$elapsed" "$budget"; then
+            log_fail "S20 violation (cloud): 5 healthy cores reached only after ${elapsed}s, not under the ${budget}s budget"
+            return 1
+        fi
+        log_pass "S20 (cloud): recovered to 5 healthy cores ${elapsed}s after drain confirmation began (budget ${budget}s: confirmation + reap + rebootstrap + core-count wait)"
+        # S7 (#1051): the same post-recovery barriers restart_all_nodes' cloud branch
+        # applies, test-echo baseline redeploy included. Outside the budget: the
+        # ruling bounds recovery to 5 healthy cores.
+        if ! _cloud_recovery_barriers "S20 (cloud)" "${NODE_COUNT:-5}"; then
+            log_fail "S20 violation (cloud): post-recovery barriers (leader election / test-echo baseline) failed after full-drain recovery"
+            return 1
+        fi
+        assert_cluster_healthy "S20 (cloud): cluster healthy after full-drain recovery and post-recovery barriers"
+        return 0
+    fi
+
+    # docker/remote: S20 contract unchanged — restart all 5 nodes via
+    # restart_all_nodes (compose cycle), then assert the cluster reaches 5
+    # ON_DUTY healthy within RECOVERY_BUDGET_S. restart_all_nodes itself
+    # waits for cluster readiness + leader + generation quiescence + per-node
+    # /health/ready, so by the time it returns the cluster is mostly there;
+    # we add a final assertion on the ON_DUTY healthy count to pin the S20
+    # contract.
     log_info "Restarting all 5 compose nodes (S20: post-self-drain recovery)"
     if ! restart_all_nodes; then
         log_fail "S20 violation: restart_all_nodes returned non-zero — cluster did not recover cleanly from self-drain exits"
@@ -1017,13 +1276,11 @@ test_cluster_recovers_to_five_on_duty() {
     # restart_all_nodes already drove the cluster back to leader + quorum,
     # but the healthy core count is the actual S20 acceptance signal.
     if ! wait_for "5 healthy cores after self-drain recovery" \
-        "[ \$(cluster_active_core_count) -eq 5 ]" "$RECOVERY_BUDGET_S"; then
-        local now_count
-        now_count=$(cluster_active_core_count)
-        log_fail "S20 violation: cluster did not return to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart (current count=${now_count})"
+        '[ "$WAIT_FOR_VALUE" -eq 5 ]' "$RECOVERY_BUDGET_S" 2 "_cluster_active_core_count_checked"; then
+        log_fail "S20 violation: cluster did not return to 5 healthy cores within $((RECOVERY_BUDGET_S * ${TIMEOUT_SCALE:-1}))s of restart (last read in the line above)"
         return 1
     fi
-    assert_cluster_healthy "S20: cluster recovered to 5 healthy cores within ${RECOVERY_BUDGET_S}s of restart"
+    assert_cluster_healthy "S20: cluster recovered to 5 healthy cores within $((RECOVERY_BUDGET_S * ${TIMEOUT_SCALE:-1}))s of restart"
 
     # #426 review follow-up (item 3): the echo-baseline redeploy formerly
     # duplicated here is now centralized in restart_all_nodes itself
@@ -1034,9 +1291,82 @@ test_cluster_recovers_to_five_on_duty() {
     # risked copy-drift between the two call sites; nothing further to do.
 }
 
+# How the "Survivor exit codes are 2" step is recorded (#1051). Prints "run",
+# "skip <reason>" or "refuse". The halt reason is readable on docker/remote (docker
+# inspect) and on cloud --runtime jvm (systemd unit state). It is not readable on
+# cloud --runtime container, and there is none to read when S19's race arbitration
+# found quorum held (the survivors never drained): both are SKIPPED, never a
+# zero-assertion PASS and never a guaranteed FAIL. An unset or unknown runtime on
+# cloud is refused.
+_s19_exit_code_disposition() {
+    if [ "${CLOUD_MODE:-false}" != "true" ]; then
+        echo "run"
+        return 0
+    fi
+    case "${CLOUD_RUNTIME:-}" in
+        jvm) ;;
+        container)
+            echo "skip GAP-A (cloud --runtime container): no docker access from the test host to read the halt reason — drain OUTCOME (membership departure) is asserted in S19"
+            return 0
+            ;;
+        *)
+            echo "refuse"
+            return 0
+            ;;
+    esac
+    if [ "$(cat "$VERDICT_FILE" 2>/dev/null)" = "quorum-held" ]; then
+        echo "skip S19 quorum-held: auto-heal refilled quorum before the survivors drained, so no survivor halted and there is no halt reason to read"
+        return 0
+    fi
+    echo "run"
+}
+
+# The post-drain KV-write check is docker-log based. On cloud it is a visible SKIP, never a PASS: a test
+# that returns 0 before asserting anything is scored PASS by run_test. The structural guarantee remains the
+# compile-time SelfDrainCoordinatorTest.noConsensusOrKvImports. (The old reason, "no docker/SSH on cloud",
+# was false: tier 2 SSHes to the same survivors. A journalctl-based check is not implemented.)
+_s19_record_no_kv_writes_step() {
+    local name="No KV-writes after drain trigger (negative assertion)"
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        skip_test "$name" "log-based KV-write check not implemented for cloud runtimes (compile-time noConsensusOrKvImports remains the structural guarantee)"
+    else
+        run_test "$name" test_no_kv_writes_after_drain_trigger
+    fi
+}
+
+_s19_record_exit_code_step() {
+    local name="Survivor exit codes are 2 (Runtime.halt(2))" disposition
+    disposition=$(_s19_exit_code_disposition)
+    case "$disposition" in
+        run)     run_test "$name" test_survivor_exit_codes_are_two ;;
+        skip\ *) skip_test "$name" "${disposition#skip }" ;;
+        *)       run_test "$name" _s19_require_cloud_runtime ;;
+    esac
+}
+
+# Whether <elapsed> seconds is inside the S20 budget <budget>: strictly under it. The
+# one comparison both S20 budget checks use, so they cannot disagree at the boundary
+# (#1051 round 3).
+_s20_within_budget() {
+    [ "$1" -lt "$2" ]
+}
+
+# The S20 step name states the budget that the branch about to run enforces
+# (#1051). Evaluated after S19 wrote VERDICT_FILE. docker/remote keep the spec's
+# 60s name.
+_s20_test_label() {
+    if [ "${CLOUD_MODE:-false}" != "true" ]; then
+        printf '%s' "Cluster recovers to 5 healthy cores within ${RECOVERY_BUDGET_S}s (S20)"
+    elif [ "$(cat "$VERDICT_FILE" 2>/dev/null)" = "quorum-held" ]; then
+        printf '%s' "Cluster recovers to 5 healthy cores within $((RECOVERY_BUDGET_S * ${TIMEOUT_SCALE:-1}))s after restart (S20, cloud quorum-held)"
+    else
+        printf '%s' "Cluster recovers to 5 healthy cores within ${CLOUD_FULL_DRAIN_RECOVERY_BUDGET_S}s of drain confirmation (S20, cloud full drain)"
+    fi
+}
+
 cleanup() {
     rm -f "$VICTIMS_FILE" "$SURVIVORS_FILE" "$SURVIVOR_IPS_FILE" "$KILL_TS_FILE" "$EVENT_BASELINE_FILE" \
-        "$PRE_KILL_ROSTER_FILE" "$VERDICT_FILE" "$SSH_STDERR_FILE"
+        "$PRE_KILL_ROSTER_FILE" "$VERDICT_FILE" "$SSH_STDERR_FILE" "$IDENTITY_VIOLATION_FILE"
 
     # Semantic baseline restore. After S19+S20 the cluster should already
     # be back at 5 ON_DUTY (restart_all_nodes was invoked in
@@ -1051,18 +1381,93 @@ cleanup() {
     restore_cluster_baseline_or_flag
 }
 
+# Sourced (test/test-chaos-harness.sh drives the functions above against stubs):
+# stop before the trap and the scenario. A direct run (`bash "$test_file"`) goes on.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    return 0
+fi
+
 # Run cleanup on ANY exit path — including a `return 1` from inside a
 # test function that propagates up through `set -e` and aborts the
 # script. Pattern matches Step 7's test-joining-window-kill.sh and
 # Step 8's test-partition-quorum-gate.sh.
 trap 'cleanup' EXIT
 
+# --- Arm D (#W3): auto-heal suppression, OFF unless explicitly requested -------------------
+#
+# The stock S19 path leaves auto-heal ON. Arm D exists because the quorum-loss branch is what
+# #1053's JVM drain code needs exercised, and auto-heal refilling quorum prevents it. Auto-heal
+# cannot be declared off in the cluster TOML — PF-25 (#575) REFUSES `[operations.auto_heal]
+# enabled = false` precisely because the runtime never read it, and an operator who set it "gets
+# silent no-op". The only real mechanism is the imperative toggle (#603), durable in the
+# consensus KV (#685).
+test_arm_d_disable_autoheal() {
+    if ! arm_d_requested; then
+        log_info "Arm D not requested (S19_ARM_D_DISABLE_AUTOHEAL unset/false) — auto-heal stays ON, stock S19 path unchanged"
+        return 0
+    fi
+
+    if ! api_post "$AUTOHEAL_DISABLE_PATH" '{"reason":"Arm D: S19 quorum-loss branch"}' >/dev/null 2>&1; then
+        log_fail "Arm D: POST ${AUTOHEAL_DISABLE_PATH} failed — the arm's independent variable was never set, so this run is NOT Arm D"
+        return 1
+    fi
+
+    # CONTROL: prove it took, before the kill, while a leader still exists to answer.
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    if [ "$state" = "false" ]; then
+        log_pass "Arm D: auto-heal read back DISABLED before the kill (independent variable confirmed set)"
+        return 0
+    fi
+    log_fail "Arm D: auto-heal read back '${state:-<unreadable>}' before the kill, expected 'false' — the arm is not set up; this round is VOID, not a result"
+    return 1
+}
+
+# Attempted DURING quorum loss. Expected to be unreadable, and that expectation is the finding:
+# the status route is LEADER-scoped, and S19 destroys the quorum that elects a leader. Setting the
+# flag is not the same as the flag HOLDING through the window it is relied upon — so this records
+# which of the three outcomes actually occurred rather than assuming persistence.
+test_arm_d_autoheal_state_in_window() {
+    if ! arm_d_requested; then
+        return 0
+    fi
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    case "$state" in
+        false) log_pass "Arm D: auto-heal still reads DISABLED during the quorum-loss window — precondition VERIFIED to have held" ;;
+        true)  log_fail "Arm D: auto-heal reads ENABLED during the window — it re-armed mid-run and THIS ARM WAS ARM R ALL ALONG; do not report it as Arm D" ;;
+        *)     log_warn "Arm D: auto-heal status UNREADABLE during the quorum-loss window (LEADER-scoped route, no leader without quorum). The flag's state across the window is UNVERIFIED — 'we set it' is not 'it held'. Expected outcome; bounds Arm D's conclusions (see plan S18/S19)." ;;
+    esac
+    return 0
+}
+
+# After S20 recovery a leader exists again, so the durable fact is readable. This cannot prove the
+# flag held DURING the window, only that it survived to the other side — weaker, and stated as such.
+test_arm_d_autoheal_state_after_recovery() {
+    if ! arm_d_requested; then
+        return 0
+    fi
+    local state
+    state=$(autoheal_enabled_field "$(api_get "$AUTOHEAL_STATUS_PATH" 2>/dev/null)")
+    case "$state" in
+        false) log_pass "Arm D: auto-heal reads DISABLED after recovery — the durable fact survived the window (does NOT prove it held throughout)" ;;
+        true)  log_fail "Arm D: auto-heal reads ENABLED after recovery — the disable did not survive; the arm's variable was not held" ;;
+        *)     log_warn "Arm D: auto-heal status still unreadable after recovery — cannot assess persistence at all" ;;
+    esac
+    # Restore for whatever runs next; best-effort, never fails the suite.
+    api_post "$AUTOHEAL_ENABLE_PATH" '{"reason":"Arm D teardown"}' >/dev/null 2>&1 || true
+    return 0
+}
+
 run_test "Initial 5 healthy cores" test_initial_state
+run_test "Arm D: disable auto-heal (skipped unless requested)" test_arm_d_disable_autoheal
 run_test "Pick 3 victims and kill simultaneously" test_pick_victims_and_kill_three_simultaneously
 run_test "Confirm quorum-loss vs auto-heal race (cloud-only arbitration)" test_confirm_quorum_loss_race
 run_test "Survivors self-drain and exit within ${SURVIVOR_EXIT_BUDGET_S}s (S19)" test_survivors_self_drain_and_exit
-run_test "Survivor exit codes are 2 (Runtime.halt(2))" test_survivor_exit_codes_are_two
+run_test "Arm D: auto-heal state during the quorum-loss window" test_arm_d_autoheal_state_in_window
+_s19_record_exit_code_step
 run_test "Drain-trigger log signature present on survivors" test_drain_trigger_log_signature_present
-run_test "No KV-writes after drain trigger (negative assertion)" test_no_kv_writes_after_drain_trigger
-run_test "Cluster recovers to 5 healthy cores within ${RECOVERY_BUDGET_S}s (S20)" test_cluster_recovers_to_five_on_duty
+_s19_record_no_kv_writes_step
+run_test "$(_s20_test_label)" test_cluster_recovers_to_five_on_duty
+run_test "Arm D: auto-heal state after recovery" test_arm_d_autoheal_state_after_recovery
 print_summary

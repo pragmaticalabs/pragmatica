@@ -4,47 +4,95 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node.stream;
 
+import org.pragmatica.aether.slice.stream.PublishOutcome;
+import org.pragmatica.aether.slice.StreamPublisher;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionAssignment;
+import org.pragmatica.aether.node.stream.StreamConsumerManager.AssignmentAuthority;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionOwnership;
 import org.pragmatica.aether.node.stream.StreamConsumerManager.SlicePlacement;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ObservabilityStrategyCell;
+import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamRegistrationKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistrationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.aether.slice.topic.ContextualEvent;
+import org.pragmatica.aether.slice.topic.MessageContext;
+import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
+import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
+import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
+
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 
@@ -91,6 +139,9 @@ class StreamConsumerManagerTest {
     /// Wide enough that HRW concentrating every partition on one of three candidates has probability
     /// 3 x (1/3)^32 — the point at which a distribution assertion stops being a coin flip.
     private static final int WIDE_PARTITION_COUNT = 32;
+    private static final Epoch EPOCH_1 = Epoch.epoch(0L, 1L, 1L);
+    private static final Epoch EPOCH_2 = Epoch.epoch(0L, 1L, 2L);
+    private static final Epoch EPOCH_3 = Epoch.epoch(0L, 1L, 3L);
 
     private StreamConsumerRegistry registry;
     private RecordingRuntime runtime;
@@ -98,9 +149,14 @@ class StreamConsumerManagerTest {
     private SliceInvoker invoker;
     private MutableOwnership ownership;
     private MutablePlacement placement;
+    /// #1271: the committed consumer assignments every manager in a test reads — the stand-in for the
+    /// consensus KV. Writes land synchronously, so a leader's reconcile commits its computed assignment
+    /// and admits itself in the same pass, exactly the steady state the pre-#1271 tests describe.
+    private Map<ConsumerAssignmentKey, ConsumerAssignmentValue> committedAssignments;
 
     @BeforeEach
     void setUp() {
+        committedAssignments = new ConcurrentHashMap<>();
         registry = StreamConsumerRegistry.streamConsumerRegistry();
         runtime = new RecordingRuntime();
         invocationHandler = mock(InvocationHandler.class);
@@ -115,14 +171,98 @@ class StreamConsumerManagerTest {
     }
 
     private StreamConsumerManager managerFor(NodeId self, StreamConsumerRuntime consumerRuntime) {
+        return managerFor(self, consumerRuntime, ownership);
+    }
+
+    private StreamConsumerManager managerFor(NodeId self,
+                                             StreamConsumerRuntime consumerRuntime,
+                                             PartitionOwnership nodeOwnership) {
+        return managerFor(self, consumerRuntime, nodeOwnership, true);
+    }
+
+    private StreamConsumerManager managerFor(NodeId self,
+                                             StreamConsumerRuntime consumerRuntime,
+                                             PartitionOwnership nodeOwnership,
+                                             boolean leader) {
         return StreamConsumerManager.streamConsumerManager(registry,
                                                            consumerRuntime,
                                                            invoker,
                                                            invocationHandler,
                                                            FrameworkCodecs.frameworkCodecs(),
+                                                           nodeOwnership,
+                                                           placement,
+                                                           self,
+                                                           authority(leader));
+    }
+
+    /// The committed-assignment authority over [#committedAssignments]; `leader` gates its writer the
+    /// way the node's leadership does.
+    private AssignmentAuthority authority(boolean leader) {
+        ConsumerAssignmentWriter.CommittedAssignments committed = (stream, partition, group) -> Option.option(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                           partition,
+                                                                                                                                                                           group)));
+
+        return AssignmentAuthority.assignmentAuthority(committed,
+                                                       ConsumerAssignmentWriter.consumerAssignmentWriter(() -> leader,
+                                                                                                         () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                                         HlcClock.hlcClock(SELF),
+                                                                                                         committed),
+                                                       this::applyAssignments);
+    }
+
+    private Promise<Unit> applyAssignments(List<KVCommand<AetherKey>> commands) {
+        commands.forEach(this::applyAssignment);
+
+        return Promise.unitPromise();
+    }
+
+    private void applyAssignment(KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.Put<?, ?> put && put.key() instanceof ConsumerAssignmentKey key && put.value() instanceof ConsumerAssignmentValue value) {
+            committedAssignments.put(key, value);
+        }
+    }
+
+    /// Commit an assignment directly — a leader elsewhere reassigning the partition.
+    private void commitAssignment(int partition, NodeId assignee, Epoch epoch) {
+        committedAssignments.put(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP), assignmentRecord(assignee, epoch));
+    }
+
+    private static ConsumerAssignmentValue assignmentRecord(NodeId assignee, Epoch epoch) {
+        return ConsumerAssignmentValue.consumerAssignmentValue(assignee, epoch, epoch.localCounter(), HlcTimestamp.ZERO);
+    }
+
+    /// The same seam for the committed-assignment reader: a record that moves BETWEEN two reads of one
+    /// pass. Follower writer, so the pass itself commits nothing.
+    private StreamConsumerManager managerReading(ConsumerAssignmentWriter.CommittedAssignments committed) {
+        return StreamConsumerManager.streamConsumerManager(registry,
+                                                           runtime,
+                                                           invoker,
+                                                           invocationHandler,
+                                                           FrameworkCodecs.frameworkCodecs(),
                                                            ownership,
                                                            placement,
-                                                           self);
+                                                           SELF,
+                                                           AssignmentAuthority.assignmentAuthority(committed,
+                                                                                                   ConsumerAssignmentWriter.consumerAssignmentWriter(() -> false,
+                                                                                                                                                     () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                                                                                     HlcClock.hlcClock(SELF),
+                                                                                                                                                     committed),
+                                                                                                   this::applyAssignments));
+    }
+
+    /// A seam for a registry whose answer changes BETWEEN reads — a KV notification landing while a
+    /// pass is in flight. A real registry answers every read from its current state, so only a mock can
+    /// script the change deterministically.
+    private StreamConsumerManager managerWithRegistry(StreamConsumerRegistry customRegistry) {
+        return StreamConsumerManager.streamConsumerManager(customRegistry,
+                                                           runtime,
+                                                           invoker,
+                                                           invocationHandler,
+                                                           FrameworkCodecs.frameworkCodecs(),
+                                                           ownership,
+                                                           placement,
+                                                           SELF,
+                                                           authority(true));
     }
 
     private void declare(String eventType, boolean batchMode) {
@@ -574,6 +714,417 @@ class StreamConsumerManagerTest {
         }
     }
 
+    /// #545: two DIFFERENT ARTIFACTS declaring the same `(stream, group)` collide — `SubscriptionKey`
+    /// and `ConsumerKey` are deliberately artifact-free, so nothing downstream can tell them apart, and
+    /// the historical `declarationFor` `findFirst()` picked a winner arbitrarily. Two VERSIONS of the
+    /// SAME artifact sharing a group is the opposite case: the intended blue-green collapse, and must
+    /// keep working exactly as before.
+    @Nested
+    class GroupCollisions {
+        private static final Artifact OTHER_ARTIFACT = Artifact.artifact("org.example:payments:1.0.0").unwrap();
+
+        private void declare(Artifact artifact, String eventType, boolean batchMode) {
+            var key = StreamRegistrationKey.streamRegistrationKey(STREAM, CONFIG_SECTION, artifact, METHOD);
+            var value = StreamRegistrationValue.streamRegistrationValue(SELF, GROUP, batchMode, eventType);
+
+            registry.onStreamRegistrationPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+        }
+
+        @Test
+        void reconcile_subscribesNeitherSide_whenTwoArtifactsShareOneGroup() {
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            manager().reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("neither colliding artifact may consume — an arbitrary winner was the #545 defect, not a feature to preserve for either side")
+                      .isEmpty();
+        }
+
+        @Test
+        void statuses_nameBothArtifactsStreamAndGroup_whenTheyCollide() {
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(manager.statuses()).hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic().or("")).describedAs("an operator reading EITHER artifact's status must see both names, the stream and the group — not just its own")
+                                                     .contains(ARTIFACT.base().asString())
+                                                     .contains(OTHER_ARTIFACT.base().asString())
+                                                     .contains(STREAM)
+                                                     .contains(GROUP));
+        }
+
+        @Test
+        void reconcile_doesNotFlagCollision_whenTwoVersionsOfOneArtifactShareTheGroup() {
+            var upgraded = Artifact.artifact("org.example:orders:1.1.0").unwrap();
+
+            declare(ARTIFACT, "java.lang.String", false);
+            declare(upgraded, "java.lang.String", false);
+            deploySliceLocally();
+            when(invocationHandler.localSlice(upgraded)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(manager.statuses()).hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic()).describedAs("two VERSIONS of one artifact sharing a group is the intended blue-green collapse (see TopicGroupDeclarationSource), not a collision")
+                                                     .isEqualTo(Option.none()));
+            assertThat(runtime.subscribedPartitions()).describedAs("the shared group keeps consuming across the upgrade window — the collision guard must not treat it as a fault")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+        }
+
+        /// #1267 replaced what this test used to pin. A pass used to read the declarations once to build
+        /// `desired` and again, per key, to resolve each key back to a declaration, so a colliding
+        /// declaration landing between those reads reached `declarationFor`'s refusal branch mid-pass.
+        /// A pass now reads ONE snapshot and resolves every key against it, so that interleaving no
+        /// longer exists: a collision landing mid-pass is invisible to that pass and is acted on by the
+        /// next one. Pinned here: the registry is read exactly once per pass, the first pass acts on
+        /// what it read, and the next pass retracts the attachment the moment the collision is visible —
+        /// fail-closed per pass, never an arbitrary winner.
+        @Test
+        void reconcile_readsOneSnapshotPerPass_andRetractsOnTheNextPass_whenACollisionLandsBetweenPasses() {
+            var declarationA = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, ARTIFACT, METHOD, GROUP, false, "java.lang.String");
+            var declarationB = new StreamConsumerRegistry.ConsumerDeclaration(STREAM, CONFIG_SECTION, OTHER_ARTIFACT, METHOD, GROUP, false, "java.lang.String");
+            var raceyRegistry = mock(StreamConsumerRegistry.class);
+
+            when(raceyRegistry.allDeclarations()).thenReturn(List.of(declarationA))
+                                                 .thenReturn(List.of(declarationA, declarationB));
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+
+            var manager = managerWithRegistry(raceyRegistry);
+
+            manager.reconcile();
+
+            verify(raceyRegistry, times(1)).allDeclarations();
+            assertThat(runtime.subscribedPartitions()).describedAs("the first pass's one snapshot holds no collision — consuming is the correct decision for what it read")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the next pass sees the collision and retracts — never an arbitrary winner")
+                      .isEmpty();
+        }
+
+        /// The other three tests all declare both sides before the first `reconcile()` — this is the
+        /// LATE-arriving case: the first artifact is already actively consuming when the second,
+        /// colliding declaration appears. `reconcile()` re-derives `collidingGroups` from scratch on
+        /// EVERY call and re-evaluates every registered declaration against it, so the fix must not be
+        /// read as "a collision blocks attachment" only — it must also retract an attachment made before
+        /// the collision existed. Fail-closed is a fresh re-check each round, not a one-time gate at
+        /// first sight.
+        @Test
+        void reconcile_unsubscribesTheFirstArtifact_whenACollidingDeclarationArrivesLate() {
+            declare(ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("before the second artifact declares, the sole declarant consumes normally")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(manager.statuses()).describedAs("before the collision, the sole declarant carries no diagnostic")
+                      .hasSize(1)
+                      .allSatisfy(status -> assertThat(status.diagnostic()).isEqualTo(Option.none()));
+
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("the late collision must retract the already-active side too — a stale active subscription surviving would be a silent gap in the #545 fail-closed guarantee")
+                      .isEmpty();
+            assertThat(manager.statuses()).describedAs("the transition must also surface the diagnostic on BOTH sides — the first artifact's prior clean status must not survive the retraction unexplained")
+                      .hasSize(2)
+                      .allSatisfy(status -> assertThat(status.diagnostic().or("")).contains(ARTIFACT.base().asString())
+                                                     .contains(OTHER_ARTIFACT.base().asString())
+                                                     .contains(STREAM)
+                                                     .contains(GROUP));
+        }
+
+        /// Review of #844, finding 2: `unsubscribeAllFor` used to filter `active` by consumer group
+        /// alone, so a collision on ONE stream could sweep an unrelated, non-colliding subscription on
+        /// a DIFFERENT stream that merely happens to reuse the same group string. `RecordingRuntime` is
+        /// keyed by (stream, partition) precisely so this is observable at all: `invoices` never
+        /// collides (its `ConsumerGroupKey` is `("invoices", GROUP)`, distinct from `("orders", GROUP)`).
+        ///
+        /// Two reconcile() calls, not one: `unsubscribeAllFor` fires INSIDE `desiredFor`'s evaluation,
+        /// before `subscribeIfAbsent` ever runs, so the sweep needs `invoices` ALREADY active from a
+        /// prior round to have anything to hit.
+        ///
+        /// Final membership is NOT the pinning assertion — a mutation probe proved this the hard way.
+        /// `attach()` uses `active.putIfAbsent`, so even a same-pass detach of `invoices` self-heals
+        /// silently: `invoices`'s declaration is still non-colliding and still in `desired`, so
+        /// `subscribeIfAbsent` re-subscribes it before `reconcile()` returns, and `subscribedPartitions`
+        /// looks identical either way. What actually differs is `subscribeCalls`: a group-only filter
+        /// detaches and then transparently RE-subscribes `invoices` — a spurious `unsubscribe`/
+        /// `subscribe` round trip a real runtime would feel as a graceful cursor flush plus a fresh
+        /// resume, wasted work with a resume-window gap, not permanent data loss. The stream-scoped
+        /// filter never touches `invoices` at all: zero new subscribe calls.
+        @Test
+        void reconcile_leavesAnUnrelatedStreamAlone_whenItsGroupNameCollidesOnlyOnAnotherStream() {
+            var otherStream = "invoices";
+            var otherConfigSection = "streams.invoices";
+            var otherStreamArtifact = Artifact.artifact("org.example:invoices:1.0.0").unwrap();
+
+            var otherKey = StreamRegistrationKey.streamRegistrationKey(otherStream, otherConfigSection, otherStreamArtifact, METHOD);
+            var otherValue = StreamRegistrationValue.streamRegistrationValue(SELF, GROUP, false, "java.lang.String");
+            registry.onStreamRegistrationPut(new ValuePut<>(new KVCommand.Put<>(otherKey, otherValue), Option.none()));
+            when(invocationHandler.localSlice(otherStreamArtifact)).thenReturn(Option.some(new StubBridge(Option.none())));
+
+            declare(ARTIFACT, "java.lang.String", false);
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions(STREAM)).describedAs("orders' sole declarant consumes normally before the collision")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("invoices' sole declarant, reusing the same group NAME on a different stream, also consumes normally and is now ACTIVE")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            var subscribeCallsBeforeCollision = runtime.subscribeCalls;
+
+            declare(OTHER_ARTIFACT, "java.lang.String", false);
+            when(invocationHandler.localSlice(OTHER_ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions(STREAM)).describedAs("both colliding artifacts on `orders` must be retracted")
+                      .isEmpty();
+            assertThat(runtime.subscribedPartitions(otherStream)).describedAs("membership alone doesn't distinguish the fix from the bug — attach()'s putIfAbsent self-heals a same-pass detach")
+                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(runtime.subscribeCalls).describedAs("the actual symptom: a group-only filter detaches `invoices` mid-pass and then transparently re-subscribes it since it is still desired — a spurious unsubscribe+resubscribe a real runtime would feel as a needless cursor flush and resume. A stream-scoped filter never touches `invoices`: zero new subscribe calls since before the collision")
+                      .isEqualTo(subscribeCallsBeforeCollision);
+        }
+    }
+
+    /// #1267: one declaration snapshot per reconcile pass, and passes that never overlap.
+    ///
+    /// The timer tick and the registration-change listener both call `reconcile()`, on different
+    /// threads. Unserialized, a pass that read the declarations BEFORE a registration landed can finish
+    /// AFTER the listener's pass attached that registration's partitions, and its `dropStale` then
+    /// detaches what the newer pass just attached — leaving a desired consumer detached until the next
+    /// tick. The latch parks the older pass inside that window; it widens the window, it does not create
+    /// it.
+    @Nested
+    class ReconcilePasses {
+        private static final long PARK_TIMEOUT_SECONDS = 10;
+        private static final int BURST_SIZE = 5;
+
+        @Test
+        void reconcile_readsTopicDeclarationsExactlyOnce_perPass() {
+            var topicGroups = new CountingTopicGroups();
+
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(topicGroups.calls.get()).describedAs("one declaration snapshot per pass — not one more per desired subscription")
+                                               .isEqualTo(1);
+        }
+
+        @Test
+        void reconcile_keepsAttachedPartitions_whenAnOlderConcurrentPassFinishesLast() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+            var timerPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the timer pass reached the declaration read with the OLD registry snapshot")
+                                                                                   .isTrue();
+            var listenerPass = Thread.ofPlatform().start(ReconcilePasses.this::declareOnListenerThread);
+
+            awaitFinishedOrBlocked(listenerPass);
+            topicGroups.release.countDown();
+            timerPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            listenerPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+
+            assertThat(timerPass.isAlive() || listenerPass.isAlive()).describedAs("both passes completed").isFalse();
+            assertThat(runtime.subscribedPartitions()).describedAs("the newer registration's partitions stay attached once both passes are done")
+                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            assertThat(manager.activeSubscriptionCount()).isEqualTo(4);
+        }
+
+        /// Coalescing (#1267): every trigger that arrives while a pass is in flight is covered by ONE
+        /// follow-up pass, not one pass per trigger. Counted by declaration reads — one per pass.
+        @Test
+        void reconcile_runsExactlyOneFollowUpPass_forABurstOfTriggersDuringABusyPass() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+            var manager = managerWithTopicGroups(topicGroups);
+            var busyPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the busy pass reached its declaration read")
+                                                                                   .isTrue();
+            var burst = IntStream.range(0, BURST_SIZE)
+                                 .mapToObj(_ -> Thread.ofPlatform().start(manager::reconcile))
+                                 .toList();
+
+            for (var trigger : burst) {
+                awaitFinishedOrBlocked(trigger);
+            }
+            topicGroups.release.countDown();
+            busyPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            for (var trigger : burst) {
+                trigger.join(PARK_TIMEOUT_SECONDS * 1_000);
+            }
+
+            assertThat(topicGroups.calls.get()).describedAs("the busy pass plus ONE follow-up pass for all %d triggers", BURST_SIZE)
+                                               .isEqualTo(2);
+        }
+
+        /// `stop()` waits for an in-flight pass, so a pass parked past its snapshot cannot attach after
+        /// `stop()` returns: the stop's detach sweep runs after that pass has finished.
+        @Test
+        void stop_leavesNothingAttached_whenAPassInFlightFinishesAfterStopWasCalled() throws InterruptedException {
+            var topicGroups = new ParkingTopicGroups();
+
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(topicGroups);
+            var inFlightPass = Thread.ofPlatform().start(manager::reconcile);
+
+            assertThat(topicGroups.parked.await(PARK_TIMEOUT_SECONDS, TimeUnit.SECONDS)).describedAs("the pass holds its snapshot and has not attached yet")
+                                                                                   .isTrue();
+            var stopping = Thread.ofPlatform().start(manager::stop);
+
+            awaitFinishedOrBlocked(stopping);
+            topicGroups.release.countDown();
+            inFlightPass.join(PARK_TIMEOUT_SECONDS * 1_000);
+            stopping.join(PARK_TIMEOUT_SECONDS * 1_000);
+
+            assertThat(inFlightPass.isAlive() || stopping.isAlive()).describedAs("the pass and the stop completed").isFalse();
+            assertThat(runtime.subscribedPartitions()).describedAs("nothing may stay attached once stop() has returned")
+                                                      .isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        /// The lock alone is not enough: a trigger after `stop()` — a queued caller, or a tick that
+        /// outlives it — must not run a pass that re-attaches.
+        @Test
+        void reconcile_attachesNothing_afterStop() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(new CountingTopicGroups());
+
+            manager.reconcile();
+            manager.stop();
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("a stopped manager must not re-attach").isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        /// `stopped` must be set BEFORE the sweep, not after it. A pass triggered while the sweep holds
+        /// the lock — here re-entrantly from inside the sweep, which is the one interleaving a test can
+        /// force without a scheduler — must find the manager already stopped; with the flag set after
+        /// the sweep it runs, re-attaches what the sweep had just detached, and survives `stop()`.
+        @Test
+        void stop_leavesNothingAttached_whenAPassIsTriggeredDuringTheDetachSweep() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = managerWithTopicGroups(new CountingTopicGroups());
+            var triggered = new AtomicBoolean();
+
+            manager.reconcile();
+            runtime.afterUnsubscribe = () -> triggerOnce(manager, triggered);
+            manager.stop();
+
+            assertThat(triggered.get()).describedAs("a pass was triggered from inside the sweep").isTrue();
+            assertThat(runtime.subscribedPartitions()).describedAs("a pass triggered during stop() must not re-attach")
+                                                      .isEmpty();
+            assertThat(manager.activeSubscriptionCount()).isZero();
+        }
+
+        private static void triggerOnce(StreamConsumerManager manager, AtomicBoolean triggered) {
+            if (triggered.compareAndSet(false, true)) {
+                manager.reconcile();
+            }
+        }
+
+        private void declareOnListenerThread() {
+            declareStringConsumer();
+        }
+
+        /// The listener pass either ran to completion (unserialized) or is waiting for the parked pass
+        /// (serialized); only then is the parked pass released, so the older pass finishes LAST.
+        private static void awaitFinishedOrBlocked(Thread thread) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(PARK_TIMEOUT_SECONDS);
+
+            while (thread.isAlive() && !isWaiting(thread) && System.nanoTime() < deadline) {
+                Thread.sleep(5);
+            }
+        }
+
+        private static boolean isWaiting(Thread thread) {
+            return switch (thread.getState()) {
+                case BLOCKED, WAITING, TIMED_WAITING -> true;
+                default -> false;
+            };
+        }
+
+        private StreamConsumerManager managerWithTopicGroups(TopicGroupDeclarationSource topicGroups) {
+            return StreamConsumerManager.streamConsumerManager(registry,
+                                                               runtime,
+                                                               invoker,
+                                                               invocationHandler,
+                                                               FrameworkCodecs.frameworkCodecs(),
+                                                               ownership,
+                                                               placement,
+                                                               SELF,
+                                                               topicGroups,
+                                                               authority(true));
+        }
+    }
+
+    /// Counts declaration reads; synthesizes no topic declarations.
+    private static final class CountingTopicGroups implements TopicGroupDeclarationSource {
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public List<StreamConsumerRegistry.ConsumerDeclaration> declarations() {
+            calls.incrementAndGet();
+
+            return List.of();
+        }
+    }
+
+    /// Parks the FIRST declaration read until released. `allDeclarations()` reads the registry before
+    /// the topic source, so the parked pass holds the registry snapshot taken before the park.
+    private static final class ParkingTopicGroups implements TopicGroupDeclarationSource {
+        private static final long PARK_SECONDS = 10;
+
+        private final CountDownLatch parked = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public List<StreamConsumerRegistry.ConsumerDeclaration> declarations() {
+            if (calls.getAndIncrement() == 0) {
+                parked.countDown();
+                awaitRelease();
+            }
+
+            return List.of();
+        }
+
+        private void awaitRelease() {
+            try {
+                release.await(PARK_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
     @Nested
     class Lifecycle {
         @Test
@@ -591,9 +1142,1060 @@ class StreamConsumerManagerTest {
             assertThat(manager.activeSubscriptionCount()).isZero();
         }
 
+        /// #1266 and rev1272 F7 follow-up: every non-delivering state reaches the per-partition status
+        /// the declarative-consumers route renders, each from its OWN snapshot field — set one at a time
+        /// so a swapped or dropped mapping shows.
+        @Test
+        void statuses_carryEachNonDeliveringState_fromItsOwnSnapshotField() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.reconcile();
+            runtime.states(true, false, false);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isTrue();
+                                                                                                 assertThat(cursor.retryInFlight()).isFalse();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isFalse();
+                                                                                             }));
+            runtime.states(false, true, false);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isFalse();
+                                                                                                 assertThat(cursor.retryInFlight()).isTrue();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isFalse();
+                                                                                             }));
+            runtime.states(false, false, true);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.assignedPartitions()).singleElement()
+                                                                                  .satisfies(cursor -> {
+                                                                                                 assertThat(cursor.deadLetterInFlight()).isFalse();
+                                                                                                 assertThat(cursor.retryInFlight()).isFalse();
+                                                                                                 assertThat(cursor.awaitingCursorFetch()).isTrue();
+                                                                                             }));
+        }
+
         @Test
         void statuses_areEmpty_whenNothingDeclared() {
             assertThat(manager().statuses()).isEmpty();
+        }
+    }
+
+    /// #1271: consumer-group partition assignment must be FENCED. Two nodes whose local views of the
+    /// partition's owner disagree — each believing it is the assignee — must not both attach: only the
+    /// node named by the COMMITTED assignment record may deliver. Before the fix each node decided from
+    /// its own view alone, so both attached, both delivered, and both wrote the cursor.
+    @Nested
+    class FencedAssignment {
+        @Test
+        void reconcile_attachesAtMostOneNode_whenTwoNodesViewsOfTheOwnerDisagree() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var selfView = new MutableOwnership();
+            var peerView = new MutableOwnership();
+
+            selfView.ownedBy(SELF, 0);
+            peerView.ownedBy(PEER, 0);
+            var selfRuntime = new RecordingRuntime();
+            var peerRuntime = new RecordingRuntime();
+
+            // One cluster, one leader: SELF's node leads and commits the assignment; PEER follows. Both
+            // compute themselves as the consumer of partition 0 from their own views.
+            managerFor(SELF, selfRuntime, selfView, true).reconcile();
+            managerFor(PEER, peerRuntime, peerView, false).reconcile();
+
+            var attached = Stream.of(selfRuntime, peerRuntime)
+                                 .filter(nodeRuntime -> nodeRuntime.subscribedPartitions()
+                                                                   .contains(0))
+                                 .count();
+
+            assertThat(attached).describedAs("divergent owner views must not produce two consumers of one (group, partition)")
+                                .isLessThanOrEqualTo(1L);
+        }
+
+        /// The follower whose OWN view names itself still attaches nothing: its view is not the authority.
+        @Test
+        void reconcile_attachesOnlyWhereTheCommittedRecordNamesThisNode_evenAgainstItsOwnView() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var peerView = new MutableOwnership();
+
+            peerView.ownedBy(PEER, 0, 1, 2, 3);
+            commitAssignment(0, SELF, EPOCH_1);
+            commitAssignment(1, PEER, EPOCH_1);
+            var peerRuntime = new RecordingRuntime();
+
+            managerFor(PEER, peerRuntime, peerView, false).reconcile();
+
+            assertThat(peerRuntime.subscribedPartitions()).describedAs("committed: 0→SELF, 1→PEER, 2 and 3 → none")
+                                                          .containsExactly(1);
+        }
+
+        /// rev1335 M12: `attach` re-reads the committed record instead of trusting the desired set computed a
+        /// moment earlier in the same pass. On a first pass partition 0's record is read exactly twice — once
+        /// into the desired set, once at attach — so a reader that names this node on its first read and PEER
+        /// from the second on is a reassignment landing between the two, and it must attach nothing.
+        @Test
+        void attach_reReadsTheCommittedRecord_andAttachesNothing_whenItMovedSinceTheDesiredSetWasComputed() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            var readsOfPartition0 = new AtomicInteger();
+            ConsumerAssignmentWriter.CommittedAssignments movingAway = (_, partition, _) -> partition == 0 && readsOfPartition0.getAndIncrement() == 0
+                                                                                           ? Option.some(assignmentRecord(SELF, EPOCH_1))
+                                                                                           : Option.some(assignmentRecord(PEER, EPOCH_2));
+
+            managerReading(movingAway).reconcile();
+
+            assertThat(readsOfPartition0.get()).describedAs("precondition: the desired set's read and the attach re-read")
+                                               .isEqualTo(2);
+            assertThat(runtime.subscribedPartitions()).describedAs("by the time attach re-read it, the record named PEER")
+                                                      .isEmpty();
+        }
+
+        @Test
+        void reconcile_attachesNothing_whenNoAssignmentIsCommitted() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            ownership.ownedBySelf(0, 1, 2, 3);
+
+            managerFor(SELF, runtime, ownership, false).reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("admitting on absence is exactly the unfenced behaviour")
+                                                      .isEmpty();
+        }
+
+        @Test
+        void attach_carriesTheCommittedEpoch_andTheFenceTracksTheCommittedRecord() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+
+            managerFor(SELF, runtime, ownership, false).reconcile();
+            var fence = runtime.fenceOf(0);
+
+            assertThat(fence.map(ConsumerFence::epoch)).isEqualTo(Option.some(EPOCH_1));
+            assertThat(fence.map(ConsumerFence::admitted)).isEqualTo(Option.some(true));
+            commitAssignment(0, PEER, EPOCH_2);
+            assertThat(fence.map(ConsumerFence::admitted)).describedAs("delivery pauses at the next pass once the mirror shows the move")
+                                                          .isEqualTo(Option.some(false));
+        }
+
+        @Test
+        void reconcile_abandonsWithoutFlush_whenTheAssignmentMovesAway() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            commitAssignment(0, PEER, EPOCH_2);
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+            assertThat(runtime.abandoned).describedAs("the loser detaches without the final flush").containsExactly(0);
+            assertThat(runtime.gracefullyUnsubscribed).isEmpty();
+        }
+
+        @Test
+        void reconcile_detachesWithFlush_whenStillTheAssignee() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            undeclare();
+            manager.reconcile();
+
+            assertThat(runtime.gracefullyUnsubscribed).describedAs("still the assignee: the final flush is the cursor's last word")
+                                                      .containsExactly(0);
+            assertThat(runtime.abandoned).isEmpty();
+        }
+
+        /// A→B→A between two reconciles: the subscription from the first tenure is abandoned and replaced
+        /// by one under the current epoch — its cursor state predates B's tenure.
+        @Test
+        void reconcile_reattachesUnderTheCurrentEpoch_afterAnAwayAndBackMove() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            commitAssignment(0, PEER, EPOCH_2);
+            commitAssignment(0, SELF, EPOCH_3);
+            manager.reconcile();
+
+            assertThat(runtime.abandoned).containsExactly(0);
+            assertThat(runtime.fenceOf(0).map(ConsumerFence::epoch)).isEqualTo(Option.some(EPOCH_3));
+        }
+
+        @Test
+        void abandonAll_detachesEverySubscriptionWithoutFlush() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            commitAssignment(1, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            manager.abandonAll();
+
+            assertThat(manager.activeSubscriptionCount()).isZero();
+            assertThat(runtime.abandoned).containsExactlyInAnyOrder(0, 1);
+            assertThat(runtime.gracefullyUnsubscribed).isEmpty();
+        }
+
+        /// The quorum-loss listener stops delivery BEFORE the drain chain runs — the drain ends in a halt
+        /// that may be seconds away.
+        @Test
+        void abandoningOnQuorumLoss_abandonsConsumersBeforeTheDrainChain() {
+            declareStringConsumer();
+            deploySliceEverywhere();
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+            var seenByChain = new ArrayList<Integer>();
+
+            manager.reconcile();
+            StreamConsumerManager.<String>abandoningOnQuorumLoss(_ -> seenByChain.add(manager.activeSubscriptionCount()),
+                                                                 manager)
+                                 .accept("quorum-lost");
+
+            assertThat(seenByChain).describedAs("the drain chain runs, and it runs after the consumers are gone")
+                                   .containsExactly(0);
+            assertThat(runtime.abandoned).containsExactly(0);
+        }
+    }
+
+
+    /// #1389: a node the COMMITTED record names, whose deployment is still reported ACTIVE here, while no
+    /// slice is loaded to consume with. Nothing there can consume and no leader pass will move it, and
+    /// that state used to be entirely silent — `desiredFor` returned `[]` without a word and
+    /// `attachAdmitted` forgot the key without one.
+    ///
+    /// Every test here captures the manager's OWN logger, because "logged at WARN" is the claim and a
+    /// `diagnostic` field alone does not prove a log line exists; every test also reads
+    /// `attachSkippedNoLocalSliceCount()`, because "and count it" is the other half of the claim and the
+    /// counter is asserted to move in lockstep with the lines.
+    ///
+    /// The fixtures distinguish the two ways a committed record can name a node that cannot consume:
+    ///   - the PERSISTENT park, which is the fault — placement still reports the slice ACTIVE here, so
+    ///     this pass still computes this node as the assignee, and nothing will repair it; and
+    ///   - a REASSIGNMENT IN FLIGHT, which is not — placement no longer reports the slice here, so the
+    ///     pass computes the partition away and the leader's `Put` is already on its way through
+    ///     consensus. `publishAssignments` does not await that `Put`, so in production the record still
+    ///     names the departing node for at least a round; reporting it would fire on every routine
+    ///     descale.
+    @Nested
+    class ParkedAssignment {
+        private static final String LOGGER_NAME = StreamConsumerManager.class.getName();
+        private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
+        private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
+        /// The ONE place #1448 is cited from, so the reference is a one-line change rather than a sweep.
+        /// Referenced by the survival pin and the cursor-fork test that replaced the tripwire. The earlier
+        /// name for this, "#1389 item 3", was retired when the defect got its own ticket: "item 3" named
+        /// nothing.
+        private static final String UNDECLARE_TICKET = "#1448";
+
+        private CapturingAppender appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void captureLog() {
+            appender = new CapturingAppender("ParkedAssignmentCapture");
+            appender.start();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            var configuration = ctx.getConfiguration();
+            var existing = configuration.getLoggerConfig(LOGGER_NAME);
+
+            if (LOGGER_NAME.equals(existing.getName())) {
+                loggerConfig = existing;
+            } else {
+                loggerConfig = new LoggerConfig(LOGGER_NAME, Level.INFO, true);
+                configuration.addLogger(LOGGER_NAME, loggerConfig);
+            }
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.INFO, null);
+            loggerConfig.setLevel(Level.INFO);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void releaseLog() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        /// The fault itself. The committed records name this node for every partition; placement still
+        /// reports the slice ACTIVE here, so this node is the only candidate and this pass computes it
+        /// as the assignee for all four; and the invocation handler has no bridge. Nothing can consume,
+        /// nothing will repair it — so the node must SAY so, naming what an operator needs to find it:
+        /// group, stream, partitions, this node, the missing slice.
+        ///
+        /// PEER owns the partitions while not hosting the slice, which is the #535 forwarding shape. On
+        /// the unfixed code the diagnosis then logged "consuming … forwarded to the owner" for a node
+        /// consuming nothing; the last assertion pins that misleading INFO away.
+        @Test
+        void reconcile_warnsAndReportsTheParkedPartitions_whenCommittedHereButTheSliceIsNotLoadedHere() {
+            declareStringConsumer();
+            placement.activeOn(SELF);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            for (var partition : List.of(0, 1, 2, 3)) {
+                commitAssignment(partition, SELF, EPOCH_1);
+            }
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("control: with no local bridge nothing is attached")
+                                                      .isEmpty();
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic().or("")).describedAs("the FAULT channel must name the parked partitions")
+                                                     .contains("[0, 1, 2, 3]")
+                                                     .contains(STREAM)
+                                                     .contains(GROUP)
+                                                     .contains(SELF.id())
+                                                     .contains(ARTIFACT.asString()));
+            var warns = appender.warns();
+
+            assertThat(warns).describedAs("#1389: a committed assignee with no local slice is never silent; captured: %s", appender.all())
+                             .hasSize(1);
+            assertThat(warns.getFirst()).contains(GROUP)
+                                        .contains(STREAM)
+                                        .contains("[0, 1, 2, 3]")
+                                        .contains(SELF.id())
+                                        .contains(ARTIFACT.asString());
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("one entry into the parked state, four partitions — the unit is reports, not partitions")
+                                                                .isEqualTo(1L);
+            assertThat(appender.infos()).describedAs("the misleading 'consuming … forwarded' INFO must not fire for a node that consumes nothing")
+                                        .noneMatch(line -> line.contains("forwarded to the owner"));
+        }
+
+        /// Transition-logged like every other diagnosis: a 5-second tick must not repeat the WARN forever,
+        /// the `diagnostic` field carries it for as long as the state persists, and the counter does NOT
+        /// climb with the ticks — it counts entries into the state, which is what makes a rise in it mean
+        /// something an operator can act on.
+        @Test
+        void reconcile_warnsOnce_whileTheParkedStatePersists() {
+            declareStringConsumer();
+            placement.activeOn(SELF);
+            ownership.ownedBySelf(0, 1, 2, 3);
+            commitAssignment(0, SELF, EPOCH_1);
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+            manager.reconcile();
+            manager.reconcile();
+
+            assertThat(appender.warns()).hasSize(1);
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("three passes, one entry")
+                                                                .isEqualTo(1L);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic().isPresent()).describedAs("the fault stays visible in the status while it persists")
+                                                     .isTrue());
+        }
+
+        /// A node that hosts the slice but is committed nowhere, and a node committed elsewhere, are not
+        /// parked — the WARN is for the assignee, not for every node without the slice.
+        @Test
+        void reconcile_doesNotWarn_whenTheCommittedAssigneeIsAnotherNode() {
+            declareStringConsumer();
+            placement.activeOn(PEER);
+            ownership.ownedBySelf(0, 1, 2, 3);
+            for (var partition : List.of(0, 1, 2, 3)) {
+                commitAssignment(partition, PEER, EPOCH_1);
+            }
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+
+            assertThat(appender.warns()).isEmpty();
+            assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic()).isEqualTo(Option.none()));
+        }
+
+        /// The DISCRIMINATOR between the fault and a routine descale, and the reason the report is not
+        /// keyed on the committed record alone.
+        ///
+        /// Here the committed record still names this node for every partition — exactly as it does in
+        /// the first test — but placement no longer reports the slice ACTIVE here, so this pass computes
+        /// every partition onto PEER. That is a reassignment already decided and in flight: in
+        /// production the leader's `Put` travels through consensus without being awaited, so the stale
+        /// record outlives the decision by at least a round, and on every ordinary descale. Reporting it
+        /// would make the WARN fire routinely and mean nothing.
+        ///
+        /// The manager is a FOLLOWER (`leader = false`) so that nothing in the test rewrites the record:
+        /// the stale record is held fixed, which is what isolates the computed half of the predicate as
+        /// the thing being tested.
+        @Test
+        void reconcile_doesNotWarn_whenTheStaleRecordNamesThisNodeButThePassComputesItAway() {
+            declareStringConsumer();
+            placement.activeOn(PEER);
+            ownership.ownedBy(PEER, 0, 1, 2, 3);
+            for (var partition : List.of(0, 1, 2, 3)) {
+                commitAssignment(partition, SELF, EPOCH_1);
+            }
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+
+            assertThat(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, 0, GROUP))
+                                           .assignee()).describedAs("control: the stale record really does still name this node, so the committed half of the predicate IS satisfied")
+                                                       .isEqualTo(SELF);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.partitionAssignments()).describedAs("control: and this pass really did compute every partition onto PEER")
+                                                     .allSatisfy(assignment -> assertThat(assignment.consumerNode()).isEqualTo(Option.some(PEER))));
+            assertThat(appender.warns()).describedAs("a reassignment in flight is not a fault; captured: %s", appender.all())
+                                        .isEmpty();
+            assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
+        }
+
+        /// The literal site the ticket cites: the bridge was there when the desired set was computed and
+        /// gone by the time `attach` re-read it. `localSlice` is read exactly twice for one committed
+        /// partition — once by `desiredFor`, once by `attachAdmitted` — so consecutive stubbing puts the
+        /// unload between them. The key is forgotten (the next pass re-evaluates), but not silently.
+        ///
+        /// This one reports UNCONDITIONALLY, unlike the pass-level report above: it is a within-pass race
+        /// on a node the pass itself just computed as the assignee, so there is no in-flight reassignment
+        /// to confuse it with, and it is rare enough that a line per occurrence costs nothing.
+        @Test
+        void attach_warns_whenTheSliceVanishesBetweenTheDesiredSetAndTheAttach() {
+            declareStringConsumer();
+            placement.activeOn(SELF, PEER);
+            ownership.ownedBySelf(0, 1, 2, 3);
+            commitAssignment(0, SELF, EPOCH_1);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())), Option.none());
+            var manager = managerFor(SELF, runtime, ownership, false);
+
+            manager.reconcile();
+
+            verify(invocationHandler, times(2)).localSlice(ARTIFACT);
+            assertThat(runtime.subscribedPartitions()).describedAs("control: the attach found no bridge and subscribed nothing")
+                                                      .isEmpty();
+            assertThat(appender.warns()).describedAs("#1389: the attach-time drop names what it dropped; captured: %s", appender.all())
+                                        .singleElement()
+                                        .satisfies(line -> assertThat(line).contains(GROUP)
+                                                                           .contains(STREAM)
+                                                                           .contains("[0]")
+                                                                           .contains(SELF.id())
+                                                                           .contains(ARTIFACT.asString()));
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("one dropped subscription key, one count")
+                                                                .isEqualTo(1L);
+        }
+
+        /// Ticket item 2, "state which", ARM 1 OF 2 — the repair, for the paths that transition placement.
+        /// The writer RE-ASSIGNS when the instance disappears, it does not refuse up front; "disappears"
+        /// means the deployment map stops saying ACTIVE, which `handleUnloading` and `performDeactivation`
+        /// both write BEFORE unregistering the bridge.
+        ///
+        /// Read this together with [#reconcile_staysParkedAndNeverReassigns_whenTheBridgeGoesWithoutLeavingActive]
+        /// below. The two differ in EXACTLY ONE input — whether `placement` transitions — and they reach
+        /// opposite outcomes. That pair is the whole of item 2: the repair exists, and it is conditional on
+        /// a write that two production paths do not make.
+        @Test
+        void reconcile_reassignsToARemainingCandidate_whenTheAssigneeLeavesActive() {
+            declareStringConsumer();
+            placement.activeOn(SELF, PEER);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("precondition: the leader committed itself and attached")
+                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+
+            // The instance here is unloaded: UNLOADING is committed (no longer ACTIVE), then the bridge goes.
+            placement.activeOn(PEER);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.none());
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+            for (var partition : List.of(0, 1, 2, 3)) {
+                var record = committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP));
+
+                assertThat(record.assignee()).describedAs("partition %s moves to the node that can still run the slice", partition)
+                                             .isEqualTo(PEER);
+                assertThat(record.assignmentTerm()).describedAs("a rewrite, not a first put")
+                                                   .isEqualTo(2L);
+            }
+            assertThat(appender.warns()).describedAs("the pass computed the partitions away, so nothing is parked here")
+                                        .isEmpty();
+            assertThat(manager.attachSkippedNoLocalSliceCount()).isZero();
+        }
+
+        /// Ticket item 2, ARM 2 OF 2 — THE PERSISTENT PARK, and the reason the report is not cosmetic.
+        ///
+        /// Identical to the arm above except for ONE input: `placement` is NOT transitioned. That models
+        /// the quorum-loss `NodeDeploymentState.suspendSlice`, which calls `unregisterSliceFromInvocation`
+        /// WITHOUT transitioning the deployment away from ACTIVE because no write can commit without
+        /// quorum — unlike `handleUnloading` and `performDeactivation`, which commit UNLOADING /
+        /// DEACTIVATING first. `handleReactivationFailure` was the other such path until #1660 made it
+        /// commit FAILED. `placement` is fed by this fixture, so a node-side fix cannot redden this test:
+        /// it pins what the consumer does WITH a stale map, not whether the map goes stale.
+        ///
+        /// The consequence is the one an operator has to live with: `candidateNodes` reads the map, the
+        /// map still says ACTIVE here, so this node stays the computed assignee and the leader rewrites
+        /// NOTHING — the record keeps naming a node that cannot consume, for as long as the map is wrong.
+        /// Extra passes are driven deliberately: the point is not that it reports once, it is that the
+        /// state does not clear and the report does not go stale.
+        ///
+        /// This also bounds the claim in the arm above. "The assignment step never picks a node holding
+        /// no instance" is true of the map's INTENDED contents, not of the computation, which trusts the
+        /// map. Two paths break the map, and this test is what makes that difference checkable rather
+        /// than a comment.
+        @Test
+        void reconcile_staysParkedAndNeverReassigns_whenTheBridgeGoesWithoutLeavingActive() {
+            declareStringConsumer();
+            placement.activeOn(SELF, PEER);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())));
+            ownership.ownedBySelf(0, 1, 2, 3);
+            var manager = manager();
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("precondition: the leader committed itself and attached")
+                                                      .containsExactlyInAnyOrder(0, 1, 2, 3);
+            appender.clear();
+
+            // The bridge is unregistered with NO placement transition — the `suspendSlice` shape. Note what
+            // is NOT written here: `placement.activeOn(...)` is deliberately left saying SELF and PEER.
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.none());
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("nothing is consuming here any more")
+                                                      .isEmpty();
+            for (var partition : List.of(0, 1, 2, 3)) {
+                var record = committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, partition, GROUP));
+
+                assertThat(record.assignee()).describedAs("partition %s is STILL committed to the node that cannot consume it — the map says ACTIVE, so the leader recomputes this node and rewrites nothing",
+                                                          partition)
+                                             .isEqualTo(SELF);
+                assertThat(record.assignmentTerm()).describedAs("no rewrite happened at all")
+                                                   .isEqualTo(1L);
+            }
+            assertThat(appender.warns()).describedAs("so the WARN is the ONLY observable; captured: %s", appender.all())
+                                        .hasSize(1);
+            assertThat(manager.attachSkippedNoLocalSliceCount()).isEqualTo(1L);
+
+            manager.reconcile();
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("PERSISTENT, not transient: further passes do not clear it")
+                                                      .isEmpty();
+            assertThat(committedAssignments.get(ConsumerAssignmentKey.consumerAssignmentKey(STREAM, 0, GROUP))
+                                           .assignee()).describedAs("and no later pass reassigns it either")
+                                                       .isEqualTo(SELF);
+            assertThat(manager.statuses()).singleElement()
+                      .satisfies(status -> assertThat(status.diagnostic().or("")).describedAs("the fault stays in the status for as long as the state lasts")
+                                                     .contains("[0, 1, 2, 3]")
+                                                     .contains(SELF.id()));
+            assertThat(manager.attachSkippedNoLocalSliceCount()).describedAs("one entry, however long it lasts")
+                                                                .isEqualTo(1L);
+        }
+
+        /// THE SURVIVAL PIN for #1448. Its tripwire — `tripwire_descaleOfAnotherInstance_undeclaresTheDurableGroupHere`
+        /// — stood here asserting the opposite, and was deleted by the fix exactly as its own failure
+        /// message instructed ("delete me and enable the inverse below"). It is recorded rather than
+        /// silently dropped, per that instruction.
+        ///
+        /// The defect it guarded: `TopicSubscriptionKey` was `(address, artifact, method)` with no node,
+        /// so every instance of a slice wrote ONE KV row and any ONE instance's unload `Remove`d the
+        /// record every OTHER instance's durable group was declared from. The group went un-declared
+        /// cluster-wide, every consumer detached on its next pass, and nothing could report it — a
+        /// dropped declaration has no status row to carry a diagnostic. That is what a 5-minute
+        /// consumed-nowhere window looked like.
+        ///
+        /// The key now carries the node, so SELF and PEER hold two DIFFERENT rows and PEER's descale
+        /// removes only its own. The two keys being distinct is asserted first: without that
+        /// discriminator this test would also pass against a registry that simply ignored the remove.
+        @Test
+        void descaleOfAnotherInstance_leavesThisNodeAttached() {
+            var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var selfKey = topicSubscriptionKey(SELF);
+            var peerKey = topicSubscriptionKey(PEER);
+            var group = DurableGroupIdentity.groupId(ARTIFACT, METHOD);
+
+            assertThat(selfKey).describedAs("%s: the two instances must be two KEYS — that IS the fix, and without it the rest of this test is vacuous",
+                                            UNDECLARE_TICKET)
+                               .isNotEqualTo(peerKey);
+
+            deploySliceEverywhere();
+            ownership.withPartitionCount(1);
+            ownership.ownedBySelf(0);
+            subscribeOn(topics, selfKey, SELF);
+            subscribeOn(topics, peerKey, PEER);
+            var manager = topicGroupManager(topics);
+
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("precondition: SELF consumes the durable group's partition")
+                                                                  .containsExactly(0);
+            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("TWO node-scoped subscription rows synthesise ONE declaration, hence ONE status — the reader-side dedup in TopicGroupDeclarationSource")
+                                                                .singleElement()
+                      .satisfies(status -> assertThat(status.consumerGroup()).isEqualTo(group));
+
+            // PEER's instance is descaled: NodeDeploymentState.handleUnloading unpublishes ITS row, which
+            // is no longer the row SELF's declaration is synthesised from. The capture is cleared first:
+            // the stub bridge's codec draws an unrelated publishability WARN on pass one.
+            appender.clear();
+            topics.onSubscriptionRemove(new ValueRemove<>(new KVCommand.Remove<>(peerKey), Option.none()));
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions(TOPIC_STREAM)).describedAs("%s: SELF still hosts the slice, is still the committed assignee, and STAYS ATTACHED — another instance's descale cannot un-declare the group here",
+                                                                              UNDECLARE_TICKET)
+                                                                  .containsExactly(0);
+            assertThat(manager.topicGroupStatuses(TOPIC_STREAM)).describedAs("and the group still has a status row, so a later fault would have somewhere to be reported")
+                                                                .singleElement()
+                      .satisfies(status -> assertThat(status.consumerGroup()).isEqualTo(group));
+            assertThat(appender.warns()).describedAs("a routine descale of a peer instance is not a fault here")
+                                        .isEmpty();
+        }
+
+        /// THE CURSOR-FORK QUESTION, left open by the design round and settled here rather than by
+        /// reading. N node-scoped rows must not fork the durable group's cursor: the group owns the
+        /// cursor, not the instance (durable-pubsub-spec §6). `cursorsByKey()` is private, so this
+        /// asserts the two observables it is built from and keyed by — the runtime's subscription
+        /// snapshots, and the `(stream, partition, consumerGroup)` triple each one carries.
+        ///
+        /// It holds because no cursor-keying type carries a node: `SubscriptionKey(stream, partition,
+        /// group)`, `DurableGroupIdentity.groupId(artifactBase, method)`, and `StreamCursorCheckpointKey
+        /// (stream, partition, group)` are all node-free, and the node is dropped at the declaration
+        /// boundary before any of them is reached.
+        ///
+        /// WHAT THIS TEST CANNOT DETECT, measured rather than assumed. Deleting `distinct()` from
+        /// [TopicGroupDeclarationSource] leaves it GREEN (only the sibling above reddens): the
+        /// DECLARATION forks there, the cursor still does not, because both declarations resolve to the
+        /// same `(stream, partition, group)` subscription. So this is not a `distinct()` pin — it is a
+        /// sensor for the one change that COULD fork a cursor, a node component reaching the group
+        /// identity. Its discriminator is the two-row assertion: under a key whose identity ignores the
+        /// node, this test reddens on that line first.
+        @Test
+        void twoInstancesOfOneSlice_shareOneCursor_notOnePerInstance() {
+            var topics = TopicSubscriptionRegistry.topicSubscriptionRegistry();
+            var group = DurableGroupIdentity.groupId(ARTIFACT, METHOD);
+
+            deploySliceEverywhere();
+            ownership.withPartitionCount(1);
+            ownership.ownedBySelf(0);
+            subscribeOn(topics, topicSubscriptionKey(SELF), SELF);
+            subscribeOn(topics, topicSubscriptionKey(PEER), PEER);
+            var manager = topicGroupManager(topics);
+
+            manager.reconcile();
+
+            assertThat(topics.allSubscriptions()).describedAs("the discriminator: two instances really are two rows here")
+                                                 .hasSize(2);
+            assertThat(runtime.subscriptions()).describedAs("%s: one subscription, so one cursor — the group's, not one per instance",
+                                                            UNDECLARE_TICKET)
+                                               .singleElement()
+                      .satisfies(snapshot -> assertThat(snapshot.consumerGroup()).describedAs("and it is keyed on the version-stable GROUP, which carries no node")
+                                                                                 .isEqualTo(group));
+        }
+
+        private static TopicSubscriptionKey topicSubscriptionKey(NodeId node) {
+            return TopicSubscriptionKey.topicSubscriptionKey(ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap(),
+                                                             ARTIFACT,
+                                                             METHOD,
+                                                             node);
+        }
+
+        private static void subscribeOn(TopicSubscriptionRegistry topics, TopicSubscriptionKey key, NodeId node) {
+            topics.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, TopicSubscriptionValue.topicSubscriptionValue(node)),
+                                                    Option.none()));
+        }
+
+        private StreamConsumerManager topicGroupManager(TopicSubscriptionRegistry topics) {
+            return StreamConsumerManager.streamConsumerManager(registry,
+                                                               runtime,
+                                                               invoker,
+                                                               invocationHandler,
+                                                               FrameworkCodecs.frameworkCodecs(),
+                                                               ownership,
+                                                               placement,
+                                                               SELF,
+                                                               TopicGroupDeclarationSource.topicGroupDeclarationSource(topics, _ -> true),
+                                                               authority(true));
+        }
+    }
+
+    /// Captures the manager's own log lines by level, so a "logged at WARN" claim is checked against a
+    /// line rather than inferred from a status field.
+    /// #752: the attached set this manager holds and the consumer runtime's subscriptions must not diverge
+    /// silently. A subscription the runtime lost is a partition nobody consumes while this node reports it attached.
+    @Nested
+    class StateDivergence {
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+        private StreamConsumerManager attachedOnPartitionZero() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+
+            return manager;
+        }
+
+        /// Red under "no reconcile against the runtime": `attach`'s `putIfAbsent` finds the key still held and
+        /// skips it on every pass, so the partition stays unconsumed and nothing is reported.
+        @Test
+        void reconcile_reattachesAndReports_whenTheRuntimeLostAnAttachedSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+            var subscribesBefore = runtime.subscribeCalls;
+
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the same pass re-attached it").containsExactly(0);
+            assertThat(runtime.subscribeCalls).isEqualTo(subscribesBefore + 1);
+            assertThat(awaitWarnings(2)).first()
+                      .satisfies(warning -> {
+                                     assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
+                                     assertThat(warning.subject()).isEqualTo(GROUP + ":" + STREAM + "[0]");
+                                     assertThat(warning.message()).contains("no subscription");
+                                 });
+        }
+
+        /// The recovery event: one per divergence, after it, same subject. Red under "no repaired report".
+        @Test
+        void reconcile_reportsTheRepair_onceTheLostSubscriptionIsAttachedAgain() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            manager.reconcile();
+            manager.reconcile();
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(4)).extracting(OperatorWarning::code)
+                      .describedAs("each loss is followed by exactly one repair; the quiet pass between them raises nothing")
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1)).satisfies(repaired -> {
+                                                      assertThat(repaired.subject()).isEqualTo(warnings.get(0).subject());
+                                                      assertThat(repaired.message()).contains("attached again");
+                                                  });
+        }
+
+        /// A divergence whose key the pass no longer wants here is over too: nothing is left to attach.
+        @Test
+        void reconcile_reportsTheRepair_whenTheLostSubscriptionIsNoLongerWantedHere() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            undeclare();
+            manager.reconcile();
+
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1).message()).contains("no longer wants it attached");
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+        }
+
+        /// Still wanted here but not attachable (the slice went away between the desired-set read and the attach): the
+        /// partition is still consumed by nobody, so the divergence stays open until a later pass attaches it. Had the
+        /// first pass closed it, its message would be the "no longer wants" one.
+        @Test
+        void reconcile_holdsTheRepair_untilAStillWantedSubscriptionAttaches() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())), Option.none());
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("arming: the re-attach did not happen").isEmpty();
+            deploySliceLocally();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1).message()).contains("attached again");
+        }
+
+        /// A divergence found by a detach or abandon is a point report: nothing is left to repair, so no recovery
+        /// event follows it. The hand-off is FIFO, so the sentinel loss and its repair close the list.
+        @Test
+        void abandonAll_thatFindsNoSubscription_raisesNoRepair() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.abandonAll();
+            manager.reconcile();
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(0).message()).contains("Detach of").contains("point event; state already reconciled");
+        }
+
+        /// Red under "the detach failure is logged at DEBUG": nothing reaches the operator.
+        @Test
+        void stop_reportsDivergence_whenTheDetachFindsNoSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.stop();
+
+            assertThat(manager.activeSubscriptionCount()).describedAs("forgotten: both sides now hold nothing").isZero();
+            assertThat(awaitWarnings(1)).singleElement()
+                      .satisfies(warning -> assertThat(warning.message()).contains("no final cursor flush"));
+        }
+
+        /// Red under "the abandon result is ignored".
+        @Test
+        void abandonAll_reportsDivergence_whenTheAbandonFindsNoSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.abandonAll();
+
+            assertThat(awaitWarnings(1)).singleElement()
+                      .satisfies(warning -> assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING));
+        }
+
+        /// No false alert: ordinary passes and an ordinary stop agree with the runtime and raise nothing. The hand-off
+        /// is FIFO, so a sentinel loss raised AFTER them proves the earlier ones raised nothing rather than racing.
+        @Test
+        void ordinaryPassesAndStop_raiseNothing() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            manager.reconcile();
+            manager.reconcile();
+            undeclare();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("detached normally when the declaration went away").isEmpty();
+            declareStringConsumer();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .describedAs("only the sentinel loss and its repair, which is the last thing the scenario can raise")
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+        }
+
+        private List<OperatorWarning> awaitWarnings(int count) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (warnings.size() < count && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            return List.copyOf(warnings);
+        }
+    }
+
+    /// #752, adopted from v1890's probes for #1923: `abandonAll` (the quorum-loss path) must not run while a pass is
+    /// between `attach`'s `active.putIfAbsent` and the runtime subscribe (here: held inside the local-slice lookup, which
+    /// sits exactly there). Red under "abandonAll does not take passLock": a false divergence warning, and an orphan
+    /// subscription the manager no longer tracks.
+    @Nested
+    class AbandonDuringAttach {
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+        private Thread passBlockedMidAttach(StreamConsumerManager manager, CountDownLatch entered, CountDownLatch release) {
+            placement.activeOn(SELF);
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            // The pass asks for the local slice twice: in desiredFor (before attach), then in attachAdmitted, right after
+            // `active.putIfAbsent` and before the runtime subscribe. Block only the second.
+            when(invocationHandler.localSlice(ARTIFACT)).thenAnswer(_ -> {
+                if (calls.incrementAndGet() == 2) {
+                    entered.countDown();
+                    release.await(5, TimeUnit.SECONDS);
+                }
+                return Option.some(new StubBridge(Option.none()));
+            });
+            var pass = new Thread(manager::reconcile);
+
+            pass.start();
+            return pass;
+        }
+
+        /// The quorum-loss abandon is issued on its own thread while the pass is held mid-attach, then the pass is
+        /// released. With `abandonAll` under `passLock` it waits for the pass and abandons what the pass attached;
+        /// without the lock it runs inside the held attach. Issued from the test thread it would wait for a pass that
+        /// only the test thread can release.
+        ///
+        /// No timed wait decides the interleaving: the pass is released only once the abandon has either finished
+        /// (it never waited) or is parked on a monitor the pass thread owns (it is waiting for the pass).
+        private void abandonWhileThePassIsHeld(StreamConsumerManager manager, Thread pass, CountDownLatch release) throws InterruptedException {
+            var abandon = new Thread(manager::abandonAll);
+
+            abandon.start();
+            assertThat(finishedOrWaitingOn(abandon, pass)).as("arming: the abandon ran, or waits for the pass").isTrue();
+            release.countDown();
+            abandon.join(5000);
+            assertThat(abandon.isAlive()).as("the abandon completed").isFalse();
+        }
+
+        private boolean finishedOrWaitingOn(Thread waiter, Thread owner) throws InterruptedException {
+            var threads = java.lang.management.ManagementFactory.getThreadMXBean();
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (System.nanoTime() < deadline) {
+                var info = Option.option(threads.getThreadInfo(waiter.threadId()));
+
+                if (!waiter.isAlive() || info.map(live -> live.getLockOwnerId() == owner.threadId()).or(false)) {
+                    return true;
+                }
+
+                Thread.sleep(1);
+            }
+
+            return false;
+        }
+
+        /// The hand-off is FIFO, so a real loss raised AFTER the scenario is its last warning: everything before it
+        /// in `warnings` was raised by the scenario. Returns the divergence warnings up to and including the sentinel.
+        private List<OperatorWarning> divergencesUpToASentinelLoss(StreamConsumerManager manager) throws InterruptedException {
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).as("sentinel arming: attached again").containsExactly(0);
+            runtime.lose(0);
+            manager.reconcile();
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (warnings.stream().noneMatch(AbandonDuringAttach::isSentinelLoss) && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+
+            return warnings.stream()
+                           .filter(warning -> warning.code() == OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED
+                                              || warning.code() == OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING)
+                           .toList();
+        }
+
+        private static boolean isSentinelLoss(OperatorWarning warning) {
+            return warning.code() == OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED && warning.message()
+                                                                                                  .contains("was held as attached");
+        }
+
+        /// No false alert: an abandon that meets an attach still in progress found no "lost" subscription; the runtime
+        /// simply had not been asked yet.
+        @Test
+        void abandonAll_duringAnInFlightAttach_raisesNoDivergenceWarning() throws InterruptedException {
+            declareStringConsumer();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            runtime.strictRemoval = true;
+            var pass = passBlockedMidAttach(manager, entered, release);
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
+            abandonWhileThePassIsHeld(manager, pass, release);
+            pass.join(5000);
+
+            assertThat(divergencesUpToASentinelLoss(manager)).as("divergence warnings: only the sentinel loss, none from the abandon racing an in-flight attach")
+                      .singleElement()
+                      .matches(AbandonDuringAttach::isSentinelLoss);
+        }
+
+        /// Pre-existing companion: after the quorum-loss abandon, nothing is subscribed. Without the lock the in-flight
+        /// attach subscribes after the abandon, leaving a runtime subscription the manager no longer holds, which
+        /// forgetVanished (manager -> runtime direction only) never sees.
+        @Test
+        void abandonAll_duringAnInFlightAttach_leavesNoOrphanSubscription() throws InterruptedException {
+            declareStringConsumer();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var pass = passBlockedMidAttach(manager, entered, release);
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
+            abandonWhileThePassIsHeld(manager, pass, release);
+            pass.join(5000);
+
+            assertThat(runtime.subscribedPartitions()).as("subscriptions after the quorum-loss abandon").isEmpty();
+            assertThat(manager.activeSubscriptionCount()).as("manager's attached count").isZero();
+        }
+
+        /// Control: abandonAll on a settled attachment (no pass in flight) raises nothing and leaves nothing.
+        @Test
+        void abandonAll_afterASettledAttach_isQuiet() throws InterruptedException {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+            runtime.strictRemoval = true;
+            manager.abandonAll();
+
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+            assertThat(divergencesUpToASentinelLoss(manager)).singleElement().matches(AbandonDuringAttach::isSentinelLoss);
+        }
+    }
+
+    private static final class CapturingAppender extends AbstractAppender {
+        private final List<LogEvent> events = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender(String name) {
+            super(name, (Filter) null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY);
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            events.add(event.toImmutable());
+        }
+
+        List<String> warns() {
+            return lines(Level.WARN);
+        }
+
+        List<String> infos() {
+            return lines(Level.INFO);
+        }
+
+        void clear() {
+            events.clear();
+        }
+
+        List<String> all() {
+            return events.stream()
+                         .map(event -> event.getLevel() + " " + event.getMessage().getFormattedMessage())
+                         .toList();
+        }
+
+        private List<String> lines(Level level) {
+            return events.stream()
+                         .filter(event -> event.getLevel().equals(level))
+                         .map(event -> event.getMessage().getFormattedMessage())
+                         .toList();
         }
     }
 
@@ -674,13 +2276,81 @@ class StreamConsumerManagerTest {
     }
 
     /// Records subscribe/unsubscribe instead of running a delivery loop, so the assignment decision is
-    /// observable without a partition manager.
+    /// observable without a partition manager. Keyed by (stream, partition) rather than partition
+    /// alone — #545 review: a partition number is not unique across streams, and the over-detach bug
+    /// in `unsubscribeAllFor` (group matched, stream did not) can only be pinned by a double that keeps
+    /// two streams' subscriptions apart. Every existing test uses one stream, so `subscribedPartitions()`
+    /// (no-arg) stays behaviorally identical to the old partition-only map.
     private static final class RecordingRuntime implements StreamConsumerRuntime {
-        private final Map<Integer, String> subscriptions = new ConcurrentHashMap<>();
+        private record StreamPartition(String streamName, int partition) {}
+
+        private final Map<StreamPartition, String> subscriptions = new ConcurrentHashMap<>();
+        private final Map<StreamPartition, ConsumerFence> fences = new ConcurrentHashMap<>();
+        private final List<Integer> abandoned = new CopyOnWriteArrayList<>();
+        private final List<Integer> gracefullyUnsubscribed = new CopyOnWriteArrayList<>();
         private int subscribeCalls;
+        /// #752: when set, unsubscribe/abandon of a subscription this runtime does not hold fails with
+        /// `CONSUMER_NOT_FOUND`, as the real runtime does. Off by default, so existing tests keep their double.
+        private volatile boolean strictRemoval;
+        private volatile boolean deadLetterHold;
+        private volatile boolean retryHold;
+        private volatile boolean awaitingCursorFetch;
+        // Runs on the unsubscribing thread after each unsubscribe — lets a test trigger a pass from INSIDE
+        // the stop sweep, while that thread holds the pass lock. Inert by default.
+        private volatile Runnable afterUnsubscribe = () -> {};
+
+        void states(boolean deadLetter, boolean retry, boolean awaitingFetch) {
+            deadLetterHold = deadLetter;
+            retryHold = retry;
+            awaitingCursorFetch = awaitingFetch;
+        }
+
+        Option<ConsumerFence> fenceOf(int partition) {
+            return Option.option(fences.get(new StreamPartition(STREAM, partition)));
+        }
+
+        @Override
+        public Result<Unit> subscribe(String streamName,
+                                      int partition,
+                                      ConsumerConfig config,
+                                      ConsumerCallback callback,
+                                      IdlePolicy idlePolicy,
+                                      ConsumerFence fence) {
+            fences.put(new StreamPartition(streamName, partition), fence);
+
+            return subscribe(streamName, partition, config, callback, idlePolicy);
+        }
+
+        @Override
+        public Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
+            abandoned.add(partition);
+
+            return removed(streamName, partition);
+        }
+
+        /// #752: the runtime loses a subscription behind the manager's back.
+        void lose(int partition) {
+            subscriptions.remove(new StreamPartition(STREAM, partition));
+        }
+
+        private Result<Unit> removed(String streamName, int partition) {
+            var held = subscriptions.remove(new StreamPartition(streamName, partition)) != null;
+
+            return held || !strictRemoval
+                   ? Result.unitResult()
+                   : StreamError.General.CONSUMER_NOT_FOUND.result();
+        }
 
         List<Integer> subscribedPartitions() {
-            return List.copyOf(subscriptions.keySet());
+            return subscriptions.keySet().stream().map(StreamPartition::partition).distinct().toList();
+        }
+
+        List<Integer> subscribedPartitions(String streamName) {
+            return subscriptions.keySet()
+                                .stream()
+                                .filter(key -> key.streamName().equals(streamName))
+                                .map(StreamPartition::partition)
+                                .toList();
         }
 
         @Override
@@ -698,16 +2368,19 @@ class StreamConsumerManagerTest {
                                       ConsumerCallback callback,
                                       IdlePolicy idlePolicy) {
             subscribeCalls++;
-            subscriptions.put(partition, config.groupId());
+            subscriptions.put(new StreamPartition(streamName, partition), config.groupId());
 
             return Result.unitResult();
         }
 
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
-            subscriptions.remove(partition);
+            gracefullyUnsubscribed.add(partition);
+            var outcome = removed(streamName, partition);
 
-            return Result.unitResult();
+            afterUnsubscribe.run();
+
+            return outcome;
         }
 
         @Override
@@ -729,13 +2402,23 @@ class StreamConsumerManagerTest {
         public List<SubscriptionSnapshot> subscriptions() {
             return subscriptions.entrySet()
                                 .stream()
-                                .map(entry -> new SubscriptionSnapshot(STREAM,
-                                                                       entry.getKey(),
+                                .map(entry -> new SubscriptionSnapshot(entry.getKey().streamName(),
+                                                                       entry.getKey().partition(),
                                                                        entry.getValue(),
                                                                        0L,
                                                                        false,
-                                                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED))
+                                                                       IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED,
+                                                                       Option.none(),
+                                                                       deadLetterHold,
+                                                                       retryHold,
+                                                                       awaitingCursorFetch,
+                                                                       RewindEpoch.NONE))
                                 .toList();
+        }
+
+        @Override
+        public long cursorCommitFailureCount() {
+            return 0;
         }
 
         @Override
@@ -755,6 +2438,8 @@ class StreamConsumerManagerTest {
         private static final String TOPIC_ADDRESS = "org.example:order-events:1.0.0";
         private static final String TOPIC_STREAM = "topic:" + TOPIC_ADDRESS;
         private static final String TOPIC_GROUP = "org.example:orders#" + METHOD.name();
+        private static final MethodName ON_PLACED = MethodName.methodName("onPlaced").unwrap();
+        private static final MethodName ON_PLACED_WITH_CONTEXT = MethodName.methodName("onPlacedWithContext").unwrap();
 
         private org.pragmatica.aether.endpoint.TopicSubscriptionRegistry topicRegistry;
         private CapturingRuntime capturingRuntime;
@@ -769,10 +2454,15 @@ class StreamConsumerManagerTest {
         }
 
         private void subscribeTopic(Artifact artifact) {
+            subscribeTopic(artifact, METHOD);
+        }
+
+        private void subscribeTopic(Artifact artifact, MethodName method) {
             var address = org.pragmatica.aether.slice.resource.ResourceAddress.resourceAddress(TOPIC_ADDRESS).unwrap();
             var key = org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey.topicSubscriptionKey(address,
                                                                                                               artifact,
-                                                                                                              METHOD);
+                                                                                                              method,
+                                                                                                              SELF);
             var value = org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue.topicSubscriptionValue(SELF);
 
             topicRegistry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
@@ -789,7 +2479,8 @@ class StreamConsumerManagerTest {
                                                                SELF,
                                                                TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
                                                                                                                        name -> ownership.partitionCount(name)
-                                                                                                                                        .isPresent()));
+                                                                                                                                        .isPresent()),
+                                                               authority(true));
         }
 
         private void deployDecodingSliceLocally() {
@@ -840,36 +2531,240 @@ class StreamConsumerManagerTest {
         }
 
         /// The unwrap seam end to end at the delivery boundary: the captured callback receives a
-        /// node-codec-encoded [TopicEventEnvelope]; the slice's invoker must see the DECODED
-        /// application payload — never the envelope, never raw bytes.
+        /// node-codec-encoded [TopicEventEnvelope]; the slice must be handed the APPLICATION payload —
+        /// never the envelope — together with the envelope's delivery context (#1295: before it, the
+        /// node decoded the payload and invoked with the bare event, so no context ever existed). The
+        /// subscribing slice's own bridge decodes the payload bytes.
         @Test
-        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayload() {
+        void delivery_unwrapsEnvelope_andInvokesSliceWithApplicationPayloadAndContext() {
             subscribeTopic(ARTIFACT);
             deployDecodingSliceLocally();
             ownership.ownedBySelf(0);
             ownership.withPartitionCount(1);
-            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.unitPromise());
             topicManager().reconcile();
-            var appEvent = new AppEvent("order-42");
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var appPayload = sliceCodec.encode(new AppEvent("order-42"));
+            var envelope = new TopicEventEnvelope("msg-1", 1234L, appPayload);
+
+            capturingRuntime.callbackFor(TOPIC_STREAM, 0)
+                            .onEvent(3L,
+                                     topicAwareCodec.encode(envelope),
+                                     1234L)
+                            .await()
+                            .onFailure(cause -> fail(cause.message()));
+            var payload = org.mockito.ArgumentCaptor.forClass(byte[].class);
+            var context = org.mockito.ArgumentCaptor.forClass(MessageContext.class);
+
+            org.mockito.Mockito.verify(invoker)
+                               .invokeLocalWithContext(org.mockito.ArgumentMatchers.eq(ARTIFACT),
+                                                       org.mockito.ArgumentMatchers.eq(METHOD),
+                                                       payload.capture(),
+                                                       context.capture());
+            assertThat(payload.getValue()).isEqualTo(appPayload);
+            assertThat(context.getValue()).isEqualTo(MessageContext.messageContext("msg-1", TOPIC_ADDRESS, 0, 3L));
+        }
+
+        /// #1295, end to end at the node boundary: a REAL [DurableTopicPublisher]
+        /// stamps the envelope's messageId; the manager's dispatch delivers it through a REAL
+        /// [DefaultSliceBridge] holding a 1-arg subscriber and a 2-arg subscriber
+        /// in the exact adapter shape the slice processor generates, both on the SAME topic. The 2-arg
+        /// subscriber must observe the PUBLISHER's messageId with the topic, partition and offset of the
+        /// delivery; the 1-arg subscriber must receive the bare event, as before. Before #1295 the 2-arg
+        /// subscriber failed every delivery with a ClassCastException and never saw anything.
+        @Test
+        void delivery_givesTwoArgSubscriberThePublishersMessageId_andOneArgSubscriberTheBareEvent() {
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var bare = new AtomicReference<Object>();
+            var contextual = new AtomicReference<ContextualEvent>();
+            var subscriber = DefaultSliceBridge.defaultSliceBridge(ARTIFACT,
+                                                                                                () -> List.of(bareSubscriber(bare),
+                                                                                                              contextualSubscriber(contextual)),
+                                                                                                sliceCodec);
+
+            subscribeTopic(ARTIFACT, ON_PLACED);
+            subscribeTopic(ARTIFACT, ON_PLACED_WITH_CONTEXT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(call -> subscriber.invokeWithContext(call.<MethodName> getArgument(1)
+                                                                                                                                  .name(),
+                                                                                                                              call.getArgument(2),
+                                                                                                                              call.getArgument(3))
+                                                                                                                          .mapToUnit());
+            topicManager().reconcile();
+
+            var published = publishThroughTheRealPublisher(sliceCodec, new AppEvent("order-42"));
+
+            deliver(ON_PLACED, published, 5L);
+            deliver(ON_PLACED_WITH_CONTEXT, published, 5L);
+
+            assertThat(bare.get()).isEqualTo(new AppEvent("order-42"));
+            assertThat(contextual.get()).isEqualTo(ContextualEvent.contextualEvent(new AppEvent("order-42"),
+                                                                                                                      MessageContext.messageContext(published.messageId(),
+                                                                                                                                                                                      TOPIC_ADDRESS,
+                                                                                                                                                                                      0,
+                                                                                                                                                                                      5L)));
+        }
+
+        private void deliver(MethodName method,
+                             TopicEventEnvelope envelope,
+                             long offset) {
+            capturingRuntime.callbackFor(TOPIC_STREAM,
+                                         0,
+                                         DurableGroupIdentity.groupId(ARTIFACT, method))
+                            .onEvent(offset, topicAwareCodec.encode(envelope), 1234L)
+                            .await()
+                            .onFailure(cause -> fail(method.name() + " delivery failed: "
+                                                                                      + cause.message()));
+        }
+
+        private static TopicEventEnvelope publishThroughTheRealPublisher(SliceCodec sliceCodec,
+                                                                                                            AppEvent event) {
+            var captured = new AtomicReference<TopicEventEnvelope>();
+
+            new DurableTopicPublisher<AppEvent>(sliceCodec, capturingPublisher(captured))
+                .publish(event)
+                .await();
+
+            return captured.get();
+        }
+
+        /// #1342 made `publishBatch` abstract; only the single form is exercised here, so the batch form
+        /// answers each event as published and is never reached.
+        private static StreamPublisher<TopicEventEnvelope> capturingPublisher(AtomicReference<TopicEventEnvelope> captured) {
+            return new StreamPublisher<>() {
+                @Override
+                public Promise<Unit> publish(TopicEventEnvelope envelope) {
+                    return capture(captured, envelope);
+                }
+
+                @Override
+                public Promise<List<PublishOutcome>> publishBatch(List<TopicEventEnvelope> events) {
+                    return Promise.success(IntStream.range(0, events.size())
+                                                    .<PublishOutcome> mapToObj(PublishOutcome.Published::new)
+                                                    .toList());
+                }
+            };
+        }
+
+        private static Promise<Unit> capture(AtomicReference<TopicEventEnvelope> captured,
+                                             TopicEventEnvelope envelope) {
+            captured.set(envelope);
+            return Promise.unitPromise();
+        }
+
+        private static SliceMethod<Unit, AppEvent> bareSubscriber(AtomicReference<Object> seen) {
+            return new SliceMethod<>(ON_PLACED,
+                                                                 event -> record(seen, event),
+                                                                 new TypeToken<Unit>() {},
+                                                                 new TypeToken<AppEvent>() {});
+        }
+
+        /// The exact adapter `FactoryClassGenerator` emits for `onPlacedWithContext(AppEvent, MessageContext)`.
+        private static SliceMethod<Unit, ContextualEvent> contextualSubscriber(AtomicReference<ContextualEvent> seen) {
+            return new SliceMethod<>(ON_PLACED_WITH_CONTEXT,
+                                                                 contextual -> record(seen,
+                                                                                      ContextualEvent.contextualEvent((AppEvent) contextual.event(),
+                                                                                                                                                        contextual.context())),
+                                                                 new TypeToken<Unit>() {},
+                                                                 new TypeToken<ContextualEvent>() {});
+        }
+
+        private static <T> Promise<Unit> record(AtomicReference<T> seen, T value) {
+            seen.set(value);
+            return Promise.unitPromise();
+        }
+
+        /// #1238: the runtime runs ONE serial delivery loop per (group, partition), so a handler that
+        /// never resolves must not hold that partition forever — the declarative path bounds each
+        /// invocation, and the timeout surfaces as a delivery failure for the error strategy to handle.
+        /// The bound is shortened through the constructor seam; production uses
+        /// [StreamConsumerManager.ManagerState#HANDLER_TIMEOUT].
+        @Test
+        void delivery_failsWithTimeout_whenTheSliceHandlerNeverResolves() throws InterruptedException {
+            subscribeTopic(ARTIFACT);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            // The durable-topic path invokes through invokeLocalWithContext (#1295); the never-resolving
+            // promise is the hung handler this pin bounds.
+            when(invoker.invokeLocalWithContext(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            new StreamConsumerManager.ManagerState(registry,
+                                                   capturingRuntime,
+                                                   invoker,
+                                                   invocationHandler,
+                                                   topicAwareCodec,
+                                                   ownership,
+                                                   placement,
+                                                   SELF,
+                                                   TopicGroupDeclarationSource.topicGroupDeclarationSource(topicRegistry,
+                                                                                                           name -> ownership.partitionCount(name)
+                                                                                                                            .isPresent()),
+                                                   StreamConsumerManager.CommittedEpochSource.none(),
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis(),
+                                                   authority(true)).reconcile();
             var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
             var envelope = new org.pragmatica.aether.stream.topic.TopicEventEnvelope("msg-1",
                                                                                      1234L,
-                                                                                     sliceCodec.encode(appEvent));
+                                                                                     sliceCodec.encode(new AppEvent("order-42")));
+            var settled = new java.util.concurrent.CountDownLatch(1);
+            var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
 
             capturingRuntime.callbackFor(TOPIC_STREAM, 0)
                             .onEvent(0L,
                                      topicAwareCodec.encode(envelope),
                                      1234L)
-                            .await()
-                            .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
-            var payload = org.mockito.ArgumentCaptor.forClass(Object.class);
+                            .onResult(result -> {
+                                          outcome.set(result);
+                                          settled.countDown();
+                                      });
+            assertThat(settled.await(2, java.util.concurrent.TimeUnit.SECONDS)).describedAs("a hung handler must end its delivery, not hold the partition's loop forever")
+                      .isTrue();
+            assertThat(outcome.get().isFailure()).describedAs("a timed-out invocation is a delivery failure")
+                      .isTrue();
+        }
 
-            org.mockito.Mockito.verify(invoker)
-                               .invokeLocal(org.mockito.ArgumentMatchers.eq(ARTIFACT),
-                                            org.mockito.ArgumentMatchers.eq(METHOD),
-                                            payload.capture(),
-                                            any());
-            assertThat(payload.getValue()).isEqualTo(appEvent);
+        /// rev1285d F2: the declarative `[streams.X]` twin of the pin above. That pin moved to
+        /// `invokeLocalWithContext` with #1295, which left `invokeConsumer`'s own `.timeout(handlerTimeout)`
+        /// on the `invokeLocal` path unpinned — removing it kept all 1,533 node tests green. Same seam,
+        /// same 200ms bound, the never-resolving promise stubbed on `invokeLocal` instead.
+        @Test
+        void delivery_failsWithTimeout_whenTheDeclarativeSliceHandlerNeverResolves() throws InterruptedException {
+            declare(APP_EVENT_TYPE, false);
+            deployDecodingSliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            when(invoker.invokeLocal(any(), any(), any(), any())).thenAnswer(_ -> Promise.promise());
+            new StreamConsumerManager.ManagerState(registry,
+                                                   capturingRuntime,
+                                                   invoker,
+                                                   invocationHandler,
+                                                   topicAwareCodec,
+                                                   ownership,
+                                                   placement,
+                                                   SELF,
+                                                   TopicGroupDeclarationSource.none(),
+                                                   StreamConsumerManager.CommittedEpochSource.none(),
+                                                   org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis(),
+                                                   authority(true)).reconcile();
+            var sliceCodec = SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(), List.of(APP_EVENT_CODEC));
+            var settled = new java.util.concurrent.CountDownLatch(1);
+            var outcome = new java.util.concurrent.atomic.AtomicReference<Result<Unit>>();
+
+            assertThat(capturingRuntime.callbackFor(STREAM, 0)).describedAs("control: the declarative consumer attached to orders[0]")
+                      .isNotNull();
+            capturingRuntime.callbackFor(STREAM, 0)
+                            .onEvent(0L, sliceCodec.encode(new AppEvent("order-42")), 1234L)
+                            .onResult(result -> {
+                                          outcome.set(result);
+                                          settled.countDown();
+                                      });
+            assertThat(settled.await(2, java.util.concurrent.TimeUnit.SECONDS)).describedAs("a hung declarative handler must end its delivery, not hold the partition's loop forever")
+                      .isTrue();
+            assertThat(outcome.get().isFailure()).describedAs("a timed-out declarative invocation is a delivery failure")
+                      .isTrue();
+            verify(invoker).invokeLocal(any(), any(), any(), any());
         }
 
         private record DecodingBridge(SliceCodec codec) implements SliceBridge {
@@ -916,11 +2811,17 @@ class StreamConsumerManagerTest {
 
         private static final class CapturingRuntime implements StreamConsumerRuntime {
             private final Map<String, ConsumerCallback> callbacks = new ConcurrentHashMap<>();
+            private final Map<String, ConsumerCallback> callbacksByGroup = new ConcurrentHashMap<>();
             private final Map<String, ConsumerConfig> byKey = new ConcurrentHashMap<>();
             private final Map<String, Integer> subscribeCalls = new ConcurrentHashMap<>();
 
             ConsumerCallback callbackFor(String streamName, int partition) {
                 return callbacks.get(streamName + "[" + partition + "]");
+            }
+
+            /// Two topic groups share one `stream[partition]` key; this resolves a group's own callback.
+            ConsumerCallback callbackFor(String streamName, int partition, String groupId) {
+                return callbacksByGroup.get(streamName + "[" + partition + "]#" + groupId);
             }
 
             List<String> streams() {
@@ -966,6 +2867,7 @@ class StreamConsumerManagerTest {
 
                 subscribeCalls.merge(key, 1, Integer::sum);
                 callbacks.put(key, callback);
+                callbacksByGroup.put(key + "#" + config.groupId(), callback);
                 byKey.put(key, config);
 
                 return Result.unitResult();
@@ -999,6 +2901,11 @@ class StreamConsumerManagerTest {
             @Override
             public List<SubscriptionSnapshot> subscriptions() {
                 return List.of();
+            }
+
+            @Override
+            public long cursorCommitFailureCount() {
+                return 0;
             }
 
             @Override

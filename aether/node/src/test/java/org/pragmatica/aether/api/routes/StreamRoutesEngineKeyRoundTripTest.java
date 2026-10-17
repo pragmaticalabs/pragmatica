@@ -22,16 +22,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
-/// The engine keys a `system`-namespace stream by its BARE NAME — the shape the legacy flat
-/// `StreamRoutes#createStream` mints it under ([StreamManager#systemAddress]). `StreamApiRoutes`'s
-/// catalog-form publish and delete resolve their engine key via [StreamManager#engineKey], which
-/// reduces a `system`-namespace address back to that same bare name. This pins the property those
-/// two resolutions depend on: CREATE (legacy, bare-name mint) -> PUBLISH (catalog-form,
-/// engineKey-resolved) -> DELETE (catalog-form, engineKey-resolved) must all agree on ONE engine
-/// key, so a rename or addressing change on either side cannot silently split the cycle across two
-/// different keys — the defect `StreamApiRoutesDeleteStreamTest#deleteStream_systemNamespace_resolvesEngineKeyToBareName`
+/// The engine keys a `system`-namespace stream by its BARE NAME ([StreamManager#systemAddress]).
+/// `StreamApiRoutes`'s catalog-form create, publish and delete all resolve their engine key via
+/// [StreamManager#engineKey], which reduces a `system`-namespace address to that bare name. This
+/// pins the property those resolutions depend on: CREATE -> PUBLISH -> DELETE (all catalog-form,
+/// engineKey-resolved) must agree on ONE engine key, so a rename or addressing change on any side
+/// cannot silently split the cycle across two different keys — the defect
+/// `StreamApiRoutesDeleteStreamTest#deleteStream_systemNamespace_resolvesEngineKeyToBareName`
 /// already guards for DELETE alone, extended here across the full CREATE-PUBLISH-DELETE cycle.
+/// (#968: the CREATE leg used the legacy body-carried route with the bare name; that route now
+/// refuses bare names — and, by the #1282 order pinned in `StreamRoutesReservedPrefixTest`, the
+/// `system:` spelling — so the cycle is driven through the catalog-form create.)
 class StreamRoutesEngineKeyRoundTripTest {
+    private static final String NAMESPACE = "com.example.diag";
     private static final String STREAM_NAME = "diagnostics";
     private static final String VERSION = "1.0.0";
 
@@ -59,23 +62,26 @@ class StreamRoutesEngineKeyRoundTripTest {
         var manager = streamPartitionManager(Long.MAX_VALUE);
         try {
             Supplier<ManageableNode> nodeSupplier = () -> nodeWith(manager);
-            var createRoutes = StreamRoutes.streamRoutes(nodeSupplier, null, null);
             var apiRoutes = StreamApiRoutes.streamApiRoutes(nodeSupplier,
                                                              StreamNamespacesService.inMemory(),
                                                              ConsumerGroupCoordinator.noOp(),
                                                              ConsumerGroupRegistry.consumerGroupRegistry());
 
-            // CREATE: legacy flat mint, keyed by the bare name.
-            createRoutes.createStream(new StreamRoutes.StreamCreateRequest(STREAM_NAME, 1))
-                        .onFailure(cause -> fail("stream create must succeed: " + cause))
-                        .onSuccess(response -> assertThat(response.status()).isEqualTo("created"));
-
-            // PUBLISH: catalog-form `system`-namespace address must resolve to the SAME bare-name
-            // engine key CREATE minted, not a shadow stream materialized under a different key.
-            apiRoutes.publishEvent(StreamManager.SYSTEM_NAMESPACE,
+            // CREATE: catalog-form address, minted under the full-address engine key.
+            apiRoutes.createStream(NAMESPACE,
                                    STREAM_NAME,
                                    VERSION,
-                                   new StreamApiRoutes.PublishRequest("payload"))
+                                   new StreamApiRoutes.CreateRequest(1))
+                     .onFailure(cause -> fail("stream create must succeed: " + cause))
+                     .onSuccess(response -> assertThat(response.status()).isEqualTo("created"));
+            assertThat(manager.streamInfo(NAMESPACE + ":" + STREAM_NAME + ":" + VERSION).isPresent()).as("minted under the full-address engine key").isTrue();
+
+            // PUBLISH: catalog-form address must resolve to the SAME full-address
+            // engine key CREATE minted, not a shadow stream materialized under a different key.
+            apiRoutes.publishEvent(NAMESPACE,
+                                   STREAM_NAME,
+                                   VERSION,
+                                   new StreamApiRoutes.PublishRequest("payload", null))
                      .await()
                      .onFailure(cause -> fail("publish against the system-namespace address must resolve to the "
                                               + "stream CREATE minted: " + cause))
@@ -83,7 +89,7 @@ class StreamRoutesEngineKeyRoundTripTest {
 
             // DELETE: same catalog-form address, same engine-key resolution — must tear down the
             // SAME stream PUBLISH just wrote to, not fail "not found" against a different key.
-            apiRoutes.deleteStream(StreamManager.SYSTEM_NAMESPACE, STREAM_NAME, VERSION)
+            apiRoutes.deleteStream(NAMESPACE, STREAM_NAME, VERSION)
                      .onFailure(cause -> fail("delete against the system-namespace address must resolve to the "
                                               + "SAME engine key publish used: " + cause))
                      .onSuccess(response -> assertThat(response.status()).isEqualTo("deleted"));

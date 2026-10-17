@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.fsm;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -13,13 +14,17 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DownHysteresisMet;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainRequested;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.DrainUnacknowledged;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.JoinGraceExpiredNeverHealthy;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.LivenessGone;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipEvent.PeerConnected;
@@ -111,6 +116,11 @@ import org.slf4j.LoggerFactory;
 /// monitor so the streak / co-confirmation flags stay internally consistent.
 public final class MembershipFsm {
     private static final Logger log = LoggerFactory.getLogger(MembershipFsm.class);
+
+    /// Process evidence (governor report / worker admission) refused because it came from a
+    /// different process (boot token) or reached a DEAD/DEPARTING identity. Read by tests/diagnostics.
+    private final AtomicLong refusedProcessEvidence = new AtomicLong();
+
     /// FSM kind tag — groups all per-member FSMs under one name for observer dashboards.
     private static final String FSM_KIND = "membership";
     /// Up-hysteresis promotion threshold for this **edge-driven** manager (= 1). SWIM emits
@@ -153,6 +163,9 @@ public final class MembershipFsm {
 
     private final FsmObserver<MembershipState, MembershipEvent> observer;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
+    private final Object scopeGuard = new Object();
+    private volatile Predicate<NodeId> trackingEligibility = _ -> true;
+    private volatile Predicate<NodeId> joinGraceReapEligibility = _ -> true;
     /// Wall-clock source (ms) used to stamp every fresh SUSPECT-inducing doubt and to age the
     /// quiesce SUSPECTED health-hint out after [`#suspectHintTtlMs`]. Injectable so tests can drive a
     /// controllable clock; production defaults to `System::currentTimeMillis`.
@@ -191,6 +204,37 @@ public final class MembershipFsm {
     /// zombie (paid cloud orphan / Docker count drift). ADDITIVE to [`#onConfirmedDeparture`], which
     /// still fires for ALL DEAD paths. Reset to the no-op by passing `null` to [`#onJoinGraceReap`].
     private volatile Consumer<NodeId> onJoinGraceReap = ignored -> {};
+
+    /// Never-joined-death listener (#588) invoked ONCE per fresh edge into DEAD for a member that
+    /// NEVER reached MEMBER — exactly the complement of the REMOVED delta edge, which `everJoined`
+    /// confines to members that did. The cluster-status rosters do NOT wait for promotion: a peer
+    /// enters `TopologyObserver.nodeStatesById` on the SWIM `JoinAnnounced`/`MemberDiscovered` →
+    /// `addNode` edge and `ClusterSyncCollector.remoteMetrics` on the first ping or pong carrying
+    /// it, both of which precede it. A member reaped OBSERVED→DEAD (join-grace expiry, or any other
+    /// pre-promotion death) therefore left a row in both that no edge could remove — the #588 ghost
+    /// by a path the REMOVED arm structurally cannot reach. Role-blind, because those rosters are.
+    /// Default no-op (production-inert): AetherNode wires it to the same two prunes the REMOVED arm
+    /// drives. Reset to the no-op by passing `null` to [`#onNeverJoinedDeath`].
+    private volatile Consumer<NodeId> onNeverJoinedDeath = ignored -> {};
+
+    /// Reachable-death listener (#1835) invoked ONCE per fresh edge into DEAD for a member whose
+    /// [`MemberTracking#everReachable`] latch was set AT THAT EDGE — this node's FSM saw reachability
+    /// evidence (QUIC handshake, SWIM ALIVE, governor / worker-admission health) before the death. SWIM ALIVE
+    /// includes gossip-relayed ALIVE (`SwimProtocol.notifyAlive` / `applyNewAliveMember`), so the evidence is
+    /// not necessarily first-hand. This is the only identity-established subject a "failed" verdict is
+    /// about, so it is the edge the user-facing NODE_FAILED event and CRITICAL alert ride.
+    /// ADDITIVE to [`#onConfirmedDeparture`], which still fires for every DEAD path.
+    /// The latch is read inside the per-member monitor at the edge
+    /// and carried into the emission, so a later retirement of the tracking cannot change the verdict.
+    /// Default no-op. Reset to the no-op by passing `null` to [`#onReachableDeath`].
+    private volatile Consumer<NodeId> onReachableDeath = ignored -> {};
+
+    /// Never-reachable-death listener (#1835): the complement of [`#onReachableDeath`] — a fresh edge into
+    /// DEAD for a member this node's FSM NEVER observed reachable. A configured core promoted by [`#seed`]
+    /// that was never reached (slow JVM boot, phantom seed) dies here, and "failed" would be a verdict about
+    /// a subject whose identity was never established. Exactly one of the two listeners fires per DEAD edge.
+    /// Default no-op. Reset to the no-op by passing `null` to [`#onNeverReachableDeath`].
+    private volatile Consumer<NodeId> onNeverReachableDeath = ignored -> {};
 
     /// Departing-edge listener (seed-500 part 2) invoked ONCE per fresh edge INTO `Departing` —
     /// at the SAME central dispatch chokepoint ([`MemberTracking#dispatch`]) that arms the H2
@@ -231,6 +275,16 @@ public final class MembershipFsm {
     /// no-ops a node already in the ring), so it is harmless if a `NodeJoined` also fires. Reset to
     /// the no-op by passing `null` to [`#onDepartingRecovery`].
     private volatile Consumer<NodeId> onDepartingRecovery = ignored -> {};
+
+    /// Reachability-evidence listener (#1853): invoked once per member, on the edge where its
+    /// [`MemberTracking#everReachable`] latch flips false → true. That latch is an input of
+    /// [`#strictCoreObservedMemberCount`] — the quorum-loss numerator — yet it flips on `PeerConnected` /
+    /// `SwimHealthy` events that need not change the member's state, so no transition record names it. Without
+    /// this edge a consumer re-evaluating the numerator on transitions alone could miss the one input change that
+    /// makes a forming cluster quorate. Runs after the per-member monitor is released, exactly like
+    /// [`#onTransition`] (#929), so it may read the member map. Reset to the no-op by passing `null` to
+    /// [`#onReachabilityLatched`].
+    private volatile Consumer<NodeId> onReachabilityLatched = ignored -> {};
 
     /// Wave-1 transition journal feed (cluster-topology-overhaul spec, Enrichment A): invoked
     /// with one [MembershipTransitionRecord] per ACTUAL per-member state change (dispatches that
@@ -393,6 +447,25 @@ public final class MembershipFsm {
                                     : listener;
     }
 
+    /// Register the reachable-death listener (#1835) — see [`#onReachableDeath`]. AetherNode wires this to
+    /// `NodeDepartureNotifier`, the one unit that owns the NODE_FAILED event and CRITICAL alert pair.
+    /// A `null` argument resets it to the no-op.
+    @Contract
+    public void onReachableDeath(Consumer<NodeId> listener) {
+        this.onReachableDeath = listener == null
+                                ? ignored -> {}
+                                : listener;
+    }
+
+    /// Register the never-reachable-death listener (#1835) — see [`#onNeverReachableDeath`]. AetherNode wires
+    /// this to a non-CRITICAL "never joined" operator warning. A `null` argument resets it to the no-op.
+    @Contract
+    public void onNeverReachableDeath(Consumer<NodeId> listener) {
+        this.onNeverReachableDeath = listener == null
+                                     ? ignored -> {}
+                                     : listener;
+    }
+
     /// Register the join-grace-reap actuation listener invoked ONCE per never-healthy join-grace
     /// reap edge (OBSERVED→DEAD via [`JoinGraceExpiredNeverHealthy`]) — see [`#onJoinGraceReap`].
     /// AetherNode wires this to a leader-gated `ClusterTopologyManager.drainNode(..,
@@ -404,6 +477,18 @@ public final class MembershipFsm {
         this.onJoinGraceReap = listener == null
                                ? ignored -> {}
                                : listener;
+    }
+
+    /// Register the never-joined-death listener invoked ONCE per fresh DEAD edge for a member that
+    /// never reached MEMBER (#588) — see [`#onNeverJoinedDeath`]. AetherNode wires this to
+    /// `TopologyObserver.pruneDeparted` plus `ClusterSyncCollector.removeNode`, the same two rosters
+    /// the projector's REMOVED arm prunes, because both admitted the member before promotion. A
+    /// `null` argument resets it to the no-op.
+    @Contract
+    public void onNeverJoinedDeath(Consumer<NodeId> listener) {
+        this.onNeverJoinedDeath = listener == null
+                                  ? ignored -> {}
+                                  : listener;
     }
 
     /// Register the departing-edge listener invoked ONCE per fresh edge INTO `Departing` (seed-500
@@ -435,10 +520,27 @@ public final class MembershipFsm {
                                    : listener;
     }
 
+    /// Register the reachability-latch listener (#1853) — see [`#onReachabilityLatched`]. A `null` argument
+    /// resets it to the no-op.
+    @Contract
+    public void onReachabilityLatched(Consumer<NodeId> listener) {
+        this.onReachabilityLatched = listener == null
+                                     ? ignored -> {}
+                                     : listener;
+    }
+
+    private void reachabilityLatchedEdge(NodeId id) {
+        onReachabilityLatched.accept(id);
+    }
+
     /// Register the Wave-1 transition-journal listener invoked once per ACTUAL per-member state
-    /// change, at the central dispatch chokepoint. The listener is called under the per-member
-    /// monitor — implementations must be cheap and non-blocking (the journal ring-buffer append
-    /// is). Diagnostic-only; a `null` argument resets it to the no-op.
+    /// change, at the central dispatch chokepoint. Since #929 the listener runs AFTER the
+    /// per-member monitor is released (still serialised per member by
+    /// [`MemberTracking#transitionGuard`], and still while that member's state is exactly what the
+    /// record names) — it may therefore read the member map without deadlocking, which is what
+    /// `AetherNode.derivedMemberCount` does on the Member-boundary edge. Cheap and non-blocking
+    /// is still the right shape: a slow listener stalls every further transition of THAT member.
+    /// Diagnostic-only; a `null` argument resets it to the no-op.
     @Contract
     public void onTransition(Consumer<MembershipTransitionRecord> listener) {
         this.onTransition = listener == null
@@ -456,9 +558,10 @@ public final class MembershipFsm {
 
     /// Register the Wave-4 membership-delta listener invoked once per counted-set lifecycle
     /// edge (JOINED / REMOVED, see [`MembershipDeltaEdge`]) at the central dispatch chokepoint.
-    /// The listener is called under the per-member monitor — implementations must be cheap and
-    /// non-blocking (the production [`MembershipDeltaProjector`] enqueues into its FIFO and
-    /// returns). A `null` argument resets it to the no-op.
+    /// Since #929 the listener runs AFTER the per-member monitor is released (still serialised per
+    /// member by [`MemberTracking#transitionGuard`]); cheap and non-blocking remains the right
+    /// shape (the production [`MembershipDeltaProjector`] enqueues into its FIFO and returns), but
+    /// it is no longer load-bearing against deadlock. A `null` argument resets it to the no-op.
     @Contract
     public void onMembershipDelta(Consumer<MembershipDeltaEdge> listener) {
         this.onMembershipDelta = listener == null
@@ -496,10 +599,11 @@ public final class MembershipFsm {
     /// (leaving its state in OBSERVED) and overwrites only the descriptor, so the address/role/source
     /// become known the moment the first NodeInfo lands. Field-level updates are guarded against
     /// blank-downgrade ([`MemberTracking#updateDescriptor`]): an information-less observation never
-    /// erases a known address / role / source, while a non-blank incoming value still replaces it.
+    /// erases a known address / role / source, and known role/source values remain immutable.
     @Contract
     public void onMemberDescriptor(NodeInfo info) {
-        trackingFor(info.id()).updateDescriptor(MemberDescriptor.fromNodeInfo(info));
+        withMember(info.id(),
+                   tracking -> tracking.updateDescriptor(MemberDescriptor.fromNodeInfo(info)));
     }
 
     /// SWIM reported `id` ALIVE at `incarnation`. Records the incarnation, bumps the consecutive-
@@ -508,6 +612,102 @@ public final class MembershipFsm {
     @Contract
     public void onSwimHealthy(NodeId id, long incarnation) {
         withMember(id, tracking -> healthy(tracking, incarnation));
+    }
+
+    /// The caller supplies already validated, fresh, term-fenced governor evidence and the
+    /// committed worker descriptor. This ingress never manufactures a negative membership event.
+    @Contract
+    public void onGovernorHealthy(NodeId id,
+                                  String community,
+                                  NodeId governor,
+                                  long governorTerm,
+                                  long bootToken,
+                                  MemberDescriptor admittedDescriptor) {
+        onGovernorHealthy(id, community, governor, governorTerm, bootToken, admittedDescriptor, 0L);
+    }
+
+    /// `observedAgoMs` is how long before NOW the governor's first-hand observation (the member's last pong)
+    /// was made: the report's own freshness window lets a report generated AFTER the member died still say
+    /// "alive" for up to `communityAbsence`, so the evidence instant, not the report's arrival, is what can
+    /// prove life. Evidence that is not NEWER than the death signal that armed the backstop is ignored
+    /// entirely (#1717): it describes a member that was alive before the signal and proves nothing since.
+    @Contract
+    public void onGovernorHealthy(NodeId id,
+                                  String community,
+                                  NodeId governor,
+                                  long governorTerm,
+                                  long bootToken,
+                                  MemberDescriptor admittedDescriptor,
+                                  long observedAgoMs) {
+        if (community.isBlank() || governorTerm < 0 || bootToken == 0 || !("worker".equalsIgnoreCase(admittedDescriptor.role()) || "spot".equalsIgnoreCase(admittedDescriptor.role()))) {
+            return;
+        }
+
+        withMember(id,
+                   tracking -> tracking.inTransition(() -> {
+                       tracking.updateDescriptor(admittedDescriptor);
+                       if (tracking.deathSignalNotOlderThan(monotonicNanos.getAsLong() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                                                                                                                                                     observedAgoMs)))) {
+                       return;
+                   }
+
+                       if (tracking.descriptor()
+                                   .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "governor report")) {
+                       return;
+                   }
+
+                       tracking.dispatch(new MembershipEvent.GovernorHealthy(bootToken,
+                                                                             community,
+                                                                             governor,
+                                                                             governorTerm));
+                       if (tracking.bumpHealthyStreakReachedThreshold()) {
+                       tracking.dispatch(new UpHysteresisMet());
+                   }
+                   }));
+    }
+
+    /// Admission evidence is explicitly distinct from SWIM and committed-governor reports.
+    @Contract
+    public void onWorkerAdmissionHealthy(NodeId id, long bootToken, MemberDescriptor descriptor) {
+        if (bootToken == 0 || !("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))) {
+            return;
+        }
+
+        withMember(id,
+                   tracking -> tracking.inTransition(() -> {
+                       tracking.updateDescriptor(descriptor);
+                       if (tracking.descriptor()
+                                   .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "worker admission")) {
+                       return;
+                   }
+
+                       tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(bootToken));
+                       if (tracking.bumpHealthyStreakReachedThreshold()) {
+                       tracking.dispatch(new UpHysteresisMet());
+                   }
+                   }));
+    }
+
+    /// Boot-token gate for process evidence (owner ruling, session 28). DEAD and DEPARTING refuse it
+    /// unconditionally — terminal removal, a dead identity never returns. Other states accept the
+    /// first token seen or an EQUAL one; a different token is a different process and is refused.
+    /// Every refusal is counted and logged, never silently dropped.
+    private boolean admitsProcessEvidence(NodeId id, MemberTracking tracking, long bootToken, String kind) {
+        var refusal = tracking.processEvidenceRefusal(bootToken);
+
+        refusal.onPresent(reason -> recordProcessEvidenceRefusal(id, kind, reason));
+
+        return refusal.isEmpty();
+    }
+
+    private void recordProcessEvidenceRefusal(NodeId id, String kind, String reason) {
+        refusedProcessEvidence.incrementAndGet();
+        log.warn("MembershipFsm refused {} for {}: {}", kind, id, reason);
+    }
+
+    /// Count of refused process-evidence events (boot-token mismatch or DEAD/DEPARTING identity).
+    public long refusedProcessEvidenceCount() {
+        return refusedProcessEvidence.get();
     }
 
     /// SWIM reported `id` SUSPECT at `incarnation`. Moves MEMBER→SUSPECT (which still counts toward
@@ -541,7 +741,11 @@ public final class MembershipFsm {
     /// Transport reported a peer connection established for `id`.
     @Contract
     public void onPeerConnected(NodeId id) {
-        withMember(id, tracking -> tracking.dispatch(new PeerConnected()));
+        withMember(id,
+                   tracking -> tracking.inTransition(() -> {
+                       tracking.dispatch(new PeerConnected());
+                       tracking.clearTransportDeath();
+                   }));
     }
 
     /// Transport reported a peer connection dropped for `id`. Drives MEMBER→SUSPECT, so it is also a
@@ -571,6 +775,10 @@ public final class MembershipFsm {
     /// ingress is retained for tests and external grace sources.
     @Contract
     public void onJoinGraceExpired(NodeId id) {
+        if (!joinGraceReapEligibility.test(id)) {
+            return;
+        }
+
         withMember(id, tracking -> tracking.dispatch(new JoinGraceExpiredNeverHealthy()));
     }
 
@@ -578,10 +786,23 @@ public final class MembershipFsm {
     /// Wave 7 — the drain command is routed THROUGH the FSM instead of bypassing it). Drives
     /// OBSERVED/MEMBER/SUSPECT → DEPARTING: the target stops counting toward effective and the
     /// DEPARTING timeout (H2) terminalizes it if it goes silent; a `SwimHealthy` at a strictly
-    /// higher incarnation recovers it mid-drain. Ignored in DEPARTING/DEAD.
+    /// higher incarnation recovers it mid-drain. When the timeout finds the DRAIN unacknowledged and no
+    /// death evidence, it withdraws the drain back to MEMBER instead (#1054). Ignored in DEPARTING/DEAD.
     @Contract
     public void onDrainRequested(NodeId id) {
         withMember(id, tracking -> tracking.dispatch(new DrainRequested()));
+    }
+
+    /// The leader observed `id` reporting `DRAINING` on its pong: the target received the DRAIN and acted on it
+    /// (#1054). LATCHED for the member's current drain episode ([`MemberTracking#drainAcknowledged`]): a drainee
+    /// that acknowledged and then halted stops ponging, and the leader's readiness sweep forgets it within
+    /// `pingInterval × 3` — long before the DEPARTING timeout — so the acknowledgement cannot be a live read at
+    /// expiry. An acknowledged drain terminalizes at expiry; only a never-acknowledged drain with no death evidence
+    /// is withdrawn. Never creates tracking for an id this FSM has not observed: a pong alone is not membership
+    /// evidence. Idempotent — production calls it on every `DRAINING` pong.
+    @Contract
+    public void onDrainAcknowledged(NodeId id) {
+        Option.option(members.get(id)).onPresent(tracking -> tracking.inTransition(tracking::latchDrainAcknowledgement));
     }
 
     /// The presence sampler down-hysteresis threshold was crossed for `id` (sustained absence over the
@@ -612,6 +833,12 @@ public final class MembershipFsm {
     /// ROLE-BLIND (includes workers). Quorum / heal-deficit / role-assignment consumers must NOT
     /// count this set — they read the role-scoped [`#coreCountedMembers`] instead
     /// (cluster-topology-overhaul spec, Wave 2 / invariant A8: one core denominator).
+    public boolean isCountedMember(NodeId node) {
+        return Option.option(members.get(node))
+                     .map(MemberTracking::countsTowardEffective)
+                     .or(false);
+    }
+
     public Set<NodeId> countedMembers() {
         return members.entrySet()
                       .stream()
@@ -682,6 +909,13 @@ public final class MembershipFsm {
     /// id is untracked. Works in ANY lifecycle state INCLUDING DEAD — DEAD members are retained in the
     /// map, and a dead node's `source` is needed to provision its same-source replacement, so this
     /// reads from the retained [`MemberTracking`] (not from [`#countedMembers`]).
+    /// Constant-time eligibility lookup; does not allocate a cluster-wide membership snapshot.
+    public boolean isTrackedAndNotDead(NodeId id) {
+        return Option.option(members.get(id))
+                     .map(tracking -> !tracking.isDead())
+                     .or(false);
+    }
+
     public Option<MemberDescriptor> memberDescriptor(NodeId id) {
         return Option.option(members.get(id)).map(MemberTracking::descriptor);
     }
@@ -738,9 +972,8 @@ public final class MembershipFsm {
 
     /// The role-scoped COUNTING projection (cluster-topology-overhaul spec, Wave 2 / invariant
     /// A8 — one core denominator): counted members (MEMBER + SUSPECT) whose descriptor role is
-    /// not the explicit literal `worker`. An unknown / absent role counts as core (conservative,
-    /// matching [`#coreMembers`]'s documented rule), so an all-core cluster with no role labels
-    /// yields every counted member.
+    /// explicitly `core`. Unknown observations remain outside core accounting; configured
+    /// legacy seed labels are normalized to CORE at the trusted bootstrap boundary.
     ///
     /// Built on — and today identical to — [`#coreMembers`], but deliberately a SEPARATE name:
     /// [`#coreMembers`] is the transport dial-set projection (what the executor keeps
@@ -813,6 +1046,27 @@ public final class MembershipFsm {
     public int strictCoreObservedMemberCount(NodeId self) {
         return (int) members.entrySet()
                             .stream()
+                            .filter(entry -> entry.getValue()
+                                                  .isStrictCoreMember())
+                            .filter(entry -> entry.getKey()
+                                                  .equals(self) || entry.getValue()
+                                                                        .everReachable())
+                            .count();
+    }
+
+    /// The quorum-loss numerator ([`#strictCoreObservedMemberCount`]) narrowed to `voter`s, in ONE pass over the
+    /// member map (#1853). `AetherNode` derives the detector's count from this on every evaluation, so the
+    /// read must not cost more than the push it replaces: the push built two member sets (a
+    /// [`#coreObservedMembers`] walk and a [`#strictCoreMembers`] walk) and intersected them with the voters;
+    /// this takes each member's monitor once for the strict predicate and once for the latch, builds nothing,
+    /// and never holds two monitors at a time (each `synchronized` accessor releases before the next member).
+    ///
+    /// `isStrictCoreMember` implies `isCoreCountedMember` (MEMBER is a counting state), so filtering the strict
+    /// set by observed reachability is identical to intersecting it with [`#coreObservedMembers`].
+    public int strictCoreObservedVoterCount(NodeId self, Predicate<NodeId> voter) {
+        return (int) members.entrySet()
+                            .stream()
+                            .filter(entry -> voter.test(entry.getKey()))
                             .filter(entry -> entry.getValue()
                                                   .isStrictCoreMember())
                             .filter(entry -> entry.getKey()
@@ -917,47 +1171,66 @@ public final class MembershipFsm {
     }
 
     // --- Per-member transition drivers (presence sampler promotion + co-confirmation eviction) ---
+    // Each driver below is ONE logical membership operation spanning several per-member steps.
+    // Since #929 they run under the member's transition guard ([`MemberTracking#inTransition`]) so
+    // the whole sequence is atomic against every other transition of that member — the atomicity
+    // that `evictIfStillConfirmedDead` used to get from being `synchronized` on the monitor, and
+    // which the drivers themselves never had (each step took the monitor separately).
     private void healthy(MemberTracking tracking, long incarnation) {
-        tracking.dispatch(new SwimHealthy(incarnation));
-        tracking.clearConfirmedDeath();
-        if (tracking.bumpHealthyStreakReachedThreshold()) {
-            tracking.dispatch(new UpHysteresisMet());
-        }
+        tracking.inTransition(() -> {
+            tracking.dispatch(new SwimHealthy(incarnation));
+            tracking.clearConfirmedDeath();
+            if (tracking.bumpHealthyStreakReachedThreshold()) {
+                tracking.dispatch(new UpHysteresisMet());
+            }
+        });
     }
 
     private void suspect(MemberTracking tracking, long incarnation) {
-        tracking.resetHealthyStreak();
-        tracking.stampDoubt(wallClockMs.getAsLong());
-        tracking.dispatch(new SwimSuspect(incarnation));
+        tracking.inTransition(() -> {
+            tracking.resetHealthyStreak();
+            tracking.stampDoubt(wallClockMs.getAsLong());
+            tracking.dispatch(new SwimSuspect(incarnation));
+        });
     }
 
     private void faulty(MemberTracking tracking, long incarnation) {
-        tracking.resetHealthyStreak();
-        tracking.stampDoubt(wallClockMs.getAsLong());
-        tracking.dispatch(new SwimFaulty(incarnation));
-        tracking.markSwimFaulty();
-        maybeConfirmDeparture(tracking);
+        tracking.inTransition(() -> {
+            tracking.resetHealthyStreak();
+            tracking.stampDoubt(wallClockMs.getAsLong());
+            tracking.dispatch(new SwimFaulty(incarnation));
+            tracking.markSwimFaulty();
+            tracking.noteDeathSignal(monotonicNanos.getAsLong());
+            maybeConfirmDeparture(tracking);
+        });
     }
 
     private void departed(MemberTracking tracking, long incarnation) {
-        tracking.resetHealthyStreak();
-        tracking.dispatch(new SwimDeparted(incarnation));
-        tracking.dispatch(new Stopped());
+        tracking.inTransition(() -> {
+            tracking.resetHealthyStreak();
+            tracking.dispatch(new SwimDeparted(incarnation));
+            tracking.dispatch(new Stopped());
+        });
     }
 
     private void livenessGone(MemberTracking tracking) {
-        tracking.stampDoubt(wallClockMs.getAsLong());
-        tracking.dispatch(new LivenessGone());
-        tracking.markLivenessGone();
-        maybeConfirmDeparture(tracking);
+        tracking.inTransition(() -> {
+            tracking.stampDoubt(wallClockMs.getAsLong());
+            tracking.dispatch(new LivenessGone());
+            tracking.markLivenessGone();
+            tracking.noteDeathSignal(monotonicNanos.getAsLong());
+            maybeConfirmDeparture(tracking);
+        });
     }
 
     /// Transport-disconnect doubt path (MEMBER→SUSPECT on [`PeerDisconnected`]): stamp the doubt
     /// time so the SUSPECT's quiesce hint decays under the #68 TTL, then dispatch. A no-op in any
     /// state with no MEMBER→SUSPECT edge — the stamp is harmless there (the hint stays `none()`).
     private void peerDisconnected(MemberTracking tracking) {
-        tracking.stampDoubt(wallClockMs.getAsLong());
-        tracking.dispatch(new PeerDisconnected());
+        tracking.inTransition(() -> {
+            tracking.stampDoubt(wallClockMs.getAsLong());
+            tracking.dispatch(new PeerDisconnected());
+        });
     }
 
     /// Seed-promote a single id (the one-time formation bootstrap). The (lazily-created) tracking is
@@ -966,7 +1239,12 @@ public final class MembershipFsm {
     /// live snapshot. `promoteIfObserved` performs the OBSERVED guard and the [`UpHysteresisMet`]
     /// dispatch atomically under the per-member monitor.
     private void seedMember(NodeId id) {
-        trackingFor(id).promoteIfObserved();
+        withMember(id, MembershipFsm::promoteSeed);
+    }
+
+    private static void promoteSeed(MemberTracking tracking) {
+        tracking.updateDescriptor(new MemberDescriptor(Option.none(), "core", ""));
+        tracking.promoteIfObserved();
     }
 
     /// Co-confirmation gate (#131 Model C — DEFERRED terminal). When BOTH planes confirm death
@@ -1000,6 +1278,18 @@ public final class MembershipFsm {
         onConfirmedDeparture.accept(id);
     }
 
+    /// Reachability-split hooks invoked from [`MemberTracking#enteredDead`] with the latch value read AT
+    /// the edge (#1835); see [`#onReachableDeath`] / [`#onNeverReachableDeath`].
+    private void reachableDeathEdge(NodeId id) {
+        onReachableDeath.accept(id);
+    }
+
+    private void neverReachableDeathEdge(NodeId id) {
+        log.info("MembershipFsm member {} reached DEAD without ever being observed reachable — never joined, not failed",
+                 id);
+        onNeverReachableDeath.accept(id);
+    }
+
     /// Reap-edge actuation hook invoked from [`MemberTracking#enteredDead`] ONLY when the fresh edge
     /// into DEAD was driven by [`JoinGraceExpiredNeverHealthy`] (never-healthy join-grace reap; by
     /// the state table this edge fires only from OBSERVED). ADDITIVE to [`#onEnteredDead`], which
@@ -1010,6 +1300,15 @@ public final class MembershipFsm {
         log.info("MembershipFsm member {} reaped OBSERVED→DEAD by join-grace (never healthy) — actuating container termination",
                  id);
         onJoinGraceReap.accept(id);
+    }
+
+    /// Never-joined-death hook invoked from [`MemberTracking#enteredDead`] for a member whose
+    /// `everJoined` is false — the arm the REMOVED delta edge cannot cover (#588). Notifies the
+    /// [`#onNeverJoinedDeath`] listener (default no-op) so the rosters that admitted the member
+    /// before promotion drop it on the same death edge that ends its tracking.
+    private void neverJoinedDeathEdge(NodeId id) {
+        log.debug("MembershipFsm member {} died without ever joining — pruning the pre-promotion rosters", id);
+        onNeverJoinedDeath.accept(id);
     }
 
     /// Departing-edge hook invoked CENTRALLY on every fresh edge INTO `Departing` (detected in
@@ -1041,7 +1340,77 @@ public final class MembershipFsm {
     /// JBCT code returns errors as values (`Result`/`Option`), never throws, so no try/catch is needed.
     @Contract
     private void withMember(NodeId id, Consumer<MemberTracking> action) {
-        action.accept(trackingFor(id));
+        eligibleTracking(id).onPresent(action);
+    }
+
+    /// Monotonic source for the death-signal instant and the evidence instant it is compared with (#1717). Both are
+    /// measured on THIS node, so a wall-clock step (NTP, VM resume) between the signal and a report cannot make fresh
+    /// evidence look older than the signal. Remaining skew is cross-node: the evidence age carries the worker's own
+    /// wall-clock term (governor clock minus worker `observedAtMs`, admitted up to `MAX_AGE_MS`), so a worker clock
+    /// behind by more than ~15 s can still make fresh evidence look old. [unverified: cross-node skew > 15 s, bounded
+    /// by MAX_AGE_MS]
+    private volatile LongSupplier monotonicNanos = System::nanoTime;
+
+    /// Test seam for the monotonic source; production keeps `System::nanoTime`.
+    public org.pragmatica.lang.Unit setMonotonicClock(LongSupplier clock) {
+        monotonicNanos = clock;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    private volatile boolean onePlaneWorkerEviction = true;
+
+    /// #1717 — whether THIS node may evict a worker or spot on a single death plane. A core holds evidence
+    /// sources for a member (governor reports, worker admission) that veto a wrong signal inside the backstop
+    /// window, so one plane is enough there. A worker node holds none of them for its peer workers (governor
+    /// reports are consumed on cores only, and a SWIM-healthy edge does not re-fire), so a one-sided partition
+    /// between two live workers lasting longer than the window would declare a live peer DEAD and raise a false
+    /// CRITICAL. A worker node therefore keeps requiring BOTH planes. Default true (core behaviour); the node
+    /// wiring switches it off on a worker.
+    public org.pragmatica.lang.Unit setOnePlaneWorkerEviction(boolean enabled) {
+        onePlaneWorkerEviction = enabled;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Whether this node evicts a worker or spot on a single death plane (see [#setOnePlaneWorkerEviction]).
+    public boolean onePlaneWorkerEviction() {
+        return onePlaneWorkerEviction;
+    }
+
+    /// Indirectly observed assigned workers cannot be declared dead from missing direct probes.
+    public org.pragmatica.lang.Unit setJoinGraceReapEligibility(Predicate<NodeId> eligibility) {
+        joinGraceReapEligibility = eligibility;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Restrict local observation state without declaring excluded peers dead. Directory scope
+    /// changes revoke old tracking and its timers; later re-entry starts as a fresh observation.
+    public org.pragmatica.lang.Unit setTrackingEligibility(Predicate<NodeId> eligibility) {
+        List<MemberTracking> retired;
+
+        synchronized (scopeGuard) {
+            trackingEligibility = eligibility;
+            retired = members.entrySet()
+                             .stream()
+                             .filter(entry -> !eligibility.test(entry.getKey()))
+                             .map(Map.Entry::getValue)
+                             .toList();
+            retired.forEach(tracking -> members.remove(tracking.id, tracking));
+        }
+
+        retired.forEach(MemberTracking::retire);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    private Option<MemberTracking> eligibleTracking(NodeId id) {
+        synchronized (scopeGuard) {
+            return trackingEligibility.test(id)
+                   ? Option.some(trackingFor(id))
+                   : Option.none();
+        }
     }
 
     /// Lazily create the per-member tracking on first observation. A DEAD entry is KEPT, so this
@@ -1055,14 +1424,20 @@ public final class MembershipFsm {
         var tracking = new MemberTracking(id,
                                           fsm,
                                           this::onEnteredDead,
+                                          this::reachableDeathEdge,
+                                          this::neverReachableDeathEdge,
                                           this::onJoinGraceReaped,
+                                          this::neverJoinedDeathEdge,
                                           this::onDepartingEdge,
                                           this::onDepartingRecoveryEdge,
                                           this::emitTransition,
                                           this::emitMembershipDelta,
+                                          this::reachabilityLatchedEdge,
                                           wallClockMs.getAsLong(),
                                           departureTimeout,
-                                          joinGrace);
+                                          joinGrace,
+                                          node -> joinGraceReapEligibility.test(node),
+                                          () -> onePlaneWorkerEviction);
         // M10 (Wave 7): the join-grace reaper — armed on first observation; cancelled on promotion
         // to MEMBER / on death; re-armed on a fenced rejoin (all inside the dispatch chokepoint).
         tracking.armJoinGrace();
@@ -1083,13 +1458,31 @@ public final class MembershipFsm {
     /// stay internally consistent under concurrent tap threads. Every [`#dispatch`] detects a fresh
     /// edge into DEAD (was-not-Dead → is-Dead) and fires the eviction hook exactly once per death.
     private static final class MemberTracking {
+        private boolean retired;
+
+        private void retire() {
+            synchronized (transitionGuard) {
+                retired = true;
+                cancelEvictionBackstop();
+                cancelDepartureTimeout();
+                cancelJoinGrace();
+            }
+        }
+
         private final NodeId id;
         private final Fsm<MembershipState, MembershipEvent> fsm;
         private final Consumer<NodeId> onEnteredDead;
+        /// Reachability-split sinks (#1835) — exactly one fires per fresh DEAD edge, chosen by
+        /// [`#everReachable`] as read inside [`#enteredDead`]. ADDITIVE to [`#onEnteredDead`].
+        private final Consumer<NodeId> onReachableDeath;
+        private final Consumer<NodeId> onNeverReachableDeath;
         /// Join-grace-reap actuation sink — invoked from [`#enteredDead`] ONLY when the fresh DEAD
         /// edge was driven by [`JoinGraceExpiredNeverHealthy`] (the never-healthy reap, OBSERVED→DEAD
         /// by the state table). ADDITIVE to [`#onEnteredDead`], which fires for every DEAD path.
         private final Consumer<NodeId> onJoinGraceReaped;
+        /// Never-joined-death sink — invoked from [`#enteredDead`] when the fresh DEAD edge belongs
+        /// to a member that never reached MEMBER, the complement of the REMOVED delta below (#588).
+        private final Consumer<NodeId> onNeverJoinedDeath;
         /// Departing-edge sink (seed-500 part 2) — invoked from [`#dispatch`] on the fresh edge
         /// INTO `Departing` (the same branch that arms the H2 departure timeout). Fires for the
         /// deliberate-departure ingresses only (`DrainRequested` / `SwimDeparted` /
@@ -1101,6 +1494,9 @@ public final class MembershipFsm {
         /// strictly-newer-incarnation `SwimHealthy` refuting the drain). Wired to the DHT ring
         /// RE-ADD; the symmetric counterpart to [`#onEnteredDeparting`]. Default no-op upstream.
         private final Consumer<NodeId> onDepartingRecovery;
+        /// Reachability-latch sink (#1853) — invoked from [`#applyEvent`] on the one-way edge where
+        /// [`#everReachable`] flips true, staged and run with the monitor released like every other sink.
+        private final Consumer<NodeId> onReachabilityLatched;
         /// Wave-1 transition journal sink — receives one [`MembershipTransitionRecord`] per
         /// ACTUAL state change from [`#dispatch`]. Diagnostic-only (default no-op upstream).
         private final Consumer<MembershipTransitionRecord> transitionSink;
@@ -1114,6 +1510,46 @@ public final class MembershipFsm {
         /// is never recreated), matching the descriptor-retention rationale documented on
         /// [`MembershipFsm#memberAgeMs`]. Final → safe to read without the per-member monitor.
         private final long firstTrackedAtMs;
+        /// Serialises one member's WHOLE logical transition — the state change AND the listener
+        /// fan-out — without holding the per-member state monitor across the fan-out (#929).
+        ///
+        /// The state monitor is `this`, and it is what every projection acquires
+        /// ([`#isStrictCoreMember`], [`#countsTowardEffective`], [`#notDead`], …). Publishing to a
+        /// listener while holding it let `AetherNode`'s Member-boundary quorum re-feed — which
+        /// walks `members` calling [`#isStrictCoreMember`] on EVERY member — hold one member's
+        /// monitor while requesting all the others', in `ConcurrentHashMap` iteration order. Two of
+        /// one node's event loops (SWIM `onSwimSuspect`, QUIC `onLivenessGone`) dispatching on two
+        /// different members then wedged AB/BA. That order is a hash order, so no lock-ordering
+        /// discipline can repair it; the nesting itself has to go.
+        ///
+        /// Holding this guard around [`#applyEvent`] plus the fan-out preserves BOTH properties the
+        /// old `synchronized dispatch` gave: one member's transitions stay totally ordered, and a
+        /// listener still observes that member in exactly the state its record names, because no
+        /// other thread can advance the member until the fan-out returns. What it drops is the
+        /// incidental blocking of READERS of this member's state — the deadlock's only edge.
+        ///
+        /// LOCK ORDER IS ALWAYS this guard, THEN the monitor. Never the reverse: every
+        /// check-then-dispatch entry point ([`#promoteIfObserved`], [`#terminalizeIfStillDeparting`],
+        /// [`#expireJoinGrace`], [`#evictIfStillConfirmedDead`]) takes the guard FIRST and reads
+        /// state through a short `synchronized` accessor, rather than being `synchronized` itself.
+        /// Their check-then-dispatch atomicity is preserved by the guard, since [`#dispatch`] is the
+        /// only writer of `fsm` state and it requires the guard.
+        ///
+        /// **That lock order is true but it is NOT what earns the safety, and the distinction matters
+        /// because the real invariant is the fragile one.** The fan-out still holds member X's guard
+        /// while acquiring every OTHER member's monitor — that is exactly what
+        /// `AetherNode.derivedMemberCount` does. What makes that acyclic is that **the per-member
+        /// monitor is a LEAF: nothing acquired under it acquires anything else.** [`#applyEvent`]
+        /// reaches only the pure state table ([`MembershipState`] contains no `synchronized`), the
+        /// timer arm/cancel helpers, and a list append.
+        ///
+        /// **The leaf property is therefore a precondition of this fix, not an incidental fact.** It
+        /// can be broken from outside this class: the factories taking an explicit
+        /// [`FsmObserver`] ([`MembershipFsm#membershipFsm`] overloads) run that observer INSIDE
+        /// [`#applyEvent`], under the monitor. Production wires `FsmObserver.noop()`; an observer that
+        /// touched another member — or anything that takes a lock — would reintroduce exactly the
+        /// inversion this guard removes. Keep observers pure, or move them out of the monitor too.
+        private final Object transitionGuard = new Object();
         private int healthyStreak = 0;
         private boolean swimFaultySeen = false;
         private boolean livenessGoneSeen = false;
@@ -1124,6 +1560,21 @@ public final class MembershipFsm {
         /// fenced rejoin (DEAD→OBSERVED→MEMBER) re-fires JOINED because the flag was cleared.
         /// Mutated only under this monitor, like the co-confirmation flags.
         private boolean everJoined = false;
+        /// Whether the CURRENT tenure in DEPARTING was entered on [`DrainRequested`] (#1054). Assigned on
+        /// every fresh edge INTO `Departing` ([`#enteredDeparting`]), so a later sustained-absence or
+        /// graceful-leave departure never inherits a previous drain's flag. Only a drain-initiated
+        /// departure has a DRAIN whose delivery can be in doubt, so only it can be withdrawn at expiry.
+        /// Mutated only under this monitor.
+        private boolean drainInitiated = false;
+        /// Whether the target acknowledged THIS drain episode's DRAIN (#1054 round 2): latched by
+        /// [`#latchDrainAcknowledgement`] when the leader records a `DRAINING` pong, and never cleared by a later
+        /// silence — a drainee that acknowledged and then halted must still terminalize after the readiness view
+        /// has forgotten it. RESET RULE: cleared on every fresh edge INTO `Departing` ([`#enteredDeparting`]), so
+        /// each drain episode starts unacknowledged and an acknowledgement observed before the drain can never
+        /// pre-arm it. A newer incarnation cannot carry a latch forward either: in DEPARTING the only
+        /// newer-incarnation edge is the `SwimHealthy` recovery to MEMBER, which ends the episode, so the next drain
+        /// re-enters DEPARTING and resets. Read only by [`#isWithdrawableDrain`]. Mutated only under this monitor.
+        private boolean drainAcknowledged = false;
         /// Transport-connectivity flag for the join-grace reaper gate (gate RCA fix,
         /// 2026-06-11): flipped by the [`PeerConnected`] / [`PeerDisconnected`] events already
         /// dispatched into this FSM (the flag is bookkeeping ONLY — the state table's handling
@@ -1175,35 +1626,65 @@ public final class MembershipFsm {
         /// Join-grace window — the manager's [`MembershipFsm#joinGrace`], captured at construction.
         /// Final → monitor-free read.
         private final TimeSpan joinGrace;
+        private final Predicate<NodeId> joinGraceReapEligibility;
 
         private MemberTracking(NodeId id,
                                Fsm<MembershipState, MembershipEvent> fsm,
                                Consumer<NodeId> onEnteredDead,
+                               Consumer<NodeId> onReachableDeath,
+                               Consumer<NodeId> onNeverReachableDeath,
                                Consumer<NodeId> onJoinGraceReaped,
+                               Consumer<NodeId> onNeverJoinedDeath,
                                Consumer<NodeId> onEnteredDeparting,
                                Consumer<NodeId> onDepartingRecovery,
                                Consumer<MembershipTransitionRecord> transitionSink,
                                Consumer<MembershipDeltaEdge> deltaSink,
+                               Consumer<NodeId> onReachabilityLatched,
                                long firstTrackedAtMs,
                                TimeSpan departureTimeout,
-                               TimeSpan joinGrace) {
+                               TimeSpan joinGrace,
+                               Predicate<NodeId> joinGraceReapEligibility,
+                               BooleanSupplier onePlaneEviction) {
+            this.onePlaneEviction = onePlaneEviction;
             this.id = id;
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
+            this.onReachableDeath = onReachableDeath;
+            this.onNeverReachableDeath = onNeverReachableDeath;
             this.onJoinGraceReaped = onJoinGraceReaped;
+            this.onNeverJoinedDeath = onNeverJoinedDeath;
             this.onEnteredDeparting = onEnteredDeparting;
             this.onDepartingRecovery = onDepartingRecovery;
             this.transitionSink = transitionSink;
             this.deltaSink = deltaSink;
+            this.onReachabilityLatched = onReachabilityLatched;
             this.firstTrackedAtMs = firstTrackedAtMs;
             this.departureTimeout = departureTimeout;
             this.joinGrace = joinGrace;
+            this.joinGraceReapEligibility = joinGraceReapEligibility;
         }
 
         /// Creation stamp (ms) of this tracking — the member's first observation on the
         /// manager's wall clock. Final field; monitor-free read.
         long firstTrackedAtMs() {
             return firstTrackedAtMs;
+        }
+
+        /// Run a MULTI-STEP driver operation with this member's [`#transitionGuard`] held (#929).
+        /// The outer-class ingress drivers ([`MembershipFsm#faulty`], [`MembershipFsm#healthy`], …)
+        /// are dispatch-plus-flag-mark-plus-co-confirmation sequences; before #929 each step took
+        /// the per-member monitor SEPARATELY, so another thread could interleave between them.
+        /// Wrapping them here makes each driver atomic against every other transition of the same
+        /// member — strictly stronger than the pre-#929 behaviour, and what keeps
+        /// [`#evictIfStillConfirmedDead`]'s check-march-clear sequence indivisible now that it
+        /// holds the guard rather than the monitor. Reentrant: nested [`#dispatch`] calls re-enter
+        /// the same guard on the same thread.
+        private void inTransition(Runnable action) {
+            synchronized (transitionGuard) {
+                if (!retired) {
+                    action.run();
+                }
+            }
         }
 
         /// Dispatch `event` to the FSM and, on a FRESH edge into DEAD (was not Dead before, is Dead
@@ -1236,8 +1717,30 @@ public final class MembershipFsm {
         /// - M10 join-grace re-arm: a fenced rejoin (was DEAD, now OBSERVED) re-arms the reaper for
         ///   the new tenure; death cancels it.
         @Contract
-        synchronized void dispatch(MembershipEvent event) {
+        void dispatch(MembershipEvent event) {
+            synchronized (transitionGuard) {
+                if (!retired) {
+                    applyEvent(event).forEach(Runnable::run);
+                }
+            }
+        }
+
+        /// State half of [`#dispatch`] (#929): mutate under the per-member monitor and STAGE the
+        /// listener fan-out instead of running it, returning the staged calls in the exact order
+        /// the pre-#929 inline code fired them (transition, JOINED delta, DEPARTING hook,
+        /// DEPARTING-recovery hook, then the DEAD hooks). The caller runs them with the monitor
+        /// released and the guard still held.
+        ///
+        /// Every branch's own bookkeeping — timer arm/cancel, death-flag clearing, `everJoined` —
+        /// still runs HERE under the monitor, interleaved exactly as before. None of it touches
+        /// `fsm.current()`, so hoisting the listener calls to the end is not observable to a
+        /// listener: the state it reads is the same state it read before.
+        private synchronized List<Runnable> applyEvent(MembershipEvent event) {
+            var emissions = new ArrayList<Runnable>(4);
+
             trackTransportConnectivity(event);
+            var wasReachable = everReachable;
+
             trackReachabilityEvidence(event);
             var wasDead = isDead();
             var wasDeparting = isDeparting();
@@ -1247,21 +1750,22 @@ public final class MembershipFsm {
             var to = stateName();
 
             if (!from.equals(to)) {
-                transitionSink.accept(new MembershipTransitionRecord(id,
-                                                                     from,
-                                                                     to,
-                                                                     event.getClass().getSimpleName(),
-                                                                     incarnation(),
-                                                                     descriptor.role(),
-                                                                     System.currentTimeMillis()));
+                var record = new MembershipTransitionRecord(id,
+                                                            from,
+                                                            to,
+                                                            event.getClass().getSimpleName(),
+                                                            incarnation(),
+                                                            descriptor.role(),
+                                                            System.currentTimeMillis());
+
+                emissions.add(() -> transitionSink.accept(record));
             }
 
-            if (!everJoined && fsm.current() instanceof MembershipState.Member) {
+            if (!everJoined && hasKnownRole() && fsm.current() instanceof MembershipState.Member) {
                 everJoined = true;
-                deltaSink.accept(new MembershipDeltaEdge(id,
-                                                         MembershipDeltaEdge.Kind.JOINED,
-                                                         incarnation(),
-                                                         descriptor.role()));
+                var edge = new MembershipDeltaEdge(id, MembershipDeltaEdge.Kind.JOINED, incarnation(), descriptor.role());
+
+                emissions.add(() -> deltaSink.accept(edge));
             }
 
             if (!from.equals(to) && fsm.current() instanceof MembershipState.Member) {
@@ -1269,7 +1773,7 @@ public final class MembershipFsm {
             }
 
             if (!wasDeparting && isDeparting()) {
-                enteredDeparting();
+                enteredDeparting(event, emissions);
             }
 
             if (wasDeparting && !isDeparting()) {
@@ -1277,7 +1781,7 @@ public final class MembershipFsm {
             }
 
             if (wasDeparting && fsm.current() instanceof MembershipState.Member) {
-                recoveredFromDeparting();
+                recoveredFromDeparting(emissions);
             }
 
             if (wasDead && fsm.current() instanceof MembershipState.Observed) {
@@ -1285,8 +1789,14 @@ public final class MembershipFsm {
             }
 
             if (!wasDead && isDead()) {
-                enteredDead(event);
+                enteredDead(event, emissions);
             }
+
+            if (!wasReachable && everReachable) {
+                emissions.add(() -> onReachabilityLatched.accept(id));
+            }
+
+            return emissions;
         }
 
         /// Track per-member transport connectivity off the transport events flowing through this
@@ -1304,13 +1814,14 @@ public final class MembershipFsm {
             }
         }
 
-        /// Latch [`#everReachable`] on first-hand reachability evidence (#557). Kept separate from
+        /// Latch [`#everReachable`] on positive reachability evidence (#557). Governor evidence is
+        /// restricted to worker descriptors; it cannot contribute to core formation. Kept separate from
         /// [`#trackTransportConnectivity`] because the two have opposite lifetimes: that flag is a
         /// LIVE transport state that clears on disconnect, this one is a ONE-WAY formation latch.
         /// Folding them together is the mistake that would reintroduce quorum flap.
         private void trackReachabilityEvidence(MembershipEvent event) {
             switch (event) {
-                case PeerConnected _, SwimHealthy _ -> everReachable = true;
+                case PeerConnected _, SwimHealthy _, MembershipEvent.GovernorHealthy _, MembershipEvent.WorkerAdmissionHealthy _ -> everReachable = true;
                 default -> {}
             }
         }
@@ -1336,10 +1847,14 @@ public final class MembershipFsm {
         /// drain-command edge. Reached only via the deliberate-departure transitions
         /// (`DrainRequested` / `SwimDeparted` / `DownHysteresisMet`) — the transport-doubt flaps
         /// never reach DEPARTING in the [`MembershipState`] table — so this can never storm per
-        /// QUIC flap. The ring prune it actuates is idempotent with the later DEAD-edge prune.
-        private synchronized void enteredDeparting() {
+        /// QUIC flap. The ring prune it actuates is idempotent with the later DEAD-edge prune. Also
+        /// records whether this DEPARTING tenure was drain-initiated and starts it unacknowledged (#1054,
+        /// [`#drainInitiated`], [`#drainAcknowledged`]).
+        private synchronized void enteredDeparting(MembershipEvent triggeringEvent, List<Runnable> emissions) {
+            drainInitiated = triggeringEvent instanceof DrainRequested;
+            drainAcknowledged = false;
             armDepartureTimeout();
-            onEnteredDeparting.accept(id);
+            emissions.add(() -> onEnteredDeparting.accept(id));
         }
 
         /// Fresh DEPARTING→MEMBER recovery fan-out (seed-500 part 2, symmetry fix): fire the
@@ -1350,8 +1865,8 @@ public final class MembershipFsm {
         /// branch in [`#dispatch`]; this branch is scoped to the MEMBER recovery target ONLY (the
         /// DEPARTING→DEAD timeout exit does not match), so it never re-adds a dying node. Idempotent
         /// with the normal `onNodeJoined` ring-add (`ConsistentHashRing.addNode` no-ops a present node).
-        private synchronized void recoveredFromDeparting() {
-            onDepartingRecovery.accept(id);
+        private void recoveredFromDeparting(List<Runnable> emissions) {
+            emissions.add(() -> onDepartingRecovery.accept(id));
         }
 
         /// Fresh-edge-into-DEAD fan-out: cancel both pending timers, fire the manager's death hook
@@ -1361,21 +1876,37 @@ public final class MembershipFsm {
         /// — graceful `SwimDeparted`, co-confirmed eviction, DEPARTING timeout — do NOT fire it), and
         /// emit the REMOVED delta for a previously-JOINED member (clearing `everJoined` so a fenced
         /// rejoin re-emits JOINED).
-        private synchronized void enteredDead(MembershipEvent triggeringEvent) {
+        private synchronized void enteredDead(MembershipEvent triggeringEvent, List<Runnable> emissions) {
             cancelEvictionBackstop();
             cancelJoinGrace();
-            onEnteredDead.accept(id);
+            emissions.add(() -> onEnteredDead.accept(id));
+            // #1835: the latch is read HERE, under this monitor, and carried into the emission. The
+            // tracking entry is KEPT on DEAD (`trackingFor` re-arms it in place) and is removed only by
+            // `setTrackingEligibility`, which may retire it before the emission runs, so the verdict must
+            // not be re-queried afterwards.
+            emissions.add(everReachable
+                          ? () -> onReachableDeath.accept(id)
+                          : () -> onNeverReachableDeath.accept(id));
             if (triggeringEvent instanceof JoinGraceExpiredNeverHealthy) {
-                onJoinGraceReaped.accept(id);
+                emissions.add(() -> onJoinGraceReaped.accept(id));
             }
 
             if (everJoined) {
                 everJoined = false;
-                deltaSink.accept(new MembershipDeltaEdge(id,
-                                                         MembershipDeltaEdge.Kind.REMOVED,
-                                                         incarnation(),
-                                                         descriptor.role()));
+                var edge = new MembershipDeltaEdge(id,
+                                                   MembershipDeltaEdge.Kind.REMOVED,
+                                                   incarnation(),
+                                                   descriptor.role());
+
+                emissions.add(() -> deltaSink.accept(edge));
+
+                return;
             }
+            // #588: a member that never JOINED still entered both cluster-status rosters — they admit
+            // on the SWIM discovery edge, not on promotion — so its death needs its own prune. The
+            // delta contract is deliberately untouched: no REMOVED edge is emitted here (it would have
+            // no JOINED to pair with and the projector drops an unannounced removal anyway).
+            emissions.add(() -> onNeverJoinedDeath.accept(id));
         }
 
         private synchronized boolean isDead() {
@@ -1394,12 +1925,20 @@ public final class MembershipFsm {
         /// and fires the Wave-4 JOINED delta edge exactly like a SWIM-driven promotion — without
         /// this, boot-seeded members would never be baselined by the [`MembershipDeltaProjector`]
         /// and their deaths would emit no `NodeRemoved` (the #245 gap, re-opened for original
-        /// cores). Reentrant-safe: both methods synchronize on this monitor.
+        /// cores). Guard + dispatch are atomic under [`#transitionGuard`] (#929): [`#dispatch`] is
+        /// the only writer of `fsm` state and it requires that guard, so no transition can slip
+        /// between the OBSERVED check and the promotion.
         @Contract
-        synchronized void promoteIfObserved() {
-            if (fsm.current() instanceof MembershipState.Observed) {
-                dispatch(new UpHysteresisMet());
+        void promoteIfObserved() {
+            synchronized (transitionGuard) {
+                if (isObserved()) {
+                    dispatch(new UpHysteresisMet());
+                }
             }
+        }
+
+        private synchronized boolean isObserved() {
+            return fsm.current() instanceof MembershipState.Observed;
         }
 
         synchronized boolean bumpHealthyStreakReachedThreshold() {
@@ -1431,14 +1970,70 @@ public final class MembershipFsm {
             livenessGoneSeen = true;
         }
 
+        /// Monotonic nanos of the LATEST death signal of the current episode (nanoTime has an arbitrary origin and may be
+        /// negative, so "armed" is a separate flag). Cleared with the flags.
+        private final BooleanSupplier onePlaneEviction;
+        private long deathSignalAtNanos;
+        private boolean deathSignalArmed;
+
+        /// The LATEST death signal wins: evidence is compared against the most recent signal, so a report observed
+        /// between an early link drop and a later SWIM-FAULTY (the worker died in between) cannot veto the death.
+        /// `nowNanos` is the node's MONOTONIC time (see [MembershipFsm#monotonicNanos]).
+        @Contract
+        synchronized void noteDeathSignal(long nowNanos) {
+            deathSignalAtNanos = nowNanos;
+            deathSignalArmed = true;
+        }
+
+        /// True when a death signal is armed and the proposed evidence instant is not newer than it.
+        synchronized boolean deathSignalNotOlderThan(long evidenceAtNanos) {
+            return deathSignalArmed && evidenceAtNanos - deathSignalAtNanos <= 0;
+        }
+
+        /// A re-established link vetoes the TRANSPORT plane of a death (the drain path's rule): the signal was a
+        /// drop, and the link is back. SWIM-FAULTY is untouched.
+        @Contract
+        synchronized void clearTransportDeath() {
+            livenessGoneSeen = false;
+            if (!swimFaultySeen) {
+                deathSignalArmed = false;
+                cancelEvictionBackstop();
+            }
+        }
+
+        /// Death is co-confirmed by two planes: SWIM-FAULTY and liveness-gone (the QUIC disconnect tap). For a core
+        /// BOTH exist (every other core dials and probes it) and both are required.
+        ///
+        /// A worker or spot is observed differently per node (#1717): a core holds the worker's QUIC link and probes
+        /// it through SWIM, but a worker killed young shows only one plane (SWIM never probed it, or the link
+        /// dropped first), and requiring both left a killed worker SUSPECT forever: no DEAD edge, so no REMOVED
+        /// delta, no worker leave, and its directive, roster entry and #731 footprint persisted. On a node that
+        /// [`#onePlaneWorkerEviction`] allows (a core), EITHER plane for an EXPLICIT non-core role arms the eviction
+        /// backstop; the window is the veto: governor / admission / SWIM-healthy evidence NEWER than the latest
+        /// death signal, or a re-established link, cancels it. A worker observer does not have those evidence
+        /// sources for its peer workers, so there both planes stay required. An unknown or blank role is never
+        /// relaxed.
+        ///
+        /// Residual (v-2006, round 2): the evidence sources that veto a single signal exist only where a governor report
+        /// or worker admission reaches the node. A NON-LEADER core has no admission source (it runs on the leader) and, for
+        /// a worker not assigned to a community, no governor report, so it can still declare an UNASSIGNED worker DEAD after
+        /// a one-sided partition longer than the backstop window. [unverified: not reproduced on a live cluster; read from
+        /// the wiring]
         synchronized boolean coConfirmedDead() {
-            return swimFaultySeen && livenessGoneSeen;
+            return isNonCoreMember() && onePlaneEviction.getAsBoolean()
+                   ? swimFaultySeen || livenessGoneSeen
+                   : swimFaultySeen && livenessGoneSeen;
+        }
+
+        private boolean isNonCoreMember() {
+            return ! descriptor.isCore() && ("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()));
         }
 
         @Contract
         synchronized void clearConfirmedDeath() {
             swimFaultySeen = false;
             livenessGoneSeen = false;
+            deathSignalArmed = false;
             cancelEvictionBackstop();
         }
 
@@ -1486,17 +2081,64 @@ public final class MembershipFsm {
             departureTimeoutHandle = Option.none();
         }
 
-        /// DEPARTING timeout firing under the per-member monitor (H2): terminalize ONLY if the
-        /// member is STILL in DEPARTING. A recovery between timer-fire and monitor-acquire has
+        /// DEPARTING timeout firing under the per-member transition guard (H2, #929): terminalize
+        /// ONLY if the member is STILL in DEPARTING. A recovery between timer-fire and guard-acquire has
         /// already moved the FSM to MEMBER (and cancelled the handle), so the re-check no-ops —
         /// closing the `cancel(false)`-cannot-stop-a-running-task race; without it the delayed
         /// `Stopped` would kill a recovered MEMBER. The `Stopped` dispatch routes through the
         /// central chokepoint, so the resulting DEAD edge journals, fires the death hook, and
         /// emits the REMOVED delta exactly like any other death.
-        private synchronized void terminalizeIfStillDeparting() {
-            if (fsm.current() instanceof MembershipState.Departing) {
+        ///
+        /// #1054: the firing first re-validates a drain-initiated departure. The DRAIN reaches the
+        /// target only on the issuer's next ping, so a delayed or lost delivery leaves a live, serving
+        /// target in DEPARTING here. When [`#isWithdrawableDrain`] holds — the target never acknowledged
+        /// this episode's DRAIN and no death evidence arrived — the firing dispatches
+        /// `DrainUnacknowledged` instead, which withdraws the member to MEMBER: no DEAD edge, no REMOVED
+        /// delta, so no `NodeRemoved` and no container reap. An ACKNOWLEDGED drain terminalizes here
+        /// whether or not the target still pongs: the acknowledgement is latched, never re-read, so a
+        /// drainee that halted after acknowledging still dies at expiry. A drain delivered after a
+        /// withdrawal still ends in exactly one death, through SWIM's FAULTY edge.
+        private void terminalizeIfStillDeparting() {
+            synchronized (transitionGuard) {
+                if (!isDeparting()) {
+                    return;
+                }
+
+                if (isWithdrawableDrain()) {
+                    log.warn("DEPARTING timeout for {}: DRAIN never acknowledged and no death evidence — withdrawing the drain, member returns to MEMBER (window={})",
+                             id,
+                             departureTimeout);
+                    dispatch(new DrainUnacknowledged());
+
+                    return;
+                }
+
                 dispatch(new Stopped());
             }
+        }
+
+        /// Latch this episode's drain acknowledgement (#1054 round 2) — see [`#drainAcknowledged`]. The caller
+        /// holds the transition guard, so a latch cannot land between a firing expiry's read of
+        /// [`#isWithdrawableDrain`] and its dispatch. Harmless outside a drain-initiated DEPARTING: the flag is
+        /// read only there, and every entry into DEPARTING clears it.
+        @Contract
+        private synchronized void latchDrainAcknowledgement() {
+            drainAcknowledged = true;
+        }
+
+        /// The withdrawal predicate (#1054), all reads under ONE monitor acquisition: this DEPARTING
+        /// tenure was drain-initiated, its DRAIN was never acknowledged ([`#drainAcknowledged`]), the
+        /// member had joined (MEMBER is where it counted before the drain, so a never-joined member is
+        /// never withdrawn INTO the counted set), and no death evidence arrived. Death evidence is
+        /// SWIM-FAULTY, or a liveness loss the transport has not since contradicted: transport may VETO
+        /// a death with a re-established link, exactly as in [`#joinGraceReapDeferred`], and never
+        /// supplies life.
+        private synchronized boolean isWithdrawableDrain() {
+            return drainInitiated
+                   && !drainAcknowledged
+                   && everJoined
+                   && !swimFaultySeen
+                   && (!livenessGoneSeen || transportConnected);
         }
 
         /// Arm the join-grace reaper (M10, Wave 7): after [`#joinGrace`] the member is reaped
@@ -1516,7 +2158,8 @@ public final class MembershipFsm {
             joinGraceHandle = Option.none();
         }
 
-        /// Join-grace firing under the per-member monitor (M10 + gate RCA fix, 2026-06-11):
+        /// Join-grace firing under the per-member transition guard (M10 + gate RCA fix, 2026-06-11;
+        /// guard rather than monitor since #929):
         /// reap ONLY if the member is never-healthy (still OBSERVED) AND `transportConnected ==
         /// false` — a true ghost is co-confirmed by BOTH planes (never SWIM-healthy AND no live
         /// transport connection). A still-OBSERVED member with a LIVE transport connection is a
@@ -1527,36 +2170,53 @@ public final class MembershipFsm {
         /// with the unchanged `JoinGraceExpiredNeverHealthy` journal cause; the state table
         /// confines the transition to OBSERVED→DEAD, so a racing promotion can never be killed
         /// by a fired-but-not-yet-run reaper.
-        private synchronized void expireJoinGrace() {
-            if (transportConnected && fsm.current() instanceof MembershipState.Observed) {
-                log.info("Join-grace reaper DEFERRED for {}: never-healthy but transport connection is LIVE — re-arming (window={})",
-                         id,
-                         joinGrace);
-                armJoinGrace();
+        private void expireJoinGrace() {
+            synchronized (transitionGuard) {
+                if (!joinGraceReapEligibility.test(id)) {
+                    return;
+                }
 
-                return;
+                if (joinGraceReapDeferred()) {
+                    log.info("Join-grace reaper DEFERRED for {}: never-healthy but transport connection is LIVE — re-arming (window={})",
+                             id,
+                             joinGrace);
+                    armJoinGrace();
+
+                    return;
+                }
+
+                dispatch(new JoinGraceExpiredNeverHealthy());
             }
-
-            dispatch(new JoinGraceExpiredNeverHealthy());
         }
 
-        /// Backstop firing under the per-member monitor (#131 Model C): terminal-evict ONLY if the
+        /// The reaper's deferral predicate, both reads under ONE monitor acquisition: never-healthy
+        /// (still OBSERVED) but a LIVE transport connection contradicting the ghost verdict.
+        private synchronized boolean joinGraceReapDeferred() {
+            return transportConnected && fsm.current() instanceof MembershipState.Observed;
+        }
+
+        /// Backstop firing under the per-member transition guard (#131 Model C; guard rather than
+        /// monitor since #929, and the co-confirmation drivers take the same guard via
+        /// [`#inTransition`], so the whole check-march-clear sequence stays atomic against them):
+        /// terminal-evict ONLY if the
         /// member is STILL co-confirmed dead. A `SwimHealthy` recovery between timer-fire and
-        /// monitor-acquire runs `clearConfirmedDeath` (flags false + cancel), so `coConfirmedDead()` is
+        /// guard-acquire runs `clearConfirmedDeath` (flags false + cancel), so `coConfirmedDead()` is
         /// false here and we no-op — closing the `cancel(false)`-cannot-stop-a-running-task race. When
         /// it does proceed, the terminal march (Suspect→Departing→Dead via `DownHysteresisMet` then
         /// `Stopped`) runs through `dispatch` (already synchronized/reentrant on this monitor); the
         /// fresh-edge-into-DEAD branch there cancels the now-fired handle and fires `onEnteredDead`
         /// exactly once.
         @Contract
-        synchronized void evictIfStillConfirmedDead() {
-            if (!coConfirmedDead()) {
-                return;
-            }
+        void evictIfStillConfirmedDead() {
+            synchronized (transitionGuard) {
+                if (!coConfirmedDead()) {
+                    return;
+                }
 
-            dispatch(new DownHysteresisMet());
-            dispatch(new Stopped());
-            clearConfirmedDeath();
+                dispatch(new DownHysteresisMet());
+                dispatch(new Stopped());
+                clearConfirmedDeath();
+            }
         }
 
         /// Guarded upsert of the network descriptor from a NodeInfo observation. Orthogonal to the
@@ -1567,28 +2227,53 @@ public final class MembershipFsm {
         /// role / source is retained when the update carries a blank one (Wave 2 worker accounting /
         /// audit M9: a label-less observation — e.g. a gossip-rebuilt peer NodeInfo — must not wipe a
         /// member's self-asserted role to blank, silently re-classifying a worker as core). A
-        /// non-blank incoming value still wins, so a genuine re-label (core → worker) takes effect.
+        /// known role/source is immutable for this instance; a later observation cannot re-label it.
         /// For the address, a degraded-but-present hostname is handled by dial-time re-resolution
         /// (transport Step 1); the hazard the address guard closes is a null/empty ERASE that would
         /// silently drop the member out of `desiredConnections` (which skips address-unknown
         /// members), wedging it in a never-dialed state.
         @Contract
-        synchronized void updateDescriptor(MemberDescriptor next) {
+        void updateDescriptor(MemberDescriptor next) {
+            synchronized (transitionGuard) {
+                if (!retired) {
+                    mergeDescriptorAndJoin(next).onPresent(deltaSink::accept);
+                }
+            }
+        }
+
+        private synchronized Option<MembershipDeltaEdge> mergeDescriptorAndJoin(MemberDescriptor next) {
             descriptor = mergedDescriptor(descriptor, next);
+            if (!everJoined && hasKnownRole() && fsm.current() instanceof MembershipState.Member) {
+                everJoined = true;
+
+                return Option.some(new MembershipDeltaEdge(id,
+                                                           MembershipDeltaEdge.Kind.JOINED,
+                                                           incarnation(),
+                                                           descriptor.role()));
+            }
+
+            return Option.none();
+        }
+
+        private boolean hasKnownRole() {
+            return descriptor.isCore() || "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role());
         }
 
         /// Per-field downgrade-guard merge: each field takes `next` when it carries information
-        /// (non-empty address, non-blank role / source), otherwise the stored value is retained.
+        /// for an address; role/source accept only their first non-blank value.
         private static MemberDescriptor mergedDescriptor(MemberDescriptor prev, MemberDescriptor next) {
             return new MemberDescriptor(next.address().isEmpty()
                                         ? prev.address()
                                         : next.address(),
-                                        next.role().isBlank()
-                                        ? prev.role()
-                                        : next.role(),
-                                        next.source().isBlank()
-                                        ? prev.source()
-                                        : next.source());
+                                        prev.role().isBlank()
+                                        ? next.role()
+                                        : prev.role(),
+                                        prev.source().isBlank()
+                                        ? next.source()
+                                        : prev.source(),
+                                        prev.version().isBlank()
+                                        ? next.version()
+                                        : prev.version());
         }
 
         /// The stored last-wins descriptor (address + role + source). Retained across DEAD so a dead
@@ -1670,6 +2355,23 @@ public final class MembershipFsm {
             return fsm.current()
                       .ctx()
                       .lastSeenIncarnation();
+        }
+
+        /// Why process evidence carrying `bootToken` is refused, or empty when it is admitted (the
+        /// first token is recorded). Refused evidence must not retract death confirmation or advance
+        /// hysteresis.
+        synchronized Option<String> processEvidenceRefusal(long bootToken) {
+            if (isDead() || isDeparting()) {
+                return Option.some("identity is " + stateName()
+                                  + " (terminal removal: a new process needs a fresh NodeId)");
+            }
+
+            var context = fsm.current().ctx();
+
+            return context.acceptBootToken(bootToken)
+                   ? Option.none()
+                   : Option.some("boot token " + bootToken
+                                + " differs from this identity's process token " + context.bootToken());
         }
 
         /// FSM-state → quiescence health-hint projection. DEAD → FAULTY (unconditional); SUSPECT →

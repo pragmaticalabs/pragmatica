@@ -65,6 +65,25 @@ public final class ClusterDeploymentContext {
     /// the deployment context, and every existing call site (production and test) keeps the
     /// pre-#590 behaviour until `AetherNode` supplies the real view.
     private volatile CommunityLivenessView communityLiveness = CommunityLivenessView.unwired();
+
+    /// #731 round 3: the leader's own local SWIM-derived alive view, read by `sweepDeadRestoredWorkers`
+    /// as a second, lower-latency signal alongside the committed `GovernorAnnouncementValue` roster —
+    /// a fresh worker is present here the instant SWIM observes it, closing the up-to-one-reannounce-
+    /// interval gap during which a live worker can be absent from every committed announcement.
+    /// Late-wired (same idiom as `communityLiveness`).
+    ///
+    /// #731 round 4 (review re-check): unlike `CommunityLivenessView.unwired()` — whose `_ -> false`
+    /// answer IS the safe answer for every input — an empty `Set::of()` local view is the WRONG safe
+    /// default for this supplier: `sweepDeadRestoredWorkers`'s `!observed.contains && !local.contains`
+    /// degenerates to the observed-only check the round-3 dual signal exists to strengthen, silently
+    /// restoring the up-to-one-reannounce-interval lag bug on any leader where `AetherNode` has not
+    /// yet run its wiring (deleting that one wiring call left every test green). `UNWIRED_MARKER` lets
+    /// [#localAliveMembersWired] tell "never wired" from "wired but currently empty" by identity, so
+    /// the sweep can fail SAFE (skip entirely; see [ClusterDeploymentState#sweepDeadRestoredWorkers])
+    /// instead of silently falling back to the weaker check.
+    private static final Supplier<Set<NodeId>> UNWIRED_MARKER = Set::of;
+
+    private volatile Supplier<Set<NodeId>> localAliveMembersSupplier = UNWIRED_MARKER;
     private final ClusterDeploymentState dormant;
     private final ClusterDeploymentState stopped;
 
@@ -205,6 +224,51 @@ public final class ClusterDeploymentContext {
         this.stopped = new ClusterDeploymentState.Stopped(this);
     }
 
+    /// #1109: where operator-attention conditions raised by the leader are reported. Log-only until the node binds its own sink (never a
+    /// process-wide one: Ember runs several nodes in one JVM).
+    private final java.util.concurrent.atomic.AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> operatorWarnings = new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly());
+
+    /// #1109: slices the leader's gate has refused LOAD for, until their target commits. Kept here, not in `Active`, so the bound runs across leader
+    /// FSM rebuilds on this node.
+    private final java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.Artifact, AwaitedTarget> awaitedTargets = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /// #1109: the `SliceTargetValue` this leader last submitted per base and has not seen commit; what a re-submission puts again.
+    private final java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private final java.util.concurrent.atomic.AtomicReference<TimeSpan> awaitedTargetBound = new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.aether.slice.SliceState.LOADING.timeout()
+                                                                                                                                                                                             .or(TimeSpan.timeSpan(2).minutes()));
+
+    /// A slice whose LOAD the gate refused since `since`; `warned` once the warning was raised, `lastResubmitMs` when its target put was last re-submitted.
+    public record AwaitedTarget(long since, boolean warned, long lastResubmitMs) {}
+
+    public org.pragmatica.utility.warning.OperatorWarningSink operatorWarnings() {
+        return operatorWarnings.get();
+    }
+
+    @Contract
+    public void setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        operatorWarnings.set(sink);
+    }
+
+    public java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.Artifact, AwaitedTarget> awaitedTargets() {
+        return awaitedTargets;
+    }
+
+    public java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts() {
+        return pendingTargetPuts;
+    }
+
+    /// How long the gate may refuse LOAD for a desired slice before the operator is told and the target put is re-submitted; the same default as
+    /// the node-side parked-start bound (LOADING's 2 minutes).
+    public TimeSpan awaitedTargetBound() {
+        return awaitedTargetBound.get();
+    }
+
+    @Contract
+    public void setAwaitedTargetBound(TimeSpan bound) {
+        awaitedTargetBound.set(bound);
+    }
+
     public long nowMs() {
         return clock.getAsLong();
     }
@@ -239,6 +303,8 @@ public final class ClusterDeploymentContext {
                                                  ConcurrentHashMap.newKeySet(),
                                                  new ConcurrentHashMap<>(),
                                                  new ConcurrentHashMap<>(),
+                                                 new ConcurrentHashMap<>(),
+                                                 ConcurrentHashMap.newKeySet(),
                                                  new AtomicInteger(0),
                                                  new AtomicBoolean(false),
                                                  CancellableTask.cancellableTask());
@@ -306,11 +372,42 @@ public final class ClusterDeploymentContext {
         return communityLiveness;
     }
 
+    /// `true` once a real observed liveness view is wired (#1652). While unwired, every member reads as
+    /// present — a count taken then would claim liveness nobody observed.
+    public boolean hasCommunityLiveness() {
+        return communityLiveness != CommunityLivenessView.unwired();
+    }
+
     /// Inject the observed community-liveness view. The pre-wiring default is
     /// [CommunityLivenessView#unwired]; pass that explicitly to restore it rather than clearing.
     @Contract
     public void setCommunityLiveness(CommunityLivenessView view) {
         communityLiveness = view;
+    }
+
+    /// The leader's local SWIM-derived alive-member view (#731 round 3). Defaults to
+    /// [#UNWIRED_MARKER] (an empty `Set::of`) until wired — since #731 round 4, that default is never
+    /// actually consulted by the sweep: [#localAliveMembersWired] gates `sweepDeadRestoredWorkers` to
+    /// skip entirely while unwired, rather than degenerating to the round-2-era observed-only check
+    /// this empty set would otherwise silently reproduce.
+    public Supplier<Set<NodeId>> localAliveMembersSupplier() {
+        return localAliveMembersSupplier;
+    }
+
+    /// #731 round 4: true once [#setLocalAliveMembersSupplier] has been called at least once — false
+    /// means `AetherNode` (or a test) has not wired the real `MembershipFsm`-backed view yet, and
+    /// `sweepDeadRestoredWorkers` must fail SAFE (remove nothing) rather than treat the still-default
+    /// empty set as "confirmed absent everywhere locally".
+    public boolean localAliveMembersWired() {
+        return localAliveMembersSupplier != UNWIRED_MARKER;
+    }
+
+    /// Inject the local alive-member supplier. There is no supported way to revert to "unwired" once
+    /// this has been called — the #731 round-4 safe default only protects the window before
+    /// `AetherNode` wires the real view; a caller past that point owns keeping the supplier live.
+    @Contract
+    public void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier) {
+        localAliveMembersSupplier = supplier;
     }
 
     public Set<NodeId> seedNodes() {

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
 import java.util.ArrayList;
@@ -11,9 +10,11 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.metrics.fsm.ClusterSyncContext;
+import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncEvents;
 import org.pragmatica.aether.metrics.fsm.ClusterSyncState;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
@@ -63,8 +64,18 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     @Contract
     void onPongReceived(NodeId nodeId);
 
+    /// #1061 R-a — the transport link to `nodeId` was (re)established. Misses counted against the
+    /// previous link are discarded: the next ping tick counts this peer from zero. `AetherNode` wires
+    /// it from the QUIC peer-state listener's join and reconnect callbacks.
+    @Contract
+    void onLinkEstablished(NodeId nodeId);
+
     @Contract
     void sendPingsNow();
+
+    default Unit publishObservationsNow() {
+        return Unit.unit();
+    }
 
     /// Membership v2 (B5b) — inject the leader-local DRAIN target supplier. `AetherNode` wires this
     /// to `DrainCommandRegistry::drainTargets` after constructing the scheduler so leader pings
@@ -79,6 +90,23 @@ public interface ClusterSyncScheduler extends PeerObservationBuffer {
     /// `ClusterSyncContext`. Default no-op for test doubles that don't drive provisioning.
     @Contract
     default void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {}
+
+    /// Full cluster metrics are delivered only to eligible core consumers.
+    @Contract
+    default Unit setPingTargetEligibility(Predicate<NodeId> predicate) {
+        return Unit.unit();
+    }
+
+    default Unit setPeerMetricsForwarding(Supplier<Boolean> predicate) {
+        return Unit.unit();
+    }
+
+    default Unit setMetricsRecipient(Predicate<NodeId> isCore) {
+        return Unit.unit();
+    }
+
+    @Contract
+    default void setSourceMetricsSupplier(Supplier<List<CommunityMetricsSnapshot>> supplier) {}
 
     /// Drive one periodic `PeerConnectivityObservation` emission synchronously.
     /// Wired by the scheduled task at `PeriodicObservationConfig.period()` cadence
@@ -357,7 +385,24 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
     @Override
     @Contract
     public void onPongReceived(NodeId nodeId) {
+        context.startMissedPongEpoch(nodeId);
         context.dispatch(new ClusterSyncEvents.PongReceived(nodeId));
+    }
+
+    @Override
+    @Contract
+    public void onLinkEstablished(NodeId nodeId) {
+        context.startMissedPongEpoch(nodeId);
+    }
+
+    @Override
+    public Unit publishObservationsNow() {
+        if (!context.isLeader()) {
+            context.broadcastPing(context.epochSupplier().get(),
+                                  context.currentRabiaTerm());
+        }
+
+        return Unit.unit();
     }
 
     @Override
@@ -376,6 +421,34 @@ final class ClusterSyncSchedulerAdapter implements ClusterSyncScheduler {
     @Contract
     public void setDispatchedNodesSupplier(Supplier<Set<NodeId>> supplier) {
         context.setDispatchedNodesSupplier(supplier);
+    }
+
+    @Override
+    public Unit setPingTargetEligibility(Predicate<NodeId> predicate) {
+        context.setPingTargetEligibility(predicate);
+
+        return Unit.unit();
+    }
+
+    @Override
+    public Unit setPeerMetricsForwarding(Supplier<Boolean> predicate) {
+        context.setPeerMetricsForwarding(predicate);
+
+        return Unit.unit();
+    }
+
+    @Override
+    @Contract
+    public Unit setMetricsRecipient(Predicate<NodeId> isCore) {
+        context.setMetricsRecipient(isCore);
+
+        return Unit.unit();
+    }
+
+    @Override
+    @Contract
+    public void setSourceMetricsSupplier(Supplier<List<CommunityMetricsSnapshot>> supplier) {
+        context.setSourceMetricsSupplier(supplier);
     }
 
     @Override

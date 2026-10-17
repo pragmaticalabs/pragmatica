@@ -8,26 +8,26 @@ source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
 test_health_public_no_auth() {
     # Health probes are always public
-    assert_http_status "${CLUSTER_ENDPOINT}/health/live" "200" "Liveness probe — no auth required"
+    assert_http_status "$(_resolve_live_endpoint)/health/live" "200" "Liveness probe — no auth required"
     assert_cluster_healthy "Cluster healthy — no auth required"
 }
 
 test_status_requires_auth() {
     # Without API key, should get 401
     local status
-    status=$(curl -s -o /dev/null -w "%{http_code}" "${CLUSTER_ENDPOINT}/api/v1/nodes/status")
+    status=$(curl -s -o /dev/null -w "%{http_code}" "$(_resolve_live_endpoint)/api/v1/nodes/status")
     assert_eq "$status" "401" "GET /api/v1/nodes/status without auth returns 401"
 }
 
 test_status_with_auth() {
-    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/nodes/status" "200" "GET /api/v1/nodes/status with auth returns 200" \
+    assert_http_status "$(_resolve_live_endpoint)/api/v1/nodes/status" "200" "GET /api/v1/nodes/status with auth returns 200" \
         -H "X-API-Key: ${ADMIN_API_KEY}"
 }
 
 test_status_invalid_key() {
     local status
     status=$(curl -s -o /dev/null -w "%{http_code}" \
-        -H "X-API-Key: invalid-key-12345" "${CLUSTER_ENDPOINT}/api/v1/nodes/status")
+        -H "X-API-Key: invalid-key-12345" "$(_resolve_live_endpoint)/api/v1/nodes/status")
     assert_eq "$status" "403" "Invalid API key returns 403"
 }
 
@@ -36,9 +36,9 @@ test_viewer_can_read() {
         skip_test "Viewer can read" "AETHER_VIEWER_API_KEY not set"
         return 0
     fi
-    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/nodes/status" "200" "Viewer can GET /api/v1/nodes/status" \
+    assert_http_status "$(_resolve_live_endpoint)/api/v1/nodes/status" "200" "Viewer can GET /api/v1/nodes/status" \
         -H "X-API-Key: ${VIEWER_API_KEY}"
-    assert_http_status "${CLUSTER_ENDPOINT}/api/v1/nodes" "200" "Viewer can GET /api/v1/nodes" \
+    assert_http_status "$(_resolve_live_endpoint)/api/v1/nodes" "200" "Viewer can GET /api/v1/nodes" \
         -H "X-API-Key: ${VIEWER_API_KEY}"
 }
 

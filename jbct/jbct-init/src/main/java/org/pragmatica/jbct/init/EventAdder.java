@@ -161,17 +161,18 @@ public final class EventAdder {
                        .replace("{{eventDescription}}", eventDescription);
     }
 
-    // Templates
+    // Templates. The formatter wants java.* imports first, then the rest, then two blank lines before the doc comment (#1998).
     private static final String PUBLISHER_TEMPLATE = """
         package {{annotationPackage}};
-
-        import org.pragmatica.aether.slice.Publisher;
-        import org.pragmatica.aether.slice.annotation.ResourceQualifier;
 
         import java.lang.annotation.ElementType;
         import java.lang.annotation.Retention;
         import java.lang.annotation.RetentionPolicy;
         import java.lang.annotation.Target;
+
+        import org.pragmatica.aether.slice.Publisher;
+        import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+
 
         /// Publisher qualifier for {{eventDescription}} events.
         @ResourceQualifier(type = Publisher.class, config = "{{configKey}}")
@@ -183,13 +184,14 @@ public final class EventAdder {
     private static final String SUBSCRIPTION_TEMPLATE = """
         package {{annotationPackage}};
 
-        import org.pragmatica.aether.slice.Subscriber;
-        import org.pragmatica.aether.slice.annotation.ResourceQualifier;
-
         import java.lang.annotation.ElementType;
         import java.lang.annotation.Retention;
         import java.lang.annotation.RetentionPolicy;
         import java.lang.annotation.Target;
+
+        import org.pragmatica.aether.slice.Subscriber;
+        import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+
 
         /// Subscription qualifier for {{eventDescription}} events.
         @ResourceQualifier(type = Subscriber.class, config = "{{configKey}}")

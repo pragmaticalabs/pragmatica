@@ -16,6 +16,7 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AbTestKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -38,6 +39,13 @@ import org.slf4j.LoggerFactory;
 
 public interface AbTestManager {
     Promise<Unit> activate();
+
+    /// #1533 — re-read the A/B tests from the KV store when a restore has landed after [#activate] (a
+    /// fresh cluster activates before its restore). A no-op unless active; idempotent.
+    default Unit reloadRestoredState() {
+        return Unit.unit();
+    }
+
     Promise<Unit> deactivate();
     boolean isActive();
 
@@ -84,6 +92,11 @@ public interface AbTestManager {
                              Map<String, AbTestDeployment> tests,
                              AtomicBoolean active) implements AbTestManager {
             private static final Logger log = LoggerFactory.getLogger(AbTestManager.class);
+            /// The canary runs at the slice floor. The variant IS the slice's own target (same key, new
+            /// version), so the runtime floor of [SliceSpec#MIN_INSTANCES] applies to it at every phase
+            /// (#1721, #1495). Deliberately NOT applied to `minInstances`, which belongs to the
+            /// operator (#982).
+            private static final int VARIANT_INSTANCES = SliceSpec.MIN_INSTANCES;
 
             @Override
             public Promise<Unit> activate() {
@@ -92,6 +105,15 @@ public interface AbTestManager {
                 restoreState();
 
                 return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Unit reloadRestoredState() {
+                if (active.get()) {
+                    restoreState();
+                }
+
+                return Unit.unit();
             }
 
             @Override
@@ -258,26 +280,92 @@ public interface AbTestManager {
             @SuppressWarnings("unchecked")
             private KVCommand<AetherKey> buildDeployCommand(ArtifactBase artifactBase, Version version) {
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
-                var value = targetPreservingOverrides(key, version);
+                var value = variantTarget(key, version);
 
                 return (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
             }
 
-            /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review).
-            /// Reads the current SliceTargetValue and carries its `maxInstances`/threshold overrides
-            /// onto the new version (canary/promote/restore stay at 1 instance).
-            private SliceTargetValue targetPreservingOverrides(SliceTargetKey key, Version version) {
-                var current = kvStore.get(key)
-                                     .filter(SliceTargetValue.class::isInstance)
-                                     .map(SliceTargetValue.class::cast);
+            /// The one read both A/B lifecycle writers derive from, and the reason they can.
+            ///
+            /// A/B lifecycle writes must not evaporate the operator's per-slice bounds (#424 review),
+            /// the slice's ownership (#698), its placement (#937) or its availability floor (#982).
+            /// [#variantTarget] and [#concludedTarget] therefore TRANSFORM this observed value rather
+            /// than rebuilding one from parts, so every component neither of them deliberately
+            /// replaces survives by construction. Between them they replace `currentVersion` and
+            /// `targetInstances` only; `minInstances` is replaced by neither.
+            ///
+            /// What that carries, `placement` included: #937 recorded it being reset to `CORE_ONLY`
+            /// here, and the reset is not merely stored — `ClusterDeploymentState` feeds
+            /// `effectivePlacement()` into the allocation engine, so an operator's deliberately
+            /// placed workload was relocated on the first A/B write. `updatedAt` is re-derived by the
+            /// `with*` chain, which is the point of a write.
+            ///
+            /// The enumerate-the-preserved-fields shape this method used to have is what let
+            /// `placement` go missing while the list read as exhaustive. It is deliberately not
+            /// restored: a `with*` chain cannot omit a field it does not mention.
+            ///
+            /// `owningBlueprint` matters beyond bookkeeping: `ClusterDeploymentState` resolves a
+            /// slice's `schemaRequired` from its owner, and an erased owner silently takes the
+            /// historical default `true`, flipping a `schema_required = false` slice on the next A/B
+            /// write. The single `kvStore.get` below is the read this method already performed, so
+            /// no control flow and no read-then-Put exposure changes here.
+            private Option<SliceTargetValue> observedTarget(SliceTargetKey key) {
+                return kvStore.get(key)
+                              .filter(SliceTargetValue.class::isInstance)
+                              .map(SliceTargetValue.class::cast);
+            }
 
+            /// The canary write. The variant runs at the slice floor, and the operator's floor is
+            /// carried untouched.
+            ///
+            /// #982: this write used to set `minInstances = 1` as well, which silently replaced an
+            /// operator's configured floor for the rest of the slice's life — the conclusion writes
+            /// below re-applied the same pin rather than restoring it, so nothing ever put it back.
+            /// The autoscaler's scale-down ratchet masked it until #936 removed the ratchet.
+            ///
+            /// Lowering the floor was never needed to place the canary: the variant is a DIFFERENT
+            /// artifact version, so `ClusterDeploymentState.handleSliceTargetChange` allocates it
+            /// from zero instances and `SliceAllocationEngine.issueAdjustmentCommands` scales UP to
+            /// `targetInstances`. `minInstances` is only ever read as a cap on scale-DOWN removals
+            /// (`issueScaleDownCommands`) and as a scale-down gate (`DecisionTreeController`), and
+            /// teardown bypasses both by issuing unload commands directly. A preserved floor
+            /// therefore cannot hold the canary above the slice floor, nor pin a variant that has to
+            /// be removed.
+            private SliceTargetValue variantTarget(SliceTargetKey key, Version version) {
+                return observedTarget(key).map(current -> current.withVersion(version)
+                                                                 .withInstances(VARIANT_INSTANCES))
+                                     .or(() -> newSliceTarget(version));
+            }
+
+            /// The conclusion writes — promote a winner, or restore the baseline on rollback.
+            ///
+            /// The concluded version takes over the slice, so it must not be left running at the
+            /// canary's instance count while the operator's floor says otherwise: the allocation
+            /// engine drives to `targetInstances`, and nothing climbs from below the floor on its
+            /// own, so `target = 3, min = 5` is a slice permanently parked under its own declared
+            /// minimum. `effectiveMinInstances()` is the operator's floor clamped to at least one,
+            /// but an operator floor below the slice floor (`min = 1`) must not park the winner under it
+            /// (#1721), so the count is clamped to at least [#VARIANT_INSTANCES].
+            ///
+            /// This restores the floor's worth of capacity, not necessarily the pre-test
+            /// `targetInstances` — a slice scaled to 8 above a floor of 5 concludes at 5 and climbs
+            /// again on load. Recovering the exact pre-test count would mean persisting it in
+            /// `AbTestValue` for the lifetime of the test; the floor is the operator's stated
+            /// guarantee and is already in the record, so it is the honest thing to restore here.
+            private SliceTargetValue concludedTarget(SliceTargetKey key, Version version) {
+                return observedTarget(key).map(current -> current.withVersion(version)
+                                                                 .withInstances(Math.max(current.effectiveMinInstances(),
+                                                                                         VARIANT_INSTANCES)))
+                                     .or(() -> newSliceTarget(version));
+            }
+
+            /// A slice that has never been written has no placement, owner or bounds to carry, so
+            /// the creation factory is correct for it and the transformations above are correct for
+            /// every other case. The floor at birth is the shared default (#1497), like every other first write.
+            private static SliceTargetValue newSliceTarget(Version version) {
                 return SliceTargetValue.sliceTargetValue(version,
-                                                         1,
-                                                         1,
-                                                         Option.none(),
-                                                         current.flatMap(SliceTargetValue::maxInstances),
-                                                         current.flatMap(SliceTargetValue::scaleUpThreshold),
-                                                         current.flatMap(SliceTargetValue::scaleDownThreshold));
+                                                         VARIANT_INSTANCES,
+                                                         SliceTargetValue.defaultMinInstances(VARIANT_INSTANCES));
             }
 
             private Promise<AbTestDeployment> activateTest(AbTestDeployment test) {
@@ -313,7 +401,7 @@ public interface AbTestManager {
             private Promise<AbTestDeployment> promoteWinner(AbTestDeployment test, String winningVariant) {
                 var winnerVersion = test.variantVersions().get(winningVariant);
                 var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
-                var value = targetPreservingOverrides(key, winnerVersion);
+                var value = concludedTarget(key, winnerVersion);
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
                 return clusterNode.<Unit> apply(List.of(command))
@@ -341,7 +429,7 @@ public interface AbTestManager {
             private Promise<AbTestDeployment> restoreBaseline(AbTestDeployment test) {
                 log.info("Restoring baseline {} for A/B test {}", test.baselineVersion(), test.testId());
                 var key = SliceTargetKey.sliceTargetKey(test.artifactBase());
-                var value = targetPreservingOverrides(key, test.baselineVersion());
+                var value = concludedTarget(key, test.baselineVersion());
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
 
                 return clusterNode.<Unit> apply(List.of(command))

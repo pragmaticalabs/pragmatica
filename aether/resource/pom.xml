@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
     </parent>
 
     <artifactId>resource</artifactId>
@@ -82,13 +82,19 @@
         </dependencies>
     </dependencyManagement>
 
+    <!-- #1211, #1219: the resource family is published. `node`, `aether-deployment`, `aether-metrics`, `aether-stream`,
+         `aether-invoke`, `aether-storage`, `ember` and `pg-codegen` depend on it at compile scope, so an inherited
+         skipPublishing here left every one of them unresolvable from Central. tools/check-publish-closure.py
+         refuses an unclosed published set. -->
+
     <build>
         <plugins>
             <plugin>
                 <groupId>org.sonatype.central</groupId>
                 <artifactId>central-publishing-maven-plugin</artifactId>
+                <inherited>false</inherited>
                 <configuration>
-                    <skipPublishing>true</skipPublishing>
+                    <skipPublishing>false</skipPublishing>
                 </configuration>
             </plugin>
         </plugins>

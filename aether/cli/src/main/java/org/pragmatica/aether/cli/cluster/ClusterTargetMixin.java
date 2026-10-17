@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.nio.file.Files;
@@ -58,7 +57,7 @@ public class ClusterTargetMixin {
     }
 
     private Result<Unit> resolveAndInstall(ClusterRegistry registry) {
-        return findEntry(registry, clusterName).map(this::installOverrides);
+        return findEntry(registry, clusterName).flatMap(this::installOverrides);
     }
 
     private static Result<ClusterRegistry.ClusterEntry> findEntry(ClusterRegistry registry, String name) {
@@ -71,20 +70,20 @@ public class ClusterTargetMixin {
                        .orElseGet(() -> new ClusterTargetError.UnknownCluster(name).result());
     }
 
-    private Unit installOverrides(ClusterRegistry.ClusterEntry entry) {
-        installEndpoint(entry);
-        installApiKey(entry.name());
-
-        return Unit.unit();
+    private Result<Unit> installOverrides(ClusterRegistry.ClusterEntry entry) {
+        return installEndpoint(entry).onSuccess(_ -> installApiKey(entry.name()));
     }
 
-    @Contract
-    private static void installEndpoint(ClusterRegistry.ClusterEntry entry) {
+    /// A blank `endpoint` used to return early and leave whatever `main` installed — the active
+    /// context — in force, so `--cluster legacy` silently dialled another cluster (#584 review).
+    private static Result<Unit> installEndpoint(ClusterRegistry.ClusterEntry entry) {
         if (entry.endpoint() == null || entry.endpoint().isBlank()) {
-            return;
+            return new ClusterTargetError.BlankEndpoint(entry.name()).result();
         }
 
         ClusterHttpClient.setEndpointOverride(entry.endpoint());
+
+        return Result.unitResult();
     }
 
     @Contract
@@ -121,6 +120,14 @@ public class ClusterTargetMixin {
             @Override
             public String message() {
                 return "Invalid --cluster value: '" + value + "': must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$";
+            }
+        }
+
+        record BlankEndpoint(String name) implements ClusterTargetError {
+            @Override
+            public String message() {
+                return "Cluster '" + name
+                     + "' is registered without an endpoint; fix its entry in ~/.aether/clusters.toml or pass --connect";
             }
         }
 

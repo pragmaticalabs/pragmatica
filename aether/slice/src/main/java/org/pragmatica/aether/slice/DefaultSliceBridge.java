@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice;
 
 import java.util.List;
@@ -9,6 +8,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.topic.ContextualEvent;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -111,25 +112,59 @@ public record DefaultSliceBridge(Artifact artifact,
         return List.copyOf(methodMap.keySet());
     }
 
+    /// #1295: the durable-topic delivery path. The method's own declared parameter type chooses the
+    /// argument — see [SliceBridge#invokeWithContext].
+    @Override
+    public Promise<byte[]> invokeWithContext(String methodName, byte[] eventBytes, MessageContext context) {
+        return lookupMethod(methodName).async()
+                           .flatMap(method -> invokeWithContextChecked(method, eventBytes, context));
+    }
+
+    private Promise<byte[]> invokeWithContextChecked(InternalMethod method, byte[] eventBytes, MessageContext context) {
+        return this.<Object> deserializeInput(eventBytes)
+                   .map(event -> argumentFor(method, event, context))
+                   .flatMap(argument -> invokeAndSerialize(method.method(),
+                                                           argument));
+    }
+
+    /// A generated context-carrying adapter declares [ContextualEvent] as its parameter; every other
+    /// method declares the event type itself and keeps receiving the bare event.
+    private static Object argumentFor(InternalMethod method, Object event, MessageContext context) {
+        return ContextualEvent.class.equals(method.parameterType().rawType())
+               ? ContextualEvent.contextualEvent(event, context)
+               : event;
+    }
+
     private Result<InternalMethod> lookupMethod(String methodName) {
         return option(methodMap.get(methodName)).toResult(METHOD_NOT_FOUND.apply(methodName));
     }
 
     @SuppressWarnings("unchecked")
     private <T> Promise<T> deserializeInput(byte[] input) {
-        return Promise.lift(Causes::fromThrowable, () -> (T) codec.decode(input));
+        return Promise.lift(DefaultSliceBridge::codecDefect, () -> (T) codec.decode(input));
     }
 
     @SuppressWarnings("unchecked")
     private <T, R> Promise<R> invokeMethod(SliceMethod<?, ?> method, T parameter) {
-        return Promise.lift(Causes::fromThrowable,
+        return Promise.lift(DefaultSliceBridge::methodDefect,
                             () -> ((SliceMethod<R, T>) method).apply(parameter))
                       .flatMap(promise -> promise);
     }
 
     private <R> Promise<byte[]> serializeResponse(R response) {
-        return Promise.lift(Causes::fromThrowable, () -> codec.encode(response));
+        return Promise.lift(DefaultSliceBridge::codecDefect, () -> codec.encode(response));
     }
 
-    private static final Fn1<Cause, String> METHOD_NOT_FOUND = Causes.forOneValue("Method not found: {0}");
+    /// #1573: bridge-side failures are tagged [SliceDefect] so the leader's all-instances-failed
+    /// detector can tell a broken version from a business failure the method returned. Only the
+    /// synchronous throw is tagged here; the Promise the method returns carries its own causes.
+    private static Cause methodDefect(Throwable throwable) {
+        return SliceDefect.MethodThrew.FACTORY.apply(Causes.fromThrowable(throwable));
+    }
+
+    private static Cause codecDefect(Throwable throwable) {
+        return SliceDefect.CodecFailed.FACTORY.apply(Causes.fromThrowable(throwable));
+    }
+
+    private static final Fn1<SliceDefect.MethodNotFound, String> METHOD_NOT_FOUND = SliceDefect.MethodNotFound.FACTORY;
 }

@@ -47,7 +47,7 @@ class AppHttpServerTest {
     void setUp() {
         registry = HttpRouteRegistry.httpRouteRegistry();
         // Use fixed port (pragmatica-lite HttpServer doesn't properly return OS-assigned ports)
-        var config = AppHttpConfig.appHttpConfig(TEST_PORT);
+        var config = AppHttpConfig.insecureAppHttpConfig(TEST_PORT);
         port = TEST_PORT;
         // Create server without HTTP forwarding support for basic tests
         server = AppHttpServer.appHttpServer(config,

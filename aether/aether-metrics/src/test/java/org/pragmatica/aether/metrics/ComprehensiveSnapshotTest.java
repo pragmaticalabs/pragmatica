@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.metrics;
 
@@ -10,7 +9,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.metrics.consensus.RabiaMetrics;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetrics;
 import org.pragmatica.aether.metrics.gc.GCMetrics;
-import org.pragmatica.aether.metrics.network.NetworkMetrics;
 import org.pragmatica.lang.Option;
 
 import java.util.Map;
@@ -24,7 +22,7 @@ class ComprehensiveSnapshotTest {
                                            long totalInvocations, long successfulInvocations,
                                            long failedInvocations, double avgLatencyMs) {
         return new ComprehensiveSnapshot(timestamp, cpu, heapUsed, heapMax,
-            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, NetworkMetrics.EMPTY, RabiaMetrics.EMPTY,
+            GCMetrics.EMPTY, EventLoopMetrics.EMPTY, RabiaMetrics.EMPTY,
             totalInvocations, successfulInvocations, failedInvocations, avgLatencyMs, Map.of());
     }
 
@@ -114,7 +112,6 @@ class ComprehensiveSnapshotTest {
             var snap = new ComprehensiveSnapshot(1000L, 0.5, 100L, 1000L,
                 GCMetrics.EMPTY,
                 new EventLoopMetrics(0, 0, 0, true),
-                NetworkMetrics.EMPTY,
                 new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 0, 0, 0, 5, 0, 100_000L),
                 100, 99, 1, 5.0, Map.of());
 
@@ -126,7 +123,6 @@ class ComprehensiveSnapshotTest {
             var snap = new ComprehensiveSnapshot(1000L, 0.5, 100L, 1000L,
                 GCMetrics.EMPTY,
                 new EventLoopMetrics(0, 0, 0, true),
-                NetworkMetrics.EMPTY,
                 new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 0, 0, 0, 5, 0, 100_000L),
                 100, 89, 11, 5.0, Map.of());
 
@@ -138,7 +134,6 @@ class ComprehensiveSnapshotTest {
             var snap = new ComprehensiveSnapshot(1000L, 0.5, 950L, 1000L,
                 GCMetrics.EMPTY,
                 new EventLoopMetrics(0, 0, 0, true),
-                NetworkMetrics.EMPTY,
                 new RabiaMetrics("LEADER", Option.some("node-1"), 0, 10, 10, 0, 0, 0, 5, 0, 100_000L),
                 100, 100, 0, 5.0, Map.of());
 

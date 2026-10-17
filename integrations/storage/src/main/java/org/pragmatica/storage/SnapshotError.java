@@ -8,6 +8,19 @@ import org.pragmatica.lang.utils.Causes;
 public sealed interface SnapshotError extends Cause {
     SnapshotError INTEGRITY_CHECK_FAILED = new IntegrityCheckFailed();
 
+    /// A [SnapshotManager] that cannot report what it wrote (#1604).
+    enum General implements SnapshotError {
+        SNAPSHOT_NOW_UNSUPPORTED("This snapshot manager cannot report the snapshot it writes");
+        private final String message;
+        General(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     record DirectoryCreateFailed(Throwable cause) implements SnapshotError {
         @Override
         public String message() {
@@ -47,6 +60,19 @@ public sealed interface SnapshotError extends Cause {
         @Override
         public String message() {
             return "Snapshot integrity check failed: content hash mismatch";
+        }
+    }
+
+    /// #1013: snapshot files are on disk and none of them restores. Distinct from "no snapshot
+    /// exists", which is a success with none -- this is metadata that WAS acked and is now
+    /// unreadable, and a boot must not proceed on empty metadata as if it never existed.
+    record NothingRestorable(String latest, int retained) implements SnapshotError {
+        @Override
+        public String message() {
+            return latest
+                 + " and none of the " + retained
+                 + " other retained snapshot(s) restores; refusing to start with EMPTY metadata. "
+                 + "See docs/operators/runbooks/backup-recovery.md";
         }
     }
 }

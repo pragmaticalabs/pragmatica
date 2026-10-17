@@ -117,6 +117,8 @@ class ClusterDeploymentStateCommunitySizingTest {
         var router = MessageRouter.mutable();
         var kvStore = new InMemoryKvStore(router);
         var cluster = new RecordingClusterNode(SELF, kvStore);
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+            new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)))));
         Function<NodeId, Option<String>> memberSourceSupplier = nodeId -> Option.option(SOURCES.get(nodeId));
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
                 fsm -> new ClusterDeploymentContext(fsm,
@@ -147,7 +149,7 @@ class ClusterDeploymentStateCommunitySizingTest {
                            InMemoryKvStore kvStore,
                            FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness) {
         void joinWorker(NodeId nodeId) {
-            harness.dispatch(new MembershipDecisionReceived(MembershipDecision.nodeJoined(nodeId, List.of(SELF, nodeId))));
+            harness.dispatch(new ClusterDeploymentEvents.WorkerJoinReceived(new org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision(nodeId, "worker", org.pragmatica.hlc.HlcTimestamp.ZERO)));
         }
 
         void seedCommunity(String communityId, CommunityState state) {
@@ -156,8 +158,10 @@ class ClusterDeploymentStateCommunitySizingTest {
         }
 
         void seedAnnouncement(String communityId, int memberCount) {
+            var members = java.util.stream.IntStream.range(0, memberCount).mapToObj(index -> new NodeId("worker-" + index)).toList();
+            members.forEach(node -> kvStore.put(new AetherKey.ActivationDirectiveKey(node), AetherValue.ActivationDirectiveValue.worker(communityId, "")));
             kvStore.put(GovernorAnnouncementKey.forCommunity(communityId),
-                        GovernorAnnouncementValue.governorAnnouncementValue(GOVERNOR, memberCount));
+                        GovernorAnnouncementValue.governorAnnouncementValue(members.getFirst(), members, ""));
         }
 
         void reconcile() {
@@ -260,8 +264,13 @@ class ClusterDeploymentStateCommunitySizingTest {
         // into the shared KV store, so a subsequent community read observes it.
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
-            committed.commit(batch);
-            return Promise.success(Collections.emptyList());
+            for (var command : batch) {
+                if (command instanceof KVCommand.LeaderTransaction<?, ?> transaction) {
+                    transaction.mutations().forEach(mutation -> mutation.replacement().onPresent(value ->
+                        commands.add(new KVCommand.Put<>((AetherKey) mutation.key(), value))));
+                }
+            }
+            return Promise.success(committed.process(committed.createBatch(batch)));
         }
     }
 
@@ -271,7 +280,13 @@ class ClusterDeploymentStateCommunitySizingTest {
         }
 
         void put(AetherKey key, AetherValue value) {
-            process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            if (value instanceof org.pragmatica.cluster.state.kvstore.LeaderAuthorized) {
+                var authority = getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, org.pragmatica.cluster.state.kvstore.LeaderValue.class).unwrap();
+                process(createBatch(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, java.util.UUID.randomUUID().toString(), authority, List.of(),
+                    List.of(new KVCommand.Mutation<>(key, get(key), Option.some(value)))))));
+            } else {
+                process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+            }
         }
 
         void commit(List<KVCommand<AetherKey>> batch) {

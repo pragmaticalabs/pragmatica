@@ -3,15 +3,19 @@
 ## Version: 1.0
 ## Status: Implementation-Ready (DESIGN only — see the inert-configuration warning below)
 ## Target Release: Post Passive Worker Pools Phase 1
-## Last Updated: 2026-08-29 (§3.2/§3.3: the #576 inert consumer keys marked rejected-at-deploy)
+## Last Updated: 2026-09-14 (#677: the #576 inert keys descoped from 1.0; their refusal is validation-time and does NOT block a publish)
 
 > **⚠️ NOT EVERY KEY IN THIS SPEC IS WIRED, AND THE UNWIRED ONES ARE REJECTED.** The
 > "Implementation-Ready" status above describes the DESIGN. Several `[streams.X]` configuration keys
 > documented below — the whole per-consumer tuning family in §3.2/§3.3, plus `compression` and a
 > non-default `encryption-key-id` — are read by nothing at runtime, and since **#576** a blueprint
-> declaring them is **rejected at deploy time** rather than silently ignored. Copying an example from
-> those sections into a real `resources.toml` will therefore FAIL the deployment, not merely
-> under-deliver. Every such key is flagged in place. The wire-or-descope decision is **#677**; the
+> declaring them is **refused by blueprint validation** rather than silently accepted. **That refusal
+> does not block the publish today** — `BlueprintService.streamBindings` discards it and writes empty
+> stream bindings — so copying an example from those sections into a real `resources.toml` does NOT
+> fail the deployment; it publishes, and any slice consuming the aliased stream then fails with
+> `StreamAddressError.UnboundStreamAlias`. Every such key is flagged in place. **#677 descoped them for 1.0** (2026-09-14): they
+> stay rejected, `encryption-key-id` waits on #253's production key source, and compression plus the
+> per-consumer tuning family are a post-GA epic — a design target, not a 1.0 promise. The
 > authoritative per-operation statement of what streaming actually guarantees is
 > [`../reference/guarantees.md`](../reference/guarantees.md) §4, which is honest about these keys.
 
@@ -62,7 +66,7 @@ Aether already has a pub/sub resource (`Publisher<T>` / `Subscriber`) for fire-a
 
 **Phase 2:** Replication (governor-push), persistent storage via AHSE (sealed segments → local disk → S3), strong consistency (Rabia path), log compaction. These are explicitly out of scope for Phase 1 but the Phase 1 design must not preclude them (see Section 17 of the exploratory spec and [AHSE spec](future/hierarchical-storage-spec.md) §8.1 for constraints).
 
-**Phase 3:** Transactional cursor commits (PostgreSQL), exactly-once consumer semantics, compound retention policies.
+**Phase 3:** Transactional cursor commits (PostgreSQL), exactly-once consumer semantics, compound retention policies. *Status (#2201): `PgTransactionalCursorCommit` exists but has no production caller; no stream path is exactly-once today, and "exactly-once" here names a goal, not a delivered guarantee. See `reference/known-limitations.md`.*
 
 ---
 
@@ -361,26 +365,31 @@ Streams are declared in the blueprint's `resources.toml` alongside other resourc
 ```toml
 [streams.order-events]
 partitions = 6                    # Number of partitions (default: 4)
-retention = "time"                # "time", "count", or "size" (default: "time")
+retention = "time"                # "time", "count", "size" or "compound" (default: "count")
 retention-value = "5m"            # Duration for time, integer for count, size string for size
 max-event-size = "64KB"           # Maximum serialized event size (default: "1MB")
-backpressure = "drop-oldest"      # "block", "drop-oldest", "reject" (default: "drop-oldest")
 ```
+
+Since #1549 every key above reaches the runtime through the same parser that validates it, and a key the parser does not read
+is refused (`unknown-stream-key`). Deploy validation applies the parser's rules to the blueprint's `resources.toml` only; at slice activation the same parser, with the same typed refusals, reads the slice's composite configuration (`resources.toml` plus `slice.toml`, node configuration, the KV overlay and environment), so a value an overlay contributes is validated at activation, not at deploy.
+The `backpressure`, `storage` and `storage-instance` keys of the table below are among the refused keys:
+they were never read, and used to be ignored silently.
 
 ### 3.2 Consumer Group Configuration
 
 Consumer groups are configured inline under the stream section. Each consumer group maps to a consumer annotation's config section.
 
-> **⚠️ EVERY KEY IN THIS EXAMPLE IS CURRENTLY REJECTED AT DEPLOY TIME (#576).** None of the
-> per-consumer tuning keys below is read at runtime, so a blueprint containing this block does not
-> deploy — `StreamResourceValidator.guardInertConfig` fails it as inert configuration. The block is
-> retained as the DESIGN target for #677, not as a working example. `auto-offset-reset` is the sharpest
+> **⚠️ EVERY KEY IN THIS EXAMPLE IS REFUSED BY BLUEPRINT VALIDATION (#576).** None of the
+> per-consumer tuning keys below is read at runtime, and `StreamResourceValidator.guardInertConfig`
+> fails them as inert configuration — but that verdict does not block the publish today (it is dropped
+> by `BlueprintService.streamBindings`), so the blueprint DOES deploy, with empty stream bindings. The block is
+> retained as a post-GA DESIGN target (descoped from 1.0 in #677), not as a working example. `auto-offset-reset` is the sharpest
 > case: the only value the validator accepts is `"earliest"`, because a never-committed consumer always
 > starts at offset 0 **by the #478 ruling, permanently** — so the `"latest"` shown here (and named as
 > the default) is precisely the value that will be refused.
 
 ```toml
-# DESIGN TARGET — does not deploy today; every key below is rejected as inert (#576, #677).
+# DESIGN TARGET — every key below is refused as inert (#576, #677); that refusal does not block the publish today.
 [streams.order-events.consumers.analytics]
 auto-offset-reset = "latest"     # REJECTED: only "earliest" is accepted (#478 makes it permanent)
 checkpoint-interval = "1s"       # REJECTED as inert: not read at runtime
@@ -404,18 +413,20 @@ on-failure = "stall"             # REJECTED as inert
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
 | `partitions` | int | `4` | Number of partitions. Immutable after creation (Phase 1). |
-| `retention` | string | `"time"` | Retention mode: `"time"`, `"count"`, or `"size"`. |
-| `retention-value` | string/int | `"5m"` | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
-| `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. |
-| `backpressure` | string | `"drop-oldest"` | Behavior when ring buffer is full: `"block"`, `"drop-oldest"`, `"reject"`. |
-| `storage` | string | `"memory"` | Storage mode: `"memory"` (Phase 1, in-memory only) or `"persistent"` (AHSE-backed, Phase 2+). |
-| `storage-instance` | string | auto | AHSE storage instance name. Default: `storage.{streamName}`. Only applies when `storage = "persistent"`. See [AHSE spec](future/hierarchical-storage-spec.md). |
+| `retention` | string | `"count"` | Retention mode: `"time"`, `"count"`, `"size"` or `"compound"` (`max-age`, `max-count`, `max-bytes`, `retention-mode` = `any`/`all`). **`time`/`size` retention also cap at the default count/bytes unless declared; eviction at whichever limit is hit first** (#1549) — `time` keeps the default 100,000 events and 256 MB, `size` the default 100,000 events and 24 h, and `compound` the default for any of `max-count`/`max-bytes`/`max-age` it omits (under `retention-mode = "all"` a partition is evicted only once every limit is exceeded). The ring's index is sized from the count, so it can never be unbounded; a count it cannot index is refused (`RetentionCountUnindexable`). `count` keeps no byte or age cap. |
+| `retention-value` | string/int | `"100000"` (count) | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
+| `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. A value above the one-frame ceiling (32 MiB transport frame, less its transfer reserve, less a 4 KiB message envelope: 33,484,800 bytes) is refused at config validation, because a single event travels alone in one replication or catch-up frame (#1937). |
+| `backpressure` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"block"`, `"drop-oldest"`, `"reject"`). |
+| `storage` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"memory"` or `"persistent"`, AHSE-backed). |
+| `storage-instance` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: AHSE instance name, see [AHSE spec](future/hierarchical-storage-spec.md)). |
 
 #### Consumer-Level Properties
 
 The `Status` column records what the RUNTIME does with each key today, which is not what the `Default`
 column describes — the defaults are the design's, and #576 turned the gap between them into a loud
-deploy-time rejection rather than silence. `Default` is therefore the #677 target, not current behaviour.
+validation-time rejection rather than silence (loud in the validator's verdict only — it does not block
+the publish; see the header). `Default` is therefore the post-GA design target (#677
+descoped the wiring from 1.0), not current behaviour.
 
 | Property | Type | Default | Status today | Description |
 |----------|------|---------|--------------|-------------|
@@ -680,7 +691,34 @@ record StreamMetadataKey(String streamName) implements AetherKey {
 }
 ```
 
-#### StreamPartitionAssignmentKey
+#### ConsumerAssignmentKey (was `StreamPartitionAssignmentKey`)
+
+> **Status (#1271, verified at `13cab2ceb`):** the per-stream `StreamPartitionAssignmentKey` designed
+> below was never written or read by anything; #1271 removed it and reused its tags for the
+> per-PARTITION `ConsumerAssignmentKey`, whose committed value is the one authority for which node
+> delivers a `(group, partition)`. The leader writes it from the same reconcile computation every node
+> used to act on alone; every node attaches only where the record names it; and the consensus applier
+> admits a `StreamCursorCheckpointKey` write only from the record's assignee at the record's epoch
+> (`KVStore.unassignedWrite`). The original design text is kept as history below the shipped shape.
+
+```
+consumer-assign/{streamName}/{partitionIndex}/{consumerGroup}
+```
+
+```java
+record ConsumerAssignmentKey(String streamName,
+                             int partitionIndex,
+                             String consumerGroup) implements AetherKey {
+    private static final String PREFIX = "consumer-assign/";
+
+    @Override
+    public String asString() {
+        return PREFIX + streamName + "/" + partitionIndex + "/" + consumerGroup;
+    }
+}
+```
+
+Original design (not shipped):
 
 ```
 stream-assign/{streamName}/{consumerGroup}
@@ -692,31 +730,7 @@ Maps partitions to consumer nodes for a consumer group.
 record StreamPartitionAssignmentKey(String streamName,
                                      String consumerGroup) implements AetherKey {
     private static final String PREFIX = "stream-assign/";
-
-    @Override
-    public String asString() {
-        return PREFIX + streamName + "/" + consumerGroup;
-    }
-
-    @SuppressWarnings("JBCT-VO-02")
-    public static StreamPartitionAssignmentKey streamPartitionAssignmentKey(String streamName,
-                                                                            String consumerGroup) {
-        return new StreamPartitionAssignmentKey(streamName, consumerGroup);
-    }
-
-    public static Result<StreamPartitionAssignmentKey> streamPartitionAssignmentKey(String key) {
-        if (!key.startsWith(PREFIX)) {
-            return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
-        }
-        var content = key.substring(PREFIX.length());
-        var slashIndex = content.indexOf('/');
-        if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
-            return STREAM_PARTITION_ASSIGNMENT_KEY_FORMAT_ERROR.apply(key).result();
-        }
-        var streamName = content.substring(0, slashIndex);
-        var consumerGroup = content.substring(slashIndex + 1);
-        return success(new StreamPartitionAssignmentKey(streamName, consumerGroup));
-    }
+    // ... one record per (stream, group) holding every partition's assignee
 }
 ```
 
@@ -815,7 +829,22 @@ record StreamMetadataValue(String streamName,
 }
 ```
 
-#### StreamPartitionAssignmentValue
+#### ConsumerAssignmentValue (was `StreamPartitionAssignmentValue`)
+
+> **Status (#1271, verified at `13cab2ceb`):** shipped as one record per partition, epoch-bearing so a
+> deposed assignee cannot commit an old epoch over a newer one, and carrying the `AssignmentToken`
+> (`assignee`, `epoch`) that a `StreamCursorCheckpointValue` must match to be admitted.
+
+```java
+record ConsumerAssignmentValue(NodeId assignee,
+                               Epoch epoch,
+                               long assignmentTerm,
+                               HlcTimestamp assignedAt) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
+    public record AssignmentToken(NodeId assignee, Epoch epoch) {}
+}
+```
+
+Original design (not shipped):
 
 ```java
 record StreamPartitionAssignmentValue(
@@ -824,12 +853,6 @@ record StreamPartitionAssignmentValue(
 ) implements AetherValue {
 
     public record PartitionAssignment(int partition, NodeId consumerNode) {}
-
-    public static StreamPartitionAssignmentValue streamPartitionAssignmentValue(
-            List<PartitionAssignment> assignments) {
-        return new StreamPartitionAssignmentValue(List.copyOf(assignments),
-                                                   System.currentTimeMillis());
-    }
 }
 ```
 
@@ -882,7 +905,7 @@ For a typical deployment:
 | Key Type | Formula | Example (20 streams, 8 partitions, 5 consumer groups) |
 |----------|---------|-------------------------------------------------------|
 | `StreamMetadataKey` | S | 20 |
-| `StreamPartitionAssignmentKey` | S x G | 100 |
+| `ConsumerAssignmentKey` (#1271; the designed `StreamPartitionAssignmentKey` was S x G) | S x P x G | 800 |
 | `StreamCursorCheckpointKey` | S x P x G | 800 |
 | `StreamRegistrationKey` | S x G (one per consumer method) | 100 |
 | **Total** | | **1,020** |
@@ -1028,6 +1051,8 @@ public Result<Long> append(byte[] serializedEvent, long timestamp) {
 }
 ```
 
+*Implementation note (#1248, verified at `ccba0dba5`):* the `asSlice` above only addresses the write target; the payload is **copied** into off-heap memory. The shipped `OffHeapRingBuffer.append` writes through `writeDataBytes` / `copyIntoData` across a segmented data region, then writes the WAL frame in the same ordered section (`StreamPartitionManager.logAndReplicate`) and awaits the fsync outside it (`awaitDurable`); no listener fires at append (#1235). See `reference/streaming-performance-analysis.md` §3.1.
+
 ### 6.5 Read Operation
 
 ```java
@@ -1147,15 +1172,17 @@ public long usedBytes() {
 
 The governor aggregates per-partition memory usage into its `WorkerGroupHealthReport` for CDM visibility.
 
-### 6.9 Co-Located Zero-Copy Optimization
+### 6.9 Co-Located Direct Delivery — NOT IMPLEMENTED
 
-When producer and consumer are in the same JVM (same node, same classloader), the runtime bypasses serialization:
+> **Status (#1248, verified at `ccba0dba5`): nothing in this section exists.** There is no `DirectConsumer` type, no direct-delivery list in `StreamPartitionManager`, and no path on which a consumer receives the producer's object reference. A co-located consumer is notified by an append listener and then receives **copies**: three `byte[]` copies per event (`OffHeapRingBuffer.readDataBytes`, the `RawEvent` constructor's `clone()`, and the `RawEvent.data()` accessor's `clone()`), followed by a decode, a re-encode and a second decode on the way into the target slice (`StreamConsumerManager.deliver` → `SliceInvoker.invokeLocal` → `invokeViaBridge`). Storage is off-heap; delivery copies to heap. See `reference/streaming-performance-analysis.md` §4.3. The requirements below are retained as the original design, not as a description of the code.
+
+When producer and consumer are in the same JVM (same node, same classloader), the design proposed that the runtime bypass serialization:
 
 - REQ-RB-01: The producer passes the Java object directly to the consumer's handler.
 - REQ-RB-02: The object is still serialized into the ring buffer for durability and replay, but the consumer receives the original object reference.
 - REQ-RB-03: This optimization is transparent -- the `StreamPublisher` implementation detects co-located consumers and maintains a list of direct delivery targets alongside the ring buffer append.
 
-**Implementation:** The `StreamPartitionManager` on the governor maintains a `Map<String, List<DirectConsumer>>` keyed by consumer group. When a produce arrives from a local slice, the manager:
+**Proposed implementation (never built):** The `StreamPartitionManager` on the governor would maintain a `Map<String, List<DirectConsumer>>` keyed by consumer group. When a produce arrives from a local slice, the manager would:
 1. Serializes and appends to ring buffer (for replay and remote consumers).
 2. Delivers the original Java object to each local `DirectConsumer`.
 
@@ -1193,8 +1220,8 @@ When CDM deploys a stream consumer group:
 1. CDM reads the `StreamMetadataValue` to get partition count.
 2. CDM reads registered consumers from `StreamRegistrationKey` entries.
 3. CDM computes a round-robin assignment: partition N -> consumer N % consumerCount.
-4. CDM writes the assignment to `StreamPartitionAssignmentKey/Value`.
-5. Consumers watch `stream-assign/*` for their group and begin consuming assigned partitions.
+4. CDM writes the assignment to `StreamPartitionAssignmentKey/Value`. *(Shipped, #1271: the LEADER's `StreamConsumerManager` reconcile writes one `ConsumerAssignmentKey/Value` per partition; there is no CDM step.)*
+5. Consumers watch `stream-assign/*` for their group and begin consuming assigned partitions. *(Shipped: every node's reconcile reads the committed `ConsumerAssignmentKey` records and attaches only where they name it.)*
 
 ### 7.4 Rebalancing Protocol
 
@@ -1202,7 +1229,7 @@ When a consumer joins or leaves a group:
 
 1. CDM detects membership change (node join/leave, or slice deployment change).
 2. CDM recomputes partition assignment.
-3. CDM writes new `StreamPartitionAssignmentValue`.
+3. CDM writes new `StreamPartitionAssignmentValue`. *(Shipped, #1271: the leader writes a new `ConsumerAssignmentValue` at the next epoch; the deposed node's checkpoints are refused by the applier from that commit on.)*
 4. Consumers draining old partitions:
    a. Complete in-flight event processing.
    b. Checkpoint cursor.
@@ -1449,6 +1476,8 @@ Write StreamCursorCheckpointValue to consensus KV-Store
 Update lastCheckpointedOffset
 ```
 
+**Design versus shipped (#1385).** The diagram is the timer-driven design. The shipped consumer evaluates the checkpoint trigger only on a delivery (`ConsumerRuntimeState.advanceCursor` -> `checkpointIfNeeded`), so no timer starts a commit on a partition that has gone quiet; a partition whose events all arrive inside its first interval after attach holds no checkpoint, and an ungraceful move replays it from offset 0. At-least-once is preserved; the bound in §10.3 and §10.4 is not, for such a partition.
+
 **Consensus checkpoint is a standard KV mutation** -- forwarded through the existing worker -> governor -> core -> consensus path. At a 1-second checkpoint interval, this adds ~1 KV mutation per consumer-partition pair per second.
 
 ### 10.3 Checkpoint Interval Configuration
@@ -1459,14 +1488,16 @@ Update lastCheckpointedOffset
 | Medium (1s-5s, default 1s) | Good balance. At most 1s of reprocessing on failover. |
 | Long (10s-60s) | Minimal consensus load. Up to 60s of reprocessing on failover. |
 
+The reprocessing figures above hold while the partition keeps receiving events; the shipped consumer starts a commit on a delivery, a dead letter, or once after a rewound resume's catch-up (timers only retry or follow up a commit already requested), so a quiet partition keeps its last commit (or none) until the next delivery or a graceful detach (#1385).
+
 ### 10.4 Recovery on Governor Failover
 
 When a governor fails and a new governor takes over:
 
 1. New governor reads `StreamCursorCheckpointKey/Value` from consensus for all consumer groups on affected partitions.
 2. Consumers reconnect and resume from last checkpointed offset.
-3. Events between last checkpoint and failure are redelivered (at-least-once within checkpoint window).
-4. Consumer handlers must be idempotent within the checkpoint window.
+3. Events between last checkpoint and failure are redelivered (at-least-once). The checkpoint window bounds this only while the partition keeps receiving events: the shipped consumer evaluates the checkpoint trigger on delivery (a dead letter and one catch-up commit after a rewound resume also request one; timers only retry or follow up a commit already requested), so a partition that goes quiet within its first interval after attach has no checkpoint and replays from offset 0 (#1385; the timer-driven diagram in §10.2 is the design, the trailing commit is not yet implemented).
+4. Consumer handlers must be idempotent; the checkpoint window bounds redelivery only while the partition keeps receiving events (see item 3).
 
 **Phase 1 limitation:** Ring buffer data is lost on governor failure (no replication). Consumers resume from checkpoint offset but events between checkpoint and failure are gone. Consumers receive `CURSOR_EXPIRED` if the new governor's buffer does not contain the checkpointed offset, and fall back to `auto-offset-reset` policy.
 
@@ -1474,28 +1505,32 @@ When a governor fails and a new governor takes over:
 
 ### 10.5 Stream Replication Durability
 
-Replication durability is governed by two independent stream-level knobs. Both count the owner; `consistency-mode` (Section 3.3) remains the orthogonal *read* knob and is unaffected.
+Replication durability is governed by two independent stream-level knobs. Both count the owner; `consistency-mode` (Section 3.3) remains the orthogonal *read* knob and is unaffected. Since #1564 they are the unified replication policy shared by streams, durable topics and durable entities, with the same keys in every section (`guarantees.md` §4a); the two replication keys are snake_case, while the other `[streams.X]` keys stay dashed for now.
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `replicas` | int | `1` | Replication factor (RF): total copies of each partition **including the owner**. The owner plus `replicas − 1` follower replicas are placed by HRW (highest-random-weight) over the eligible nodes, so `replicas = 1` is owner-only (no follower). |
-| `min-sync-replicas` | int | `0` | Minimum in-sync replicas (Kafka `min.insync.replicas`, **counts the owner**) that must acknowledge a write before it is client-acked. `min-sync ≤ 1` resolves on the owner's local write (no peer-ack wait); `min-sync ≥ 2` blocks the publish until `min-sync − 1` follower replicas ack. |
+| `replication_factor` | int | cluster `[replication] replication_factor` (built-in `3`) | Replication factor (RF): total copies of each partition **including the owner**. The owner plus `replication_factor − 1` follower replicas are placed by HRW (highest-random-weight) over the eligible nodes. A value below 3 is accepted only when the stream declares it (LOUD warning `replication-factor-below-three`: under terminal removal a dead owner never returns, so fewer copies lose a dead owner's partitions); an RF below 3 that came from a default is refused. An RF above the cluster's DESIRED core count is refused (`replication-exceeds-core-count`). |
+| `confirmation_factor` | int | `min(cluster [replication] confirmation_factor, RF)` (built-in `2`) | Confirmation factor (CF): copies, **the owner included**, that hold a write before it is client-acked. The owner appends (WAL fsync), then awaits `CF − 1` distinct non-self acks. CF 1 acks on the owner's append alone (warning `confirmation-factor-owner-only`); CF == RF refuses writes when any one replica is lost (warning `confirmation-equals-replication-factor`). |
 
-**Invariant:** `0 ≤ min-sync-replicas ≤ replicas`. A configuration violating this bound is rejected at stream creation. Note: `min-sync-replicas = 0` and `1` are equivalent at runtime — both resolve on the owner's local write. A large `replicas` with `min-sync ≤ 1` therefore buys placement redundancy with a **zero peer-ack durability floor**: at ack time the record may exist only on the owner (followers replicate asynchronously).
+**Invariant:** `1 ≤ confirmation_factor ≤ replication_factor`. A violation, an RF below 3 taken from a default, or an RF above the desired core count is refused, typed, at deploy (rule `replication-policy-invalid`, or `replication-exceeds-core-count`: the alias is rejected as a binding, the blueprint still publishes with it under `rejectedStreamBindings`, and a slice that uses the alias then fails to load with `UnboundStreamAlias`) and again at activation. The factors resolve once, when the stream's config is committed; a later change of the cluster default affects only streams declared afterwards, and redeclaring a live stream with different factors is refused (`ChangedOnLiveResource` — deploy a new stream to change the policy). Streams created through the Management API take the cluster defaults. `[mechanism: ReplicationDeclaration.resolve]`
 
-**Durability guarantee (storage):** a write that has been client-acked is held by `min-sync` distinct copies before the ack returns, so the *data* survives up to `min-sync − 1` simultaneous replica failures (owner included). Whether a *promotion* recovers all of it is scoped below. With `replicas = 2, min-sync-replicas = 2` (owner + 1 in-sync per write), the single follower is always caught up to the last acked offset, so it can be promoted with zero loss.
+**Breaking default (#1564).** A stream that declared no factor used to ack on the owner alone (the old `min-sync-replicas` default 0). CF now defaults to 2, so a publish needs one registered peer. A cluster whose desired core count is below 3 cannot take the default RF (it exceeds the core count), so its streams declare their factors.
 
-**Failover (HRW-elect + catch-up-before-serve):** on owner death the new owner is the next HRW-ranked survivor — election is placement-driven, not ISR-membership-driven. A lagging promotee is held non-authoritative until it catches up to the highest `confirmedOffset` among surviving replicas, then serves. **Losslessness scope:** with `replicas = 2` or `min-sync-replicas = replicas`, every client-acked record is on every surviving in-sync replica, so the promoted owner serves the complete acked history (this is the acceptance proven by the `02-chaos` `test-stream-replica-failover.sh` suite). With `replicas > 2` and `min-sync < replicas`, promotion catch-up currently sources from a **single** ahead-survivor; distinct acked offsets may reside on different followers, so promotion is not yet guaranteed lossless — tracked in #411 (multi-survivor promotion catch-up).
+**One parse, deploy and runtime (#1549).** A `[streams.X]` section is parsed by `StreamConfigParser` both when the blueprint is validated and when the slice's stream resources are provisioned, so the committed config carries every declared key. Deploy validation applies the parser's rules to the blueprint's `resources.toml` only; at slice activation the same parser, with the same typed refusals, reads the slice's composite configuration (`resources.toml` plus `slice.toml`, node configuration, the KV overlay and environment), so a value an overlay contributes is validated at activation, not at deploy. The accepted keys are exactly `version`, `source`, `role`, `partitions`, `retention`, `retention-value`, `retention-mode`, `max-age`, `max-count`, `max-bytes`, `auto-offset-reset`, `max-event-size`, `consistency`, `replication_factor`, `confirmation_factor`, `compression` and `encryption-key-id`; any other key directly in the section (a record-component name such as `max_event_size_bytes`, or a removed #1564 key — `replicas`, `min-sync-replicas`, `min_sync_replicas` — which is refused naming its replacement, with no alias) is refused under `unknown-stream-key`, naming the key it resembles, and a non-integer value for `partitions`, `replication_factor` or `confirmation_factor` under `stream-key-invalid` (a malformed, overflowing, non-integer or below-minimum value). Before #1549 the provisioning path used the generic record binder, which read snake_case component names and silently resolved everything else from `StreamConfig.DEFAULT`: the then write-ack floor (`min-sync-replicas`, superseded by #1564) was provisioned as 0 and `max-event-size`, `retention*`, `auto-offset-reset`, `consistency`, `compression` and `encryption-key-id` as their defaults, whatever the blueprint declared.
+
+**Durability guarantee (storage):** a write that has been client-acked is held by CF distinct copies before the ack returns, so the *data* survives up to `CF − 1` simultaneous replica failures (owner included) `[design intent — unverified]`. Whether a *promotion* recovers all of it is scoped below. With `confirmation_factor = replication_factor` every follower is caught up to the last acked offset, so any of them can be promoted with zero loss.
+
+**Failover (HRW-elect + catch-up-before-serve):** on owner death the new owner is the next HRW-ranked survivor — election is placement-driven, not ISR-membership-driven. A lagging promotee is held non-authoritative until it catches up to the highest `confirmedOffset` among surviving replicas, then serves. **Losslessness scope:** with `CF = RF`, every client-acked record is on every surviving in-sync replica, so the promoted owner serves the complete acked history (this is the acceptance proven by the `02-chaos` `test-stream-replica-failover.sh` suite). With `CF < RF`, distinct acked offsets may reside on different followers; the multi-survivor catch-up of §10.6 and #1555's promotion gate (the new owner catches up from the highest-head live member before it serves) are the mechanism that makes promotion lossless for every acked record held by a live replica `[design intent — unverified]`.
 
 ### 10.6 Multi-survivor promotion catch-up — coverage-union design (#411, 2026-07-04)
 
-Closes the §10.5 losslessness gap for `replicas > 2 ∧ min-sync < replicas`.
+Closes the §10.5 losslessness gap for `RF > 2 ∧ CF < RF`. (Written against the pre-#1564 knobs `replicas`/`min-sync`; they are `replication_factor` (RF) and `confirmation_factor` (CF) since #1564.)
 
 **Why a single ahead-survivor is insufficient.** Each surviving replica `r` holds a contiguous
 interval `[e_r, w_r]` of the partition — contiguous because live replication applies in order
 (`applyContiguous`) and backfill fills from a starting offset; but `e_r > 0` is possible (a
 replica placed late by the reconcile edge backfills from the then-earliest retained offset and
-holds a **suffix**). With per-record ack quorums of size `min-sync − 1 < replicas − 1`, different
+holds a **suffix**). With per-record ack quorums of size `CF − 1 < RF − 1`, different
 acked records may be held by different followers. Max-tail-only catch-up pulls one interval and
 can miss acked records that only another survivor holds.
 
@@ -1518,20 +1553,22 @@ can miss acked records that only another survivor holds.
 
 **Guarantee statement (post-implementation):** promotion recovers *every acked record held by at
 least one reachable surviving replica* — the information-theoretic maximum. Acked records whose
-entire ack quorum (`min-sync` copies) is lost are unrecoverable by any mechanism and are reported
-via `PROMOTION_GAP`; their exposure is bounded by the `min-sync` floor the writer chose (§10.5).
+entire ack quorum (CF copies) is lost are unrecoverable by any mechanism and are reported
+via `PROMOTION_GAP`; their exposure is bounded by the CF the writer chose (§10.5).
 
-**Validation gate:** implementing this section is the precondition for relaxing the
-`min-sync == replicas` constraint in `durable-pubsub-spec.md` §3, and requires a `replicas = 3,
-min-sync = 2` failover scenario in `02-chaos` (kill the owner after acks routed via different
-followers; assert union recovery) before the relaxation ships.
+**Validation gate:** implementing this section was the precondition for relaxing the
+`CF == RF` constraint in `durable-pubsub-spec.md` §3, and requires an `RF = 3,
+CF = 2` failover scenario in `02-chaos` (kill the owner after acks routed via different
+followers; assert union recovery). (The relaxation itself is superseded by #1564, know 267792392: durable
+topics accept CF < RF, lossless via #1555's promotion gate; the `02-chaos` scenario is not claimed here.)
 
 **Companion #411 items (decided):**
 - `KVStoreSerializer` stream-config wire format gains a leading **schema-version tag** and
   per-stream skip-on-parse-fail (quarantine + log, not map-wide abort) **before** it is wired to
   any snapshot/persistence path. (Today: test-only, zero production callers.)
-- Startup **WARN** when `replicas ≥ 3 ∧ min-sync ≤ 1` (placement redundancy with a zero peer-ack
-  floor — legal, Kafka-consistent, surprising; §10.5 note made loud at boot).
+- Startup **WARN** when `RF ≥ 3 ∧ CF ≤ 1` (placement redundancy with a zero peer-ack
+  floor — legal, Kafka-consistent, surprising; §10.5 note made loud at boot). (Superseded by #1564: CF 1 raises
+  the declaration warning `confirmation-factor-owner-only` at deploy and activation.)
 - `@Contract` on `PartitionBackfill.ackBackfillToOwner` / `DefaultReplicationManager.recordSurvivorConfirmed`
   — fold into the same-file touch that implements this section.
 
@@ -1552,14 +1589,14 @@ CDM manages stream lifecycle alongside slices:
 **On blueprint undeploy:**
 1. CDM deletes `StreamMetadataKey` from consensus.
 2. Governors destroy ring buffers and release memory.
-3. CDM deletes associated `StreamPartitionAssignmentKey` and `StreamCursorCheckpointKey` entries.
+3. CDM deletes associated `StreamPartitionAssignmentKey` (shipped as `ConsumerAssignmentKey`, #1271) and `StreamCursorCheckpointKey` entries.
 
 ### 11.2 Consumer Group Management
 
 When CDM detects a slice with stream subscription manifest entries:
 1. CDM reads the `stream.subscriptions.*` properties from the manifest.
 2. CDM writes `StreamRegistrationKey/Value` to consensus.
-3. CDM computes or updates partition assignments (`StreamPartitionAssignmentKey/Value`).
+3. CDM computes or updates partition assignments (`StreamPartitionAssignmentKey/Value`; shipped as the leader's per-partition `ConsumerAssignmentKey/Value`, #1271).
 4. The consumer runtime on the assigned node begins consuming.
 
 ### 11.3 Consumer Lag-Based Autoscaling
@@ -1614,11 +1651,11 @@ New endpoints for stream management:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/streams` | List all streams with partition counts and status |
-| GET | `/api/streams/{name}` | Stream detail: partitions, offsets, consumer groups |
-| GET | `/api/streams/{name}/consumers` | Consumer groups with lag and assignment details |
-| POST | `/api/streams/{name}/consumers/{group}/reset` | Reset consumer group cursor to earliest/latest |
-| POST | `/api/streams/{name}/consumers/{group}/skip` | Skip current event (for stalled consumers) |
+| GET | `/api/v1/streams` | List all streams with partition counts and status |
+| GET | `/api/v1/streams/{namespace}/{stream}/{version}` | Stream detail: partitions, offsets, consumer groups |
+| GET | `/api/v1/streams/{namespace}/{stream}/{version}/consumers` | Consumer groups with lag and assignment details |
+| POST | `/api/v1/streams/{namespace}/{stream}/{version}/consumers/{group}/reset` (proposed; not implemented) | Reset consumer group cursor to earliest/latest |
+| POST | `/api/v1/streams/{namespace}/{stream}/{version}/consumers/{group}/skip` (proposed; not implemented) | Skip current event (for stalled consumers) |
 
 ---
 
@@ -1778,7 +1815,7 @@ aether-stream (runtime implementation)
 - Integration tests with Forge
 
 **Sprint 5 (1 week): Polish**
-- Co-located zero-copy optimization
+- Co-located direct delivery (§6.9) — not implemented at `ccba0dba5`
 - Cross-governor produce routing
 - Dead-letter stream support
 - Documentation
@@ -1800,7 +1837,7 @@ aether-stream (runtime implementation)
 
 ### Phase 3 (8-10 weeks)
 
-- Transactional cursor commits via PostgreSQL (exactly-once consumer semantics)
+- Transactional cursor commits via PostgreSQL (exactly-once consumer semantics) — *not wired in production (#2201); consumers are at-least-once today*
 - Log compaction (AHSE-native: compact blocks per key, store result as new block)
 - Compound retention policies
 - Cold-tier replay: consumers reading historical data served from AHSE disk/S3 tiers transparently (same API, higher latency)

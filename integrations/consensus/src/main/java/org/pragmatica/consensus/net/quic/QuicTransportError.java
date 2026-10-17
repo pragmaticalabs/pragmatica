@@ -34,6 +34,28 @@ public sealed interface QuicTransportError extends Cause {
         HELLO_TIMEOUT("Hello handshake timed out"),
         UNEXPECTED_MESSAGE("Expected Hello message but received different type"),
         SERVER_NOT_STARTED("QUIC server is not started"),
+        /// #1456: the bind completed after stop() had already run. The just-bound channel was closed
+        /// rather than published, so the start reports failure instead of arming a transport nobody
+        /// owns. Terminal — retrying cannot un-stop a server; only a fresh start can.
+        ///
+        /// This message must never be the cause `EmberCluster.start()` surfaces from its abort path;
+        /// the failure that TRIGGERED the abort must be. `EmberClusterSwimStartFailureTest` is what
+        /// catches a violation — see `QuicClusterServerInstance.closeOrphanedChannel` for why the
+        /// ordering holds and for the mutation that demonstrates the test's sensitivity.
+        STOPPED_DURING_START("QUIC cluster server was stopped while its bind was still in flight") {
+            @Override
+            public boolean isTerminal() {
+                return true;
+            }
+        },
+        /// #1461: `stop()` ran before (or while) `startOnPort` ran. A stopped network stays stopped, so the late
+        /// start refuses instead of arming a server, reconciler and keepalive that nothing will stop. Terminal.
+        NETWORK_STOPPED("QUIC cluster network was stopped before its start could complete") {
+            @Override
+            public boolean isTerminal() {
+                return true;
+            }
+        },
         NO_TLS_CONFIGURATION("No TLS configuration provided. Set AETHER_INSECURE_DEV_MODE=true for development without TLS verification");
         private final String message;
         General(String message) {
@@ -63,11 +85,28 @@ public sealed interface QuicTransportError extends Cause {
                                                                                      ConnectFailed::new);
     }
 
+    /// #1489: the QUIC connect failed in its TLS handshake (the netty-quic connect future fails with a
+    /// `javax.net.ssl.SSLException`, e.g. `CERTIFICATE_VERIFY_FAILED` for a peer of another cluster). Kept apart
+    /// from [ConnectFailed] (unreachable, refused, timed out) so `quic_handshake_failures_total` counts TLS
+    /// failures only; `quic_dial_failures_total` counts every failed dial.
+    record HandshakeFailed(String address, Cause origin, String message) implements QuicTransportError, Cause.Wrapped {
+        static final Fn2<HandshakeFailed, String, Cause> FACTORY = Causes.forTwoValues("QUIC TLS handshake with %s failed: %s",
+                                                                                       HandshakeFailed::new);
+    }
+
     /// Peer address could not be resolved to an IP (e.g. stale/unknown DNS name).
     /// Clean, retryable dial failure — distinct from a Netty-level connect failure.
     record UnresolvedAddress(String address, String message) implements QuicTransportError {
         static final Fn1<UnresolvedAddress, String> FACTORY = Causes.forOneValue("Cannot connect to QUIC peer: address is unresolved or missing: %s",
                                                                                  UnresolvedAddress::new);
+    }
+
+    /// #1578: a still-pending dial abandoned because the peer went CONNECTED over another link before this
+    /// attempt's QUIC handshake completed. Not a failure of the peer — the dialer drops it quietly, never
+    /// down the connect-failure path (which would evict and report a peer that is connected).
+    record DialAbandoned(NodeId peer, String message) implements QuicTransportError {
+        static final Fn1<DialAbandoned, NodeId> FACTORY = Causes.forOneValue("QUIC dial to %s abandoned: the peer is already connected over another link",
+                                                                             DialAbandoned::new);
     }
 
     /// Dialer-side Hello identity verification failed (cluster-topology-overhaul spec, Wave 3):
@@ -92,6 +131,22 @@ public sealed interface QuicTransportError extends Cause {
                                        + " helloSender=" + actual.id()
                                        + " address=" + address
                                        + " — connection rejected");
+        }
+    }
+
+    /// The Hello carried a boot token the [org.pragmatica.consensus.net.BootTokens] registry refused:
+    /// a different process for a known NodeId (the NodeId is retired), or any process for an already
+    /// retired NodeId (terminal removal, owner ruling session 28). Terminal — no retry can change it.
+    ///
+    /// @param peer      the NodeId the Hello claimed
+    /// @param admission the registry's verdict (`CONFLICT` or `RETIRED`)
+    record BootTokenRefused(NodeId peer, String admission, String message) implements QuicTransportError {
+        static final Fn2<BootTokenRefused, NodeId, String> FACTORY = Causes.forTwoValues("QUIC Hello from %s refused by the boot-token gate: %s",
+                                                                                         BootTokenRefused::new);
+
+        @Override
+        public boolean isTerminal() {
+            return true;
         }
     }
 

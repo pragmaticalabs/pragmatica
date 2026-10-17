@@ -16,8 +16,8 @@ package org.pragmatica.aether.deployment.membership.ntt;
 /// @param configuredCoreCount      configured core count (`coreCount`) at the moment of decision
 /// @param provisionCount           number of provision actions dispatched this pass
 /// @param drainCount               number of drain actions dispatched this pass
-/// @param inFlightProvisioningCount peers this leader has provisioned and is still tracking
-///                                  for in-flight expiry
+/// @param inFlightProvisioningCount peers this leader has provisioned (or inherited) and is still
+///                                  tracking in-flight by provider instance state (#1049)
 public record ReconcileIntent(long observedAtNanos,
                               ReconcileTrigger trigger,
                               int clusterMembershipCount,

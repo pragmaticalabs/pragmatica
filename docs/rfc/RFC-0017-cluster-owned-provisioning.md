@@ -1,6 +1,6 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko -->
-<!-- Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0. -->
+<!-- Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms. -->
 
 # RFC-0017 — Cluster-Owned Provisioning
 
@@ -257,7 +257,7 @@ Staged, each stage independently landable and verifiable:
    keep fixed-host registration (no cloud API to provision through) and DOCKER sources keep all
    roles (the integration harness creates its workers at bootstrap). The `--wait` open question
    below is thereby answered: `--wait` means "core quorum formed"; the desired-vs-actual surface
-   for worker convergence is the provisioning diagnostics + `GET /api/cluster/config` topology.
+   for worker convergence is the provisioning diagnostics + `GET /api/v1/cluster/config` topology.
 
 ## Live validation — 2026-08-09 (arc-final Hetzner run)
 

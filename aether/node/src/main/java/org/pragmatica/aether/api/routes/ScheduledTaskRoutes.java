@@ -4,10 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.UnaryOperator;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -20,6 +22,7 @@ import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.invoke.ScheduledTaskStateRegistry;
 import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.invoke.SliceInvokerError;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.ExecutionMode;
@@ -29,13 +32,16 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -120,6 +126,20 @@ public final class ScheduledTaskRoutes implements RouteSource {
         return buildFilteredResponse(configSection);
     }
 
+    /// Package-private accessor mirroring `handleInjectForTest`: lets unit tests drive the
+    /// manual-trigger path (including the `tryClaim` conflict guard, #273 review item 1)
+    /// without standing up the HTTP routing layer.
+    Promise<TaskActionResult> triggerForTest(String configSection, String artifactStr, String methodStr) {
+        return triggerTask(configSection, artifactStr, methodStr);
+    }
+
+    /// Package-private accessor mirroring `triggerForTest`: lets unit tests drive the single-task
+    /// `/state` handler (including the #680/#841 ALL-mode per-node aggregation in
+    /// [#buildStateResponse]) without standing up the HTTP routing layer.
+    Promise<TaskStateResponse> getTaskStateForTest(String configSection, String artifactStr, String methodStr) {
+        return getTaskState(configSection, artifactStr, methodStr);
+    }
+
     record TaskSummary(String configSection,
                        String artifact,
                        String method,
@@ -131,7 +151,10 @@ public final class ScheduledTaskRoutes implements RouteSource {
                        long lastExecutionAt,
                        long nextFireAt,
                        int consecutiveFailures,
-                       int totalExecutions) {}
+                       int totalExecutions,
+                       String lastOutcome,
+                       int completionTimeouts,
+                       int lateResolutions) {}
 
     record ScheduledTasksResponse(List<TaskSummary> tasks, int activeTimers) {}
 
@@ -147,7 +170,11 @@ public final class ScheduledTaskRoutes implements RouteSource {
                              int consecutiveFailures,
                              int totalExecutions,
                              String lastFailureMessage,
-                             long updatedAt) {}
+                             long updatedAt,
+                             int skippedOverlaps,
+                             String lastOutcome,
+                             int completionTimeouts,
+                             int lateResolutions) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -294,25 +321,41 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     private Promise<ScheduledTaskInjectResponse> invokeAndAdvanceState(ScheduledTask task,
                                                                        ScheduledTaskInjectRequest req) {
-        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
-                                                                   task.artifact(),
-                                                                   task.methodName());
+        var stateKey = injectStateKeyFor(task);
         var priorState = stateRegistry.stateFor(stateKey);
         var previousExecutionMs = priorState.map(ScheduledTaskStateValue::lastExecutionAt).or(0L);
+        var firedAt = System.currentTimeMillis();
 
-        return invoker.invoke(task.artifact(),
-                              task.methodName(),
-                              Unit.unit())
-                      .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
-                      .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
+        return invoker.invokeAwaitingCompletion(task.artifact(),
+                                                task.methodName(),
+                                                Unit.unit())
+                      .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause, firedAt))
+                      .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs, firedAt));
+    }
+
+    /// Mirrors `ScheduledTaskManager.TaskOps#stateKeyFor` so `/inject` writes land on the same
+    /// row the automatic path reads and the Management API aggregates: an ALL-mode task is
+    /// scoped by this node, same as an automatic fire, so the write is visible on the per-node
+    /// aggregation (#841) instead of landing on the unscoped key every ALL-mode read surface
+    /// now filters out. SINGLE-mode keeps the pre-#841 unscoped key unchanged — it still races
+    /// the leader's automatic fire on that same key (no `tryClaim`/`release` guard here; `/trigger`
+    /// writes no state entry at all, so it is not a racer on this key), a documented TOCTOU caveat,
+    /// not fixed by this change.
+    private ScheduledTaskStateKey injectStateKeyFor(ScheduledTask task) {
+        return task.executionMode() == ExecutionMode.ALL
+               ? ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                             task.artifact(),
+                                                             task.methodName(),
+                                                             nodeSupplier.get().self())
+               : ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(), task.artifact(), task.methodName());
     }
 
     private Promise<ScheduledTaskInjectResponse> writeSuccessAndRespond(ScheduledTaskStateKey stateKey,
                                                                         Option<ScheduledTaskStateValue> priorState,
                                                                         ScheduledTaskInjectRequest req,
-                                                                        long previousExecutionMs) {
-        var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
-        var value = ScheduledTaskStateValue.successState(0, priorTotal + 1);
+                                                                        long previousExecutionMs,
+                                                                        long firedAt) {
+        var value = ScheduledTaskStateValue.successState(priorState, 0, firedAt);
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         return nodeSupplier.get()
@@ -324,15 +367,50 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                      value.lastExecutionAt()));
     }
 
-    private void writeFailureBestEffort(ScheduledTaskStateKey stateKey,
-                                        Option<ScheduledTaskStateValue> priorState,
-                                        Cause cause) {
-        var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
-        var priorFailures = priorState.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
-        var value = ScheduledTaskStateValue.failureState(0, priorFailures + 1, priorTotal, cause.message());
+    /// The callee's response arrived after the injected fire had been recorded as UNKNOWN, or the invoker gave the fire up.
+    /// Applied to the row as it is now, except that a row older than the fire itself (its UNKNOWN commit not yet visible)
+    /// is replaced by `written` as the base, so the sequence never goes backwards (#1723). A row that is gone has nothing
+    /// to resolve.
+    private void resolveLateOutcome(ScheduledTaskStateKey stateKey,
+                                    ScheduledTaskStateValue written,
+                                    UnaryOperator<ScheduledTaskStateValue> resolution) {
+        stateRegistry.stateFor(stateKey)
+                     .map(row -> ScheduledTaskStateValue.resolutionBase(row, written))
+                     .map(resolution::apply)
+                     .onPresent(value -> writeLateOutcome(stateKey, value));
+    }
+
+    private void writeLateOutcome(ScheduledTaskStateKey stateKey, ScheduledTaskStateValue value) {
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         nodeSupplier.get().apply(List.of(command));
+    }
+
+    /// A fire that ended without a success. A timeout of a REMOTE fire says nothing about the callee, so its outcome is
+    /// recorded as UNKNOWN and counted neither as an execution nor as a failure (#1723); anything else is a failure.
+    private void writeFailureBestEffort(ScheduledTaskStateKey stateKey,
+                                        Option<ScheduledTaskStateValue> priorState,
+                                        Cause cause,
+                                        long firedAt) {
+        var value = cause instanceof SliceInvokerError.CompletionUnknown
+                    ? ScheduledTaskStateValue.unknownOutcomeState(priorState, 0, firedAt)
+                    : ScheduledTaskStateValue.failureState(priorState, 0, firedAt, cause.message());
+        KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
+
+        nodeSupplier.get().apply(List.of(command));
+        if (cause instanceof SliceInvokerError.CompletionUnknown unknown) {
+            var fireSeq = value.fireSeq();
+
+            unknown.lateOutcome()
+                   .onSuccess(_ -> resolveLateOutcome(stateKey,
+                                                      value,
+                                                      base -> ScheduledTaskStateValue.lateSuccessState(base, fireSeq)))
+                   .onFailure(late -> resolveLateOutcome(stateKey,
+                                                         value,
+                                                         base -> ScheduledTaskStateValue.lateFailureState(base,
+                                                                                                          fireSeq,
+                                                                                                          late.message())));
+        }
     }
 
     /// Stable total-order over scheduled tasks so positional access into the response
@@ -381,13 +459,10 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                          String artifactStr,
                                                          String methodStr,
                                                          boolean paused) {
-        var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
-        var value = new ScheduledTaskValue(task.registeredBy(),
-                                           task.interval(),
-                                           task.cron(),
-                                           task.executionMode(),
-                                           paused);
-        KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
+        var command = pauseCommand(ScheduledTaskPauseKey.scheduledTaskPauseKey(task.configSection(),
+                                                                               task.artifact(),
+                                                                               task.methodName()),
+                                   paused);
         var action = paused
                      ? "paused"
                      : "resumed";
@@ -395,6 +470,15 @@ public final class ScheduledTaskRoutes implements RouteSource {
         return nodeSupplier.get()
                            .apply(List.of(command))
                            .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, action));
+    }
+
+    /// Pause and resume write the operator's intent to its own cluster-state key: present = paused,
+    /// removed = resumed. The task registration itself is left alone.
+    private static KVCommand<AetherKey> pauseCommand(ScheduledTaskPauseKey key, boolean paused) {
+        return paused
+               ? new KVCommand.Put<>(key,
+                                     ScheduledTaskPauseValue.scheduledTaskPauseValue(System.currentTimeMillis()))
+               : new KVCommand.Remove<>(key);
     }
 
     private Promise<TaskActionResult> triggerTask(String configSection, String artifactStr, String methodStr) {
@@ -408,10 +492,26 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                            String configSection,
                                                            String artifactStr,
                                                            String methodStr) {
-        return invoker.invoke(task.artifact(),
-                              task.methodName(),
-                              Unit.unit())
-                      .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered"));
+        var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
+
+        if (!manager.tryClaim(key)) {
+            return new TriggerConflict(configSection, artifactStr, methodStr).promise();
+        }
+
+        var triggered = new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered");
+        var completion = invoker.invokeAwaitingCompletion(task.artifact(),
+                                                          task.methodName(),
+                                                          Unit.unit(),
+                                                          manager.completionBound());
+        // The claim is the scheduler's in-flight guard: it is held until the callee COMPLETES (success, failure, a departed
+        // node, or the manager's explicit completion bound), not until the request was enqueued, so a scheduled fire cannot
+        // overlap a manual run of a remote callee (#1930).
+        completion.onResultRun(() -> manager.release(key));
+        // A callee hosted here is awaited to its end, as before. A remote one answers "triggered" once dispatched (the claim
+        // is still held), unless dispatch itself already failed.
+        return invoker.hasLocalSlice(task.artifact()) || completion.isResolved()
+               ? completion.map(_ -> triggered)
+               : Promise.success(triggered);
     }
 
     private Promise<ScheduledTask> findTask(String configSection, String artifactStr, String methodStr) {
@@ -434,25 +534,51 @@ public final class ScheduledTaskRoutes implements RouteSource {
                       .equals(methodStr);
     }
 
+    /// #680/#841: an ALL-mode task's automatic fires write per-node `ScheduledTaskStateKey` rows
+    /// (one per node running its own independent timer), so `stateRegistry` — a single-row,
+    /// per-JVM mirror synced only for the unscoped key — reports zero or stale totals for such a
+    /// task. Reading it unconditionally here was the #680 defect surviving on this endpoint after
+    /// the per-node key fix (which only corrected the WRITE side, in `ScheduledTaskManager`). ALL-
+    /// mode tasks aggregate across the cluster's per-node rows instead, via
+    /// [#aggregateAllModeState] (same `KVStore.forEach` idiom as [#buildExecutionsByNode]);
+    /// SINGLE-mode tasks keep the cheap `stateRegistry` read (one writer, already correct).
     private TaskSummary toSummary(ScheduledTask task) {
+        if (task.executionMode() == ExecutionMode.ALL) {
+            return aggregateAllModeState(task).fold(() -> buildSummary(task, 0, 0, 0, 0, "", 0, 0),
+                                                    state -> buildSummary(task,
+                                                                          state.lastExecutionAt(),
+                                                                          state.nextFireAt(),
+                                                                          state.consecutiveFailures(),
+                                                                          state.totalExecutions(),
+                                                                          state.lastOutcome(),
+                                                                          state.completionTimeouts(),
+                                                                          state.lateResolutions()));
+        }
+
         var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
                                                                    task.artifact(),
                                                                    task.methodName());
 
         return stateRegistry.stateFor(stateKey)
-                            .fold(() -> buildSummary(task, 0, 0, 0, 0),
+                            .fold(() -> buildSummary(task, 0, 0, 0, 0, "", 0, 0),
                                   state -> buildSummary(task,
                                                         state.lastExecutionAt(),
                                                         state.nextFireAt(),
                                                         state.consecutiveFailures(),
-                                                        state.totalExecutions()));
+                                                        state.totalExecutions(),
+                                                        state.lastOutcome(),
+                                                        state.completionTimeouts(),
+                                                        state.lateResolutions()));
     }
 
     private static TaskSummary buildSummary(ScheduledTask task,
                                             long lastExecutionAt,
                                             long nextFireAt,
                                             int consecutiveFailures,
-                                            int totalExecutions) {
+                                            int totalExecutions,
+                                            String lastOutcome,
+                                            int completionTimeouts,
+                                            int lateResolutions) {
         return new TaskSummary(task.configSection(),
                                task.artifact().asString(),
                                task.methodName().name(),
@@ -464,7 +590,10 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                lastExecutionAt,
                                nextFireAt,
                                consecutiveFailures,
-                               totalExecutions);
+                               totalExecutions,
+                               lastOutcome,
+                               completionTimeouts,
+                               lateResolutions);
     }
 
     private Promise<TaskStateResponse> getTaskState(String configSection, String artifactStr, String methodStr) {
@@ -474,36 +603,129 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                                                   methodStr));
     }
 
+    /// Same #680/#841 gap as [#toSummary], on the single-task `/state` surface: an ALL-mode task
+    /// aggregates its per-node rows via [#aggregateAllModeState] instead of the single-row
+    /// `stateRegistry` mirror. `lastFailureMessage`/`updatedAt` are not naturally summable across
+    /// nodes — [#combineNodeStates] takes them from whichever per-node row is freshest by
+    /// `updatedAt`, the same tie-break the combine uses for every non-additive field.
     private Promise<TaskStateResponse> buildStateResponse(ScheduledTask task,
                                                           String configSection,
                                                           String artifactStr,
                                                           String methodStr) {
+        if (task.executionMode() == ExecutionMode.ALL) {
+            return Promise.success(aggregateAllModeState(task).fold(() -> emptyStateResponse(configSection,
+                                                                                             artifactStr,
+                                                                                             methodStr),
+                                                                    state -> toStateResponse(configSection,
+                                                                                             artifactStr,
+                                                                                             methodStr,
+                                                                                             state)));
+        }
+
         var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
                                                                    task.artifact(),
                                                                    task.methodName());
 
         return stateRegistry.stateFor(stateKey)
                             .fold(() -> Promise.success(emptyStateResponse(configSection, artifactStr, methodStr)),
-                                  state -> Promise.success(new TaskStateResponse(configSection,
-                                                                                 artifactStr,
-                                                                                 methodStr,
-                                                                                 state.lastExecutionAt(),
-                                                                                 state.nextFireAt(),
-                                                                                 state.consecutiveFailures(),
-                                                                                 state.totalExecutions(),
-                                                                                 state.lastFailureMessage(),
-                                                                                 state.updatedAt())));
+                                  state -> Promise.success(toStateResponse(configSection, artifactStr, methodStr, state)));
+    }
+
+    private static TaskStateResponse toStateResponse(String configSection,
+                                                     String artifactStr,
+                                                     String methodStr,
+                                                     ScheduledTaskStateValue state) {
+        return new TaskStateResponse(configSection,
+                                     artifactStr,
+                                     methodStr,
+                                     state.lastExecutionAt(),
+                                     state.nextFireAt(),
+                                     state.consecutiveFailures(),
+                                     state.totalExecutions(),
+                                     state.lastFailureMessage(),
+                                     state.updatedAt(),
+                                     state.skippedOverlaps(),
+                                     state.lastOutcome(),
+                                     state.completionTimeouts(),
+                                     state.lateResolutions());
     }
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {
-        return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0);
+        return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0, 0, "", 0, 0);
     }
 
-    /// P-NEW-H (2026-05-21): Surfaces per-node execution attribution for a scheduled task.
-    /// RC1 implementation uses the global state's `registeredBy` node as the sole executor —
-    /// per-node counter aggregation requires schema changes to `ScheduledTaskStateValue`
-    /// tracked as a follow-up. Tests using ALL-mode tasks must assert on the global
-    /// `totalExecutions` rather than per-node attribution until that is implemented.
+    /// Cluster-wide combine of an ALL-mode task's per-node [ScheduledTaskStateValue] rows, feeding
+    /// [#toSummary] and [#buildStateResponse] the same 7-field shape a single global row used to
+    /// carry — so both downstream call sites are unchanged past this seam. Not every field is
+    /// summable: `totalExecutions`/`skippedOverlaps` are (every node's count is real activity, #680
+    /// spec's explicit "totals summed"); `consecutiveFailures` takes the MAX across nodes (surfaces
+    /// the worst-case node rather than hiding it behind a healthier one); `lastExecutionAt` takes
+    /// the MAX (freshest activity, cluster-wide); `nextFireAt` takes the MIN (the soonest upcoming
+    /// fire across the independent per-node timers is the next cluster-wide activity an operator
+    /// would wait for); `lastFailureMessage`/`updatedAt` are taken together from whichever row has
+    /// the highest `updatedAt`, so the message always describes the state it is paired with rather
+    /// than an arbitrary older row's text next to a newer timestamp. [design intent — unverified
+    /// beyond the field-level reasoning above; no review ruling pins these five choices specifically,
+    /// only the two additive fields].
+    private static ScheduledTaskStateValue combineNodeStates(ScheduledTaskStateValue a, ScheduledTaskStateValue b) {
+        var latest = a.updatedAt() >= b.updatedAt()
+                     ? a
+                     : b;
+
+        return new ScheduledTaskStateValue(Math.max(a.lastExecutionAt(), b.lastExecutionAt()),
+                                           Math.min(a.nextFireAt(), b.nextFireAt()),
+                                           Math.max(a.consecutiveFailures(), b.consecutiveFailures()),
+                                           a.totalExecutions() + b.totalExecutions(),
+                                           latest.lastFailureMessage(),
+                                           latest.updatedAt(),
+                                           a.skippedOverlaps() + b.skippedOverlaps(),
+                                           latest.lastOutcome(),
+                                           latest.fireSeq(),
+                                           latest.newestFireAt(),
+                                           a.completionTimeouts() + b.completionTimeouts(),
+                                           a.lateResolutions() + b.lateResolutions());
+    }
+
+    /// Scans the live KV store for every per-node row belonging to `task` (same
+    /// `matchesTaskIdentity` filter [#buildExecutionsByNode] uses) and folds them into one
+    /// [ScheduledTaskStateValue] via [#combineNodeStates]. `Option.none()` means no per-node row
+    /// exists yet for this ALL-mode task — no execution since the #841 upgrade, or none ever — in
+    /// which case the caller reports zero/empty, exactly as a brand-new task would. The pre-#841
+    /// global key is never read here: it is excluded by [#matchesTaskIdentity]'s own scan surface
+    /// (it walks `ScheduledTaskStateKey` rows and [#collectNodeState] additionally requires
+    /// `key.node().isPresent()`), so a stale global row can never be misread as a node's row.
+    private Option<ScheduledTaskStateValue> aggregateAllModeState(ScheduledTask task) {
+        var perNodeStates = new ArrayList<ScheduledTaskStateValue>();
+
+        nodeSupplier.get()
+                    .kvStore()
+                    .forEach(ScheduledTaskStateKey.class,
+                             ScheduledTaskStateValue.class,
+                             (key, value) -> collectNodeState(perNodeStates, task, key, value));
+
+        return perNodeStates.stream()
+                            .reduce(ScheduledTaskRoutes::combineNodeStates)
+                            .map(Option::some)
+                            .orElseGet(Option::none);
+    }
+
+    private static void collectNodeState(List<ScheduledTaskStateValue> states,
+                                         ScheduledTask task,
+                                         ScheduledTaskStateKey key,
+                                         ScheduledTaskStateValue value) {
+        if (matchesTaskIdentity(key, task) && key.node().isPresent()) {
+            states.add(value);
+        }
+    }
+
+    /// #841: surfaces per-node execution attribution for an ALL-mode scheduled task, one row per
+    /// node that has written a per-node `ScheduledTaskStateKey` for this task (see that key's
+    /// javadoc for the wire-format rationale). Aggregates by scanning the live KV-store — the same
+    /// `KVStore.forEach` idiom [#selectHostingHint] uses — rather than the single-row
+    /// `ScheduledTaskStateRegistry` mirror, because the registry is keyed 1:1 and cannot represent
+    /// several nodes' rows for the same task. A SINGLE-mode task, or an ALL-mode task with no
+    /// per-node row yet (pre-#841 global-shaped state, or simply no execution since upgrade),
+    /// reports an empty list here — its counters are visible instead via `/state`'s global key.
     private Promise<ScheduledTaskExecutionsByNodeResponse> getExecutionsByNode(String configSection,
                                                                                String artifactStr,
                                                                                String methodStr) {
@@ -517,22 +739,45 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                         String configSection,
                                                                         String artifactStr,
                                                                         String methodStr) {
-        var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
-                                                                   task.artifact(),
-                                                                   task.methodName());
+        var executions = new ArrayList<ScheduledTaskNodeExecution>();
 
-        return stateRegistry.stateFor(stateKey)
-                            .fold(() -> new ScheduledTaskExecutionsByNodeResponse(configSection,
-                                                                                  artifactStr,
-                                                                                  methodStr,
-                                                                                  List.of()),
-                                  state -> new ScheduledTaskExecutionsByNodeResponse(configSection,
-                                                                                     artifactStr,
-                                                                                     methodStr,
-                                                                                     List.of(new ScheduledTaskNodeExecution(task.registeredBy()
-                                                                                                                                .id(),
-                                                                                                                            state.totalExecutions(),
-                                                                                                                            state.lastExecutionAt()))));
+        nodeSupplier.get()
+                    .kvStore()
+                    .forEach(ScheduledTaskStateKey.class,
+                             ScheduledTaskStateValue.class,
+                             (key, value) -> collectNodeExecution(executions, task, key, value));
+        executions.sort(Comparator.comparing(ScheduledTaskNodeExecution::nodeId));
+
+        return new ScheduledTaskExecutionsByNodeResponse(configSection, artifactStr, methodStr, List.copyOf(executions));
+    }
+
+    /// Two filters, both required: `matchesTaskIdentity` excludes rows belonging to a DIFFERENT
+    /// task the scan also walks past (the KV-store holds every scheduled task's state, not just
+    /// this one); `key.node()` being present excludes a same-task GLOBAL row (pre-#841 shape, or a
+    /// SINGLE-mode task's row) — that shape can never be node-scoped (see
+    /// `ScheduledTaskStateKey`'s javadoc), so it is filtered here rather than misread as a node's
+    /// execution count.
+    private static void collectNodeExecution(List<ScheduledTaskNodeExecution> executions,
+                                             ScheduledTask task,
+                                             ScheduledTaskStateKey key,
+                                             ScheduledTaskStateValue value) {
+        if (!matchesTaskIdentity(key, task)) {
+            return;
+        }
+
+        key.node()
+           .onPresent(nodeId -> executions.add(new ScheduledTaskNodeExecution(nodeId.id(),
+                                                                              value.totalExecutions(),
+                                                                              value.lastExecutionAt())));
+    }
+
+    private static boolean matchesTaskIdentity(ScheduledTaskStateKey key, ScheduledTask task) {
+        return key.configSection()
+                  .equals(task.configSection())
+               && key.artifact()
+                     .equals(task.artifact())
+               && key.methodName()
+                     .equals(task.methodName());
     }
 
     private sealed interface InjectError extends Cause permits InjectError.General, InjectError.SliceNotLocal {
@@ -569,6 +814,27 @@ public final class ScheduledTaskRoutes implements RouteSource {
                 return "scheduled-tasks inject for artifact=" + artifact
                      + " must run on a node hosting the slice; retry against node " + hostingNodeId;
             }
+        }
+    }
+
+    /// 409 — `triggerTask` (POST .../trigger) found the task's `ScheduledTaskManager.tryClaim`
+    /// already held: an automatic fire (fixed-rate tick or cron) is currently in flight for this
+    /// task, or another manual trigger call raced ahead of this one and claimed first. Refusing
+    /// the manual fire and reporting it honestly is preferable to letting it run concurrently with
+    /// the in-progress execution and silently double-counting `totalExecutions` (#273 review, item 1).
+    private record TriggerConflict(String configSection, String artifact, String method) implements Cause, HttpStatusAware {
+        @Override
+        public String message() {
+            return "Scheduled task " + configSection
+                 + "/" + artifact
+                 + "." + method
+                 + " has a run already in flight — refusing the manual trigger to avoid a concurrent"
+                 + " double execution; retry once the in-progress run completes";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 }

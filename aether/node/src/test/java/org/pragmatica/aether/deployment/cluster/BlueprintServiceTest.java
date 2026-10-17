@@ -8,30 +8,102 @@ package org.pragmatica.aether.deployment.cluster;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.api.routes.ProblemResponses;
+import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.controller.ControlLoop;
+import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
+import org.pragmatica.aether.http.AppHttpServer;
+import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
+import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
+import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
+import org.pragmatica.aether.metrics.deployment.DeploymentMetricsCollector;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.node.StorageFactory;
+import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.slice.SliceManifest;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
+import org.pragmatica.aether.slice.blueprint.SliceSpecError;
+import org.pragmatica.aether.slice.delegation.TaskGroup;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.aether.slice.stream.StreamNamespacesService;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.StreamReadRouter;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.ttm.TTMManager;
+import org.pragmatica.aether.update.AbTestManager;
+import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.StateMachine.Batch;
+import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.DHTNode;
+import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.Headers;
+import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.QueryParams;
+import org.pragmatica.http.routing.RequestContext;
+import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.messaging.Message;
+import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 
+import io.netty.handler.codec.http.HttpHeaders;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+import java.util.jar.Attributes;
+import java.util.jar.JarOutputStream;
+import java.util.jar.Manifest;
+import java.util.zip.ZipEntry;
 
+import static org.pragmatica.aether.api.ManagementApiResponses.BlueprintStatusResponse;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
@@ -51,6 +123,91 @@ class BlueprintServiceTest {
         repository = artifact -> Causes.cause("Repository not used in tests").promise();
 
         service = BlueprintService.blueprintService(cluster, store, repository);
+    }
+
+    /// #1564 / #1617 (R10): a deploy warning is raised as a `deploy-warning` operator warning, so it reaches the cluster
+    /// event log as well as the WARN log and the publish response. Drives the real `publish(dsl)` over a slice jar whose
+    /// `resources.toml` declares a stream with an explicit replication factor of 1 — the LOUD warning.
+    @Nested
+    class DeployWarningEvents {
+        private static final Artifact WARN_SLICE = Artifact.artifact("org.example:warn-slice:1.0.0").unwrap();
+
+        @TempDir
+        Path tempDir;
+
+        @Test
+        void publish_withADeployWarning_raisesItAsADeployWarningOperatorWarning() throws IOException {
+            var warnings = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+            var liveStore = new TestKVStore();
+            var liveCluster = new TestClusterNode();
+
+            liveCluster.setStore(liveStore);
+            var sliceJar = writeSliceJarDeclaringFactorOne();
+            Repository liveRepository = artifact -> WARN_SLICE.equals(artifact)
+                                                    ? Result.lift(Causes::fromThrowable, () -> sliceJar.toUri().toURL())
+                                                            .flatMap(url -> Location.location(artifact, url))
+                                                            .async()
+                                                    : ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
+            var liveService = BlueprintService.blueprintService(liveCluster,
+                                                                liveStore,
+                                                                liveRepository,
+                                                                org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warnings::add));
+            var dsl = """
+                    id = "org.example:warn-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:warn-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            var published = liveService.publish(dsl)
+                                       .await()
+                                       .onFailure(cause -> fail("Expected DSL publish to succeed, got: " + cause.message()))
+                                       .unwrap();
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+            // The sink hands off asynchronously: wait for as many events as the answer carries, bounded.
+            while (warnings.size() < published.warnings().size() && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertThat(published.warnings()).as("the publish answer carries the warning").isNotEmpty();
+            assertThat(warnings).as("every deploy warning is raised as an operator warning")
+                                .hasSize(published.warnings().size());
+            assertThat(warnings).allSatisfy(warning -> assertThat(warning.subject()).isEqualTo("org.example:warn-app:1.0.0"));
+            // The LOUD warning is CRITICAL at deploy as at activation (v1735); the others are deploy-warning.
+            assertThat(warnings).filteredOn(warning -> warning.message().contains("replication-factor-below-three"))
+                                .singleElement()
+                                .satisfies(warning -> assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE));
+            assertThat(warnings).filteredOn(warning -> !warning.message().contains("replication-factor-below-three"))
+                                .isNotEmpty()
+                                .allSatisfy(warning -> assertThat(warning.code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.DEPLOY_WARNING));
+        }
+
+        private Path writeSliceJarDeclaringFactorOne() throws IOException {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, WARN_SLICE.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, "org.example.warn.WarnSlice");
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve("warn-slice-1.0.0.jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/warn/"));
+                out.closeEntry();
+                out.putNextEntry(new ZipEntry("META-INF/resources.toml"));
+                out.write("""
+                          [streams.orders]
+                          replication_factor = 1
+                          """.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+
+            return target;
+        }
     }
 
     @Nested
@@ -190,7 +347,7 @@ class BlueprintServiceTest {
 
                     [[slices]]
                     artifact = "org.example:user-service:1.0.0"
-                    instances = 2
+                    instances = 3
 
                     [[slices]]
                     artifact = "org.example:order-service:1.0.0"
@@ -219,7 +376,7 @@ class BlueprintServiceTest {
             var dsl = """
                     [[slices]]
                     artifact = "org.example:slice:1.0.0"
-                    instances = 1
+                    instances = 3
                     """;
 
             service.validate(dsl)
@@ -234,7 +391,7 @@ class BlueprintServiceTest {
 
                     [[slices]]
                     artifact = "invalid-artifact"
-                    instances = 1
+                    instances = 3
                     """;
 
             service.validate(dsl)
@@ -243,12 +400,810 @@ class BlueprintServiceTest {
         }
     }
 
+    /// #759 review round 3, BLOCKING 1: drives the REAL live path end to end over the harness above —
+    /// real `BlueprintService.publish(dsl)`/`get`/`outcome` over [TestClusterNode]/[TestKVStore], and
+    /// the real `SliceRoutes` status handler over the same service — instead of a stubbed
+    /// `BlueprintService`. `BlueprintStatusAggregationTest#statusRoute_redeployAfterPriorFailure_outcomeCleared_reportsInProgressNotFailed`
+    /// hardcodes `outcome()` to `Option.none()` from the start, so it is insensitive to reverting
+    /// #818's clearing Remove — only a real `publish()` against a live store can pin that. Needs its
+    /// own [Repository] resolving a real on-disk slice jar, because `publish(String)` — unlike the
+    /// `get`/`list`/`delete` tests above — runs `BlueprintExpander.expand` against the outer class's
+    /// always-failing fixture.
+    @Nested
+    class RedeployAfterPriorFailureTests {
+        private static final BlueprintId REDEPLOY_ID = BlueprintId.blueprintId("org.example:redeploy-app:1.0.0").unwrap();
+        private static final Artifact REDEPLOY_SLICE = Artifact.artifact("org.example:redeploy-slice:1.0.0").unwrap();
+        private static final String REDEPLOY_SLICE_CLASS = "org.example.redeploy.RedeploySlice";
+        private static final NodeId NODE_A = NodeId.nodeId("redeploy-node-a").unwrap();
+
+        @TempDir
+        Path tempDir;
+
+        private TestClusterNode liveCluster;
+        private TestKVStore liveStore;
+        private BlueprintService liveService;
+        private Repository liveRepository;
+
+        @BeforeEach
+        void setUpLivePublish() throws IOException {
+            liveStore = new TestKVStore();
+            liveCluster = new TestClusterNode();
+            liveCluster.setStore(liveStore);
+
+            var sliceJar = writeRedeploySliceJar();
+            liveRepository = artifact -> REDEPLOY_SLICE.equals(artifact)
+                                                    ? sliceLocation(sliceJar, artifact)
+                                                    : ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
+
+            liveService = BlueprintService.blueprintService(liveCluster, liveStore, liveRepository);
+        }
+
+        /// Leg (a): must go RED if #818's `Remove` of the stale outcome (`BlueprintService.java`'s
+        /// `storeBlueprintWithKey`/`buildAllCommands`) is reverted — without it, the FAILED outcome
+        /// seeded below survives the republish and the route reports PARTIAL instead of IN_PROGRESS.
+        @Test
+        void statusRoute_publishAfterPriorFailure_outcomeCleared_reportsInProgressNotFailed() {
+            seedFailedOutcome(liveStore, REDEPLOY_ID);
+
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            liveService.publish(dsl)
+                       .await()
+                       .onFailure(cause -> fail("Expected DSL publish to succeed, got: " + cause.message()));
+
+            assertThat(liveService.outcome(REDEPLOY_ID)
+                                  .map(AetherValue.DeploymentOutcomeValue::status))
+                    .as("#818: republish of a previously FAILED id must not carry the stale outcome "
+                        + "forward. #963 changed HOW — the same consensus batch now Puts IN_PROGRESS "
+                        + "instead of Removing, so the guarantee is met by replacement rather than by "
+                        + "absence, and 'this attempt started' becomes a positive fact. Asserting the "
+                        + "STATUS rather than `isPresent` keeps this discriminating: after #963 every "
+                        + "publish leaves a record, so presence alone no longer distinguishes a fresh "
+                        + "attempt from a surviving stale terminal")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeStatus.IN_PROGRESS));
+
+            var deploymentMap = DeploymentMap.deploymentMap();
+            deploymentMap.onNodeArtifactPut(nodeArtifactPut(NODE_A, REDEPLOY_SLICE, SliceState.ACTIVE));
+
+            var response = liveStatusResponse(deploymentMap);
+
+            assertThat(response.overallStatus())
+                    .as("a live in-flight redeploy must report its own progress, never the prior "
+                        + "attempt's cleared terminal outcome")
+                    .isEqualTo("IN_PROGRESS");
+        }
+
+        /// Leg (b): same seeded stale FAILED outcome, no republish. Must go RED if
+        /// `SliceRoutes.routeBlueprintStatusByOutcome`'s outcome-first check is reverted.
+        @Test
+        void statusRoute_noRepublishAfterPriorFailure_reportsFailed() {
+            seedFailedOutcome(liveStore, REDEPLOY_ID);
+
+            var response = liveStatusResponse(DeploymentMap.deploymentMap());
+
+            assertThat(response.overallStatus())
+                    .as("with no republish, the route must surface the terminal failure rather than a "
+                        + "bare 404 or a fabricated live status")
+                    .isEqualTo("FAILED");
+        }
+
+        /// #922/#930 — THE INVARIANT THE APPLY MARKER RESTS ON, pinned against the BATCH.
+        ///
+        /// `ClusterDeploymentState.Active.deploymentApplyOutstanding` decides whether retry
+        /// exhaustion condemns an artifact, and it reads exactly this pair: `AppBlueprintKey(id)`
+        /// present with no `DeploymentOutcomeKey(id)` record. That is only a usable marker because
+        /// #759 puts both writes into ONE consensus batch — one `ClusterNode.apply` call becomes one
+        /// `Batch` (`RabiaEngine.prepareBatch`) decided once and handed to `KVStore.process` as a
+        /// unit, so no replica applies one without the other and no crash can split them.
+        ///
+        /// The test above pins that the stale outcome is CLEARED. It stays green if the `Remove` is
+        /// moved into a second `cluster.apply`, because the end state is identical — and that is
+        /// precisely the regression that would silently un-earn the marker. This one pins the
+        /// GROUPING: it fails if the two writes stop sharing a batch, whatever the end state.
+        ///
+        /// **Bound stated honestly.** This drives `storeBlueprintWithKey` (the `publish(dsl)` path)
+        /// and, below, `removeFromStore` (the `delete` path). The third site,
+        /// `buildAllCommands` (`publishFromArtifact`), is NOT covered here — reaching it needs a
+        /// blueprint descriptor inside a real artifact, which this harness does not build. Its
+        /// grouping is identical by inspection (`commands.add(buildBlueprintPutCommand(...))` then
+        /// `commands.add(new Remove<>(...))` into the one list handed to a single `apply`), but that
+        /// is reading, not evidence, and it is recorded as a gap rather than claimed as a pass.
+        @Test
+        void publish_writesBlueprintAndClearsStaleOutcome_inOneConsensusBatch() {
+            seedFailedOutcome(liveStore, REDEPLOY_ID);
+            liveCluster.appliedBatches().clear();
+
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            liveService.publish(dsl)
+                       .await()
+                       .onFailure(cause -> fail("Expected DSL publish to succeed, got: " + cause.message()));
+
+            var blueprintKey = AetherKey.AppBlueprintKey.appBlueprintKey(REDEPLOY_ID);
+            var outcomeKey = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID);
+
+            assertThat(batchesTouching(outcomeKey))
+                    .as("instrument check: the outcome-clearing Remove must actually be issued, or the "
+                        + "grouping assertion below would be vacuously satisfiable by its absence")
+                    .isNotEmpty();
+            assertThat(batchesContainingBoth(blueprintKey, outcomeKey))
+                    .as("#759 invariant: the blueprint write and the outcome write must travel in ONE "
+                        + "consensus batch. Split across two applies, a reader between them sees a "
+                        + "blueprint present WITH the previous attempt's terminal record — and "
+                        + "deploymentApplyOutstanding would then be reading a state the mechanism "
+                        + "is supposed to make unobservable")
+                    .hasSize(1);
+            // #963 F2 — assert the COMMAND, not merely the key. Keying alone cannot distinguish the
+            // #963 Put of IN_PROGRESS from the pre-#963 Remove, so reverting the publish paths to a
+            // Remove left this test green: `confirmOutcomeStart` then writes the record on a LATER
+            // apply, repairing the end state while silently losing #759's same-batch property. The
+            // retry makes the system robust in a way that hid the breakage from the mutation that
+            // used to catch it, and this line is what restores the discrimination.
+            assertThat(batchesContainingBoth(blueprintKey, outcomeKey).getFirst()
+                                                                      .stream()
+                                                                      .filter(command -> outcomeKey.equals(command.key()))
+                                                                      .toList())
+                    .as("the outcome write in that batch must be a Put of the apply-start record — a "
+                        + "Remove satisfies the key-level assertion above while leaving the record to "
+                        + "be written later, outside the batch #759 guarantees")
+                    .singleElement()
+                    .isInstanceOf(KVCommand.Put.class);
+        }
+
+        /// The same grouping on the deletion path (`removeFromStore`). A blueprint whose
+        /// `AppBlueprintKey` is gone while its outcome record lingers would be attributable to
+        /// nothing and is exactly the orphan #759 BLOCKING 2 removed.
+        @Test
+        void delete_removesBlueprintAndItsOutcome_inOneConsensusBatch() {
+            seedFailedOutcome(liveStore, REDEPLOY_ID);
+            liveCluster.appliedBatches().clear();
+
+            liveService.delete(REDEPLOY_ID)
+                       .await()
+                       .onFailure(cause -> fail("Expected delete to succeed, got: " + cause.message()));
+
+            var blueprintKey = AetherKey.AppBlueprintKey.appBlueprintKey(REDEPLOY_ID);
+            var outcomeKey = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID);
+
+            assertThat(batchesTouching(blueprintKey))
+                    .as("instrument check: delete must issue a blueprint Remove at all")
+                    .isNotEmpty();
+            assertThat(batchesContainingBoth(blueprintKey, outcomeKey))
+                    .as("#759 BLOCKING 2: a deleted blueprint must not leave its outcome record "
+                        + "behind, and the two removals must land together")
+                    .hasSize(1);
+        }
+
+        /// #972 — every publish names its attempt, once, in both records the gate attributes by: the
+        /// blueprint and its apply-start record carry the SAME attempt id, and a republish gets a new one.
+        @Test
+        void publish_stampsOneFreshAttemptId_intoTheBlueprintAndItsApplyStartRecord() {
+            publishRedeployApp();
+            var firstAttempt = committedAttempt();
+
+            assertThat(firstAttempt).as("a publish must stamp an attempt id").isNotEmpty();
+            assertThat(liveService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .as("the apply-start record names the same attempt as the blueprint it starts")
+                    .isEqualTo(Option.some(firstAttempt));
+
+            publishRedeployApp();
+
+            assertThat(committedAttempt())
+                    .as("a republish is a new attempt")
+                    .isNotEqualTo(firstAttempt);
+            assertThat(liveService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .isEqualTo(Option.some(committedAttempt()));
+        }
+
+        /// #972 — the worst case the ticket names: a live blueprint whose outcome record still holds the
+        /// FAILED of an EARLIER attempt (its apply-start write lost the race to that terminal). The route
+        /// must report the live deployment, never the earlier attempt's failure against it.
+        @Test
+        void statusRoute_aTerminalForAnEarlierAttempt_isNotReportedAgainstTheLiveBlueprint() {
+            publishRedeployApp();
+            var committed = liveService.outcome(REDEPLOY_ID).unwrap();
+
+            liveStore.processCommand(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID),
+                                                         AetherValue.DeploymentOutcomeValue.failed(List.of(REDEPLOY_SLICE.asString()),
+                                                                                                   "earlier attempt failed",
+                                                                                                   1L,
+                                                                                                   committed.outcomeVersion() + 1,
+                                                                                                   "an-earlier-attempt")));
+            assertThat(liveService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::status))
+                    .as("precondition: the earlier attempt's FAILED holds the record")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeStatus.FAILED));
+
+            var deploymentMap = DeploymentMap.deploymentMap();
+            deploymentMap.onNodeArtifactPut(nodeArtifactPut(NODE_A, REDEPLOY_SLICE, SliceState.ACTIVE));
+
+            assertThat(liveStatusResponse(deploymentMap).overallStatus())
+                    .as("the live deployment's own progress, not the earlier attempt's FAILED")
+                    .isEqualTo("IN_PROGRESS");
+        }
+
+        /// #972 — every apply-start write of a publish loses to a terminal for an EARLIER attempt, the
+        /// exhaustion `confirmOutcomeStart` used to fail the publish on. The blueprint is committed and
+        /// the earlier terminal no longer attributes to it, so the publish succeeds rather than telling the
+        /// caller its live blueprint failed to publish.
+        @Test
+        void publish_whoseApplyStartWritesAllLoseToAnEarlierAttemptsTerminal_stillSucceeds() {
+            var outcomeKey = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID);
+            var racingCluster = new TestClusterNode() {
+                @Override
+                public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+                    Promise<List<R>> applied = super.apply(commands);
+
+                    liveStore.processCommand(new KVCommand.Put<>(outcomeKey,
+                                                                 AetherValue.DeploymentOutcomeValue.succeeded(1L,
+                                                                                                              99L,
+                                                                                                              "an-earlier-attempt")));
+                    return applied;
+                }
+            };
+            racingCluster.setStore(liveStore);
+            var racedService = BlueprintService.blueprintService(racingCluster, liveStore, liveRepository);
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            racedService.publish(dsl)
+                        .await()
+                        .onFailure(cause -> fail("the publish must succeed, got: " + cause.message()));
+
+            assertThat(racedService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .as("precondition: every apply-start write lost — the earlier attempt's terminal holds the record")
+                    .isEqualTo(Option.some("an-earlier-attempt"));
+            assertThat(racedService.get(REDEPLOY_ID).isPresent()).as("the blueprint is committed").isTrue();
+            assertThat(racedService.attributedOutcome(REDEPLOY_ID).isEmpty())
+                    .as("and the earlier attempt's terminal does not attribute to it")
+                    .isTrue();
+        }
+
+        /// #1974 — the apply this publish started settles before the confirmation reads the record (the
+        /// FSM wrote SUCCEEDED for THIS attempt). The retry used to read "not IN_PROGRESS" as "fenced out" and
+        /// wrote IN_PROGRESS over the real outcome.
+        @Test
+        void publish_whoseOwnApplyAlreadySettled_doesNotOverwriteItsTerminalWithInProgress() {
+            var racedService = publishRacingTheFsm(attempt -> AetherValue.DeploymentOutcomeValue.succeeded(2L, 2L, attempt),
+                                                   false);
+
+            assertThat(racedService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::status))
+                    .as("the apply's own SUCCEEDED stands, not an IN_PROGRESS written over it")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeStatus.SUCCEEDED));
+            assertThat(racedService.attributedOutcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::status))
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeStatus.SUCCEEDED));
+        }
+
+        /// #1974 — a newer publish of the same id committed before the confirmation read, and its apply
+        /// already holds a terminal. That record is not this publish's to replace.
+        @Test
+        void publish_supersededByANewerPublish_doesNotOverwriteTheNewerAttemptsTerminal() {
+            var racedService = publishRacingTheFsm(attempt -> AetherValue.DeploymentOutcomeValue.failed(List.of(REDEPLOY_SLICE.asString()),
+                                                                                                          "newer attempt failed",
+                                                                                                          2L,
+                                                                                                          2L,
+                                                                                                          "a-newer-attempt"),
+                                                   true);
+
+            assertThat(racedService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .as("the newer attempt's FAILED stands")
+                    .isEqualTo(Option.some("a-newer-attempt"));
+        }
+
+        /// #1974 — an IN_PROGRESS record is an apply-start that landed, whichever publish wrote it: a competing
+        /// publish of the id writes an identical one, so replacing it gains nothing. Unchanged by the attempt binding.
+        @Test
+        void publish_whoseApplyStartLostToAnotherInProgressRecord_isNotRetried() {
+            var racedService = publishRacingTheFsm(attempt -> AetherValue.DeploymentOutcomeValue.inProgress(2L, 2L, "a-competing-attempt"),
+                                                   false);
+
+            assertThat(racedService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .isEqualTo(Option.some("a-competing-attempt"));
+        }
+
+        /// Publishes through a cluster that, right after the publish batch lands, commits what a concurrent
+        /// writer would: `terminalFor` applied to the attempt the record should close, and — when `newerPublish`
+        /// — a blueprint of a different attempt, as a second publish of the id would have left.
+        private BlueprintService publishRacingTheFsm(java.util.function.Function<String, AetherValue.DeploymentOutcomeValue> terminalFor,
+                                                     boolean newerPublish) {
+            var outcomeKey = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID);
+            var blueprintKey = AetherKey.AppBlueprintKey.appBlueprintKey(REDEPLOY_ID);
+            var raced = new boolean[]{false};
+            var racingCluster = new TestClusterNode() {
+                @Override
+                public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+                    Promise<List<R>> applied = super.apply(commands);
+
+                    if (!raced[0] && commands.stream().anyMatch(command -> blueprintKey.equals(command.key()))) {
+                        raced[0] = true;
+                        var published = (AetherValue.AppBlueprintValue) liveStore.get(blueprintKey).unwrap();
+
+                        if (newerPublish) {
+                            liveStore.processCommand(new KVCommand.Put<>(blueprintKey,
+                                                                         AetherValue.AppBlueprintValue.appBlueprintValue(published.blueprint(),
+                                                                                                                         false,
+                                                                                                                         "a-newer-attempt")));
+                        }
+                        liveStore.processCommand(new KVCommand.Put<>(outcomeKey, terminalFor.apply(published.attemptId())));
+                    }
+                    return applied;
+                }
+            };
+            racingCluster.setStore(liveStore);
+            var racedService = BlueprintService.blueprintService(racingCluster, liveStore, liveRepository);
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            racedService.publish(dsl)
+                        .await()
+                        .onFailure(cause -> fail("the publish must succeed, got: " + cause.message()));
+
+            return racedService;
+        }
+
+        /// #972 — the ARTIFACT publish path (`buildAllCommands`) stamps its attempt too: the blueprint it commits and
+        /// its apply-start record carry the same id. [#publish_stampsOneFreshAttemptId_intoTheBlueprintAndItsApplyStartRecord]
+        /// drives only the DSL path.
+        @Test
+        void publishFromArtifact_stampsOneAttemptId_intoTheBlueprintAndItsApplyStartRecord() throws IOException {
+            var blueprintArtifact = Artifact.artifact("org.example:redeploy-blueprint:1.0.0").unwrap();
+            var blueprintJar = tempDir.resolve("redeploy-blueprint-1.0.0.jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(blueprintJar))) {
+                out.putNextEntry(new ZipEntry("META-INF/blueprint.toml"));
+                out.write("""
+                          id = "org.example:redeploy-app:1.0.0"
+
+                          [[slices]]
+                          artifact = "org.example:redeploy-slice:1.0.0"
+                          instances = 3
+                          """.getBytes(StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+            Repository artifactRepository = requested -> requested.equals(blueprintArtifact)
+                                                         ? Result.lift(Causes::fromThrowable, () -> blueprintJar.toUri().toURL())
+                                                                 .flatMap(url -> Location.location(requested, url))
+                                                                 .async()
+                                                         : liveRepository.locate(requested);
+
+            BlueprintService.blueprintService(liveCluster, liveStore, artifactRepository)
+                            .publishFromArtifact(blueprintArtifact.asString())
+                            .await()
+                            .onFailure(cause -> fail("Expected the artifact publish to succeed, got: " + cause.message()));
+
+            assertThat(committedAttempt()).as("the artifact publish must stamp an attempt id").isNotEmpty();
+            assertThat(liveService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .as("the apply-start record names the same attempt as the blueprint it starts")
+                    .isEqualTo(Option.some(committedAttempt()));
+        }
+
+        private void publishRedeployApp() {
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            liveService.publish(dsl)
+                       .await()
+                       .onFailure(cause -> fail("Expected DSL publish to succeed, got: " + cause.message()));
+        }
+
+        private String committedAttempt() {
+            return liveStore.get(AetherKey.AppBlueprintKey.appBlueprintKey(REDEPLOY_ID))
+                            .map(value -> ((AetherValue.AppBlueprintValue) value).attemptId())
+                            .or("");
+        }
+
+        private List<List<KVCommand<AetherKey>>> batchesTouching(AetherKey key) {
+            return liveCluster.appliedBatches()
+                              .stream()
+                              .filter(batch -> batch.stream().anyMatch(command -> key.equals(command.key())))
+                              .toList();
+        }
+
+        private List<List<KVCommand<AetherKey>>> batchesContainingBoth(AetherKey first, AetherKey second) {
+            return liveCluster.appliedBatches()
+                              .stream()
+                              .filter(batch -> batch.stream().anyMatch(command -> first.equals(command.key()))
+                                            && batch.stream().anyMatch(command -> second.equals(command.key())))
+                              .toList();
+        }
+
+        private void seedFailedOutcome(TestKVStore targetStore, BlueprintId id) {
+            targetStore.processCommand(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(id),
+                                                            AetherValue.DeploymentOutcomeValue.failed(List.of(REDEPLOY_SLICE.asString()),
+                                                                                                      "prior attempt failed",
+                                                                                                      1L)));
+        }
+
+        private BlueprintStatusResponse liveStatusResponse(DeploymentMap deploymentMap) {
+            var holder = new AtomicReference<BlueprintStatusResponse>();
+            liveStatusRoute(deploymentMap).handler()
+                                          .handle(new LiveStatusRequestContext(List.of(REDEPLOY_ID.asString())))
+                                          .await()
+                                          .onSuccess(value -> holder.set((BlueprintStatusResponse) value))
+                                          .onFailure(cause -> fail("Status lookup must succeed, got: " + cause.message()));
+            return holder.get();
+        }
+
+        private Route<?> liveStatusRoute(DeploymentMap deploymentMap) {
+            var routes = SliceRoutes.sliceRoutes(() -> new LiveManageableNode(liveService, deploymentMap))
+                                    .routes()
+                                    .filter(candidate -> candidate.name().equals(ManagementRoute.BLUEPRINT_STATUS.name()))
+                                    .toList();
+            return routes.isEmpty() ? fail("BLUEPRINT_STATUS route not registered") : routes.getFirst();
+        }
+
+        private ValuePut<AetherKey.NodeArtifactKey, AetherValue.NodeArtifactValue> nodeArtifactPut(NodeId nodeId, Artifact artifact, SliceState state) {
+            var key = new AetherKey.NodeArtifactKey(nodeId, artifact);
+            var value = AetherValue.NodeArtifactValue.nodeArtifactValue(state);
+            return new ValuePut<>(new KVCommand.Put<>(key, value), Option.none());
+        }
+
+        private Promise<Location> sliceLocation(Path jar, Artifact artifact) {
+            return Result.lift(Causes::fromThrowable, () -> jar.toUri().toURL())
+                         .flatMap(url -> Location.location(artifact, url))
+                         .async();
+        }
+
+        private Path writeRedeploySliceJar() throws IOException {
+            var manifest = new Manifest();
+            var attributes = manifest.getMainAttributes();
+
+            attributes.put(Attributes.Name.MANIFEST_VERSION, "1.0");
+            attributes.putValue(SliceManifest.SLICE_ARTIFACT_ATTR, REDEPLOY_SLICE.asString());
+            attributes.putValue(SliceManifest.SLICE_CLASS_ATTR, REDEPLOY_SLICE_CLASS);
+            attributes.putValue(SliceManifest.ENVELOPE_VERSION_ATTR, "1000");
+
+            var target = tempDir.resolve("redeploy-slice-1.0.0.jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target), manifest)) {
+                out.putNextEntry(new ZipEntry("org/example/redeploy/"));
+                out.closeEntry();
+            }
+
+            return target;
+        }
+
+        /// The status route touches exactly two `ManageableNode` accessors: `blueprintService()` and
+        /// `deploymentMap()`. Every other abstract method is routed through `unsupported`, per the #759
+        /// follow-up rule requiring new tests to be Proxy-free — same pattern as
+        /// `BlueprintStatusAggregationTest`'s `StatusManageableNode`, duplicated here because this test
+        /// lives in a different module/package and no shared test utility exists for this interface.
+        private record LiveManageableNode(BlueprintService blueprintService, DeploymentMap deploymentMap) implements ManageableNode {
+            @Override
+            public NodeId self() { return unsupported("self"); }
+            @Override
+            public KVStore<AetherKey, AetherValue> kvStore() { return unsupported("kvStore"); }
+            @Override
+            public SliceStore sliceStore() { return unsupported("sliceStore"); }
+            @Override
+            public ClusterSyncCollector metricsCollector() { return unsupported("metricsCollector"); }
+            @Override
+            public DeploymentMetricsCollector deploymentMetricsCollector() { return unsupported("deploymentMetricsCollector"); }
+            @Override
+            public ControlLoop controlLoop() { return unsupported("controlLoop"); }
+            @Override
+            public MavenProtocolHandler mavenProtocolHandler() { return unsupported("mavenProtocolHandler"); }
+            @Override
+            public ArtifactStore artifactStore() { return unsupported("artifactStore"); }
+            @Override
+            public TopologyManager topologyManager() { return unsupported("topologyManager"); }
+            @Override
+            public MembershipFsm membershipFsm() { return unsupported("membershipFsm"); }
+            @Override
+            public Epoch currentGenerationEpoch() { return unsupported("currentGenerationEpoch"); }
+            @Override
+            public InvocationMetricsCollector invocationMetrics() { return unsupported("invocationMetrics"); }
+            @Override
+            public DeploymentManager deploymentManager() { return unsupported("deploymentManager"); }
+            @Override
+            public AbTestManager abTestManager() { return unsupported("abTestManager"); }
+            @Override
+            public AppHttpServer appHttpServer() { return unsupported("appHttpServer"); }
+            @Override
+            public HttpRouteRegistry httpRouteRegistry() { return unsupported("httpRouteRegistry"); }
+            @Override
+            public TTMManager ttmManager() { return unsupported("ttmManager"); }
+            @Override
+            public ComprehensiveSnapshotCollector snapshotCollector() { return unsupported("snapshotCollector"); }
+            @Override
+            public ArtifactMetricsCollector artifactMetricsCollector() { return unsupported("artifactMetricsCollector"); }
+            @Override
+            public ClusterEventAggregator eventAggregator() { return unsupported("eventAggregator"); }
+            @Override
+            public StreamPartitionManager streamPartitionManager() { return unsupported("streamPartitionManager"); }
+            @Override
+            public StreamReadRouter streamReadRouter() { return unsupported("streamReadRouter"); }
+            @Override
+            public ConsumerGroupCoordinator consumerGroupCoordinator() { return unsupported("consumerGroupCoordinator"); }
+            @Override
+            public ConsumerGroupRegistry consumerGroupRegistry() { return unsupported("consumerGroupRegistry"); }
+            @Override
+            public StreamNamespacesService streamNamespacesService() { return unsupported("streamNamespacesService"); }
+            @Override
+            public Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver() { return unsupported("taskGroupOwnerResolver"); }
+            @Override
+            public Map<String, StorageFactory.StorageSetup> storageSetups() { return unsupported("storageSetups"); }
+            @Override
+            public Option<ClusterTopologyManager> clusterTopologyManager() { return unsupported("clusterTopologyManager"); }
+            @Override
+            public int observedPeakMembership() { return unsupported("observedPeakMembership"); }
+            @Override
+            public Option<CertificateRenewalScheduler> certRenewalScheduler() { return unsupported("certRenewalScheduler"); }
+            @Override
+            public boolean tlsEnabled() { return unsupported("tlsEnabled"); }
+            @Override
+            public int connectedNodeCount() { return unsupported("connectedNodeCount"); }
+            @Override
+            public Map<String, Number> transportMetrics() { return unsupported("transportMetrics"); }
+            @Override
+            public Set<NodeId> connectedPeerIds() { return unsupported("connectedPeerIds"); }
+            @Override
+            public boolean isLeader() { return unsupported("isLeader"); }
+            @Override
+            public boolean isReady() { return unsupported("isReady"); }
+            @Override
+            public Option<NodeId> leader() { return unsupported("leader"); }
+            @Override
+            public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) { return unsupported("apply"); }
+            @Override
+            public SchemaOrchestratorService schemaOrchestrator() { return unsupported("schemaOrchestrator"); }
+            @Override
+            public int managementPort() { return unsupported("managementPort"); }
+            @Override
+            public int appHttpPort() { return unsupported("appHttpPort"); }
+            @Override
+            public long uptimeSeconds() { return unsupported("uptimeSeconds"); }
+            @Override
+            public List<NodeId> initialTopology() { return unsupported("initialTopology"); }
+            @Override
+            public TopologyConfig topologyConfig() { return unsupported("topologyConfig"); }
+            @Override
+            public InFlightRequestTracker inFlightRequestTracker() { return unsupported("inFlightRequestTracker"); }
+            @Override
+            public NodeLifecycle nodeLifecycle() { return unsupported("nodeLifecycle"); }
+            @Override
+            public HlcClock hlcClock() { return unsupported("hlcClock"); }
+            @Override
+            public Option<DHTClient> dhtClient() { return unsupported("dhtClient"); }
+            @Override
+            public Option<DHTNode> dhtNode() { return unsupported("dhtNode"); }
+            @Override
+            public MembershipView membershipView() { return unsupported("membershipView"); }
+            @Override
+            public Supplier<AetherValue.ClusterPhase> clusterPhaseSupplier() { return unsupported("clusterPhaseSupplier"); }
+            @Override
+            @SuppressWarnings("JBCT-RET-01")
+            public void route(Message message) { unsupported("route"); }
+        }
+
+        private record LiveStatusRequestContext(List<String> pathParams) implements RequestContext {
+            @Override
+            public <T> Result<T> fromJson(TypeToken<T> literal) { return unsupported("fromJson"); }
+            @Override
+            public Route<?> route() { return unsupported("route"); }
+            @Override
+            public HttpHeaders responseHeaders() { return unsupported("responseHeaders"); }
+            @Override
+            public String requestId() { return unsupported("requestId"); }
+            @Override
+            public HttpMethod method() { return unsupported("method"); }
+            @Override
+            public String path() { return unsupported("path"); }
+            @Override
+            public Headers headers() { return unsupported("headers"); }
+            @Override
+            public QueryParams queryParams() { return unsupported("queryParams"); }
+            @Override
+            public byte[] body() { return unsupported("body"); }
+        }
+
+        private static <T> T unsupported(String methodName) {
+            return fail("Not touched by the status route handler: " + methodName);
+        }
+    }
+
+    /// #1495 — a blueprint the parser refuses is the CALLER's error. The parser's causes live in the
+    /// HTTP-free `slice` module, so without `BlueprintRejected` they reached
+    /// `ProblemResponses.resolveStatus` status-less and answered 500, as if the cluster had broken (the
+    /// #569 class). Driven through the REAL `BLUEPRINT_PUBLISH_BODY` handler over the REAL
+    /// `BlueprintService` and then the exact funnel call `ManagementRouter.writeError` makes, so a hop
+    /// that re-wraps or drops the mapping fails here.
+    @Nested
+    class PublishRefusalStatusTests {
+        @Test
+        void publishRoute_instancesTwo_respondsBadRequestNamingTheFloor() {
+            var cause = publishCause("""
+                    id = "org.example:floor-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:floor-slice:1.0.0"
+                    instances = 2
+                    """);
+            var recorder = writeProblem(cause);
+
+            assertThat(recorder.status.get()).as("a blueprint below the instance floor is a malformed request")
+                                             .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(recorder.body()).contains("declares instances = 2")
+                                       .contains("must run at least 3 instances");
+            assertThat(cause).as("the typed parser cause stays reachable through the 400 wrapper")
+                             .isInstanceOfSatisfying(BlueprintRejected.class,
+                                                     rejected -> assertThat(rejected.origin())
+                                                             .isInstanceOf(SliceSpecError.InstancesBelowMinimum.class));
+        }
+
+        /// The ARTIFACT publish path (`publishFromArtifact`) parses the jar's `META-INF/blueprint.toml` and wraps the
+        /// same refusal in [BlueprintRejected], so a blueprint jar below the floor answers 400 like the body path.
+        @Test
+        void publishFromArtifact_instancesTwo_respondsBadRequestNamingTheFloor(@TempDir Path dir) throws IOException {
+            var artifact = Artifact.artifact("org.example:floor-blueprint:1.0.0")
+                                   .unwrap();
+            var jar = writeBlueprintJar(dir, """
+                    id = "org.example:floor-blueprint:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:floor-slice:1.0.0"
+                    instances = 2
+                    """);
+            Repository jarRepository = requested -> requested.equals(artifact)
+                                                    ? Result.lift(Causes::fromThrowable, () -> jar.toUri().toURL())
+                                                            .flatMap(url -> Location.location(requested, url))
+                                                            .async()
+                                                    : ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
+            var holder = new AtomicReference<Cause>();
+
+            BlueprintService.blueprintService(cluster, store, jarRepository)
+                            .publishFromArtifact(artifact.asString())
+                            .await()
+                            .onSuccess(value -> fail("Publish must be refused, got: " + value))
+                            .onFailure(holder::set);
+            var recorder = writeProblem(holder.get());
+
+            assertThat(recorder.status.get()).as("a blueprint jar below the instance floor is a malformed request")
+                                             .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(recorder.body()).contains("declares instances = 2")
+                                       .contains("must run at least 3 instances");
+            assertThat(holder.get()).isInstanceOfSatisfying(BlueprintRejected.class,
+                                                            rejected -> assertThat(rejected.origin())
+                                                                    .isInstanceOf(SliceSpecError.InstancesBelowMinimum.class));
+        }
+
+        private static Path writeBlueprintJar(Path dir, String blueprintToml) throws IOException {
+            var target = dir.resolve("floor-blueprint-1.0.0.jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(target))) {
+                out.putNextEntry(new ZipEntry("META-INF/blueprint.toml"));
+                out.write(blueprintToml.getBytes(StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+
+            return target;
+        }
+
+        @Test
+        void publishRoute_malformedBlueprint_respondsBadRequest() {
+            var recorder = writeProblem(publishCause("this is [not toml"));
+
+            assertThat(recorder.status.get()).as("unparseable TOML is a malformed request, not a server fault")
+                                             .isEqualTo(HttpStatus.BAD_REQUEST);
+            assertThat(recorder.body()).contains("Blueprint rejected");
+        }
+
+        private Cause publishCause(String dsl) {
+            var holder = new AtomicReference<Cause>();
+
+            publishRoute().handler()
+                          .handle(new BodyRequestContext(dsl.getBytes(StandardCharsets.UTF_8)))
+                          .await()
+                          .onSuccess(value -> fail("Publish must be refused, got: " + value))
+                          .onFailure(holder::set);
+
+            return holder.get();
+        }
+
+        private Route<?> publishRoute() {
+            var routes = SliceRoutes.sliceRoutes(() -> new RedeployAfterPriorFailureTests.LiveManageableNode(service,
+                                                                                                             DeploymentMap.deploymentMap()))
+                                    .routes()
+                                    .filter(candidate -> candidate.name().equals(ManagementRoute.BLUEPRINT_PUBLISH_BODY.name()))
+                                    .toList();
+
+            return routes.isEmpty() ? fail("BLUEPRINT_PUBLISH_BODY route not registered") : routes.getFirst();
+        }
+
+        private static RecordingResponseWriter writeProblem(Cause cause) {
+            var recorder = new RecordingResponseWriter();
+
+            ProblemResponses.writeProblem(recorder, cause, "/api/v1/blueprints", "req-1");
+
+            return recorder;
+        }
+
+        private record BodyRequestContext(byte[] body) implements RequestContext {
+            @Override
+            public List<String> pathParams() { return List.of(); }
+            @Override
+            public <T> Result<T> fromJson(TypeToken<T> literal) { return unsupported("fromJson"); }
+            @Override
+            public Route<?> route() { return unsupported("route"); }
+            @Override
+            public HttpHeaders responseHeaders() { return unsupported("responseHeaders"); }
+            @Override
+            public String requestId() { return unsupported("requestId"); }
+            @Override
+            public HttpMethod method() { return unsupported("method"); }
+            @Override
+            public String path() { return unsupported("path"); }
+            @Override
+            public Headers headers() { return unsupported("headers"); }
+            @Override
+            public QueryParams queryParams() { return unsupported("queryParams"); }
+        }
+
+        private static final class RecordingResponseWriter implements ResponseWriter {
+            private final AtomicReference<HttpStatus> status = new AtomicReference<>();
+            private final AtomicReference<byte[]> body = new AtomicReference<>(new byte[0]);
+
+            @Override
+            public void write(HttpStatus status, byte[] body, ContentType contentType) {
+                this.status.set(status);
+                this.body.set(body);
+            }
+
+            @Override
+            public ResponseWriter header(String name, String value) {
+                return this;
+            }
+
+            String body() {
+                return new String(body.get(), StandardCharsets.UTF_8);
+            }
+        }
+
+        private static <T> T unsupported(String methodName) {
+            return fail("Not touched by the publish route handler: " + methodName);
+        }
+    }
+
     // Test implementation of ClusterNode that delegates to TestKVStore
     private static class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private TestKVStore store;
+        /// One entry per `apply` call, holding that call's commands. Batch BOUNDARIES are the
+        /// subject of `ApplyMarkerInvariantTests`, so flattening them here would erase exactly the
+        /// property under test.
+        private final List<List<KVCommand<AetherKey>>> appliedBatches = new ArrayList<>();
 
         void setStore(TestKVStore store) {
             this.store = store;
+        }
+
+        List<List<KVCommand<AetherKey>>> appliedBatches() {
+            return appliedBatches;
         }
 
         @Override
@@ -274,6 +1229,8 @@ class BlueprintServiceTest {
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            appliedBatches.add(List.copyOf(commands));
+
             // Process commands through the store
             return Promise.success(commands.stream()
                                            .map(cmd -> (R) store.processCommand(cmd))

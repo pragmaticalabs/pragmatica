@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import java.util.Map;
@@ -31,7 +30,9 @@ public record AetherConfig(ClusterConfig cluster,
                            Option<CloudConfig> cloud,
                            Map<String, EndpointConfig> endpoints,
                            StreamingConfig streaming,
-                           Option<MembershipConfigBinding> membership) {
+                           Option<MembershipConfigBinding> membership,
+                           Option<StorageEncryptionConfig> storageEncryption,
+                           Option<AlertConfig> alerts) {
     public static Result<AetherConfig> aetherConfig(ClusterConfig cluster,
                                                     NodeConfig node,
                                                     Option<TlsConfig> tls,
@@ -58,6 +59,8 @@ public record AetherConfig(ClusterConfig cluster,
                                         none(),
                                         Map.of(),
                                         StreamingConfig.streamingConfig(),
+                                        none(),
+                                        none(),
                                         none()));
     }
 
@@ -104,7 +107,9 @@ public record AetherConfig(ClusterConfig cluster,
                                 cloud,
                                 endpoints,
                                 streaming,
-                                membership);
+                                membership,
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withEndpoints(Map<String, EndpointConfig> endpoints) {
@@ -123,7 +128,9 @@ public record AetherConfig(ClusterConfig cluster,
                                 cloud,
                                 endpoints,
                                 streaming,
-                                membership);
+                                membership,
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withCloud(CloudConfig cloud) {
@@ -142,7 +149,9 @@ public record AetherConfig(ClusterConfig cluster,
                                 some(cloud),
                                 endpoints,
                                 streaming,
-                                membership);
+                                membership,
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withStreaming(StreamingConfig streaming) {
@@ -161,7 +170,9 @@ public record AetherConfig(ClusterConfig cluster,
                                 cloud,
                                 endpoints,
                                 streaming,
-                                membership);
+                                membership,
+                                storageEncryption,
+                                alerts);
     }
 
     public AetherConfig withMembership(MembershipConfigBinding membership) {
@@ -180,7 +191,51 @@ public record AetherConfig(ClusterConfig cluster,
                                 cloud,
                                 endpoints,
                                 streaming,
-                                some(membership));
+                                some(membership),
+                                storageEncryption,
+                                alerts);
+    }
+
+    public AetherConfig withStorageEncryption(StorageEncryptionConfig storageEncryption) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                storage,
+                                cloud,
+                                endpoints,
+                                streaming,
+                                membership,
+                                some(storageEncryption),
+                                alerts);
+    }
+
+    public AetherConfig withAlerts(AlertConfig alerts) {
+        return new AetherConfig(cluster,
+                                node,
+                                tls,
+                                docker,
+                                kubernetes,
+                                ttm,
+                                slice,
+                                appHttp,
+                                backup,
+                                dhtReplication,
+                                timeouts,
+                                storage,
+                                cloud,
+                                endpoints,
+                                streaming,
+                                membership,
+                                storageEncryption,
+                                some(alerts));
     }
 
     public static Builder builder() {
@@ -228,6 +283,8 @@ public record AetherConfig(ClusterConfig cluster,
         private Map<String, EndpointConfig> endpointsConfig;
         private StreamingConfig streamingConfig;
         private MembershipConfigBinding membershipConfig;
+        private StorageEncryptionConfig storageEncryptionConfig;
+        private AlertConfig alertConfig;
 
         @SuppressWarnings("JBCT-NAM-01")
         public Builder withEnvironment(Environment environment) {
@@ -363,6 +420,18 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder storageEncryption(StorageEncryptionConfig storageEncryptionConfig) {
+            this.storageEncryptionConfig = storageEncryptionConfig;
+
+            return this;
+        }
+
+        public Builder alerts(AlertConfig alertConfig) {
+            this.alertConfig = alertConfig;
+
+            return this;
+        }
+
         public AetherConfig build() {
             var base = AetherConfig.aetherConfig(environment);
             var clusterConfig = applyClusterOverrides(base.cluster());
@@ -397,8 +466,11 @@ public record AetherConfig(ClusterConfig cluster,
                          : withStorage.withEndpoints(finalEndpoints);
             var withStreaming = option(streamingConfig).map(withEp::withStreaming).or(withEp);
             var withCloudConfig = option(cloudConfig).fold(() -> withStreaming, withStreaming::withCloud);
+            var withMembership = option(membershipConfig).fold(() -> withCloudConfig, withCloudConfig::withMembership);
+            var withStorageEncryption = option(storageEncryptionConfig).fold(() -> withMembership,
+                                                                             withMembership::withStorageEncryption);
 
-            return option(membershipConfig).fold(() -> withCloudConfig, withCloudConfig::withMembership);
+            return option(alertConfig).fold(() -> withStorageEncryption, withStorageEncryption::withAlerts);
         }
 
         private ClusterConfig applyClusterOverrides(ClusterConfig base) {

@@ -25,15 +25,15 @@ import org.pragmatica.consensus.NodeId;
 ///
 /// ## Ordering
 /// The absence window is `timeouts.cluster.community_absence`, which is required to be strictly longer
-/// than the `core_absence` window on which a worker fences itself. That inequality is the whole
-/// no-double-active guarantee: a community always stops serving before the core re-places its slices.
+/// than the `core_absence` window on which a worker fences itself. This is an operational margin,
+/// not an exclusive-ownership proof: asymmetric loss and delayed execution require effect fencing.
 /// The threshold lives inside the implementation rather than in the caller so there is exactly one
 /// place the two windows are compared.
 @FunctionalInterface
 public interface CommunityLivenessView {
     /// `true` when the leader has had no contact from `node` for longer than the community-absence
-    /// window. `false` covers both "recently heard from" and "no evidence either way" — an absent
-    /// verdict must be positively observed, never inferred from missing data.
+    /// window. Unknown peers receive a bounded observation grace after leader acquisition; once
+    /// that grace expires they are unavailable for placement until evidence arrives.
     boolean isAbsent(NodeId node);
 
     /// `members` minus those positively observed absent. Lives here rather than at each call site because
@@ -51,6 +51,17 @@ public interface CommunityLivenessView {
     /// #590. Tests and any deployment that has not wired the collector keep the old semantics rather
     /// than silently gaining a demotion path with no signal behind it.
     static CommunityLivenessView unwired() {
-        return _ -> false;
+        return Unwired.INSTANCE;
+    }
+
+    /// Holder for the single unwired instance, so a caller can tell "not wired" from "wired, and
+    /// nothing is absent" (#1652: the live-member count is withheld rather than reported as
+    /// everyone-alive when no observation backs it).
+    enum Unwired implements CommunityLivenessView {
+        INSTANCE;
+        @Override
+        public boolean isAbsent(NodeId node) {
+            return false;
+        }
     }
 }

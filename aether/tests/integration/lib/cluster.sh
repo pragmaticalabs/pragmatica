@@ -6,6 +6,54 @@ source "${LIB_DIR}/common.sh"
 source "${LIB_DIR}/generation.sh"
 
 # ---------------------------------------------------------------------------
+# Cluster naming
+# ---------------------------------------------------------------------------
+# resolve_cluster_name <a|b> <container|jvm> — echo the cluster name for one slot.
+#
+# Precedence: an explicit CLUSTER_A_NAME / CLUSTER_B_NAME taken from the environment
+# ALWAYS wins, including over the --runtime jvm rename. Without one, container keeps
+# test-a/test-b and jvm keeps cloud-test-{a,b}-jvm — the historical defaults, byte for
+# byte, so a run that sets neither behaves exactly as before.
+#
+# Why an override has to exist at all: the names were plain assignments, and the jvm
+# branch overwrote them unconditionally. Two concurrent same-runtime arms therefore
+# shared one cluster name, one ~/.aether/clusters/<name>/ state dir and one
+# aether-cluster label — so arm 1's teardown (`cloud-reaper.sh --cluster <name>
+# --destroy`) reaped arm 2's LIVE cluster. That surfaces as nodes vanishing mid-run,
+# which reads as a runtime fault rather than a harness one.
+#
+# The caller is expected to have captured CLUSTER_{A,B}_NAME_EXPLICIT before assigning
+# any default over them; this function never reads CLUSTER_{A,B}_NAME itself, precisely
+# so it cannot mistake a default it already set for a user's choice.
+#
+# Names become Hetzner label values, so they are validated here and rejected fast: an
+# invalid name would otherwise surface as an opaque provisioning error AFTER VMs are
+# already being billed.
+resolve_cluster_name() {
+    local slot="${1:-}" runtime="${2:-container}" explicit default
+
+    case "${slot}:${runtime}" in
+        a:jvm) explicit="${CLUSTER_A_NAME_EXPLICIT:-}"; default="cloud-test-a-jvm" ;;
+        b:jvm) explicit="${CLUSTER_B_NAME_EXPLICIT:-}"; default="cloud-test-b-jvm" ;;
+        a:*)   explicit="${CLUSTER_A_NAME_EXPLICIT:-}"; default="test-a" ;;
+        b:*)   explicit="${CLUSTER_B_NAME_EXPLICIT:-}"; default="test-b" ;;
+        *)     echo "resolve_cluster_name: slot must be 'a' or 'b', got: ${slot}" >&2
+               return 2 ;;
+    esac
+
+    local name="${explicit:-$default}"
+
+    # Hetzner label values: alphanumeric start/end, [A-Za-z0-9._-] within, <=63 chars.
+    if ! printf '%s' "$name" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$'; then
+        echo "resolve_cluster_name: invalid cluster name '${name}' — must match" \
+             "^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?\$ (Hetzner label value)" >&2
+        return 2
+    fi
+
+    printf '%s\n' "$name"
+}
+
+# ---------------------------------------------------------------------------
 # Cluster queries (CLI-based)
 # ---------------------------------------------------------------------------
 # cluster_member_count — generation snapshot member count (includes JOINING).
@@ -235,12 +283,30 @@ ready_core_count() {
     echo "$n"
 }
 
+# Legacy contract: always prints a number and returns 0 — a failed or unparseable
+# topology read prints 0. Kept for its existing callers; a caller that must tell
+# "0 active cores" apart from "could not read" uses _cluster_active_core_count_checked.
 cluster_active_core_count() {
+    _cluster_active_core_count_checked || echo 0
+}
+
+# Honest-read active core count (#1051). ONE topology read, parsed once:
+#   rc 0 — prints the count taken from that read;
+#   rc 1 — the read failed (empty body): prints nothing;
+#   rc 2 — the body carries neither a numeric coreCount nor a complete coreNodes
+#          array: prints nothing.
+# A failed read never becomes a number, and there is no second read for a blip to
+# fall between (an earlier form validated one read, then parsed a second one that
+# printed 0 when it failed). For every body it accepts, the count printed is the one
+# cluster_active_core_count printed before it became a wrapper.
+_cluster_active_core_count_checked() {
     local topology core_count core_nodes_count
-    topology=$(api_get "/api/v1/cluster/topology" 2>/dev/null || true)
-    if [ -z "$topology" ]; then
-        echo 0
-        return 0
+    local count_re='"coreCount"[[:space:]]*:[[:space:]]*[0-9]'
+    local nodes_re='"coreNodes"[[:space:]]*:[[:space:]]*\[[^]]*\]'
+    topology=$(api_get "/api/v1/cluster/topology" 2>/dev/null) || topology=""
+    [ -n "$topology" ] || return 1
+    if ! [[ "$topology" =~ $count_re ]] && ! [[ "$topology" =~ $nodes_re ]]; then
+        return 2
     fi
     core_count=$(printf '%s' "$topology" \
         | grep -o '"coreCount"[[:space:]]*:[[:space:]]*[0-9]*' \
@@ -325,6 +391,203 @@ mgmt_entry_point_node() {
     printf ''
 }
 
+# The node id behind a management endpoint, from GET /health/live (a LOCAL route: never forwarded, names
+# the answering node in `nodeId`). Empty when the read fails.
+_endpoint_node_id() {
+    curl -sk -m 3 "${1}/health/live" 2>/dev/null \
+        | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/' || true
+}
+
+# ---------------------------------------------------------------------------
+# Scale-down victim bookkeeping (03-scaling). The product, not the harness, picks scale-down victims (the leader's
+# reconciler: non-slice-owners first, ephemeral over configured, leader last), so the harness can only OBSERVE them:
+# a victim is a member that leaves the voter set. At S-triple-prime the load target (core-4) was a victim and 12 of
+# 482 requests answered 503; nothing recorded that the target was a victim.
+# ---------------------------------------------------------------------------
+
+# The consensus voters from /api/v1/nodes/status voterReconfiguration: <field> is installedVoters or targetVoters.
+# One node id per line, sorted. Empty when the read fails or the list is empty.
+#
+# THE WIRE SHAPE (a real node's body: test/fixtures/node-status-real-stable.json): when no reconfiguration is requested the
+# serializer OMITS empty lists, so a STABLE node has `"voterReconfiguration":{"stage":"STABLE","installedEpoch":0,
+# "installedVoters":[...]}` and NO targetVoters key at all (docs: "targetVoters: the requested roster, empty when none").
+# An empty targetVoters is therefore the NORMAL settled state, not a parse failure.
+_cluster_voters() {
+    api_get "/api/v1/nodes/status" 2>/dev/null | _voters_in "$1"
+}
+# stdin: a /api/v1/nodes/status body. <field>: the ids of that voter list, one per line, sorted.
+_voters_in() {
+    tr -d '\n ' | { grep -oE "\"$1\":\[[^]]*\]" || true; } | head -1 \
+        | { grep -oE '"[^"]+"' || true; } | { grep -v "^\"$1\"\$" || true; } | tr -d '"' | sort
+}
+
+# <list a> <list b>: ids in a that are not in b (one per line).
+_id_set_difference() {
+    local a="$1" b="$2" x
+    for x in $a; do
+        case " $(printf '%s' "$b" | tr '\n' ' ') " in *" $x "*) ;; *) printf '%s\n' "$x" ;; esac
+    done
+}
+
+# App endpoint of a node id, or empty when it cannot be derived. Cloud: the VM's public IP at the app port; docker:
+# `node-N` / `aether-<cluster>-node-N` maps to APP_PORT + N - 1 on TARGET_HOST.
+_app_endpoint_for_node() {
+    local id="$1" ip n
+    [ -n "$id" ] || return 0
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        ip=$(cloud_public_ip "$id" 2>/dev/null) || return 0
+        [ -n "$ip" ] && printf 'http://%s:%s' "$ip" "${APP_PORT:-8070}"
+    elif [[ "$id" =~ node-([0-9]+)$ ]]; then
+        n="${BASH_REMATCH[1]}"
+        printf 'http://%s:%s' "${TARGET_HOST}" "$(( ${APP_PORT:-8070} + $(b_seed_offset "$n") ))"
+    fi
+    return 0
+}
+
+# PUT a file to <url> (octet-stream, API key), recording the response body in <body file> (never /dev/null). Prints the
+# final HTTP status. ONE retry, on 503 only (the designed transient refusal); a 500 is a recovered store failure and is
+# NOT retried, so the defect it signals stays visible. Every non-200 answer is warned with its body (stderr).
+put_artifact_retry_503() {
+    local file="$1" url="$2" body_file="$3" attempt status
+    for attempt in 1 2; do
+        status=$(curl -sk -o "$body_file" -w "%{http_code}" -X PUT -H "X-API-Key: ${API_KEY}" \
+            -H "Content-Type: application/octet-stream" --data-binary "@${file}" "$url")
+        [ "$status" = "200" ] && break
+        log_warn "PUT ${url} attempt ${attempt} answered ${status}; body: $(head -c 500 "$body_file" 2>/dev/null | tr '\n' ' ')" >&2
+        { [ "$status" = "503" ] && [ "$attempt" -lt 2 ]; } || break
+        sleep "${PUT_RETRY_DELAY_S:-3}"
+    done
+    printf '%s' "$status"
+}
+
+# Wait (bounded) until the membership has settled: the node reports voterReconfiguration stage STABLE (no requested roster,
+# nobody catching up), any targetVoters it does report equals installedVoters, and the member count equals the voter count,
+# on two consecutive reads a poll apart. An ABSENT targetVoters is the settled state (see _cluster_voters). <budget seconds>.
+# rc 0 settled, 1 not within the budget (or the node unreadable), 2 HARNESS BUG: the body names voterReconfiguration /
+# installedVoters but the parser reads no stage / no installed list from it, i.e. the parser no longer matches the wire shape;
+# that is a loud log_fail, never a warning (a gate that can never settle looks exactly like a cluster that never does).
+_seed_membership_settled() {
+    local budget="${1:-90}" deadline body stage inst tgt members stable=0
+    deadline=$(( SECONDS + budget ))
+    while :; do
+        body=$(api_get "/api/v1/nodes/status" 2>/dev/null) || body=""
+        stage=$(printf '%s' "$body" | tr -d '\n ' | { grep -oE '"stage":"[A-Z_]+"' || true; } | head -1 | sed 's/.*:"\(.*\)"/\1/')
+        inst=$(printf '%s' "$body" | _voters_in installedVoters | tr '\n' ' ')
+        tgt=$(printf '%s' "$body" | _voters_in targetVoters | tr '\n' ' ')
+        case "$body" in
+            *'"voterReconfiguration"'*)
+                if [ -z "$stage" ]; then
+                    log_fail "_seed_membership_settled: the status body has voterReconfiguration but no parsable stage — the gate's parser is out of step with the wire shape (harness bug, not an unsettled cluster)"
+                    return 2
+                fi ;;
+        esac
+        case "$body" in
+            *'"installedVoters"'*)
+                if [ -z "$inst" ]; then
+                    log_fail "_seed_membership_settled: the status body has installedVoters but the parser read none — the gate's parser is out of step with the wire shape (harness bug, not an unsettled cluster)"
+                    return 2
+                fi ;;
+        esac
+        members=$(cluster_member_count)
+        if [ "$stage" = "STABLE" ] && [ -n "$inst" ] && { [ -z "$tgt" ] || [ "$inst" = "$tgt" ]; } \
+           && [ "$members" = "$(printf '%s' "$inst" | wc -w | tr -d ' ')" ]; then
+            stable=$((stable + 1))
+            [ "$stable" -ge 2 ] && return 0
+        else
+            stable=0
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && return 1
+        sleep "${SEED_SETTLE_POLL_S:-2}"
+    done
+}
+
+# One INFO line per scale-down step: who left, and whether the load target was among them. <members before> <members
+# after> <load endpoint>. Records only; it never steers.
+log_scale_down_step() {
+    local before="$1" after="$2" endpoint="$3" hosts="${4:-}" removed id target_id="" m victim="no" hosts_slice="unknown" host_victim="unknown"
+    removed=$(_id_set_difference "$before" "$after")
+    for m in $before; do
+        [ "$(_app_endpoint_for_node "$m")" = "$endpoint" ] && { target_id="$m"; break; }
+    done
+    for id in $removed; do [ "$id" = "$target_id" ] && victim="yes"; done
+    [ -n "$target_id" ] || victim="unknown"
+    # <hosts> (optional 4th): the nodes hosting the load's slice when the scale-down started. Whether the TARGET hosts it,
+    # and whether ANY host was a victim (#1790's shape: the node that hosts the route is the one demoted).
+    if [ -n "$hosts" ]; then
+        host_victim="no"
+        for id in $removed; do case " $(printf '%s' "$hosts" | tr '\n' ' ') " in *" $id "*) host_victim="yes" ;; esac; done
+        if [ -n "$target_id" ]; then
+            hosts_slice="no"
+            case " $(printf '%s' "$hosts" | tr '\n' ' ') " in *" ${target_id} "*) hosts_slice="yes" ;; esac
+        fi
+    fi
+    log_info "scale-down step: members before=[$(printf '%s' "$before" | tr '\n' ' ')] after=[$(printf '%s' "$after" | tr '\n' ' ')] removed=[$(printf '%s' "$removed" | tr '\n' ' ')]; load target=${endpoint} (node ${target_id:-<unresolved>}); load target was a victim: ${victim}; load target hosts slice: ${hosts_slice}; slice hosts=[$(printf '%s' "$hosts" | tr '\n' ' ')], a slice host was a victim: ${host_victim}"
+}
+
+# OPT-IN (SCALE_LOAD_TARGET_VICTIM=1, default OFF): re-aim the running load generator at a node that is being removed,
+# so the 03 defect is reproducible on demand. Victims are chosen by the product at the scale-down pass, so the harness
+# waits for the electorate to shrink (the removed nodes leave targetVoters within a fraction of a second of the pass)
+# and then points the load at one of them through the override file start_load's loop reads every tick. Flag off: this
+# does nothing at all. <voters before> [poll seconds] [slice coords]. Prints the chosen victim id, or nothing.
+# With slice coords the choice PREFERS a removed voter that HOSTS the load's slice (the current owner first when it is a
+# victim): #1790's shape is the node that hosts the route being demoted, and a victim that hosts nothing answers by
+# forwarding, which does not exercise it. Without coords, or when no victim hosts it, the first removed voter with a
+# derivable endpoint (the previous behaviour).
+scale_load_retarget_to_victim() {
+    [ "${SCALE_LOAD_TARGET_VICTIM:-0}" = "1" ] || return 0
+    local before="$1" budget="${2:-${SCALE_VICTIM_POLL_S:-15}}" coords="${3:-}" deadline now v ep removed hosts="" ordered h hosts_slice
+    deadline=$(( SECONDS + budget ))
+    while :; do
+        now=$(_cluster_voters targetVoters)
+        [ -n "$now" ] || now=$(_cluster_voters installedVoters)
+        removed=$(_id_set_difference "$before" "$now")
+        if [ -n "$removed" ]; then
+            ordered=""
+            hosts=""
+            [ -n "$coords" ] && hosts=$(slice_hosts_for "$coords" all 2>/dev/null || true)
+            for h in $hosts; do
+                case " $(printf '%s' "$removed" | tr '\n' ' ') " in *" $h "*) ordered="${ordered} ${h}" ;; esac
+            done
+            for v in $removed; do
+                case " ${ordered} " in *" ${v} "*) ;; *) ordered="${ordered} ${v}" ;; esac
+            done
+            for v in $ordered; do
+                ep=$(_app_endpoint_for_node "$v")
+                if [ -n "$ep" ]; then
+                    hosts_slice="no"
+                    [ -z "$coords" ] && hosts_slice="unknown"
+                    case " $(printf '%s' "$hosts" | tr '\n' ' ') " in *" ${v} "*) hosts_slice="yes" ;; esac
+                    printf '%s' "$ep" > "/tmp/load_endpoint_override_$$"
+                    log_info "SCALE_LOAD_TARGET_VICTIM=1: re-aiming the load at ${v} (${ep}); victim: yes, hosts slice: ${hosts_slice}; removed from the electorate: [$(printf '%s' "$removed" | tr '\n' ' ')]; slice hosts: [$(printf '%s' "$hosts" | tr '\n' ' ')]" >&2
+                    printf '%s' "$v"
+                    return 0
+                fi
+            done
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "${SCALE_VICTIM_POLL_INTERVAL_S:-0.5}"
+    done
+    log_warn "SCALE_LOAD_TARGET_VICTIM=1: no removed node with a derivable app endpoint within ${budget}s (removed=[$(printf '%s' "${removed:-}" | tr '\n' ' ')]); the load keeps its target" >&2
+    return 0
+}
+
+# Management endpoint of a NAMED node, or empty when it cannot be derived. Cloud: the VM's public IP at
+# the uniform mgmt port; docker: `node-N` maps to MGMT_PORT + N - 1. For a caller that must read one
+# specific node's view (for example the leader across a partition) rather than whichever node the
+# pinned endpoint happens to be.
+node_mgmt_endpoint() {
+    local node_id="$1" ip
+    [ -n "$node_id" ] || return 0
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        ip=$(cloud_public_ip "$node_id" 2>/dev/null) || return 0
+        [ -n "$ip" ] && printf '%s://%s:%s' "${MGMT_SCHEME:-http}" "$ip" "${CLOUD_MGMT_PORT:-8080}"
+    elif [[ "$node_id" =~ ^node-([0-9]+)$ ]]; then
+        printf 'http://%s:%s' "${TARGET_HOST}" "$((MGMT_PORT + BASH_REMATCH[1] - 1))"
+    fi
+    return 0
+}
+
 # Pick a non-leader node from the cluster's CURRENT live membership.
 # Always excludes the leader. Additionally excludes any explicitly pinned MGMT
 # entry-point node (MGMT_ENTRY_POINT_NODE env override -- empty in normal
@@ -402,6 +665,24 @@ pick_non_leader() {
                 leader="$derived_leader"
             fi
 
+            # The harness's ENTRY-POINT node(s): the node(s) behind the endpoint the harness talks to
+            # (_resolve_live_endpoint, the pin api_get uses; MGMT_ENTRY_POINT, the pin the CLI uses).
+            # Cloud never sets MGMT_ENTRY_POINT_NODE, so nothing excluded them, and S05 partitioned
+            # the very node its leader query went through, read the minority's leaderless view and
+            # reported a majority failure that never happened. Identity comes from GET /health/live,
+            # a LOCAL route (ManagementRoute.HEALTH_LIVE): it is never forwarded and names the
+            # ANSWERING node in `nodeId`. /api/v1/nodes/status is NOT usable for this: it is
+            # LEADER-targeted, a follower forwards it, and the leader's nodeId comes back whichever
+            # node was asked. Such nodes are offered only if too few other candidates exist.
+            local entry_nodes="" _ep _eid
+            for _ep in "$(_resolve_live_endpoint 2>/dev/null)" "${MGMT_ENTRY_POINT:-}"; do
+                [ -n "$_ep" ] || continue
+                _eid=$(_endpoint_node_id "$_ep")
+                [ -n "$_eid" ] || continue
+                case " ${entry_nodes} " in *" ${_eid} "*) ;; *) entry_nodes="${entry_nodes} ${_eid}" ;; esac
+            done
+            local deferred_entries=""
+
             # Candidate enumeration: server-side READY filter via the aether CLI.
             # The response is a JSON array of `{nodeId, state, updatedAt}` triplets,
             # all already READY post-filter — extract `nodeId` with grep+sed (no jq).
@@ -456,11 +737,27 @@ pick_non_leader() {
                             continue
                         fi
                     fi
+                    case " ${entry_nodes} " in
+                        *" ${candidate} "*)
+                            pass_diag="${pass_diag} ${candidate}=DEFER-entrypoint"
+                            deferred_entries="${deferred_entries} ${candidate}"
+                            continue ;;
+                    esac
                     pass_diag="${pass_diag} ${candidate}=LIVE"
                     attempt_list="${attempt_list}${candidate}"$'\n'
                     attempt_found=$((attempt_found + 1))
                     if [ "$attempt_found" -ge "$count" ]; then break; fi
                 done 3<<< "$current_members"
+
+                # Fallback: entry-point nodes are used only when nothing else satisfies the count.
+                local _d
+                for _d in $deferred_entries; do
+                    [ "$attempt_found" -ge "$count" ] && break
+                    log_warn "pick_non_leader: too few candidates besides the entry-point node ${_d}; offering it (harness may lose its view if it is killed or partitioned)" >&2
+                    pass_diag="${pass_diag} ${_d}=FALLBACK-entrypoint"
+                    attempt_list="${attempt_list}${_d}"$'\n'
+                    attempt_found=$((attempt_found + 1))
+                done
 
                 if [ "$attempt_found" -ge "$count" ]; then
                     printf '%s' "$attempt_list" | grep -v '^$' | head -n "$count"
@@ -756,7 +1053,10 @@ wait_for_node_count() {
     # (log_warn + keep polling) rather than a real false — i.e. a failed read
     # SKIPS this iteration instead of being read as "count is 0, not yet
     # satisfied". A successful read behaves exactly as before.
-    wait_for "${expected} nodes" "[ \"\$(_cluster_member_count_checked)\" -eq ${expected} ]" "$timeout"
+    # #1051: passed as wait_for's value reader, so a failed read skips the poll
+    # without evaluating `[ "" -eq N ]` (which logged "integer expression expected"
+    # every poll) and the timeout message states the last count read.
+    wait_for "${expected} nodes" "[ \"\$WAIT_FOR_VALUE\" -eq ${expected} ]" "$timeout" 2 "_cluster_member_count_checked"
 }
 
 # Cloud-aware default catch-window for CTM auto-heal, in seconds (pre-TIMEOUT_SCALE).
@@ -1131,7 +1431,7 @@ slices_total_instances() {
 # ManagementApiResponses.ClusterSliceInfo):
 #   { "slices": [
 #       { "artifact": "<group>:<artifact>:<version>",
-#         "targetInstances": N, "minInstances": M, "currentVersion": "...",
+#         "targetInstances": N, "minInstances": M, "version": "...",
 #         "instances": [
 #           { "nodeId": "hetzner-eu-core-3", "state": "ACTIVE", "failureReason": "" },
 #           ...
@@ -1151,11 +1451,15 @@ slices_total_instances() {
 # `org:test-persistence:1.0.0` shares the `org:test-persistence` prefix with the slice
 # artifact `org:test-persistence-persistence-slice:1.0.0`; matching on the
 # `${coords%:*}` (group:artifact) prefix catches both forms.
-slice_owner_for() {
-    local coords="$1"
+slice_owner_for() { slice_hosts_for "$1"; }
+
+# Nodes hosting an ACTIVE instance of the slice, one per line, in the order the slices API lists them (the first is what
+# slice_owner_for returns). <coords> [all]: without "all" only the first host is printed.
+slice_hosts_for() {
+    local coords="$1" all="${2:-}"
     local prefix="${coords%:*}"
     cluster_slices \
-        | awk -v prefix="$prefix" '
+        | awk -v prefix="$prefix" -v all="$all" '
             BEGIN { in_match = 0; pending_node = "" }
             # Track when we enter a slice block whose artifact matches the prefix.
             /"artifact"[[:space:]]*:[[:space:]]*"/ {
@@ -1176,7 +1480,8 @@ slice_owner_for() {
             }
             in_match && pending_node != "" && /"state"[[:space:]]*:[[:space:]]*"ACTIVE"/ {
                 print pending_node
-                exit 0
+                if (all == "") exit 0
+                pending_node = ""
             }
             # Reset pending_node when we cross to the next instance without ACTIVE.
             in_match && /"state"[[:space:]]*:[[:space:]]*"/ {
@@ -1216,8 +1521,10 @@ first_seed_host_app_port() {
     [ "${CLOUD_MODE:-false}" = "true" ] && return 1
     local prefix="${CLUSTER_NAME:-aether-${CLUSTER_ID:-b}-node-}"
     local n hp
+    local gen
+    gen=$(b_current_generation)
     for n in $(seq 1 "${NODE_COUNT:-5}"); do
-        hp=$(host_port_for_container "${prefix}${n}" "$inport")
+        hp=$(host_port_for_container "${prefix}$(b_seed_number "$gen" "$n")" "$inport")
         if [ -n "$hp" ]; then
             printf '%s' "$hp"
             return 0
@@ -1244,9 +1551,33 @@ first_seed_host_app_port() {
 # Newline-separated stdout rather than a global array: bash 3.2 (macOS) errors on `"${arr[@]}"`
 # for an EMPTY array under `set -u`, so a string keeps callers free of that trap.
 # Returns non-zero and prints nothing when no endpoint resolves.
+# Cloud: every VM exposes the SAME logical app port on its own public IP, so an endpoint is
+# `http://<public-ip>:<app port>` per live core member. Members come from the generation snapshot
+# (cloud_running_cores, which includes CTM replacements) and are resolved by cloud_public_ip
+# (bootstrap-state, then /api/v1/nodes/endpoint for replacements). Until 2026-09-24 this branch did
+# not exist: cloud returned 1 unconditionally, so 02y/02w sent no app traffic at all and their
+# durability assertions failed in 0s against nothing.
+#
+# A member that does not resolve is SKIPPED, not failed: cloud_public_ip reports a miss as a stderr
+# log_warn plus rc 1 (never a counted [FAIL]), so the `|| continue` below is the whole handling.
+# Only a bare host is accepted.
+_cloud_node_app_endpoints() {
+    local inport="$1" id ip out=""
+    for id in $(cloud_running_cores); do
+        ip=$(cloud_public_ip "$id" 2>/dev/null) || continue
+        printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+        out="${out}http://${ip}:${inport}"$'\n'
+    done
+    [ -n "$out" ] || return 1
+    printf '%s' "$out"
+}
+
 node_app_endpoints() {
     local inport="${APP_PORT:-8070}"
-    [ "${CLOUD_MODE:-false}" = "true" ] && return 1
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        _cloud_node_app_endpoints "$inport"
+        return $?
+    fi
 
     local prefix="${CLUSTER_NAME:-aether-${CLUSTER_ID:-b}-node-}"
     local names name hp out="" saved_ifs
@@ -1354,7 +1685,10 @@ retarget_app_endpoint_to_active_slice() {
     if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
         # Cloud: each node has its own public IP at the same logical app port.
         local owner_ip
-        owner_ip=$(cloud_public_ip "$owner" 2>/dev/null || true)
+        # `|| owner_ip=""`, not `|| true`: on a miss cloud_public_ip prints its [FAIL] diagnostic on
+        # stdout, which `|| true` kept as the "address" and turned into APP_ENDPOINT=http://[FAIL]...
+        owner_ip=$(cloud_public_ip "$owner" 2>/dev/null) || owner_ip=""
+        printf '%s' "$owner_ip" | grep -Eq '^[A-Za-z0-9.-]+$' || owner_ip=""
         if [ -z "$owner_ip" ]; then
             log_warn "retarget: cloud_public_ip(${owner}) returned empty; APP_ENDPOINT unchanged. (Owner reported by /api/v1/slices is not in bootstrap-state.json — node may have been replaced by CTM and not re-recorded.)"
             return 1
@@ -1788,7 +2122,7 @@ drop_ctm_replacements() {
 # run2/run4 pre-kill deaths (node-5, node-3) undiagnosable. A remote-side daemon
 # (scripts/log-streamer.sh) keeps an appending `docker logs -f` attached to every aether-*
 # container — including auto-heal replacements, via a 5s re-scan — so the FILES survive
-# container removal. capture_node_logs (run-tests.sh) fetches them as streamed-*.log.
+# container removal. capture_node_logs (lib/capture.sh) fetches them as streamed-*.log.
 start_log_streamers() {
     [ "$ENV_TYPE" = "remote" ] || return 0
 
@@ -1916,9 +2250,8 @@ _cloud_transport_ports() {
 #
 # This is the AUTO-HEAL kill path: every suite caller (02-chaos/*, 02z-killonly,
 # 12-network swim/quic, 13-edge-cases, self-drain-quorum-loss) expects the node to
-# be GONE and a brand-new replacement to be provisioned by CTM auto-heal — NO test
-# revives the same node after a kill (start_node / cloud_revive_vm have zero suite
-# callers; see start_node's header). So a hard DELETE is the faithful "node gone"
+# be GONE and a brand-new replacement to be provisioned by CTM auto-heal — a killed
+# node is never revived under its old id (#1543). So a hard DELETE is the faithful "node gone"
 # model: peers observe the VM vanish via SWIM timeout → NODE_FAILED → CTM auto-heal,
 # AND the account's server quota is freed.
 #
@@ -1928,9 +2261,6 @@ _cloud_transport_ports() {
 # leader's provisionReplacement fails repeatedly (observed priorFailureCount=41) so
 # auto-heal can never rebuild the cluster — it sat at 3/5 for 45 min. Deleting the
 # victim keeps the quota clear so each replacement provision has headroom.
-#
-# Same-node restart (poweroff/keep) is provided by the separate cloud_stop_vm /
-# cloud_revive_vm pair for any test that genuinely needs the original VM back.
 #
 # Idempotent: deleting an already-gone server id (server-id resolution fails because
 # the VM no longer exists) is a no-op-with-warning, NOT a failure — a double-kill or a
@@ -1949,13 +2279,23 @@ cloud_kill_vm() {
                 log_fail "cloud_kill_vm: hcloud CLI not found (required for provider 'hetzner')"
                 return 2
             fi
-            local sid
-            sid=$(cloud_server_id "$node_id" 2>/dev/null) || {
-                # No live server resolved → already gone (deleted/replaced). Idempotent
-                # no-op: the post-condition ("victim VM absent") already holds.
-                log_warn "cloud_kill_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
-                return 0
-            }
+            local sid sid_rc
+            sid=$(cloud_server_id "$node_id" 2>/dev/null); sid_rc=$?
+            case "$sid_rc" in
+                0) ;;
+                1)
+                    # Address known, no server holds it → already gone (deleted/replaced). Idempotent
+                    # no-op: the post-condition ("victim VM absent") already holds.
+                    log_warn "cloud_kill_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
+                    return 0
+                    ;;
+                *)
+                    # rc 3 = UNKNOWN (address unresolvable / hcloud list failed): the VM may be running. Not a kill,
+                    # not "gone": a visible failure, counted once.
+                    log_fail "cloud_kill_vm: cannot tell whether '${node_id}' has a VM (cloud_server_id rc=${sid_rc}: address unresolvable or hcloud list failed); NOT killed and NOT assumed gone"
+                    return 1
+                    ;;
+            esac
             log_info "cloud_kill_vm: deleting ${node_id} (hetzner server ${sid})"
             local out rc
             out=$(hcloud server delete "$sid" 2>&1); rc=$?
@@ -1973,100 +2313,6 @@ cloud_kill_vm() {
             ;;
         *)
             log_fail "cloud_kill_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
-            return 2
-            ;;
-    esac
-}
-
-# cloud_stop_vm <node_id> — abrupt VM power-off WITHOUT deleting (provider API).
-#
-# Non-destructive sibling of cloud_kill_vm, paired with cloud_revive_vm: a hard
-# poweroff (NOT graceful shutdown) so peers observe the node vanish via SWIM timeout,
-# while the VM (and its identity) is PRESERVED so cloud_revive_vm can power it back on
-# for a same-node rejoin. Use this — not cloud_kill_vm — in any test that calls
-# start_node / cloud_revive_vm on the SAME node afterwards. (No such suite exists
-# today; this primitive keeps the stop/revive contract available for restart_all_nodes'
-# best-effort seed power-on and any future same-identity-restart test.)
-# Resolves the VM by server-id (seed OR CTM replacement). Idempotent for an
-# already-stopped server. Returns non-zero with a clear log on a real provider error.
-cloud_stop_vm() {
-    local node_id="${1:-}"
-    if [ -z "$node_id" ]; then
-        log_fail "cloud_stop_vm: node id argument is required"
-        return 2
-    fi
-    case "${CLOUD_PROVIDER:-hetzner}" in
-        hetzner)
-            if ! command -v hcloud >/dev/null 2>&1; then
-                log_fail "cloud_stop_vm: hcloud CLI not found (required for provider 'hetzner')"
-                return 2
-            fi
-            local sid
-            sid=$(cloud_server_id "$node_id") || {
-                log_fail "cloud_stop_vm: could not resolve server id for '${node_id}' (cannot power off)"
-                return 1
-            }
-            log_info "cloud_stop_vm: powering off ${node_id} (hetzner server ${sid})"
-            local out rc
-            out=$(hcloud server poweroff "$sid" 2>&1); rc=$?
-            if [ "$rc" -ne 0 ]; then
-                log_fail "cloud_stop_vm: hcloud server poweroff ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
-                return "$rc"
-            fi
-            return 0
-            ;;
-        *)
-            log_fail "cloud_stop_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
-            return 2
-            ;;
-    esac
-}
-
-# cloud_revive_vm <node_id> — power a previously-STOPPED VM back on (provider API).
-#
-# Partner of cloud_stop_vm (NOT cloud_kill_vm — kill DELETES the VM, which cannot be
-# revived). Intended for tests that need same-identity rejoin. NOTE: by the time this
-# runs, CTM auto-heal may already have DECOMMISSIONED the node and provisioned a
-# replacement — in which case the revived VM rejoins as a stale identity and the
-# cluster sees a transient N+1 state (same caveat as start_node's docker path).
-# Prefer waiting on CTM auto-heal for normal recovery; use this only when the test
-# explicitly stopped the VM (cloud_stop_vm) and needs the original back.
-cloud_revive_vm() {
-    local node_id="${1:-}"
-    if [ -z "$node_id" ]; then
-        log_fail "cloud_revive_vm: node id argument is required"
-        return 2
-    fi
-    case "${CLOUD_PROVIDER:-hetzner}" in
-        hetzner)
-            if ! command -v hcloud >/dev/null 2>&1; then
-                log_fail "cloud_revive_vm: hcloud CLI not found (required for provider 'hetzner')"
-                return 2
-            fi
-            local sid
-            sid=$(cloud_server_id "$node_id" 2>/dev/null) || {
-                # No live server resolves → the VM was DELETED (cloud_kill_vm) and CTM
-                # auto-heal has provisioned a replacement that carries the load. In the
-                # best-effort recovery model (restart_all_nodes ignores this rc), reviving
-                # a deleted node is a benign no-op — mirror cloud_kill_vm's idempotent
-                # not-found path (log_warn + return 0) so it does NOT emit a spurious
-                # [FAIL] that records an otherwise-passing recovery test as FAIL. A STOPPED
-                # VM (cloud_stop_vm) still resolves, so the stop/revive contract is intact:
-                # this path only triggers for a genuinely deleted node.
-                log_warn "cloud_revive_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
-                return 0
-            }
-            log_info "cloud_revive_vm: powering on ${node_id} (hetzner server ${sid})"
-            local out rc
-            out=$(hcloud server poweron "$sid" 2>&1); rc=$?
-            if [ "$rc" -ne 0 ]; then
-                log_fail "cloud_revive_vm: hcloud server poweron ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
-                return "$rc"
-            fi
-            return 0
-            ;;
-        *)
-            log_fail "cloud_revive_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
             return 2
             ;;
     esac
@@ -2138,11 +2384,41 @@ cloud_partition_node() {
             #    the name already exists — treat "already exists" as success and
             #    resolve the existing id. Rules are set explicitly below (an empty
             #    rule set would deny-all inbound, also cutting mgmt+ssh).
+            # Labelled so cloud-reaper.sh finds it: unlabelled, a partition firewall left behind
+            # by a failed or killed heal was invisible to every reaper mode (2 leaked on
+            # 2026-09-23). The key is `aether-chaos-cluster`, NEVER `aether-cluster` (#1500): the
+            # Hetzner provider counts ANY firewall labelled `aether-cluster=<name>` as an ingress
+            # firewall its per-source selector missed (`HetznerComputeProvider.noFirewallForSource`)
+            # and refuses every CTM replacement while one exists — so a partition labelled that way
+            # blocked auto-heal for the whole partition window (s27 cluster B, 12-network S06).
+            # cloud-reaper.sh selects on `aether-chaos-cluster` as well, so leaks are still reaped.
+            local chaos_cluster="${BOOTSTRAP_CLUSTER_NAME:-${CLOUD_BOOTSTRAP_CLUSTER:-aether}}"
             local out rc fw_id
-            out=$(hcloud firewall create --name "$fw_name" 2>&1); rc=$?
+            out=$(hcloud firewall create --name "$fw_name" \
+                --label "aether-chaos-cluster=${chaos_cluster}" \
+                --label "aether-role=partition" 2>&1); rc=$?
             if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'already exists|uniqueness'; then
                 log_fail "cloud_partition_node: hcloud firewall create '${fw_name}' failed (rc=${rc}): ${out}"
                 return "$rc"
+            fi
+            if [ "$rc" -ne 0 ]; then
+                # Reused under its deterministic name: a firewall left by an earlier run may
+                # predate the labels, so apply them here too (idempotent with --overwrite) — and
+                # strip a legacy `aether-cluster` label, which would re-arm the provider's guard.
+                hcloud firewall add-label --overwrite "$fw_name" \
+                    "aether-chaos-cluster=${chaos_cluster}" \
+                    "aether-role=partition" >/dev/null 2>&1 \
+                    || log_warn "cloud_partition_node: could not label existing firewall '${fw_name}' — reapers will not see it"
+                # remove-label errors when the label is already absent, so its status cannot tell
+                # "nothing to do" from a real API failure. Check the post-condition instead: a reused
+                # firewall that KEEPS aether-cluster silently re-creates the #1500 red.
+                hcloud firewall remove-label "$fw_name" aether-cluster >/dev/null 2>&1 || true
+                local fw_json
+                if ! fw_json=$(hcloud firewall describe "$fw_name" -o json 2>/dev/null); then
+                    log_warn "cloud_partition_node: could not read back '${fw_name}' to confirm its legacy aether-cluster label is gone — if it remains, CTM replacements are refused while the partition is up (#1500)"
+                elif printf '%s' "$fw_json" | grep -qE '"aether-cluster"[[:space:]]*:'; then
+                    log_warn "cloud_partition_node: '${fw_name}' STILL carries aether-cluster after remove-label — CTM replacements will be refused while the partition is up (#1500); remove it by hand: hcloud firewall remove-label ${fw_name} aether-cluster"
+                fi
             fi
             fw_id=$(hcloud firewall describe "$fw_name" -o 'format={{.ID}}' 2>/dev/null)
             if [ -z "$fw_id" ]; then
@@ -2204,6 +2480,14 @@ ${out_rules%,
                 return "$rc"
             fi
 
+            # apply-to-resource returns when the ACTION is accepted, not when applied_to shows the server. CONFIRM the
+            # partition is in force (bounded) or FAIL: a test that carries on with no partition in place passes
+            # vacuously. An unreadable describe is not confirmation either.
+            if ! _cloud_fw_wait_applied "$fw_name" applied "${CLOUD_PARTITION_APPLY_TIMEOUT_S:-30}"; then
+                log_fail "cloud_partition_node: partition firewall '${fw_name}' (id ${fw_id}) never applied to server ${sid} within ${CLOUD_PARTITION_APPLY_TIMEOUT_S:-30}s (applied_to count=${CLOUD_FW_LAST_COUNT:-?}); ${node_id} is NOT partitioned and the test would pass vacuously"
+                return 1
+            fi
+
             # Record the id for cleanup (cloud_heal_partition reads this).
             printf '%s\n' "$fw_id" > "/tmp/aether-partition-fw-${node_id}.id" 2>/dev/null || true
             log_info "cloud_partition_node: ${node_id} (server ${sid}) partitioned via firewall '${fw_name}' (id ${fw_id}) — blocking cluster ${cluster_port}+swim ${swim_port} in+out (tcp+udp), keeping mgmt ${mgmt_port}+ssh ${ssh_port}"
@@ -2214,6 +2498,82 @@ ${out_rules%,
             return 2
             ;;
     esac
+}
+
+# Number of resources a Hetzner firewall is applied to, from `hcloud firewall describe <name> -o json`; prints a
+# non-negative integer, or "?" when the firewall cannot be read (gone, API error). jq when present, else a count
+# of the `"server":{` members of `applied_to` (nothing else in that document is shaped like that).
+_cloud_fw_applied_count() {
+    local json
+    json=$(hcloud firewall describe "$1" -o json 2>/dev/null) || { printf '?'; return 0; }
+    [ -n "$json" ] || { printf '?'; return 0; }
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$json" | jq -r '(.applied_to // []) | length' 2>/dev/null || printf '?'
+    else
+        # grep -o exits 1 on ZERO matches, which under pipefail would fail this function (and kill a plain
+        # `c=$(...)` caller under set -e) exactly when the answer is the valid count 0.
+        printf '%s' "$json" | tr -d '\n' | { grep -oE '"server"[[:space:]]*:[[:space:]]*\{' || true; } | wc -l | tr -d ' '
+    fi
+}
+
+# Server ids a Hetzner firewall is applied to, one per line, read from the firewall's OWN `applied_to`
+# (`hcloud firewall describe <name> -o json`: "applied_to":[{"type":"server","server":{"id":N}}, ...]). Only TOP-LEVEL
+# type=server entries count: a label_selector entry carries its own nested "applied_to_resources":[{"type":"server",...}]
+# (real hcloud 1.62.2 output, test/fixtures/hcloud-firewall-describe-label-selector.json), which is not a direct
+# attachment this heal made, so it is ignored by both paths. Prints nothing (rc 0) for none applied or an unreadable describe. This is
+# what a heal must detach from: a node->IP->server lookup cannot resolve a CTM-replacement node that has left the
+# cluster's endpoint API, and its miss used to become a garbage `--server` argument (12-network S05, cloud run 4).
+_cloud_fw_applied_server_ids() {
+    local json
+    json=$(hcloud firewall describe "$1" -o json 2>/dev/null) || return 0
+    [ -n "$json" ] || return 0
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$json" | jq -r '(.applied_to // [])[] | select(.type == "server") | .server.id' 2>/dev/null || true
+    else
+        # No jq: walk the applied_to array tracking bracket depth, taking an entry that STARTS at depth 1 (a direct
+        # element of applied_to) and opens {"type":"server","server":{"id":N}. Nested entries start deeper.
+        printf '%s' "$json" | tr -d ' \t\r\n' | awk '{
+            s = $0; key = "\"applied_to\":["; p = index(s, key)
+            if (p == 0) exit
+            depth = 0
+            for (i = p + length(key) - 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "[" || c == "{") {
+                    if (c == "{" && depth == 1) {
+                        rest = substr(s, i)
+                        if (match(rest, /^\{"type":"server","server":\{"id":[0-9]+/)) {
+                            id = substr(rest, RSTART, RLENGTH); sub(/.*:/, "", id); print id
+                        }
+                    }
+                    depth++
+                } else if (c == "]" || c == "}") {
+                    depth--
+                    if (depth == 0) exit
+                }
+            }
+        }'
+    fi
+    return 0
+}
+
+# Wait (bounded, $SECONDS-based) until firewall <name>'s applied count satisfies <mode>: "empty" (== 0) or
+# "applied" (>= 1; an unreadable "?" is not confirmation). Returns 0 on success, 1 on timeout; the last count read is left in CLOUD_FW_LAST_COUNT. `hcloud firewall remove-from-resource` / `apply-to-resource` return when the
+# ACTION is accepted, not when the firewall's applied_to has settled, and a delete in between fails with
+# resource_in_use (S-triple-prime: node-01m3thk11zaa0jzk5mym15q76x stayed partitioned for the rest of the run).
+CLOUD_FW_LAST_COUNT=""
+_cloud_fw_wait_applied() {
+    local name="$1" mode="$2" budget="${3:-60}" poll="${CLOUD_FW_POLL_S:-2}"
+    local deadline=$(( SECONDS + budget ))
+    while :; do
+        CLOUD_FW_LAST_COUNT=$(_cloud_fw_applied_count "$name")
+        case "$mode" in
+            empty)   [ "$CLOUD_FW_LAST_COUNT" = "0" ] && return 0 ;;
+            # "?" (an unreadable describe) is NOT confirmation: keep polling, then time out
+            applied) case "$CLOUD_FW_LAST_COUNT" in ''|'?'|0) ;; *) return 0 ;; esac ;;
+        esac
+        [ "$SECONDS" -ge "$deadline" ] && return 1
+        sleep "$poll"
+    done
 }
 
 # cloud_heal_partition <node_id> — remove a node's partition firewall (idempotent).
@@ -2243,21 +2603,50 @@ cloud_heal_partition() {
                 log_info "cloud_heal_partition: no partition firewall '${fw_name}' for ${node_id} (already healed)"
                 return 0
             fi
-            # Detach from the node's server (if still applied), then delete. Resolve
-            # the server id best-effort — if the VM is gone (CTM replaced it) the
-            # detach is unnecessary and delete still succeeds.
-            local sid out rc
-            sid=$(cloud_server_id "$node_id" 2>/dev/null || true)
-            if [ -n "$sid" ]; then
-                out=$(hcloud firewall remove-from-resource "$fw_name" --type server --server "$sid" 2>&1); rc=$?
+            # Detach from every server the firewall is applied to, WAIT for the detach to settle, then delete (retrying
+            # on resource_in_use), then VERIFY the firewall is gone. The servers come from the firewall's own applied_to,
+            # never from a node->IP lookup: that lookup cannot resolve a CTM-replacement node, and a miss became a garbage
+            # `--server` argument. Nothing applied (VM gone, already detached) needs no detach and delete still succeeds.
+            local sid out rc budget="${CLOUD_HEAL_TIMEOUT_S:-60}" deadline delay="${CLOUD_HEAL_RETRY_DELAY_S:-2}" one_sid
+            deadline=$(( SECONDS + budget ))
+            sid=$(_cloud_fw_applied_server_ids "$fw_name" | tr '\n' ' ' | sed 's/ *$//')
+            for one_sid in $sid; do
+                out=$(hcloud firewall remove-from-resource "$fw_name" --type server --server "$one_sid" 2>&1); rc=$?
                 if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'not applied|not_found|not found'; then
-                    log_warn "cloud_heal_partition: detach '${fw_name}' from server ${sid} returned rc=${rc}: ${out} (proceeding to delete)"
+                    log_warn "cloud_heal_partition: detach '${fw_name}' from server ${one_sid} returned rc=${rc}: ${out} (waiting for applied_to to clear)"
                 fi
+            done
+            if ! _cloud_fw_wait_applied "$fw_name" empty "$budget"; then
+                case "$CLOUD_FW_LAST_COUNT" in
+                    '?') ;;   # unreadable: the firewall may already be gone; the delete below decides
+                    *)
+                        log_fail "cloud_heal_partition: firewall '${fw_name}' (id ${fw_id}) is STILL applied to ${CLOUD_FW_LAST_COUNT} resource(s) ${budget}s after detaching from server ${sid:-<none applied>}; ${node_id} stays PARTITIONED, left for the driver's proof of zero (the record /tmp/aether-partition-fw-${node_id}.id is kept)"
+                        return 1
+                        ;;
+                esac
             fi
-            out=$(hcloud firewall delete "$fw_name" 2>&1); rc=$?
-            if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -qiE 'not_found|not found'; then
-                log_fail "cloud_heal_partition: hcloud firewall delete '${fw_name}' failed (rc=${rc}): ${out}"
+            while :; do
+                out=$(hcloud firewall delete "$fw_name" 2>&1); rc=$?
+                if [ "$rc" -eq 0 ] || printf '%s' "$out" | grep -qiE 'not_found|not found'; then
+                    break
+                fi
+                if printf '%s' "$out" | grep -qiE 'resource_in_use|still in use'; then
+                    if [ "$SECONDS" -ge "$deadline" ]; then
+                        log_fail "cloud_heal_partition: firewall '${fw_name}' (id ${fw_id}) still resource_in_use after ${budget}s of retries (server ${sid:-<none applied>}); ${node_id} stays PARTITIONED, left for the driver's proof of zero: ${out}"
+                        return 1
+                    fi
+                    log_warn "cloud_heal_partition: delete '${fw_name}' (id ${fw_id}) refused resource_in_use; retrying in ${delay}s"
+                    sleep "$delay"
+                    delay=$(awk -v d="$delay" 'BEGIN { d = d * 2; if (d > 8) d = 8; print d }')
+                    continue
+                fi
+                log_fail "cloud_heal_partition: hcloud firewall delete '${fw_name}' (id ${fw_id}, server ${sid:-<none applied>}) failed (rc=${rc}): ${out}"
                 return "$rc"
+            done
+            # Do not trust the exit code: the firewall must be GONE.
+            if hcloud firewall describe "$fw_name" -o 'format={{.ID}}' >/dev/null 2>&1; then
+                log_fail "cloud_heal_partition: delete of '${fw_name}' (id ${fw_id}, server ${sid:-<none applied>}) reported success but the firewall still exists; ${node_id} may stay PARTITIONED, left for the driver's proof of zero"
+                return 1
             fi
             rm -f "/tmp/aether-partition-fw-${node_id}.id" 2>/dev/null || true
             log_info "cloud_heal_partition: removed partition firewall '${fw_name}' for ${node_id}"
@@ -2364,6 +2753,30 @@ _reestablish_echo_baseline() {
     return 0
 }
 
+# Post-recovery barriers for a cloud destructive recovery: a leader, a quiesced
+# generation, readiness of <ready_floor> cores, then the test-echo baseline redeploy
+# (#426: the cloud branch once returned before the redeploy). Shared by
+# restart_all_nodes' cloud branch and the S20 full-drain path in
+# suites/02-chaos/test-self-drain-quorum-loss.sh (#1051), so the two cannot drift.
+# <caller> prefixes the log lines. rc 1 when no leader is elected or the echo
+# baseline is not restored; quiescence and readiness shortfalls only warn.
+_cloud_recovery_barriers() {
+    local caller="$1" ready_floor="$2"
+    if ! wait_for_leader 120; then
+        log_fail "${caller}: no leader elected within 120s on cloud baseline restore"
+        return 1
+    fi
+    if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 180; then
+        log_warn "${caller}: generation did not quiesce within 180s on cloud (proceeding — readiness barrier is authoritative)"
+    fi
+    if ! wait_for_cluster_ready 120 "${ready_floor}"; then
+        log_warn "${caller}: cloud cluster not fully ready within 120s (proceeding — downstream suite has its own readiness gate)"
+    fi
+    log_info "${caller}: cloud cluster recovered (>=${ready_floor} healthy cores, leader elected)"
+    _reestablish_echo_baseline || return 1
+    return 0
+}
+
 # #441 review v2: corroboration helper for the S20 full-drain decision. Emits
 # the public IPs of Hetzner VMs in RUNNING power state for a cluster (one per
 # line), via the hcloud CLI — a signal path completely independent of the mgmt
@@ -2391,11 +2804,15 @@ _cloud_running_vm_ips() {
     if ! command -v hcloud >/dev/null 2>&1; then
         return 1
     fi
-    # #441 Defect B: the previous `--selector "aether-cluster=${cluster_name}"`
-    # query structurally never matched — provisioned VMs (seed AND CTM
-    # replacement alike) are only ever stamped with `aether-node-id`;
-    # `aether-cluster` is a separate label that CTM does not currently set on
-    # every VM (product-side gap, tracked separately as #442 v2b). That made
+    # #441 Defect B (run 8, historical): at that time a
+    # `--selector "aether-cluster=${cluster_name}"` query matched nothing,
+    # because provisioned VMs were stamped only with `aether-node-id`. That is
+    # no longer true of the product (#1051 round 3): HetznerComputeProvider
+    # stamps `aether-cluster` on every VM it provisions, CTM replacements
+    # included (provision -> labelsFor -> buildLabels), which is the label the
+    # drain confirmation (_cloud_cluster_vms) and the --strict-cluster reap
+    # select on. This helper keeps the key-presence query below for VMs
+    # provisioned before that. At the time, the empty match made
     # this function's "0 running VMs" result look trustworthy even while VMs
     # were fully alive, and the caller (restart_all_nodes) treated that
     # false-empty as confirmed-dead and reaped + rebootstrapped a LIVE
@@ -2405,7 +2822,10 @@ _cloud_running_vm_ips() {
     # Interim fix: query by label KEY presence (`-l aether-node-id`, matches
     # regardless of whether `aether-cluster` is ever stamped) and post-filter
     # each row against two independent, cluster-unambiguous membership tests:
-    #   - CTM auto-heal replacements are named `aether-cloud-<cluster>-node-*`
+    #   - CTM auto-heal replacements are named `aether-<cluster>-node-*` — the cluster's
+    #     persisted name, which is the harness name since #1487 (before it, the TOML
+    #     `[cluster] name`, `cloud-test-b`, so the old pattern `aether-cloud-<cluster>-`
+    #     only matched because that TOML name happened to be `cloud-` + the harness name)
     #     (the cluster name is embedded in the `aether-node-id` VALUE itself,
     #     so this match can never fold in a sibling cluster's replacement).
     #   - Original bootstrap seeds are named `<CLOUD_SOURCE_NAME>-core-N`,
@@ -2460,7 +2880,7 @@ _cloud_running_vm_ips() {
         node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
         [ -z "$node_id" ] && continue
         case "$node_id" in
-            "aether-cloud-${cluster_name}-node-"*)
+            "aether-${cluster_name}-node-"*)
                 printf '%s\n' "$ip"
                 ;;
             *)
@@ -2524,7 +2944,7 @@ _cloud_seed_ips() {
 # every 03-scaling scale-up failed with 403 resource_limit_exceeded).
 # Per-row membership tests (any one admits the row):
 #   1. `aether-node-id` label VALUE matches the CTM replacement pattern
-#      `aether-cloud-<cluster>-node-*` (cluster name embedded — unambiguous).
+#      `aether-<cluster>-node-*` (cluster name embedded — unambiguous; #1487).
 #   2. exact `aether-cluster=<cluster>` label match (stamped reliably
 #      post-#442 v2b; exact match can never fold in the PG VM — its value is
 #      `test-pg`, never a test cluster's name — nor a sibling cluster).
@@ -2576,7 +2996,7 @@ reap_cloud_cluster() {
             node_id=$(printf '%s' "$labels_blob" | grep -oE 'aether-node-id=[^,[:space:]]+' | sed 's/aether-node-id=//' || true)
             member=false
             case "$node_id" in
-                "aether-cloud-${cluster_name}-node-"*) member=true ;;
+                "aether-${cluster_name}-node-"*) member=true ;;
             esac
             # Exact-boundary label match; cluster names are [a-z0-9-] so the
             # interpolation is ERE-safe.
@@ -2636,6 +3056,48 @@ reap_cloud_cluster() {
 ## the VM apart from the CREATE DATABASE itself; NEVER drops or alters anything.
 ## Requires the PG firewall to be open (caller runs after pg-firewall.sh open) and
 ## the ambient PG_HOST/PG_USER/PG_PASSWORD env vars run-tests.sh already relies on.
+# Drop and recreate a cloud test database so a suite that asserts FIRST-TIME behaviour
+# gets a first-time database.
+#
+# The Hetzner PG VM is long-lived and shared across runs, so `ensure_cloud_pg_database`
+# — which creates only when absent — leaves migration state behind forever. Suite 10
+# baselines `database.testpersistence`; the first run that ever did so succeeded, and
+# every run since gets a CORRECT 409 from the server:
+#
+#   "Baseline conflict for datasource 'database.testpersistence':
+#    versioned migrations already applied up to version 900"
+#
+# Measured 2026-09-18: 10-database 2p/1f on four consecutive runs across BOTH runtimes.
+# The server was right every time; the test's premise had expired. Same class as the
+# url-shortener fixture gap — a test depending on ambient shared state rather than a
+# provisioned one.
+#
+# Guarded to names ending in `_testpersistence` or `_testpersistence_b` (cluster B's own copy): this DROPs a database, and it must not
+# be reachable for anything but the suite fixture it exists for.
+reset_cloud_pg_database() {
+    local dbname="$1"
+    case "$dbname" in
+        *_testpersistence|*_testpersistence_b) ;;
+        *) log_warn "reset_cloud_pg_database(${dbname}): REFUSING — only *_testpersistence and *_testpersistence_b (cluster B's own) may be dropped"
+           return 1 ;;
+    esac
+    local pg_ssh_user="${PG_VM_SSH_USER:-root}"
+    if [ -z "${PG_HOST:-}" ] || [ -z "${PG_USER:-}" ] || [ -z "${PG_PASSWORD:-}" ]; then
+        log_warn "reset_cloud_pg_database(${dbname}): PG_HOST/PG_USER/PG_PASSWORD not set"
+        return 1
+    fi
+    local ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR -i "$AETHER_SSH_KEY")
+    local dropped
+    # Runs BEFORE cluster bootstrap, so no slice holds a connection yet.
+    dropped=$(ssh "${ssh_opts[@]}" "${pg_ssh_user}@${PG_HOST}" \
+        "docker exec -e PGPASSWORD='${PG_PASSWORD}' aether-pg psql -U '${PG_USER}' -d postgres -c 'DROP DATABASE IF EXISTS ${dbname}'" 2>&1) || {
+        log_warn "reset_cloud_pg_database(${dbname}): DROP failed: $(printf '%s' "$dropped" | head -c 200)"
+        return 1
+    }
+    log_info "reset_cloud_pg_database(${dbname}): dropped (was: $(printf '%s' "$dropped" | tr -d '\n' | head -c 60))"
+    ensure_cloud_pg_database "$dbname"
+}
+
 ensure_cloud_pg_database() {
     local dbname="$1"
     local pg_ssh_user="${PG_VM_SSH_USER:-root}"
@@ -2664,15 +3126,306 @@ ensure_cloud_pg_database() {
     return 0
 }
 
+## #1051 (owner ruling 2026-09-13): confirm a FULL self-drain from POSITIVE per-VM
+## evidence before anything is reaped. An unreachable node is not a dead node:
+## management-API silence, an empty read, or a probe that failed is never evidence
+## of death. The VM set is exactly what the reap destroys — _cloud_full_drain_recover
+## reaps with --strict-cluster, the exact `aether-cluster=<name>` label — so every
+## VM the reap would delete is classified from a direct read:
+##   halted     POSITIVELY drain-halted. jvm: the aether-node unit is LoadState=loaded
+##              with ActiveState=failed or ExecMainStatus=2. container: the aether-node
+##              container exited (State.Status exited|dead) with ANY exit code — a
+##              container has no "failed" state. Exit status recorded. This is the
+##              reap gate's evidence class, deliberately broader than S19's
+##              halt-REASON predicate jvm_unit_is_drain_halt (failed AND 2), which
+##              answers a different question (lib/common.sh).
+##   stopped    jvm: unit loaded, inactive, and neither failed nor exit 2 — no running
+##              node, but not a drain halt.
+##   notloaded  jvm: unit not loaded (LoadState!=loaded, e.g. not yet installed) — no
+##              running node, and NOT proof of a drain.
+##   gone       the provider reports the VM not found.
+##   alive      the unit or container is running (or starting, or stopping).
+##   unreadable SSH error or timeout, output that does not parse, unknown runtime.
+## CTO ruling 2026-09-13: the drain is CONFIRMED only when no VM is alive, no VM is
+## unreadable, AND at least one VM is halted. stopped/notloaded/gone VMs count toward
+## the reap only beside a halted one: a set with no halted VM may be a cluster still
+## bootstrapping, and that must never be reaped. An enumeration that failed or came
+## back empty is not confirmed either (an empty enumeration cannot be told apart from
+## a selector that matched nothing — #441 Defect B, see _cloud_running_vm_ips).
+
+# VMs carrying aether-cluster=<cluster>, one "id name status ipv4" line each.
+# rc 1 when hcloud is missing, or the query failed or timed out.
+_cloud_cluster_vms() {
+    local cluster_name="$1"
+    command -v hcloud >/dev/null 2>&1 || return 1
+    _run_with_timeout 10 hcloud server list -l "aether-cluster=${cluster_name}" -o columns=id,name,status,ipv4 -o noheader 2>/dev/null
+}
+
+# One read of the node process state on a VM, over SSH to its public IP with
+# cloud_ssh's options (cloud_ssh resolves node ids; this set is VMs, not node ids).
+# Prints one line, "<halted|stopped|notloaded|alive|unreadable> <evidence>" (see the
+# classification above); the verdict is the output.
+_cloud_vm_node_state() {
+    local ip="$1" runtime="$2"
+    local remote_cmd out rc errf err flat
+    case "$runtime" in
+        jvm)       remote_cmd="systemctl show aether-node --property=LoadState,ActiveState,ExecMainStatus" ;;
+        container) remote_cmd="docker inspect --format '{{.State.Status}}|{{.State.ExitCode}}' aether-node" ;;
+        *)         echo "unreadable unknown runtime '${runtime}'"; return 0 ;;
+    esac
+    if [ -z "$ip" ] || [ "$ip" = "-" ]; then
+        echo "unreadable no public IPv4 to reach it"
+        return 0
+    fi
+    errf=$(mktemp)
+    # </dev/null: ssh reads stdin, and the caller feeds its VM list on stdin.
+    out=$(_run_with_timeout "${CLOUD_DRAIN_SSH_TIMEOUT_S:-20}" ssh "${SSH_OPTS[@]}" \
+        -i "${AETHER_SSH_KEY}" "${CLOUD_SSH_USER:-root}@${ip}" "$remote_cmd" </dev/null 2>"$errf") && rc=0 || rc=$?
+    err=$(tr '\n' ' ' < "$errf" | head -c 200)
+    rm -f "$errf"
+    out=$(printf '%s' "$out" | tr -d '\r')
+    flat=$(printf '%s' "$out" | tr '\n' ' ' | head -c 200)
+    if [ "$rc" -ne 0 ]; then
+        [ "$rc" -eq 124 ] && err="(timed out after ${CLOUD_DRAIN_SSH_TIMEOUT_S:-20}s) ${err}"
+        echo "unreadable ssh rc=${rc}: ${flat} ${err}"
+        return 0
+    fi
+    if [ "$runtime" = "jvm" ]; then
+        local load active exec_status fields
+        load=$(jvm_unit_field "$out" "LoadState")
+        active=$(jvm_unit_field "$out" "ActiveState")
+        exec_status=$(jvm_unit_field "$out" "ExecMainStatus")
+        fields="LoadState=${load} ActiveState=${active} ExecMainStatus=${exec_status}"
+        if [ -z "$load" ] || ! [[ "$exec_status" =~ ^[0-9]+$ ]]; then
+            echo "unreadable unparseable systemctl output: ${flat}"
+            return 0
+        fi
+        case "$active" in
+            active|activating|deactivating|reloading)
+                echo "alive unit ${fields}"
+                return 0
+                ;;
+            inactive|failed) ;;
+            *)
+                echo "unreadable unparseable systemctl output: ${flat}"
+                return 0
+                ;;
+        esac
+        if [ "$load" != "loaded" ]; then
+            echo "notloaded unit ${fields}"
+        elif [ "$active" = "failed" ] || [ "$exec_status" = "2" ]; then
+            echo "halted unit ${fields}"
+        else
+            echo "stopped unit ${fields}"
+        fi
+        return 0
+    fi
+    local line status code
+    line=$(printf '%s\n' "$out" | grep -E '^[a-z]+\|-?[0-9]+$' | head -1 || true)
+    status="${line%%|*}"
+    code="${line#*|}"
+    case "$status" in
+        exited|dead)                               echo "halted container Status=${status} ExitCode=${code}" ;;
+        running|restarting|paused|created|removing) echo "alive container Status=${status} ExitCode=${code}" ;;
+        *)                                         echo "unreadable unparseable docker inspect output: ${flat}" ;;
+    esac
+    return 0
+}
+
+# Whether the provider positively reports a VM id as deleted. Only hcloud's own
+# deleted-server response counts: `hcloud server describe <id>` exits non-zero with
+# exactly `hcloud: Server not found: <id>` as its whole output (hcloud v1.62.2,
+# measured against a fake API answering GET /servers/<id> with 404
+# {"error":{"code":"not_found"}} and an empty name lookup). Every other failure is
+# NOT evidence the VM is gone, including other "not found" texts
+# (`hcloud: project not found (not_found)`, a proxy's `server responded with status
+# code 404`), auth, network and timeouts — the VM stays unreadable (#1051 round 3).
+_cloud_vm_reported_gone() {
+    local id="$1" out
+    if out=$(_run_with_timeout 10 hcloud server describe "$id" </dev/null 2>&1); then
+        return 1
+    fi
+    [ "$(printf '%s' "$out" | tr -d '\r')" = "hcloud: Server not found: ${id}" ]
+}
+
+# One confirmation round over every VM carrying aether-cluster=<cluster>. Prints one
+# verdict line per VM — "<verdict> <name> (id <id>, <ip>): <evidence>" — plus an
+# "unknown: <why>" line when the round cannot confirm for a reason no single VM
+# carries, and a "listed: <ids>" line naming the ids this listing returned.
+# <seen> (optional) is the ids earlier rounds listed: one missing from this listing
+# counts only if hcloud reports it deleted, else it is unreadable — a listing that
+# silently drops a VM must not confirm a drain (#1051 round 3).
+# rc 0 only when no VM is alive or unreadable and at least one is halted.
+_cloud_full_drain_round() {
+    local cluster_name="$1" runtime="$2" seen="${3:-}"
+    local listing id name status ip state verdict evidence unconfirmed=0 halted=0 listed=""
+    if ! listing=$(_cloud_cluster_vms "$cluster_name"); then
+        echo "unknown: hcloud enumeration of aether-cluster=${cluster_name} failed or timed out"
+        return 1
+    fi
+    if [ -z "$(printf '%s' "$listing" | tr -d '[:space:]')" ]; then
+        echo "unknown: hcloud lists ZERO VMs with aether-cluster=${cluster_name} — an empty enumeration is not evidence of death"
+        return 1
+    fi
+    while read -r id name status ip; do
+        [ -n "$id" ] || continue
+        listed="${listed} ${id}"
+        state=$(_cloud_vm_node_state "$ip" "$runtime")
+        verdict="${state%% *}"
+        evidence="${state#* }"
+        case "$verdict" in
+            halted)
+                echo "halted ${name} (id ${id}, ${ip}): ${evidence}"
+                halted=$((halted + 1))
+                ;;
+            stopped|notloaded)
+                echo "${verdict} ${name} (id ${id}, ${ip}): ${evidence}"
+                ;;
+            alive)
+                echo "alive ${name} (id ${id}, ${ip}): ${evidence}"
+                unconfirmed=1
+                ;;
+            *)
+                if _cloud_vm_reported_gone "$id"; then
+                    echo "gone ${name} (id ${id}, ${ip}): hcloud reports the server not found (probe had read: ${evidence})"
+                else
+                    echo "unreadable ${name} (id ${id}, ${ip}, hcloud status=${status}): ${evidence}"
+                    unconfirmed=1
+                fi
+                ;;
+        esac
+    done <<< "$listing"
+    echo "listed:${listed}"
+    for id in $seen; do
+        case " ${listed} " in
+            *" ${id} "*) continue ;;
+        esac
+        if _cloud_vm_reported_gone "$id"; then
+            echo "gone (id ${id}): listed in an earlier round, absent now, hcloud reports the server deleted"
+        else
+            echo "unreadable (id ${id}): listed in an earlier round but absent from this listing and not reported deleted — the enumeration may be partial"
+            unconfirmed=1
+        fi
+    done
+    if [ "$unconfirmed" -eq 0 ] && [ "$halted" -eq 0 ]; then
+        echo "unknown: no VM is positively drain-halted (aether-node LoadState=loaded with ActiveState=failed or ExecMainStatus=2, or an exited container) — stopped, not-loaded or gone VMs alone may be a cluster still bootstrapping"
+        return 1
+    fi
+    return "$unconfirmed"
+}
+
+# Re-probes until a round confirms the full drain, or <bound> seconds have passed.
+# <bound> is NOT scaled by TIMEOUT_SCALE: the caller's budget is already a cloud
+# wall-clock figure. <bound> is checked BETWEEN rounds, never inside one: a round
+# that starts always completes (one hcloud listing <=10s plus one SSH read <=20s per
+# VM), and a failed round is followed by a CLOUD_DRAIN_PROBE_INTERVAL_S pause, so
+# confirmation can overrun <bound> by up to one pause plus one round; the caller's
+# overall budget is the enforced ceiling. Ids listed by any round are carried into
+# later rounds (see _cloud_full_drain_round). rc 0 confirmed; rc 1 not confirmed,
+# after a log_fail naming what blocked the last round.
+_cloud_await_full_drain() {
+    local cluster_name="$1" runtime="$2" bound="$3"
+    local start=$SECONDS round=0 report rc seen=""
+    if [ -z "$cluster_name" ]; then
+        log_fail "full self-drain confirmation: no cluster name (BOOTSTRAP_CLUSTER_NAME unset) — refusing to enumerate or reap an unscoped VM set"
+        return 1
+    fi
+    while :; do
+        round=$((round + 1))
+        report=$(_cloud_full_drain_round "$cluster_name" "$runtime" "$seen") && rc=0 || rc=$?
+        seen=$(printf '%s %s\n' "$seen" "$(printf '%s\n' "$report" | sed -n 's/^listed://p')" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
+        if [ "$rc" -eq 0 ]; then
+            log_info "full self-drain of '${cluster_name}' confirmed on every VM (round ${round}, $((SECONDS - start))s): $(printf '%s' "$report" | tr '\n' ';')"
+            return 0
+        fi
+        [ $((SECONDS - start)) -ge "$bound" ] && break
+        log_info "full self-drain of '${cluster_name}' not yet confirmed (round ${round}, $((SECONDS - start))s of ${bound}s): $(printf '%s' "$report" | tr '\n' ';') — re-probing"
+        sleep "${CLOUD_DRAIN_PROBE_INTERVAL_S:-5}"
+    done
+    log_fail "full self-drain of '${cluster_name}' NOT confirmed after ${round} round(s) in $((SECONDS - start))s (bound ${bound}s, checked between rounds) — refusing to reap. Blocking: $(printf '%s\n' "$report" | grep -vE '^(halted|stopped|notloaded|gone) |^listed:' | tr '\n' ';') Last round: $(printf '%s' "$report" | tr '\n' ';')"
+    return 1
+}
+
+# THE ONLY CALLER of _cloud_full_drain_recover (#1051 round 3, CTO ruling: "unreachable
+# is not dead" governs EVERY reap or rebootstrap decision in this harness, not only
+# S20). Whatever nominated a full drain — S20's quorum-lost verdict, or
+# restart_all_nodes' 0 active cores / silent mgmt ports / stragglers / zero progress —
+# nothing is reaped until _cloud_await_full_drain confirms it from positive per-VM
+# evidence. <caller> prefixes the log lines; <bound> is the confirmation bound. rc:
+#   0 recovered;
+#   1 reap or bootstrap failed (VMs may already be gone);
+#   2 recovery refused in preflight, nothing destroyed;
+#   3 drain NOT confirmed, or CLOUD_RUNTIME unknown — nothing destroyed.
+_cloud_reap_after_confirmed_drain() {
+    local caller="$1" bound="$2"
+    local runtime="${CLOUD_RUNTIME:-}" rc
+    case "$runtime" in
+        jvm|container) ;;
+        *)
+            log_fail "${caller}: CLOUD_RUNTIME is '${runtime:-<unset>}' — cannot read VM drain state, refusing to reap or rebootstrap"
+            return 3
+            ;;
+    esac
+    if ! _cloud_await_full_drain "${BOOTSTRAP_CLUSTER_NAME:-}" "$runtime" "$bound"; then
+        log_fail "${caller}: full self-drain not positively confirmed on every VM — refusing to reap or rebootstrap"
+        return 3
+    fi
+    _cloud_full_drain_recover && rc=0 || rc=$?
+    return "$rc"
+}
+
+## Unregister a cluster whose VMs were just reaped, so a later `aether cluster bootstrap <name>` is not
+## refused by BootstrapExistingClusterGuard (#2213): the guard refuses a fresh bootstrap while the CLI
+## registry (~/.aether/clusters.toml) holds the name or ~/.aether/clusters/<name>/ exists. The registry entry
+## is removed (registry-only; a missing entry is tolerated) and the local bootstrap state is MOVED aside to
+## <name>.reaped-<UTC stamp> (reversible, keeps the evidence) — never deleted. Always returns 0: a failure here
+## surfaces as the guard's own refusal at the next bootstrap, which names the cause.
+_cloud_unregister_reaped_cluster() {
+    local name="$1" out state_dir stamp
+    if out=$(aether cluster remove "$name" 2>&1); then
+        log_info "_cloud_unregister_reaped_cluster: '${name}' removed from the cluster registry"
+    else
+        log_warn "_cloud_unregister_reaped_cluster: 'aether cluster remove ${name}' failed (tolerated; entry may be absent): ${out}"
+    fi
+    state_dir="${HOME}/.aether/clusters/${name}"
+    if [ -d "$state_dir" ]; then
+        stamp=$(date -u +%Y%m%dT%H%M%SZ)
+        if mv "$state_dir" "${state_dir}.reaped-${stamp}"; then
+            log_info "_cloud_unregister_reaped_cluster: bootstrap state of '${name}' moved to ${state_dir}.reaped-${stamp}"
+        else
+            log_warn "_cloud_unregister_reaped_cluster: could not move ${state_dir} aside — the next bootstrap of '${name}' will be refused"
+        fi
+    fi
+    return 0
+}
+
+## End-of-run teardown reap of one named cluster (run-tests.sh cloud teardown), then unregister it. The reap is
+## the planned destruction of a finished run's cluster, so unlike _cloud_full_drain_recover it is not gated on
+## drain evidence. rc 0 (clean) and rc 2 (orphans left) both leave the cluster gone, so both unregister; rc 1 is
+## a usage/setup error (e.g. no HCLOUD_TOKEN) that deleted nothing, so the registry entry is kept. Always returns
+## 0 (teardown is best effort). AETHER_CLOUD_REAPER overrides the reaper path (same test seam as above).
+_cloud_teardown_reap_cluster() {
+    local name="$1" reaper out rc
+    reaper="${AETHER_CLOUD_REAPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../tools" 2>/dev/null && pwd)/cloud-reaper.sh}"
+    out=$("$reaper" --cluster "$name" --destroy --force 2>&1)
+    rc=$?
+    printf '%s\n' "$out" | tail -3
+    case "$rc" in
+        0|2) _cloud_unregister_reaped_cluster "$name" ;;
+        *) log_warn "_cloud_teardown_reap_cluster: reaper failed for '${name}' (rc=${rc}) — registry entry kept" ;;
+    esac
+    return 0
+}
+
 ## #441 S20: cluster-scoped reap + fresh bootstrap — the cloud analog of the
 ## docker/compose branch's `docker compose down -v && up -d` full reset. This is
 ## the ONLY path capable of recovering a CONFIRMED FULL self-drain: every core
 ## has halted (`--restart no` on all launch paths, by design — a self-fenced
 ## node must never auto-return on VM reboot), so there is no leader and no CTM
 ## (CTM itself runs on a leader that no longer exists) to auto-heal, and
-## `cloud_revive_vm` is poweron-only — a no-op against a VM that is still
+## a poweron would be a no-op against a VM that is still
 ## powered ON (self-drain halts the container/JVM, not the VM) or against a VM
-## the chaos-kill primitive already DELETED. Cloud-init also does not re-run on
+## the chaos-kill primitive already DELETED — and same-NodeId revival is not supported (#1543). Cloud-init also does not re-run on
 ## an already-provisioned VM, so there is no lighter-weight recovery available.
 ##
 ## NEVER touches the shared test-PG VM or its firewall (tools/pg-firewall.sh):
@@ -2688,11 +3441,17 @@ ensure_cloud_pg_database() {
 ## orphan-capture post-filter keeps any aether-node-id-labeled row whose
 ## aether-cluster label is EMPTY — exactly the shape a mislabeled PG resource
 ## could take — so --strict-cluster is required here, not optional.)
+##
+## #1051 round 3: called ONLY through _cloud_reap_after_confirmed_drain, which first
+## confirms the full drain from per-VM evidence. rc 2 = refused in preflight, nothing
+## destroyed; rc 1 = the reap or the bootstrap failed. AETHER_CLOUD_REAPER overrides
+## the reaper path (test seam: test/test-chaos-harness.sh points it at a recording
+## stub; real runs leave it unset).
 _cloud_full_drain_recover() {
     local cluster_name="${BOOTSTRAP_CLUSTER_NAME:-}"
     if [ -z "$cluster_name" ]; then
         log_fail "_cloud_full_drain_recover: BOOTSTRAP_CLUSTER_NAME unset — refusing an unscoped reap (would risk resources outside this cluster, including the shared test-PG VM)"
-        return 1
+        return 2
     fi
 
     # #441 review WARNING b: prove the re-bootstrap is POSSIBLE before
@@ -2705,11 +3464,11 @@ _cloud_full_drain_recover() {
     case "${CLUSTER_ID:-}" in
         a) toml="${CLOUD_TOML_A:-}" ;;
         b) toml="${CLOUD_TOML_B:-}" ;;
-        *) log_fail "_cloud_full_drain_recover: unrecognized CLUSTER_ID='${CLUSTER_ID:-}' (expected 'a' or 'b') — cannot select a bootstrap TOML"; return 1 ;;
+        *) log_fail "_cloud_full_drain_recover: unrecognized CLUSTER_ID='${CLUSTER_ID:-}' (expected 'a' or 'b') — cannot select a bootstrap TOML; nothing destroyed"; return 2 ;;
     esac
     if [ -z "$toml" ] || [ ! -f "$toml" ]; then
         log_fail "_cloud_full_drain_recover: no readable bootstrap TOML for cluster '${cluster_name}' (CLUSTER_ID='${CLUSTER_ID:-}', resolved path='${toml}') — run-tests.sh must export CLOUD_TOML_A/CLOUD_TOML_B (not exported on --skip-deploy reruns; full-drain recovery is not possible there — refusing before destroying anything)"
-        return 1
+        return 2
     fi
 
     # Locate tools/cloud-reaper.sh relative to THIS file (lib/cluster.sh), not the
@@ -2719,12 +3478,14 @@ _cloud_full_drain_recover() {
     # as _cloud_transport_ports above. lib/ -> integration -> tests -> aether ->
     # pragmatica -> tools.
     local reaper
-    reaper="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../tools" 2>/dev/null && pwd)/cloud-reaper.sh"
+    reaper="${AETHER_CLOUD_REAPER:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../tools" 2>/dev/null && pwd)/cloud-reaper.sh}"
     if [ ! -x "$reaper" ]; then
-        log_fail "_cloud_full_drain_recover: tools/cloud-reaper.sh not found or not executable (resolved path: ${reaper})"
-        return 1
+        log_fail "_cloud_full_drain_recover: tools/cloud-reaper.sh not found or not executable (resolved path: ${reaper}) — nothing destroyed"
+        return 2
     fi
-    log_warn "_cloud_full_drain_recover: full self-drain confirmed (0 active cores) — reaping all VMs for cluster '${cluster_name}' (no partial-recovery path exists once every core has halted)"
+    # The reap deletes every VM and its logs; keep them if this suite has already failed.
+    capture_before_destructive "cloud-reap"
+    log_warn "_cloud_full_drain_recover: full self-drain confirmed from per-VM evidence (_cloud_reap_after_confirmed_drain) — reaping all VMs for cluster '${cluster_name}' (no partial-recovery path exists once every core has halted)"
     local reap_out reap_rc
     reap_out=$("$reaper" --cluster "$cluster_name" --strict-cluster --destroy --force 2>&1)
     reap_rc=$?
@@ -2739,6 +3500,9 @@ _cloud_full_drain_recover() {
         *) log_fail "_cloud_full_drain_recover: cloud-reaper.sh --cluster ${cluster_name} --strict-cluster --destroy --force failed (rc=${reap_rc}): ${reap_out}"; return 1 ;;
     esac
 
+    # #2213: the fresh bootstrap below is refused while the registry or local state still holds this name.
+    _cloud_unregister_reaped_cluster "$cluster_name"
+
     # Bare `aether` resolved from PATH — the gate run environment prepends its
     # own CLI shim to PATH; a hardcoded path would silently bypass it. PG env
     # vars (PG_USER/PG_PASSWORD/PG_HOST/PG_DB) referenced via ${env:...} in the
@@ -2746,10 +3510,17 @@ _cloud_full_drain_recover() {
     # the operator's environment; this subshell inherits them from run-tests.sh).
     log_info "_cloud_full_drain_recover: fresh bootstrap of '${cluster_name}' from ${toml}"
     local boot_out boot_rc
-    boot_out=$(aether cluster bootstrap "$toml" --cluster "$cluster_name" --yes --wait --timeout 300 2>&1)
+    # --timeout 600, not 300: a cold 5-VM provision + formation does not fit 300s (#362's
+    # own step-2 note). --keep-on-failure because this is a RECOVERY path — when it fails
+    # it is the only witness to why, and the default cleanup destroys all five VMs before
+    # their cloud-init/node logs can be read. Measured 2026-09-12: this bootstrap reached
+    # "All nodes healthy", failed the quorum gate, and deleted every VM, leaving the cause
+    # undiagnosable. #1030 is the same complaint against the operator-facing path.
+    boot_out=$(aether cluster bootstrap "$toml" --cluster "$cluster_name" --yes --wait --timeout 600 --keep-on-failure 2>&1)
     boot_rc=$?
     if [ "$boot_rc" -ne 0 ]; then
         log_fail "_cloud_full_drain_recover: aether cluster bootstrap '${cluster_name}' failed (rc=${boot_rc}): ${boot_out}"
+        log_warn "_cloud_full_drain_recover: VMs were KEPT for diagnosis (--keep-on-failure) — they are BILLABLE; reap with tools/cloud-reaper.sh --cluster ${cluster_name} --destroy --force"
         return 1
     fi
     log_info "_cloud_full_drain_recover: bootstrap complete: $(printf '%s' "$boot_out" | tail -3)"
@@ -2763,30 +3534,117 @@ _cloud_full_drain_recover() {
     return 0
 }
 
+# The backup remote's head (the commit of branch `kv-backup` in the shared bare repository), or empty when the remote has none yet.
+# Read through the node image's own git, as the in-container user that owns the repository.
+_backup_remote_head() {
+    remote_exec "docker run --rm --entrypoint git -v ${BACKUP_REMOTE_VOLUME}:/r:ro aether-node:local --git-dir=/r/kv.git rev-parse --verify -q refs/heads/kv-backup" 2>/dev/null | tail -n1 | tr -dc '0-9a-f'
+}
+
+# Wait until the leader's last change has been pushed: the head is non-empty and unchanged across two reads a flush window
+# apart (the backup flushes 500 ms after the last change and at most 5 s after the first). Prints the settled head, or nothing
+# when the remote never got one within <timeout> seconds.
+_await_backup_head_settled() {
+    local timeout="${1:-60}" waited=0 head previous=""
+    while [ "$waited" -le "$timeout" ]; do
+        head=$(_backup_remote_head)
+        if [ -n "$head" ] && [ "$head" = "$previous" ]; then
+            printf '%s' "$head"
+            return 0
+        fi
+        previous="$head"
+        sleep "${BACKUP_SETTLE_POLL_S:-6}"
+        waited=$((waited + ${BACKUP_SETTLE_POLL_S:-6}))
+    done
+    return 1
+}
+
+# The restore decision (`Backup restore decision: RESTORED|FRESH|SKIPPED_EXISTING_STATE|DISABLED`) logged by the fresh cluster's
+# leader, read from the logs of the given containers; prints the first found.
+_backup_restore_decision() {
+    local names="$1"
+    remote_exec "for c in ${names}; do docker logs \$c 2>&1 | grep -o 'Backup restore decision: [A-Z_]*' | head -1; done | head -1 | sed 's/.*: //'" 2>/dev/null | tail -n1 | tr -dc 'A-Z_'
+}
+
+# Restart cluster B's five core seeds onto FRESH ids (generation + 1) and let the new leader restore the KV from the backup.
+# See restart_all_nodes for why. Returns non-zero (after a [FAIL]) when the nodes could not be started, or when a backup head
+# existed but the fresh cluster did not restore it.
+_compose_b_restart_onto_fresh_ids() {
+    local head old_gen new_gen n1 n2 n3 n4 n5 peers nodes_out decision
+    head=$(_await_backup_head_settled "${BACKUP_SETTLE_TIMEOUT_S:-60}") || head=""
+    if [ -z "$head" ]; then
+        log_warn "restart_all_nodes: the backup remote has no head to restore (nothing was ever pushed): the fresh cluster starts empty"
+    else
+        log_info "restart_all_nodes: backup head settled at ${head:0:12}; restarting onto fresh core ids"
+    fi
+    old_gen=$(b_current_generation)
+    new_gen=$((old_gen + 1))
+    n1=$(b_seed_number "$new_gen" 1); n2=$(b_seed_number "$new_gen" 2); n3=$(b_seed_number "$new_gen" 3)
+    n4=$(b_seed_number "$new_gen" 4); n5=$(b_seed_number "$new_gen" 5)
+    peers=""
+    for n in "$n1" "$n2" "$n3" "$n4" "$n5"; do
+        peers="${peers}${peers:+,}aether-b-node-${n}:aether-b-node-${n}:6000"
+    done
+    # The generation is recorded BEFORE the containers start: whatever the start leaves behind must be findable under it.
+    local start_out start_rc
+    start_out=$(remote_exec "echo ${new_gen} > ${BACKUP_GENERATION_FILE}; docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && AETHER_B_N1=${n1} AETHER_B_N2=${n2} AETHER_B_N3=${n3} AETHER_B_N4=${n4} AETHER_B_N5=${n5} AETHER_B_PEERS='${peers}' docker compose -f docker-compose-b.yml up -d" 2>&1)
+    start_rc=$?
+    if [ "$start_rc" -ne 0 ]; then
+        log_fail "restart_all_nodes: starting the fresh generation ${new_gen} returned rc=${start_rc}. Output: ${start_out}"
+        return 1
+    fi
+    _AETHER_B_GEN="$new_gen"
+    log_info "restart_all_nodes: core ids ${old_gen}->${new_gen}: aether-b-node-{$(b_seed_number "$old_gen" 1)..$(b_seed_number "$old_gen" 5)} -> aether-b-node-{${n1},${n2},${n3},${n4},${n5}}"
+    # Container-count guard. `docker compose up -d` can return 0 yet leave fewer than NODE_COUNT containers running when a
+    # transient name/alias conflict blocks a subset on the first attempt (S20: rc=0, 2/5 up); count them directly through docker
+    # (independent of the management API, unreachable while sub-quorum), force-recreate once, then fail loud.
+    local want="${NODE_COUNT:-5}" running
+    running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
+    if [ "${running:-0}" -lt "$want" ]; then
+        log_warn "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after up -d — force-recreating"
+        remote_exec "cd ~ && AETHER_B_N1=${n1} AETHER_B_N2=${n2} AETHER_B_N3=${n3} AETHER_B_N4=${n4} AETHER_B_N5=${n5} AETHER_B_PEERS='${peers}' docker compose -f docker-compose-b.yml up -d --force-recreate" >/dev/null 2>&1
+        running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
+    fi
+    if [ "${running:-0}" -lt "$want" ]; then
+        local diag
+        diag=$(remote_exec "docker ps -a --filter name='aether-b-node-' --format '{{.Names}} {{.Status}}'; for c in \$(docker ps -aq --filter name='aether-b-node-' --filter status=exited); do echo \"--- \$c ---\"; docker logs --tail 15 \$c 2>&1; done" 2>&1)
+        log_fail "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after force-recreate. Diagnostics: ${diag}"
+        return 1
+    fi
+    RESTART_FRESH_IDS="aether-b-node-${n1} aether-b-node-${n2} aether-b-node-${n3} aether-b-node-${n4} aether-b-node-${n5}"
+    export RESTART_FRESH_IDS
+    RESTART_BACKUP_HEAD="$head"
+    return 0
+}
+
+# After the readiness barriers: a backup head that existed before the restart must have been RESTORED by the fresh cluster's
+# leader. Anything else (a FRESH decision over a non-empty head, a blocked restore that never decided) means the data did not
+# come back, and a later "recovered" verdict would be a lie.
+_assert_restored_from_backup() {
+    [ -n "${RESTART_BACKUP_HEAD:-}" ] || return 0
+    local decision
+    decision=$(_backup_restore_decision "${RESTART_FRESH_IDS}")
+    if [ "$decision" != "RESTORED" ]; then
+        log_fail "restart_all_nodes: a backup head (${RESTART_BACKUP_HEAD:0:12}) existed before the restart, but the fresh cluster's restore decision is '${decision:-<none logged>}', not RESTORED: the cluster's declared state did not come back"
+        return 1
+    fi
+    log_info "restart_all_nodes: the fresh cluster restored the backup (decision RESTORED, head ${RESTART_BACKUP_HEAD:0:12})"
+    return 0
+}
+
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
+    # The recreate below destroys the outgoing containers' logs; keep them if this suite has already failed.
+    capture_before_destructive "restart_all_nodes"
     if [ "$CLOUD_MODE" = "true" ]; then
         # Cloud has NO single Docker host and NO docker-compose project — each node
-        # is its own VM. The old SSH-based `docker restart` / JVM pkill+relaunch loop
-        # could not reach CTM-provisioned replacement VMs (no operator SSH key), and
-        # there is nothing to "compose up". Recovery model on cloud:
-        #   1. Power any powered-off seed VMs back on (cloud_revive_vm, best-effort —
-        #      a still-running VM's poweron is a harmless no-op; a CTM-replaced node
-        #      may no longer have a same-id VM, which is fine — its replacement is
-        #      already carrying the load).
-        #   2. Let CTM auto-heal + SWIM converge, then wait on the SAME mgmt-API
-        #      readiness barriers the docker path uses (node count, leader, quiesce,
-        #      ready). The mgmt API is reachable for every node regardless of SSH key.
-        # We deliberately do NOT hard-fail when a seed VM cannot be revived: on cloud
-        # the operational invariant is "N healthy cores" (CTM may satisfy it with
-        # replacements), which the readiness barriers below assert authoritatively.
-        local i node_id
-        for i in $(seq 1 "${NODE_COUNT:-5}"); do
-            node_id=$(to_node_id "node-${i}" 2>/dev/null || true)
-            [ -z "$node_id" ] && continue
-            cloud_revive_vm "$node_id" 2>/dev/null \
-                || log_info "restart_all_nodes: cloud_revive_vm ${node_id} did not power on a VM (already running or CTM-replaced — proceeding)"
-        done
+        # is its own VM. There is nothing to "compose up", and a powered-off or killed
+        # seed is never powered back on: a node id returns only by being REPLACED under
+        # a fresh id (#1543 — same-NodeId relaunch is refused). Recovery model on cloud:
+        # let CTM auto-heal + SWIM converge, then wait on the SAME mgmt-API readiness
+        # barriers the docker path uses (node count, leader, quiesce, ready). The mgmt
+        # API is reachable for every node regardless of SSH key. The operational
+        # invariant is "N healthy cores" (CTM satisfies it with replacements), which
+        # the readiness barriers below assert authoritatively.
         # Re-pin the mgmt endpoint to a live core, then wait on readiness via the API.
         _refresh_mgmt_entry_point || log_warn "restart_all_nodes: no live endpoint to re-pin (proceeding with ${CLUSTER_ENDPOINT})"
         local floor=$(( ${NODE_COUNT:-5} - 1 ))
@@ -2818,9 +3676,14 @@ restart_all_nodes() {
                 local topology_probe
                 topology_probe=$(api_get "/api/v1/cluster/topology" 2>/dev/null || true)
                 if [ -n "$topology_probe" ]; then
-                    log_warn "restart_all_nodes: mgmt API cleanly reports 0 active cores — confirmed full self-drain, proceeding to reap+rebootstrap"
-                    if ! _cloud_full_drain_recover; then
-                        log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                    # #1051 round 3: none of this function's signals — 0 active
+                    # cores, silent mgmt ports, stragglers, zero progress — is
+                    # evidence of death. Each only NOMINATES a full drain, which
+                    # _cloud_reap_after_confirmed_drain confirms per VM before
+                    # anything is reaped or rebootstrapped.
+                    log_warn "restart_all_nodes: mgmt API cleanly reports 0 active cores — a CANDIDATE full self-drain; confirming from per-VM evidence before any reap"
+                    if ! _cloud_reap_after_confirmed_drain "restart_all_nodes" "${CLOUD_DRAIN_CONFIRM_BOUND_S:-120}"; then
+                        log_fail "restart_all_nodes: cloud full-drain recovery refused or failed (see above) — nothing is reaped without positive per-VM drain evidence"
                         return 1
                     fi
                 else
@@ -2917,22 +3780,22 @@ restart_all_nodes() {
                                     fi
                                 else
                                     log_warn "restart_all_nodes: bounded progress window (${progress_window}s) showed ZERO progress in active-core count (stuck at ${after_count:-0}) after re-pinning to '${ready_ip}' — straggler-skewed LIVE read, not a recoverable cluster; falling through to full-drain confirmation"
-                                    if ! _cloud_full_drain_recover; then
-                                        log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                                    if ! _cloud_reap_after_confirmed_drain "restart_all_nodes" "${CLOUD_DRAIN_CONFIRM_BOUND_S:-120}"; then
+                                        log_fail "restart_all_nodes: cloud full-drain recovery refused or failed (see above) — nothing is reaped without positive per-VM drain evidence"
                                         return 1
                                     fi
                                 fi
                             fi
                         elif [ "$straggler_count" -gt 0 ]; then
-                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}'; ${straggler_count} answer /health/live but NONE report ready=true (${straggler_evidence}) — straggler evidence (e.g. a CTM replacement provisioned in-flight at quorum death, cold-boot-suppressed from self-draining, forever JOINING), not a recoverable cluster; proceeding to reap+rebootstrap (reap is cluster-scoped and includes straggler VMs)"
-                            if ! _cloud_full_drain_recover; then
-                                log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}'; ${straggler_count} answer /health/live but NONE report ready=true (${straggler_evidence}) — straggler evidence (e.g. a CTM replacement provisioned in-flight at quorum death, cold-boot-suppressed from self-draining, forever JOINING), not a recoverable cluster; a CANDIDATE full drain — confirming from per-VM evidence before any reap (a running straggler refuses it)"
+                            if ! _cloud_reap_after_confirmed_drain "restart_all_nodes" "${CLOUD_DRAIN_CONFIRM_BOUND_S:-120}"; then
+                                log_fail "restart_all_nodes: cloud full-drain recovery refused or failed (see above) — nothing is reaped without positive per-VM drain evidence"
                                 return 1
                             fi
                         else
-                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}', but NONE answer their mgmt port directly (probed ${vm_count} VM(s), 0 listening) — VMs staying powered on with an exited container is the expected post-self-drain state; proceeding to reap+rebootstrap"
-                            if ! _cloud_full_drain_recover; then
-                                log_fail "restart_all_nodes: cloud full-drain recovery (cluster-scoped reap + rebootstrap) failed"
+                            log_warn "restart_all_nodes: mgmt API unreachable, hcloud shows ${vm_count} running VM(s) for '${BOOTSTRAP_CLUSTER_NAME}', but NONE answer their mgmt port directly (probed ${vm_count} VM(s), 0 listening) — VMs staying powered on with an exited container is the expected post-self-drain state, but silence is not death: a CANDIDATE full drain — confirming from per-VM evidence before any reap"
+                            if ! _cloud_reap_after_confirmed_drain "restart_all_nodes" "${CLOUD_DRAIN_CONFIRM_BOUND_S:-120}"; then
+                                log_fail "restart_all_nodes: cloud full-drain recovery refused or failed (see above) — nothing is reaped without positive per-VM drain evidence"
                                 return 1
                             fi
                         fi
@@ -2947,87 +3810,27 @@ restart_all_nodes() {
                 fi
             fi
         fi
-        if ! wait_for_leader 120; then
-            log_fail "restart_all_nodes: no leader elected within 120s on cloud baseline restore"
-            return 1
-        fi
-        if ! await_generation_quiesced "${CLUSTER_ENDPOINT}" "current" 180; then
-            log_warn "restart_all_nodes: generation did not quiesce within 180s on cloud (proceeding — readiness barrier is authoritative)"
-        fi
-        if ! wait_for_cluster_ready 120 "${floor}"; then
-            log_warn "restart_all_nodes: cloud cluster not fully ready within 120s (proceeding — downstream suite has its own readiness gate)"
-        fi
-        log_info "restart_all_nodes: cloud cluster recovered (>=${floor} healthy cores, leader elected)"
-        # #426 review follow-up (SEVERE): this branch used to return here,
-        # before the echo-baseline redeploy — cloud never got the rebaseline
-        # even though cloud is where the motivating incident happened.
-        _reestablish_echo_baseline || return 1
+        # #426 review follow-up (SEVERE): this branch used to return before the
+        # echo-baseline redeploy — cloud never got the rebaseline even though cloud
+        # is where the motivating incident happened. The barriers, redeploy
+        # included, now live in _cloud_recovery_barriers (#1051).
+        _cloud_recovery_barriers "restart_all_nodes" "${floor}" || return 1
         return 0
     fi
-    # Why: `docker start` on exited containers re-uses identical NodeIds / addresses,
-    # which triggers a 5-way simultaneous QUIC handshake storm on boot. The storm
-    # causes peerLinks to flap, consensus messages to drop (QuicClusterNetwork.broadcast
-    # only sends to peers in peerLinks at that instant), and Rabia proposals to starve.
-    # `docker-compose down -v && up -d` performs an orchestrated tear-down that clears
-    # peerLinks before restart — avoids the double-initiate race and gives clean boot.
+    # #1968 / #1543 Q1: a whole-cluster restart is a REGULAR START ON FRESH CORE NODES (new ids), then the KV restore from the
+    # backup. A node id never returns, so this function no longer relaunches the old containers or cycles the compose project
+    # under the same ids (the old `down -v && up -d`, a same-id cold start with every volume wiped). Instead it waits for the
+    # leader's last backup push to settle, removes every `aether-b-node-` container (compose seeds and CTM replacements alike),
+    # starts the five seeds again under generation-encoded ids (lib/common.sh b_seed_number) with the same backup remote, and
+    # lets the new leader restore (`[backup] restore = auto`). The compose project is never `down`ed: the remote volume is
+    # external, and `--remove-orphans` stays off (clusters A and B share one default compose project).
     local prefix="${CLUSTER_NAME:-aether-b-node-}"
-    local compose="${COMPOSE_FILE:-${SCRIPT_DIR:-/tmp}/docker-compose-b.yml}"
-    # Surface stderr from the remote compose tear-down/up. Prior form swallowed it via
-    # `2>/dev/null`, hiding a real bug where compose would fail (network in use, CTM
-    # container port collision, etc) and leave containers running from the previous
-    # broken state — yet the test harness believed it had reset the cluster and
-    # interpreted subsequent "no leader elected" as a Rabia convergence failure rather
-    # than the real cause: the compose cycle never ran.
-    # Pre-clean cluster B by NAME PREFIX `aether-b-node-`, not by the CTM label alone.
-    # Mid-suite, B's ON_DUTY members are a mix of compose-fixed nodes (aether-b-node-1..5) and
-    # CTM auto-heal replacements named `aether-b-node-<ULID>`. A replacement provisioned before
-    # bootstrap can carry `aether.cluster=default` (DockerComputeProvider.clusterOrDefault
-    # fallback — see docker-compose-b.yml AETHER_CLUSTER_NAME note), so the old
-    # `--filter label=aether.cluster=b` sweep MISSED it: it outlived `down -v` (not a compose
-    # service), kept holding a node's name/network-alias, and the following `up -d` then failed
-    # to (re)create that compose node — the cluster returned as a sub-quorum MINORITY (observed
-    # 2026-06-30 S20: only 2/5, nodes 3+5). The name prefix `aether-b-node-` matches BOTH compose
-    # nodes AND every CTM replicant, and CANNOT match cluster A (`aether-a-node-*`), so it is a
-    # safe, comprehensive reset.
-    # DO NOT add `--remove-orphans`: clusters A and B share one default compose project (both are
-    # `up`'d from ~ with no -p), so B's `up -d` lists A's containers as orphans — `--remove-orphans`
-    # would DELETE cluster A + forge-postgres. Project isolation (-p per cluster) is the proper
-    # structural fix, tracked separately.
-    local restart_out restart_rc
-    if [ -f "$compose" ] && [ "${prefix}" = "aether-b-node-" ]; then
-        restart_out=$(remote_exec "docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>&1)
-        restart_rc=$?
-    else
-        # Fallback for non-standard cluster names — best-effort start of exited containers.
-        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter label=aether.provisioned-by=ctm) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>&1)
-        restart_rc=$?
-    fi
-    if [ "$restart_rc" -ne 0 ]; then
-        log_fail "restart_all_nodes: compose cycle returned rc=${restart_rc}. Output: ${restart_out}"
+    # The compose file is on the DOCKER HOST (`~/docker-compose-b.yml`), which is not this machine under --env remote: no local test.
+    if [ "${prefix}" != "aether-b-node-" ]; then
+        log_fail "restart_all_nodes: no compose project for cluster name '${prefix}' (only aether-b-node- is restarted onto fresh ids); relaunching exited containers under their old NodeIds is not supported"
         return 1
     fi
-    # Container-count guard (compose-b path). `docker compose up -d` can return 0 yet leave fewer
-    # than NODE_COUNT containers running when a transient name/alias conflict blocks a subset on
-    # the first attempt — the exact S20 symptom (rc=0, but 2/5 up). Verify the RUNNING container
-    # count directly via docker (authoritative — independent of the management API, which is
-    # unreachable while the cluster is sub-quorum); on a shortfall, force-recreate once, then
-    # capture per-container status + tail logs and fail loud before the management-API waits below
-    # (which would otherwise misreport a missing-container problem as a Rabia convergence failure).
-    if [ "${prefix}" = "aether-b-node-" ]; then
-        local want="${NODE_COUNT:-5}" running
-        running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
-        if [ "${running:-0}" -lt "$want" ]; then
-            log_warn "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after up -d — force-recreating"
-            remote_exec "docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml up -d --force-recreate" >/dev/null 2>&1
-            running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
-        fi
-        if [ "${running:-0}" -lt "$want" ]; then
-            local diag
-            diag=$(remote_exec "docker ps -a --filter name='aether-b-node-' --format '{{.Names}} {{.Status}}'; for c in \$(docker ps -aq --filter name='aether-b-node-' --filter status=exited); do echo \"--- \$c ---\"; docker logs --tail 15 \$c 2>&1; done" 2>&1)
-            log_fail "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after force-recreate. Diagnostics: ${diag}"
-            return 1
-        fi
-    fi
+    _compose_b_restart_onto_fresh_ids || return 1
     # Rotate entry point — the previous pinned node may have been killed during the suite.
     rotate_mgmt_entry_point 2>/dev/null || true
     # Strict recovery assertions — no more log_warn pass-through.
@@ -3075,23 +3878,18 @@ restart_all_nodes() {
         # transition that didn't happen).
         reset_provisioning_circuit || true
     fi
-    # Re-establish the blueprint baseline wiped by `docker compose down -v` above —
-    # that command performs a full VOLUME wipe (see the "Why" comment near the top
-    # of this function), so the artifact repository and every deployed slice are
-    # gone and the cluster returns at a fresh generation with zero slices. Without
-    # this, ANY test that runs after a destructive restart_all_nodes() — directly
-    # (e.g. S20 in test-self-drain-quorum-loss.sh) or indirectly via
-    # restore_cluster_baseline's step-0 leader-unreachable escalation — inherits an
-    # empty artifact repository, and load/echo traffic silently 404s instead of
-    # measuring the scenario under test (#426 item 5: this exact gap left no ACTIVE
-    # echo owner for kill-under-load's retarget to resolve on 2026-07-08, correctly
-    # triggering the loud-abort added in 71a4aa599 rather than a silent 100%-error
-    # false read). restore_cluster_baseline itself deliberately does NOT restore
-    # blueprint state (see its step-8 design comment — that exclusion is
-    # intentional and scoped to non-destructive baseline checks); this is the
-    # destructive-recovery counterpart, scoped to the one function that actually
-    # wipes the volumes. See _reestablish_echo_baseline above for the (now
-    # runtime-agnostic) redeploy logic shared with the cloud branch.
+    # The restore decision is committed once the leader is up; check it before anything else rebuilds state on top.
+    if ! _assert_restored_from_backup; then
+        return 1
+    fi
+    # Re-establish the echo baseline. The restore brings back DECLARED state (blueprints, slice targets, stream configs), but the
+    # artifact repository and the deployed slices belong to the old cluster's runtime and are NOT in the backup, so the fresh
+    # cluster comes up with the declarations and none of the artifacts. Without this redeploy, ANY test that runs after a
+    # destructive restart_all_nodes() — directly (S20 in test-self-drain-quorum-loss.sh) or through restore_cluster_baseline's
+    # step-0 leader-unreachable escalation — inherits an empty artifact repository, and load/echo traffic silently 404s instead of
+    # measuring the scenario under test (#426 item 5). restore_cluster_baseline deliberately does NOT restore blueprint state
+    # (its step-8 design comment); this is the destructive-recovery counterpart. See _reestablish_echo_baseline for the
+    # runtime-agnostic redeploy logic shared with the cloud branch.
     if ! _reestablish_echo_baseline; then
         return 1
     fi
@@ -3158,44 +3956,6 @@ kill_node() {
         if [ -n "$kill_out" ] && ! echo "$kill_out" | grep -q "^${name}$"; then
             log_warn "kill_node: docker kill ${name} output: ${kill_out}"
         fi
-    fi
-}
-
-# DEPRECATED for chaos-test recovery — prefer waiting for CTM auto-heal via
-# `wait_for "${target} ON_DUTY healthy cores" ...` or `restore_cluster_baseline`.
-# Restarting the killed container brings the original NodeId back, but the
-# cluster has already DECOMMISSIONED that ID (single-writer rule on
-# NodeLifecycleKey) and CTM has provisioned a replacement — the cluster sees
-# the restarted container as a stale identity and the test ends up in a
-# "killed+restarted+replaced" 6-node state.
-#
-# Kept callable for tests that genuinely need same-ID rejoin semantics
-# (currently 15-delegation/test-02-reassignment.sh, which restarts a scaling
-# node before it has been DECOMMISSIONED).
-start_node() {
-    local node_id="$1"
-    log_info "Starting node: ${node_id}"
-    if [ "$CLOUD_MODE" = "true" ]; then
-        # Provider-API revive: power the node's VM back on (cloud_revive_vm). Replaces
-        # the old SSH-based JVM-replay / `docker start`, which could not reach
-        # CTM-provisioned replacement VMs. NOTE: CTM auto-heal may already have
-        # DECOMMISSIONED this node and provisioned a replacement by now — in which
-        # case the revived VM rejoins as a stale identity (transient N+1). For normal
-        # chaos recovery prefer waiting on CTM auto-heal (restore_cluster_baseline);
-        # this same-identity revive is for tests that explicitly need the original
-        # VM back. See cloud_revive_vm's header for the full caveat.
-        if ! cloud_revive_vm "$node_id"; then
-            log_fail "start_node: cloud VM poweron of '${node_id}' failed"
-            return 1
-        fi
-    else
-        # NodeId == container_name (post-migration) — see kill_node for rationale.
-        local name="$node_id"
-        # Capture stderr — `2>/dev/null` previously hid failures (container not found,
-        # docker daemon error, race with rm). Caller checks $? for success/failure.
-        local start_out
-        start_out=$(remote_exec "docker start ${name}" 2>&1) \
-            || { log_warn "start_node: docker start ${name} failed: ${start_out}"; return 1; }
     fi
 }
 
@@ -3312,9 +4072,17 @@ seed_cluster_config() {
         if [ -n "$toml_max" ] && [ -n "$stored_max" ] \
            && [ "$stored_max" -lt "$toml_max" ] 2>/dev/null; then
             log_info "Reconciling cluster config: stored coreMax=${stored_max} < TOML max=${toml_max} (configVersion=${stored_version:-?})"
+            # #1086 (rev1412 NIT-5): never substitute 0 for an unreadable configVersion. Against a
+            # stored config the server refuses 0 as an unfenced overwrite (#289), so the fallback
+            # could only ever hide WHY the reconcile failed. The 200 body that yielded coreMax
+            # carries configVersion in the same record; an empty read here is a parser defect.
+            if [ -z "$stored_version" ]; then
+                log_warn "Cluster config reconcile NOT attempted: coreMax=${stored_max} was read but configVersion was not (body: $(printf '%s' "$body" | head -c 300))"
+                return 1
+            fi
             local escaped_toml json_body
             escaped_toml=$(escape_json "$toml_content")
-            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version:-0}}"
+            json_body="{\"tomlContent\":\"${escaped_toml}\",\"expectedVersion\":${stored_version}}"
             local apply_out
             apply_out=$(leader_api_post "/api/v1/cluster/config" "$json_body" 2>&1) || true
             # Surface VersionConflict / ImmutableFieldChange rather than masking them:
@@ -3387,16 +4155,30 @@ provisioning_snapshot() {
 }
 
 # cluster_no_deficit — returns 0 iff the LEADER's provisioning view reports a WHOLE
-# cluster: no missing cores (deficit==0) AND full membership reached. This is the
-# lag-free authority for "all N cores present". The harness's own counts
+# cluster: no missing cores (deficit==0) AND the leader COUNTS all N core members
+# (countedCoreMembers >= N). This is the lag-free authority for "all N cores present".
+#
+# deficit==0 alone is NOT that: the product computes deficit = configured - effective, and
+# `effective` counts a dispatched-but-not-yet-joined replacement as present
+# (LeaderReconciler: "A dispatched replacement stays in-flight (counted toward effective
+# capacity)"), until a backstop expires it. So a 4-member cluster with one replacement in
+# flight reads deficit=0 — and did on 2026-09-23, where this gate passed and logged "5 cores
+# present" while every following suite measured 4. `reachedFullMembership` is a LATCH (set
+# once, even pre-latched on re-election) and says nothing about current membership; it is
+# kept only as a non-leader guard.
+#
+# Still NOT a liveness check: countedCoreMembers is MEMBER + SUSPECT (LeaderReconciler
+# coreCountedMembers), so a dead core the leader still holds as SUSPECT counts. Which of the
+# two shapes passed on 2026-09-23 was never recorded — this gate logged nothing measured on
+# success — so restore now logs the measured counts it passed on. The harness's own counts
 # (cluster_active_core_count, ready_core_count) are fed by the SWIM-projection /
 # per-node lifecycle query, which can lag the leader's membership view by 10s-100s of
 # seconds on a genuinely-whole cluster — a present, counted core routinely reads
 # not-yet-READY for a while (see restore step 5b). Gating terminal convergence on the
 # leader's deficit (the #336 provisioning surface) instead of ready_core_count avoids
 # falsely DEGRADING a healthy cluster, and is exactly the signal that matters for the
-# next test's "N running cores" precondition (a killed-not-replaced node shows
-# deficit>0, so the gate correctly waits for CTM auto-heal to bring deficit→0).
+# next test's "N running cores" precondition (a killed node lowers countedCoreMembers
+# until its replacement actually JOINS, so the gate waits for the join, not the dispatch).
 # Quiet (no logging) — called in a wait_for poll loop; provisioning_snapshot is the
 # loud diagnostic for the failure path.
 cluster_no_deficit() {
@@ -3404,8 +4186,11 @@ cluster_no_deficit() {
     ep=$(_resolve_live_endpoint) || return 1
     snap=$(curl -sk -m 10 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/cluster/provisioning" 2>/dev/null) || return 1
     [ -n "$snap" ] || return 1
-    printf '%s' "$snap" | grep -q '"deficit"[[:space:]]*:[[:space:]]*0' \
-        && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true'
+    local counted
+    counted=$(printf '%s' "$snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    printf '%s' "$snap" | grep -qE '"deficit"[[:space:]]*:[[:space:]]*0([^0-9.]|$)' \
+        && printf '%s' "$snap" | grep -q '"reachedFullMembership"[[:space:]]*:[[:space:]]*true' \
+        && [ "${counted:-0}" -ge "${NODE_COUNT:-5}" ]
 }
 
 # Operator-controlled toggle of CTM auto-heal (deficit-driven replacement
@@ -3548,6 +4333,176 @@ restore_cluster_baseline_or_flag() {
     return 0
 }
 
+# The core node ids the topology read lists as active (the `coreNodes` array cluster_active_core_count
+# counts), one per line. Empty when the read fails or the array is absent.
+_active_core_ids() {
+    api_get "/api/v1/cluster/topology" 2>/dev/null \
+        | grep -oE '"coreNodes"[[:space:]]*:[[:space:]]*\[[^]]*\]' \
+        | head -1 \
+        | grep -oE '"[^"]+"' \
+        | grep -v '^"coreNodes"$' \
+        | tr -d '"' || true
+}
+
+# The leader's countedCoreMembers from the provisioning snapshot; empty when unreadable.
+_leader_counted_core_members() {
+    provisioning_snapshot 2>/dev/null \
+        | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' | head -1 || true
+}
+
+# Terminal agreement gate for restore_cluster_baseline: the harness's active core count (topology
+# coreNodes, no role filter) and the LEADER's countedCoreMembers (role-filtered, what its reconciler
+# acts on) must BOTH equal the target. They diverge when a present, healthy core is not counted by the
+# leader (blank role label — the phantom-core defect): the leader then provisions a replacement for it
+# and the cluster ends up with too many real cores. cluster_no_deficit alone cannot see this: it needs
+# counted >= target and passes with 5 counted beside 6 active.
+# Waits (bounded, $SECONDS-based like the READY barrier; budget AETHER_RESTORE_COUNTED_TIMEOUT base,
+# default 60s, x TIMEOUT_SCALE) because a surplus node can be mid-drain; on a miss it FAILS loudly and
+# never passes. The counted ids are not exposed by /api/v1/cluster/provisioning, so the message lists
+# the active ids: the uncounted node is among them.
+_restore_active_counted_gate() {
+    local target="$1"
+    local budget=$(( ${AETHER_RESTORE_COUNTED_TIMEOUT:-60} * ${TIMEOUT_SCALE:-1} ))
+    local poll="${AETHER_RESTORE_COUNTED_POLL:-5}"
+    local deadline=$(( SECONDS + budget ))
+    local active counted
+    while :; do
+        active=$(cluster_active_core_count)
+        counted=$(_leader_counted_core_members)
+        if [ "${active:-x}" = "$target" ] && [ "${counted:-x}" = "$target" ]; then
+            log_info "restore_cluster_baseline: active=${active} == leader counted=${counted} == target=${target}"
+            return 0
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "$poll"
+    done
+    log_fail "restore_cluster_baseline: active core count and the leader's counted core members do not both equal the target ${target} after ${budget}s: active=${active:-<unreadable>} counted=${counted:-<unreadable>}. Active core ids (the leader does not count at least one of them when active > counted; counted ids are not exposed by /api/v1/cluster/provisioning): $(_active_core_ids | tr '\n' ' ')"
+    return 1
+}
+
+# One line per artifact entry in a /api/v1/slices body (stdin), layout-independent (the body may be
+# pretty-printed or one line):  <artifact>\t<targetInstances>\t<version>\t<node>=<STATE> <node>=<STATE> ...
+# `version` is the JSON key of ManagementApiResponses.ClusterSliceInfo's 4th component (`currentVersion()` is the
+# Java accessor on the SliceTarget value, NOT a key; a parser on it matches nothing and the gate passes
+# vacuously — test-restore-slices-gate.sh derives its fixtures from the record and pins the key). It is
+# non-empty ONLY when a SliceTarget backs the artifact (SliceRoutes.toClusterSliceInfo takes it from the
+# SliceTarget and falls back to ""), and targetInstances falls back to instances.size() without one: so an
+# UNDEPLOYED artifact with a lingering non-ACTIVE row reads as target > 0, and only `version` tells a deployed
+# artifact from such a row.
+_slices_by_artifact() {
+    tr '\n' ' ' | sed 's/"artifact"/\
+"artifact"/g' | grep '^"artifact"' | while IFS= read -r chunk; do
+        local art tgt ver states
+        art=$(printf '%s' "$chunk" | sed -E 's/^"artifact"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        ver=$(printf '%s' "$chunk" | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
+        tgt=$(printf '%s' "$chunk" | grep -oE '"targetInstances"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+$' || true)
+        states=$(printf '%s' "$chunk" \
+            | grep -oE '"nodeId"[[:space:]]*:[[:space:]]*"[^"]*"[^}]*"state"[[:space:]]*:[[:space:]]*"[A-Z_]+"' \
+            | sed -E 's/"nodeId"[[:space:]]*:[[:space:]]*"([^"]*)".*"state"[[:space:]]*:[[:space:]]*"([A-Z_]+)"/\1=\2/' \
+            | tr '\n' ' ' || true)
+        printf '%s\t%s\t%s\t%s\n' "$art" "${tgt:-0}" "${ver:-}" "$states"
+    done
+}
+
+# Every DEPLOYED slice artifact must have >= 1 ACTIVE instance (any version of it: during a rolling update
+# the old version legitimately drains while the new one is ACTIVE). "Deployed" means a SliceTarget backs it
+# (`version` non-empty): an undeployed artifact can linger as a non-ACTIVE row, and with target read back
+# as instances.size() it would fail every later restore. Artifacts are keyed group:artifact (version
+# stripped); one with targetInstances 0 is not required to run anything. Prints, on stdout, the per-artifact
+# instance states of each starved artifact, and nothing when all are fine.
+_slices_missing_active() {
+    local report="$1"
+    printf '%s\n' "$report" | awk -F'\t' '
+        NF >= 3 {
+            key = $1; sub(/:[^:]*$/, "", key)
+            seen[key] = 1; target[key] += $2
+            if ($3 != "") deployed[key] = 1
+            n = split($4, inst, " ")
+            for (i = 1; i <= n; i++) if (inst[i] ~ /=ACTIVE$/) active[key]++
+            states[key] = states[key] " [" $1 " target=" $2 " version=" $3 ": " $4 "]"
+        }
+        END { for (k in seen) if (deployed[k] && target[k] > 0 && active[k] == 0) print k ":" states[k] }'
+}
+
+# One line per datasource whose schema migration FAILED and is holding a STARVED slice, from a
+# /api/v1/schema/status body (stdin); $1 = the starved artifact keys (group:artifact, one per line).
+# SchemaRoutes.SchemaStatusResponse(datasource, currentVersion, lastMigration, status, owningBlueprint, heldSlices):
+# `status` FAILED (AetherValue.SchemaStatus) with `heldSlices` (#760, artifact BASES, i.e. group:artifact) that
+# INTERSECT the starved artifacts is a PERMANENT hold on something the gate is waiting for (2026-09-30
+# S-double-prime: "Config section not found: database.testpersistence" -> SCHEMA_MIGRATION_FAILED, test-persistence
+# LOADED forever). A FAILED record holding only OTHER artifacts says nothing about the starved one and must not
+# be blamed for it. Layout-independent.
+_schema_failed_holds() {
+    local starved="$1"
+    tr '\n' ' ' | sed 's/"datasource"/\
+"datasource"/g' | grep '^"datasource"' | while IFS= read -r chunk; do
+        local st ds lm ob held inner item hit=""
+        st=$(printf '%s' "$chunk" | grep -oE '"status"[[:space:]]*:[[:space:]]*"[A-Z_]+"' | head -1 | sed -E 's/.*:[[:space:]]*"([A-Z_]+)"/\1/' || true)
+        [ "$st" = "FAILED" ] || continue
+        held=$(printf '%s' "$chunk" | grep -oE '"heldSlices"[[:space:]]*:[[:space:]]*\[[^]]*\]' | head -1 || true)
+        inner="${held#*\[}"
+        inner=$(printf '%s' "${inner%\]}" | tr -d '" ')
+        [ -n "$inner" ] || continue
+        for item in $(printf '%s' "$inner" | tr ',' ' '); do
+            if printf '%s\n' "$starved" | grep -qxF "$item"; then hit="${hit}${hit:+,}${item}"; fi
+        done
+        [ -n "$hit" ] || continue
+        ds=$(printf '%s' "$chunk" | sed -E 's/^"datasource"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+        lm=$(printf '%s' "$chunk" | grep -oE '"lastMigration"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
+        ob=$(printf '%s' "$chunk" | grep -oE '"owningBlueprint"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed -E 's/.*:[[:space:]]*"([^"]*)"$/\1/' || true)
+        printf 'datasource=%s status=FAILED lastMigration=%s owningBlueprint=%s heldSlices=%s (starved: %s)\n' "$ds" "${lm:--}" "${ob:--}" "$inner" "$hit"
+    done
+}
+
+# restore_cluster_baseline's slice gate: the cluster is not "at baseline" while a deployed blueprint has
+# NO ACTIVE instance (2026-09-30 S-prime: test-echo 5 x UNLOADING passed the restore, and 02-chaos then failed
+# 90s later with a misleading "no ACTIVE owner"). Bounded wait ($SECONDS-based, AETHER_RESTORE_SLICES_TIMEOUT
+# base 60s x TIMEOUT_SCALE) so a legitimate rolling update, where every instance is briefly LOADING with none
+# ACTIVE, settles first. On a miss it FAILS naming each starved artifact with every instance's state, so the
+# root cause is visible at the restore. An unreadable /api/v1/slices is a failure too, never a pass.
+_restore_slices_gate() {
+    local budget=$(( ${AETHER_RESTORE_SLICES_TIMEOUT:-60} * ${TIMEOUT_SCALE:-1} ))
+    local poll="${AETHER_RESTORE_SLICES_POLL:-5}"
+    local deadline=$(( SECONDS + budget ))
+    local body report missing failed starved failed_streak=0
+    while :; do
+        body=$(api_get "/api/v1/slices" 2>/dev/null) || body=""
+        if printf '%s' "$body" | grep -q '"slices"'; then
+            report=$(printf '%s' "$body" | _slices_by_artifact)
+            missing=$(_slices_missing_active "$report")
+            if [ -z "$missing" ]; then
+                log_info "restore_cluster_baseline: every deployed slice artifact has an ACTIVE instance ($(printf '%s\n' "$report" | grep -c . || true) artifact entries)"
+                return 0
+            fi
+        else
+            missing="/api/v1/slices unreadable or without a slices list: $(printf '%s' "$body" | head -c 200)"
+        fi
+        # A starved artifact held by a FAILED schema migration is a permanent hold: fail NOW and name it, instead
+        # of waiting out the budget and printing only LOADED. Two guards against misattribution: the FAILED
+        # record's heldSlices must INTERSECT the starved artifacts (an unrelated FAILED hold is not this one's
+        # cause), and the condition must hold on 2 CONSECUTIVE polls (a stale FAILED right after a redeploy).
+        if [ -n "$missing" ] && printf '%s' "$body" | grep -q '"slices"'; then
+            starved=$(printf '%s\n' "$missing" | sed -E 's/: \[.*//' | grep -v '^$')
+            failed=$(api_get "/api/v1/schema/status" 2>/dev/null | _schema_failed_holds "$starved" || true)
+            if [ -n "$failed" ]; then
+                failed_streak=$((failed_streak + 1))
+                if [ "$failed_streak" -ge 2 ]; then
+                    log_fail "restore_cluster_baseline: slice(s) held by a FAILED schema migration (permanent: waiting will not clear it; fix the datasource config or migration): $(printf '%s' "$failed" | tr '\n' ' ') — starved artifacts: $(printf '%s' "$missing" | tr '\n' ' ')"
+                    return 1
+                fi
+                # confirm quickly rather than after a full poll interval
+                sleep 1
+                continue
+            fi
+            failed_streak=0
+        fi
+        [ "$SECONDS" -ge "$deadline" ] && break
+        sleep "$poll"
+    done
+    log_fail "restore_cluster_baseline: deployed slice artifact(s) (SliceTarget-backed: 'version' set) with NO ACTIVE instance after ${budget}s — $(printf '%s' "$missing" | tr '\n' ' ')"
+    return 1
+}
+
 restore_cluster_baseline() {
     local target="${NODE_COUNT:-5}"
     log_info "Restoring cluster to baseline (semantic): ${target} healthy cores, READY"
@@ -3559,8 +4514,7 @@ restore_cluster_baseline() {
     # return 1, which left cluster B unrecoverable for every subsequent suite in
     # the run -- the 2026-05-22 cascade (02-chaos 0p/6f → 03-scaling 0p/3f → ...)
     # originated here. restart_all_nodes is provider-aware: docker/remote run a
-    # compose down/up cycle; cloud powers powered-off VMs back on (cloud_revive_vm)
-    # and waits on CTM auto-heal + mgmt-API readiness (there is no compose project on
+    # compose down/up cycle; cloud waits on CTM auto-heal (fresh-id replacements; no VM is powered back on) + mgmt-API readiness (there is no compose project on
     # cloud — the old `docker compose ... aether-b-network` path is a no-op there and
     # failed with `No resource found for project aether`).
     # Reliability gate reads through the BOUNDED curl path (cluster_leader_http), never the
@@ -3787,7 +4741,7 @@ restore_cluster_baseline() {
     # AETHER_RESTORE_RECOVERY_TIMEOUT (shared with the step-4b active-recovery budget).
     local converge_base="${AETHER_RESTORE_RECOVERY_TIMEOUT:-240}"
     [ "$converge_base" -lt 300 ] 2>/dev/null && converge_base=300
-    if ! wait_for "cluster WHOLE (leader deficit=0, all ${target} cores present) — terminal convergence" \
+    if ! wait_for "cluster WHOLE (leader deficit=0 and counts all ${target} core members) — terminal convergence" \
         "cluster_no_deficit" \
         "$converge_base"; then
         # DEGRADED return (matches steps 4b/5/6's contract): the runner's post-suite
@@ -3796,12 +4750,44 @@ restore_cluster_baseline() {
         # diagnosable in minutes, not hours — #336 observability surface.
         local snap
         snap=$(provisioning_snapshot)
-        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader-deficit). provisioning: ${snap}"
+        log_fail "restore_cluster_baseline: cluster did not reach full core membership — cores present=$(cluster_active_core_count)/${target} READY=$(ready_core_count)/${target}, slices ACTIVE=$(slices_active_instances)/$(slices_target_total) (slice counts informational; gate=leader deficit==0 + reachedFullMembership + countedCoreMembers>=${target}). provisioning: ${snap}"
         return 1
     fi
 
-    log_info "restore_cluster_baseline: cluster at baseline (${target} cores present, leader deficit=0, generation quiesced)"
+    # Log what was MEASURED, not the target: the previous line printed ${target} whatever the
+    # leader reported, so a run could not tell which snapshot shape the gate passed on.
+    local _passed_snap _pc _pe _pd
+    _passed_snap=$(provisioning_snapshot 2>/dev/null)
+    _pc=$(printf '%s' "$_passed_snap" | grep -oE '"countedCoreMembers"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    _pe=$(printf '%s' "$_passed_snap" | grep -oE '"effective"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    _pd=$(printf '%s' "$_passed_snap" | grep -oE '"deficit"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+$' || true)
+    # 9. ACTIVE == COUNTED == TARGET. Step 8 passes on counted >= target, which cannot see a present
+    # core the leader does not count (active 6, counted 5); wait bounded for agreement, else FAIL.
+    _restore_active_counted_gate "$target" || return 1
+
+    # 10. EVERY DEPLOYED BLUEPRINT HAS AN ACTIVE INSTANCE. Cores agreeing (step 9) says nothing about the
+    # slices on them; a cluster whose echo slice is 5 x UNLOADING is not at baseline.
+    _restore_slices_gate || return 1
+
+    log_info "restore_cluster_baseline: cluster at baseline (target=${target}; leader counted=${_pc:-?} effective=${_pe:-?} deficit=${_pd:-?}; active=$(cluster_active_core_count) READY=$(ready_core_count); generation quiesced)"
     return 0
+}
+
+# _extract_problem_detail — pull the `detail` field out of an RFC 9457
+# application/problem+json body (or any JSON body shaped {"detail": "..."}).
+# Same jq-with-grep-fallback idiom as push_blueprint's `.status` parse above:
+# jq when available, a grep/sed extractor otherwise so the integration suite
+# still runs on minimal CI images. Echoes the empty string (never fails) when
+# the field is absent or the body isn't JSON — callers fall back to the raw
+# body in that case.
+_extract_problem_detail() {
+    local body="$1"
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$body" | jq -r '.detail // empty' 2>/dev/null
+    else
+        printf '%s' "$body" | grep -oE '"detail"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+            | sed -E 's/.*"detail"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
+    fi
 }
 
 scale_cluster() {
@@ -3836,10 +4822,24 @@ scale_cluster() {
     # already works for docker/remote.
     local scale_ep
     scale_ep=$(_resolve_live_endpoint)
+    # #1086: `expectedVersion:0` is no longer a bypass on the scale route — against a populated
+    # config the server refuses it with 409 UnfencedOverwrite, the same #289 fence apply-config has.
+    # Read the committed configVersion and fence with it (what `aether cluster scale` does). An
+    # unreadable version is a failure here, never a silent 0: a 0 would now be refused anyway, and
+    # substituting it would hide WHY the scale did not happen behind the fence's message.
+    local stored_version
+    stored_version=$(curl -sk -m 30 -H "X-API-Key: ${API_KEY}" "${scale_ep}/api/v1/cluster/config" 2>/dev/null \
+        | grep -oE '"configVersion"[[:space:]]*:[[:space:]]*[0-9]+' \
+        | head -1 | grep -oE '[0-9]+$')
+    if [ -z "$stored_version" ]; then
+        rm -f "$body_file"
+        log_warn "scale_cluster: could not read configVersion from GET ${scale_ep}/api/v1/cluster/config — the cluster was NOT rescaled (a scale needs the committed version to fence with, #1086)"
+        return 1
+    fi
     url="${scale_ep}/api/v1/cluster/scale"
     http_status=$(curl -sk -m 90 -o "$body_file" -w '%{http_code}' \
                       -X POST -H "X-API-Key: ${API_KEY}" -H "Content-Type: application/json" \
-                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":0}" "$url")
+                      -d "{\"role\":\"core\",\"count\":${target},\"expectedVersion\":${stored_version}}" "$url")
     rc=$?
     local body
     body=$(head -c 500 "$body_file" 2>/dev/null)
@@ -3849,7 +4849,21 @@ scale_cluster() {
         return 1
     fi
     if [ -z "$http_status" ] || [ "$http_status" -lt 200 ] 2>/dev/null || [ "$http_status" -ge 300 ] 2>/dev/null; then
-        log_warn "scale_cluster: POST /api/v1/cluster/scale REJECTED with HTTP ${http_status:-<empty>} — the cluster was NOT rescaled. Body: ${body}"
+        # #837: distinguish an EXPECTED typed refusal (404/409 — e.g. no cluster config
+        # stored after a volume wipe, or a version conflict) from a genuine 5xx failure.
+        # Both used to log identically ("REJECTED with HTTP ...") with the body truncated
+        # to 500 chars and never parsed, so an operator reading the log had to eyeball raw
+        # JSON to find the actual reason. Surface `detail` explicitly either way.
+        local detail
+        detail=$(_extract_problem_detail "$body")
+        case "$http_status" in
+            404|409)
+                log_warn "scale_cluster: POST /api/v1/cluster/scale refused as expected (HTTP ${http_status}, typed) — the cluster was NOT rescaled. detail: ${detail:-<none — body: ${body}>}"
+                ;;
+            *)
+                log_warn "scale_cluster: POST /api/v1/cluster/scale FAILED with HTTP ${http_status:-<empty>} — the cluster was NOT rescaled. detail: ${detail:-<none — body: ${body}>}"
+                ;;
+        esac
         return 1
     fi
     log_info "Scale result: HTTP ${http_status} ${body}" >&2
@@ -3957,14 +4971,285 @@ stream_list() {
     aether_json "streams list" 2>/dev/null || api_get "/api/v1/streams"
 }
 
-stream_info() {
-    local name="$1"
-    api_get "/api/v1/streams/${name}"
+# Resolve a BARE stream name to its catalog coordinate "namespace/stream/version".
+#
+# The 2026-09-02 catalog migration (7a523c9e3) moved every stream route to
+# /streams/{namespace}/{stream}/{version}/<verb>. The harness only ever held a bare
+# name, so the old flat paths did NOT 404 — they MISROUTED. RouteMatcher buckets by
+# (method, segment count), and the flat 6-token /streams/replicas/{name}/{partition}
+# lands in the same bucket as STREAMS_METADATA (/streams/{ns}/{stream}/{version}),
+# which absorbed it as namespace="replicas", version="{partition}". Measured against a
+# live rc4 node 2026-09-12: it returns 500 "Resource version must match
+# MAJOR.MINOR.PATCH", while a well-formed-but-absent triple returns 500 "Stream not
+# found" — same handler, different failure, which is what proves the misroute.
+#
+# Resolving against the LIVE catalog rather than hard-coding the triple keeps this from
+# rotting the same way: if the coordinate changes, the lookup follows it.
+# Prints "ns/stream/version" on stdout; returns 1 if the name is not in the catalog.
+# Create a stream at a CATALOG address (#1224).
+#
+# The flat `POST /api/v1/streams` with a body-carried name is refused as of #1224: it wrote only
+# the engine's ring-buffer store and never the registry, so everything it created was invisible to
+# `GET /api/v1/streams` — which is what `stream_coordinate` below reads. Every publish therefore
+# failed to resolve a coordinate and reported zero acks, across four suites, in both runtimes.
+#
+# Operator-created streams are addressed like every other catalog verb since the 2026-09-02
+# migration and #1044: namespace:stream:version, stated explicitly. `system` is rejected by the
+# server, so integration fixtures use STREAM_TEST_NAMESPACE.
+STREAM_TEST_NAMESPACE="${STREAM_TEST_NAMESPACE:-integration}"
+STREAM_TEST_VERSION="${STREAM_TEST_VERSION:-1.0.0}"
+
+stream_create() {
+    local name="$1" partitions="${2:-1}"
+    api_post "/api/v1/streams/${STREAM_TEST_NAMESPACE}/${name}/${STREAM_TEST_VERSION}" \
+             "{\"partitions\":${partitions}}"
 }
 
+# Both failure paths WARN on stderr, and they are deliberately distinguished.
+#
+# This returned 1 silently for both, and that silence is what made the 2026-09-23 baseline
+# undiagnosable: a stream missing from the catalog is the dominant failure mode there, and every
+# caller — stream_publish, stream_info, stream_identity, stream_replicas — inherited the silence and
+# reported only `expected NOT '', got ''`. Surfacing the HTTP body at the api layer does not help,
+# because on this path NO REQUEST IS EVER MADE.
+#
+# "catalog unreachable" and "stream absent from an otherwise healthy catalog" call for different
+# actions (fix the cluster vs create the stream), so they must not read alike. stdout stays
+# coordinate-only: the assert call sites capture it with `$(...)` and redirect stderr away.
+# Resolution is EXACT for streams this harness creates (stream_create puts them in
+# STREAM_TEST_NAMESPACE at STREAM_TEST_VERSION): when that address is in the catalog it is returned,
+# whatever else carries the same bare name. Cluster A holds `integration/test-events` AND the
+# `org.pragmatica.aether.test.test-persistence/test-events` that a deployed blueprint declares; the old
+# namespace-blind `head -1` over an unordered listing picked either one, re-resolved on every publish, so
+# one test's writes split across the two streams (6 + 14 of 20 measured, and the batch's 48 in the other).
+# A bare name with no harness-namespace entry resolves only when it matches EXACTLY ONE catalog entry (an
+# app-declared stream such as `notifications`); a match in several namespaces FAILS, loudly, naming them.
+# The exact address is cached per test process ($$, one process per test file) so a test resolves it once.
+stream_coordinate() {
+    local name="$1" body matches exact count cache
+    cache="${TMPDIR:-/tmp}/aether-stream-coord.$$.${name}"
+    if [ -s "$cache" ]; then
+        cat "$cache"
+        return 0
+    fi
+    body=$(api_get "/api/v1/streams" 2>/dev/null) || {
+        log_warn "stream_coordinate ${name}: GET /api/v1/streams failed — catalog unreachable" >&2
+        return 1
+    }
+    matches=$(printf '%s' "$body" \
+        | tr '}' '\n' \
+        | grep -F "\"stream\":\"${name}\"" \
+        | sed -E 's/.*"namespace":"([^"]*)".*"stream":"([^"]*)".*"version":"([^"]*)".*/\1\/\2\/\3/' \
+        | sort -u)
+    exact="${STREAM_TEST_NAMESPACE}/${name}/${STREAM_TEST_VERSION}"
+    if printf '%s\n' "$matches" | grep -qxF "$exact"; then
+        printf '%s' "$exact" | tee "$cache"
+        return 0
+    fi
+    count=$(printf '%s\n' "$matches" | grep -c . || true)
+    if [ "$count" -eq 1 ]; then
+        printf '%s' "$matches"
+        return 0
+    fi
+    if [ "$count" -gt 1 ]; then
+        log_warn "stream_coordinate ${name}: AMBIGUOUS — the bare name matches ${count} catalog entries and none is the harness address ${exact}: $(printf '%s' "$matches" | tr '\n' ' ')" >&2
+        return 1
+    fi
+    log_warn "stream_coordinate ${name}: not in the catalog (create it with stream_create); catalog holds: $(printf '%s' "$body" | grep -oE '"stream":"[^"]*"' | tr '\n' ' ' | head -c 300)" >&2
+    return 1
+}
+
+stream_info() {
+    local name="$1" coord
+    coord=$(stream_coordinate "$name") || return 1
+    api_get "/api/v1/streams/${coord}"
+}
+
+# stream_info is the catalog METADATA route (STREAMS_METADATA): namespace, stream, version, refCount,
+# partitionCount, retention... — no event counts, and the name field is `stream`, not `name`.
+# The per-partition totals live on /info (STREAM_GET), which since #1478 reports the OWNERS' heads.
+stream_status() {
+    local name="$1" coord
+    coord=$(stream_coordinate "$name") || return 1
+    api_get "/api/v1/streams/${coord}/info"
+}
+
+# stream_total_events <name>: prints /info's totalEvents. A body WITHOUT the field is a harness/API
+# mismatch, not a measured zero: the earlier `${count:-0}` rendered "field absent" as "got '0'" and
+# sent the 2026-09-29 investigation after a product defect that was really the wrong endpoint (#1478).
+# Fails non-zero, stdout empty, stderr naming the absence, so callers capturing stdout cannot mistake it.
+stream_total_events() {
+    local name="$1" info count
+    info=$(stream_status "$name") || return 1
+    count=$(json_value "$info" "totalEvents")
+    [ -n "$count" ] || {
+        log_warn "stream_total_events ${name}: totalEvents field absent from /info body: $(printf '%s' "$info" | head -c 300)" >&2
+        return 1
+    }
+    printf '%s' "$count"
+}
+
+# stream_declared_name <name>: prints the metadata body's `stream` field; absent is a loud failure.
+stream_declared_name() {
+    local name="$1" info declared
+    info=$(stream_info "$name") || return 1
+    declared=$(json_value "$info" "stream")
+    [ -n "$declared" ] || {
+        log_warn "stream_declared_name ${name}: stream field absent from metadata body: $(printf '%s' "$info" | head -c 300)" >&2
+        return 1
+    }
+    printf '%s' "$declared"
+}
+
+# Publish one event with the retry policy below and print the FINAL HTTP status ("000" when nothing
+# answered) on stdout; the final response body goes to $3 when given. ONLY a 503 whose body says the
+# publish was "refused before writing" (ManagementServerError.PublishRetryable: an owner not yet promoted,
+# not enough replicas) is retried, with 250ms -> 1s backoff for up to STREAM_PUBLISH_RETRY_BUDGET_S
+# (default 10s); the last refusal is then reported as-is. Everything else returns after exactly ONE
+# request, in particular a 500 including "Publish outcome unknown ... FORWARD_TIMEOUT": the publish may
+# have landed, and without a message id a resend can duplicate it (#1750).
+# When STREAM_PUBLISH_TRACE names a file, one line per call is appended:
+#   endpoint=<ep> status=<s> attempts=<n> offset=<o> partition=<p>
+# so a later shortfall can be tied to which node answered which offset (partition is the response's
+# field when present, else 0, the Management API default).
+stream_publish_status() {
+    local name="$1" body="$2" body_file="${3:-/dev/null}" coord
+    coord=$(stream_coordinate "$name") || { printf '000'; return 0; }
+    local budget="${STREAM_PUBLISH_RETRY_BUDGET_S:-10}"
+    local delay="${STREAM_PUBLISH_RETRY_DELAY_S:-0.25}" max_delay="${STREAM_PUBLISH_RETRY_MAX_DELAY_S:-1}"
+    local deadline
+    deadline=$(deadline_in "$budget")
+    local out status resp_body ep attempt=0 off part
+    while :; do
+        attempt=$((attempt + 1))
+        ep=$(_resolve_live_endpoint)
+        out=$(_api_call POST "${ep}/api/v1/streams/${coord}/publish" "$body" 1) || true
+        status=$(printf '%s' "$out" | grep -oE '__API_HTTP_STATUS:[0-9]+__' | tail -1 | sed 's/__API_HTTP_STATUS://;s/__//')
+        resp_body=$(printf '%s' "$out" | sed '$d')
+        if [ "$status" = "503" ] && printf '%s' "$resp_body" | grep -qi 'refused before writing'; then
+            if [ "$SECONDS" -lt "$deadline" ]; then
+                log_warn "stream_publish ${name}: attempt ${attempt} got 503 ($(printf '%s' "$resp_body" | head -c 120)); retrying in ${delay}s" >&2
+                sleep "$delay"
+                delay=$(awk -v d="$delay" -v m="$max_delay" 'BEGIN { d = d * 2; if (d > m) d = m; print d }')
+                continue
+            fi
+            log_warn "stream_publish ${name}: 503 refused-before-writing still refused after ${attempt} attempt(s) in ${budget}s; last body: $(printf '%s' "$resp_body" | head -c 300)" >&2
+        fi
+        printf '%s' "$resp_body" > "$body_file"
+        if [ -n "${STREAM_PUBLISH_TRACE:-}" ]; then
+            off=$(json_value "$resp_body" "offset" 2>/dev/null || true)
+            part=$(json_value "$resp_body" "partition" 2>/dev/null || true)
+            printf 'endpoint=%s status=%s attempts=%s offset=%s partition=%s\n' \
+                "$ep" "${status:-000}" "$attempt" "${off:--}" "${part:-0}" >> "$STREAM_PUBLISH_TRACE"
+        fi
+        printf '%s' "${status:-000}"
+        return 0
+    done
+}
+
+# Publish one event; success (rc 0) prints the response body, any refusal returns 1. See
+# stream_publish_status for the retry policy.
 stream_publish() {
-    local name="$1" body="$2"
-    api_post "/api/v1/streams/publish/${name}" "$body"
+    local name="$1" body="$2" body_file status
+    body_file=$(mktemp)
+    status=$(stream_publish_status "$name" "$body" "$body_file")
+    if [ "$status" -ge 200 ] && [ "$status" -lt 400 ] 2>/dev/null; then
+        cat "$body_file"
+        rm -f "$body_file"
+        return 0
+    fi
+    rm -f "$body_file"
+    return 1
+}
+
+# The catalog identity in CLI form: `namespace:stream:version`.
+#
+# `stream_coordinate` emits the slash form because management ROUTES are path-shaped; the CLI takes
+# the colon form. Both descend from the same catalog lookup, so they cannot disagree.
+#
+# Callers must use this rather than a bare name. `aether streams read|status|publish|delete` document
+# a bare-name convenience that "defaults to system:name:1.0.0" — harmless while the engine also keyed
+# app streams by their bare section name, and WRONG since #1040 qualified them: the bare form now
+# resolves to the `system` namespace, which `StreamEngineKey` reduces back to a bare key that holds
+# no app stream. Measured 2026-09-12: publishing through the catalog and reading by bare name returned
+# 0 of 20 markers while the events were demonstrably present on the qualified ring.
+stream_identity() {
+    local coord
+    coord=$(stream_coordinate "$1") || return 1
+    printf '%s' "${coord//\//:}"
+}
+
+# Best-effort teardown/pre-clean delete for a stream that may or may not exist.
+#
+# The four call sites are hygiene, not assertions: two pre-clean a stale stream before pushing a
+# blueprint (so the partition under test starts at offset 0) and two are cleanup traps. They were
+# written as `aether_failover streams delete "$STREAM_NAME" ... || true`, which since #1044 is a
+# bare-name hard error on EVERY invocation — so the pre-clean silently stopped pre-cleaning and the
+# cleanup silently stopped cleaning, both while looking like they still worked. `|| true` is what
+# made it invisible.
+#
+# Absent-from-catalog is a legitimate outcome here (the pre-clean runs before anything creates the
+# stream), so it returns 0 without invoking the CLI. It is NOT a silent catch-all: a delete that is
+# attempted and fails warns, because at that point the stream demonstrably existed.
+stream_delete_if_present() {
+    local name="$1" identity
+    identity=$(stream_identity "$name" 2>/dev/null) || {
+        log_info "stream_delete_if_present: ${name} not in catalog — nothing to delete"
+        return 0
+    }
+    # `--force` is REQUIRED, not hygiene: `streams delete` prompts "Are you sure…? (y/N)" and the
+    # suite gives it no tty, so without it the command blocks on the prompt and exits non-zero even
+    # for a perfectly-addressed stream. The original `|| true` was concealing TWO stacked defects —
+    # the bare name AND this — so fixing only the address would have produced a delete that still
+    # silently did nothing. Measured against a live cluster: without --force the stream is still in
+    # the catalog afterwards; with it, it is gone.
+    aether_failover streams delete "$identity" --force >/dev/null 2>&1 \
+        || log_warn "stream_delete_if_present: 'streams delete ${identity} --force' failed (stream is in the catalog)"
+    return 0
+}
+
+# Replica-set view for a partition (STREAM_REPLICAS). Partition defaults to 0.
+stream_replicas() {
+    local name="$1" partition="${2:-0}" coord
+    coord=$(stream_coordinate "$name") || return 1
+    api_get "/api/v1/streams/${coord}/replicas/${partition}"
+}
+
+# Management endpoints of every live node, one per line (best effort; a node that does not answer is
+# handled by the caller). Cloud: the running cores' public IPs; docker/remote: MGMT_PORT + 0..NODE_COUNT-1.
+_stream_live_endpoints() {
+    local id ip i
+    if [ "${CLOUD_MODE:-false}" = "true" ]; then
+        for id in $(cloud_running_cores); do
+            ip=$(cloud_public_ip "$id" 2>/dev/null) || continue
+            printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+            printf '%s://%s:%s\n' "${MGMT_SCHEME:-http}" "$ip" "${CLOUD_MGMT_PORT:-8080}"
+        done
+    else
+        for i in $(seq 0 $(( ${NODE_COUNT:-5} - 1 ))); do
+            printf 'http://%s:%s\n' "${TARGET_HOST}" "$(( ${MGMT_PORT:-5151} + i ))"
+        done
+    fi
+}
+
+# Capture for a stream whose count fell short of what was acknowledged (a possible acked-data loss):
+# every acked offset and which endpoint answered it (from the STREAM_PUBLISH_TRACE file), the /info body
+# (partitionDetails), /replicas/0, and `replicas-local` from EVERY node — a node that fails is reported
+# and skipped over, never a reason to stop. Prints on stdout; the caller quotes it in one log line.
+stream_shortfall_report() {
+    local name="$1" trace="${2:-}" identity ep body
+    echo "acked offsets (offset@partition, in publish order): $(grep -E 'status=(2|3)[0-9][0-9]' "$trace" 2>/dev/null | sed -E 's/.*offset=([^ ]+) partition=([^ ]+).*/\1@\2/' | tr '\n' ' ')"
+    echo "answering endpoints: $(grep -oE 'endpoint=[^ ]+' "$trace" 2>/dev/null | sort | uniq -c | tr '\n' ' ')"
+    echo "non-2xx publishes: $(grep -vE 'status=(2|3)[0-9][0-9]' "$trace" 2>/dev/null | tr '\n' '|')"
+    echo "/info: $(stream_status "$name" 2>&1 | head -c 2000)"
+    echo "/replicas/0: $(stream_replicas "$name" 0 2>&1 | head -c 2000)"
+    identity=$(stream_identity "$name" 2>/dev/null) || identity=""
+    for ep in $(_stream_live_endpoints); do
+        if [ -z "$identity" ]; then echo "replicas-local @ ${ep}: <no catalog identity>"; continue; fi
+        body=$(curl -sk -m 5 -H "X-API-Key: ${API_KEY}" "${ep}/api/v1/streams/${identity}/0/replicas-local" 2>&1) \
+            || body="<request failed rc=$?: ${body}>"
+        echo "replicas-local @ ${ep}: $(printf '%s' "$body" | head -c 1500)"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -4048,7 +5333,8 @@ deploy_start() {
     log_info "Starting ${strategy} deployment: ${coords}" >&2
     # Compose the strategy body that DeployCommand would build (extra args ignored — CLI
     # only passes them through HTTP body, the bash test layer just composes JSON itself).
-    local strategy_upper instances=2 traffic=10 manual=false
+    # instances defaults to the server-side floor/default of 3 (#1495); fewer is refused with 400.
+    local strategy_upper instances=3 traffic=10 manual=false
     case "$strategy" in
         blue-green) strategy_upper="BLUE_GREEN" ;;
         canary) strategy_upper="CANARY" ;;
@@ -4082,23 +5368,27 @@ deploy_list() {
 
 deploy_status() {
     local deployment_id="$1"
+    _require_deployment_id "$deployment_id" "{id}" || return 1
     api_get "/api/v1/deploy/${deployment_id}"
 }
 
 deploy_promote() {
     local deployment_id="$1"
+    _require_deployment_id "$deployment_id" "promote" || return 1
     log_info "Promoting deployment: ${deployment_id}" >&2
     api_post "/api/v1/deploy/promote/${deployment_id}" "{}"
 }
 
 deploy_rollback() {
     local deployment_id="$1"
+    _require_deployment_id "$deployment_id" "rollback" || return 1
     log_info "Rolling back deployment: ${deployment_id}" >&2
     api_post "/api/v1/deploy/rollback/${deployment_id}" "{}"
 }
 
 deploy_complete() {
     local deployment_id="$1"
+    _require_deployment_id "$deployment_id" "complete" || return 1
     log_info "Completing deployment: ${deployment_id}" >&2
     api_post "/api/v1/deploy/complete/${deployment_id}" "{}"
 }
@@ -4138,9 +5428,26 @@ deploy_cleanup() {
 }
 
 # Extract deployment ID from the most recent entry in deploy list
+# #1476: an empty id fails HERE, quoting the response it was read from, instead of flowing on into
+# `/api/v1/deploy/promote/` and coming back as a 404 that looks like a routing fault. The [FAIL] line
+# goes to stderr because callers capture stdout (`did=$(deploy_extract_id ...)`).
 deploy_extract_id() {
-    local deployments="$1"
-    json_value "$deployments" "deploymentId"
+    local deployments="$1" id
+    id=$(json_value "$deployments" "deploymentId")
+    if [ -z "$id" ]; then
+        echo -e "${RED}[FAIL]${NC}  $(_log_prefix)no deploymentId in the response, so no deployment was started or listed: $(printf '%s' "$deployments" | head -c 300)" >&2
+        return 1
+    fi
+    printf '%s' "$id"
+}
+
+# #1476: never issue a deployment request with an empty id. `/api/v1/deploy/promote/` with no id is a
+# 404 that reads as a missing route, while the real cause is a failed start earlier in the test.
+_require_deployment_id() {
+    local deployment_id="$1" action="$2"
+    [ -n "$deployment_id" ] && return 0
+    echo -e "${RED}[FAIL]${NC}  $(_log_prefix)refusing to call /api/v1/deploy/${action} with an empty deployment id; the step that should have produced it failed earlier" >&2
+    return 1
 }
 
 # ---------------------------------------------------------------------------

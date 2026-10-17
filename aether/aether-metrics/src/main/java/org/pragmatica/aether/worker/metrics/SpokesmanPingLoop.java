@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
 import java.util.HashMap;
@@ -23,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SpokesmanValue;
 import org.pragmatica.cluster.metrics.CommunityReport;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPong;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -67,7 +67,7 @@ public interface SpokesmanPingLoop {
                                                ClusterNetwork network,
                                                TimeSpan interval,
                                                Supplier<Long> rabiaTermSupplier,
-                                               Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
+                                               Supplier<Map<NodeId, MetricObservation>> allMetricsSupplier,
                                                Function<String, Option<NodeId>> governorLookup) {
         return spokesmanPingLoop(self,
                                  network,
@@ -82,7 +82,7 @@ public interface SpokesmanPingLoop {
                                                ClusterNetwork network,
                                                TimeSpan interval,
                                                Supplier<Long> rabiaTermSupplier,
-                                               Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
+                                               Supplier<Map<NodeId, MetricObservation>> allMetricsSupplier,
                                                Function<String, Option<NodeId>> governorLookup,
                                                SpokesmanStatusWriter statusWriter) {
         return new SpokesmanPingLoopImpl(self,
@@ -152,7 +152,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
     private final ClusterNetwork network;
     private final TimeSpan interval;
     private final Supplier<Long> rabiaTermSupplier;
-    private final Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier;
+    private final Supplier<Map<NodeId, MetricObservation>> allMetricsSupplier;
     private final Function<String, Option<NodeId>> governorLookup;
     private final SpokesmanStatusWriter statusWriter;
     private final AtomicBoolean started = new AtomicBoolean(false);
@@ -168,7 +168,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
                           ClusterNetwork network,
                           TimeSpan interval,
                           Supplier<Long> rabiaTermSupplier,
-                          Supplier<Map<NodeId, Map<String, Double>>> allMetricsSupplier,
+                          Supplier<Map<NodeId, MetricObservation>> allMetricsSupplier,
                           Function<String, Option<NodeId>> governorLookup,
                           SpokesmanStatusWriter statusWriter) {
         this.self = self;
@@ -328,13 +328,22 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
 
     private void sendPing(NodeId governor, long rabiaTerm) {
         var epoch = Epoch.ZERO;
+        var local = allMetricsSupplier.get().get(self);
+        var observations = local == null
+                           ? Map.<NodeId, MetricObservation> of()
+                           : Map.of(self, local);
         var ping = new ClusterSyncPing(self,
-                                       allMetricsSupplier.get(),
+                                       observations,
                                        rabiaTerm,
+                                       epoch.incarnation(),
                                        epoch.rabiaTerm(),
                                        epoch.localCounter(),
                                        Set.of(),
-                                       Set.of());
+                                       Set.of(),
+                                       Map.of(),
+                                       Set.of(),
+                                       false,
+                                       false);
 
         network.send(governor, ping);
     }
@@ -350,6 +359,7 @@ final class SpokesmanPingLoopImpl implements SpokesmanPingLoop {
         var members = lifecycleCount(pong);
         var report = new CommunityReport(communityId,
                                          0L,
+                                         pong.observedEpochIncarnation(),
                                          pong.observedEpochTerm(),
                                          pong.observedEpochCounter(),
                                          pong.sender(),

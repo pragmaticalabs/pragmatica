@@ -89,7 +89,10 @@ readonly VM_NAME_PREFIX="aether-test-pg"
 readonly SSH_KEY_NAME="aether-test-pg-key"
 
 # Defaults overridable via env
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
+# This script provisions a REAL, billable Hetzner server.
 PG_VM_TYPE="${PG_VM_TYPE:-cx23}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 PG_VM_LOCATION="${PG_VM_LOCATION:-fsn1}"
 PG_VM_IMAGE="${PG_VM_IMAGE:-ubuntu-22.04}"
 AETHER_SSH_USER="${AETHER_SSH_USER:-root}"

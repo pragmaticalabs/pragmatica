@@ -3,9 +3,18 @@ package org.pragmatica.net.tcp.security;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.cert.CertificateFactory;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.util.HexFormat;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.net.tcp.security.SelfSignedCertificateProvider.selfSignedCertificateProvider;
@@ -13,6 +22,11 @@ import static org.pragmatica.net.tcp.security.SelfSignedCertificateProvider.self
 class SelfSignedCertificateProviderTest {
     private static final byte[] CLUSTER_SECRET = "test-cluster-secret".getBytes(StandardCharsets.UTF_8);
     private static final byte[] OTHER_SECRET = "other-cluster-secret".getBytes(StandardCharsets.UTF_8);
+    /// The secret shipped in `build.sh` for local dev — pinned so the vectors cover a value real
+    /// clusters actually use, not only a test-only string.
+    private static final byte[] DEV_SECRET = "aether-local-dev-cluster-secret".getBytes(StandardCharsets.UTF_8);
+    /// Fixed, so the gossip vector does not move with the wall clock.
+    private static final String PINNED_GOSSIP_VERSION = "2026-01-01";
 
     private static CertificateProvider provider;
 
@@ -109,6 +123,147 @@ class SelfSignedCertificateProviderTest {
         }
     }
 
+    /// #1164: the day-derived keys follow the clock's day at access time, not the construction
+    /// day. A node up for two days must hold exactly the keys a node booted today holds, or the two
+    /// cannot decrypt each other (the accept window is one day either side).
+    @Nested
+    class DayRollover {
+        private static final Instant DAY_D = Instant.parse("2026-09-21T12:00:00Z");
+
+        @Test
+        void keysFollowTheClockDay_notTheBootDay() {
+            var clock = new MutableClock(DAY_D);
+            var longRunning = provider(clock);
+
+            clock.advance(Duration.ofDays(2));
+            var bootedToday = provider(new MutableClock(DAY_D.plus(Duration.ofDays(2))));
+
+            assertThat(keyId(longRunning.currentGossipKey())).as("#1164: a provider up for two days must encrypt under TODAY's key, i.e. the key a "
+                                                                + "provider booted today derives — otherwise the two never share a key")
+                      .isEqualTo(keyId(bootedToday.currentGossipKey()));
+            assertThat(keyId(longRunning.previousGossipKey())).isEqualTo(keyId(bootedToday.previousGossipKey()));
+            assertThat(keyId(longRunning.nextGossipKey())).isEqualTo(keyId(bootedToday.nextGossipKey()));
+        }
+
+        /// The window SLIDES by one day: today's `next` is tomorrow's `current`, today's `current`
+        /// is tomorrow's `previous`. Pins that the rollover moves the window rather than widening it.
+        @Test
+        void oneDayLater_windowSlidesByOneDay() {
+            var clock = new MutableClock(DAY_D);
+            var provider = provider(clock);
+            var currentOnD = keyId(provider.currentGossipKey());
+            var nextOnD = keyId(provider.nextGossipKey());
+
+            clock.advance(Duration.ofDays(1));
+            assertThat(keyId(provider.previousGossipKey())).isEqualTo(currentOnD);
+            assertThat(keyId(provider.currentGossipKey())).isEqualTo(nextOnD);
+        }
+
+        @Test
+        void withinTheSameDay_keysAreStable() {
+            var clock = new MutableClock(DAY_D);
+            var provider = provider(clock);
+            var currentOnD = provider.currentGossipKey().or((GossipKey) null);
+
+            clock.advance(Duration.ofHours(11));
+            var later = provider.currentGossipKey().or((GossipKey) null);
+
+            assertThat(later.keyId()).isEqualTo(currentOnD.keyId());
+            assertThat(later.key()).isEqualTo(currentOnD.key());
+        }
+
+        /// #1415: the day label is the UTC day of the clock's instant, whatever zone the clock (or the
+        /// host) is in. At 11:00Z a `+14:00` host is already on the next local day and a `-12:00` host
+        /// still on the previous one — two local days apart, which a zone-read label turns into a
+        /// full use of the one-day accept window before any clock skew.
+        @Test
+        void hostsInDifferentZones_deriveTheSameDayKeys() {
+            var instant = Instant.parse("2026-09-21T11:00:00Z");
+            var east = provider(Clock.fixed(instant, ZoneOffset.ofHours(14)));
+            var west = provider(Clock.fixed(instant, ZoneOffset.ofHours(-12)));
+            var utc = provider(Clock.fixed(instant, ZoneOffset.UTC));
+
+            assertThat(keyId(east.currentGossipKey())).as("#1415: the gossip day is the UTC day, not the host zone's")
+                      .isEqualTo(keyId(west.currentGossipKey()))
+                      .isEqualTo(keyId(utc.currentGossipKey()));
+            assertThat(keyId(east.previousGossipKey())).isEqualTo(keyId(west.previousGossipKey()));
+            assertThat(keyId(east.nextGossipKey())).isEqualTo(keyId(west.nextGossipKey()));
+        }
+
+        /// #1415 at the boundary itself, on a non-UTC host: a `+05:00` host's local midnight (19:00Z) does not
+        /// roll the key, and UTC midnight does. A UTC-zoned clock cannot tell the two apart.
+        @Test
+        void dayBoundary_onANonUtcHost_isUtcMidnight_notLocalMidnight() {
+            var plusFive = ZoneOffset.ofHours(5);
+            var beforeLocalMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T18:59:59Z"), plusFive));
+            var afterLocalMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T19:00:00Z"), plusFive));
+            var beforeUtcMidnight = provider(Clock.fixed(Instant.parse("2026-09-21T23:59:59Z"), plusFive));
+            var afterUtcMidnight = provider(Clock.fixed(Instant.parse("2026-09-22T00:00:00Z"), plusFive));
+
+            assertThat(keyId(afterLocalMidnight.currentGossipKey())).as("the host's local midnight is not a gossip-day boundary")
+                      .isEqualTo(keyId(beforeLocalMidnight.currentGossipKey()));
+            assertThat(keyId(afterUtcMidnight.currentGossipKey())).as("UTC midnight is the gossip-day boundary")
+                      .isEqualTo(keyId(beforeUtcMidnight.nextGossipKey()))
+                      .isNotEqualTo(keyId(beforeUtcMidnight.currentGossipKey()));
+        }
+
+        /// The day boundary is UTC midnight (#1415).
+        @Test
+        void dayBoundary_isUtcMidnight() {
+            var clock = new MutableClock(Instant.parse("2026-09-21T23:59:59Z"));
+            var provider = provider(clock);
+            var beforeMidnight = keyId(provider.currentGossipKey());
+            var nextBeforeMidnight = keyId(provider.nextGossipKey());
+
+            clock.advance(Duration.ofSeconds(1));
+            assertThat(keyId(provider.currentGossipKey())).as("one second across UTC midnight rolls the current key to yesterday's next")
+                      .isEqualTo(nextBeforeMidnight)
+                      .isNotEqualTo(beforeMidnight);
+        }
+
+        private static CertificateProvider provider(Clock clock) {
+            return selfSignedCertificateProvider(CLUSTER_SECRET, clock).or((CertificateProvider) null);
+        }
+
+        private static int keyId(Result<GossipKey> key) {
+            return key.or((GossipKey) null)
+                      .keyId();
+        }
+
+        private static int keyId(Option<GossipKey> key) {
+            return key.or((GossipKey) null)
+                      .keyId();
+        }
+    }
+
+    /// A UTC clock the test moves by hand.
+    static final class MutableClock extends Clock {
+        private Instant now;
+
+        MutableClock(Instant start) {
+            this.now = start;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+    }
+
     @Nested
     class VersionedKeyDerivation {
         @Test
@@ -165,7 +320,110 @@ class SelfSignedCertificateProviderTest {
         }
     }
 
+    /// #980 verification finding SF1 — the HISTORICAL-OUTPUT gate, and the highest-consequence test in
+    /// this file.
+    ///
+    /// Every other test here compares the implementation **to itself within one version**:
+    /// `Determinism.deterministic_sameSecret_sameCA` derives twice and checks agreement, which a
+    /// self-consistent reformulation of the HKDF steps satisfies perfectly — swapped extract
+    /// arguments, a changed salt, a reordered expand. Such a rewrite would stay deterministic, stay
+    /// label-separated, keep every test in this file green, **and change the CA identity of every
+    /// deployed cluster**, silently invalidating their mutual trust.
+    ///
+    /// That risk grew with #980, not shrank: the derivation moved from a private method with one
+    /// consumer into a public interface in another module with three. `ClusterSecretDerivationTest`
+    /// pins the admin-key label against an externally computed vector for exactly this reason; the CA
+    /// and gossip labels, whose blast radius is far larger, had none.
+    ///
+    /// **Provenance of these values, which is what makes them a gate rather than a snapshot.** They
+    /// are the PRE-CONSOLIDATION output, established by cross-version execution rather than taken on
+    /// trust: `integrations/net/tcp` was built at `8f02cd3cf` (private `hkdfDerive` present,
+    /// `ClusterSecretDerivation.class` absent from the compiled output — checked, not assumed) and at
+    /// the consolidated head, and ONE probe was run against BOTH, using only API present in each. CA
+    /// public key and gossip key id/bytes came out **identical** for both secrets. The #980 adversarial
+    /// verification reached the same result independently; this was re-run here because the claim is
+    /// load-bearing for these constants and a report is not evidence.
+    ///
+    /// Discrimination control: the two secrets yield different values throughout, so the probe was not
+    /// reading a constant. Confirmed stable across separate JVM runs before being written down.
+    ///
+    /// The pinned quantity is the CA **public key**, not the certificate: the certificate embeds
+    /// `notBefore`/`notAfter` and differs run to run. The verifier hit that as a false positive; it is
+    /// recorded here so the next reader does not re-derive it.
+    ///
+    /// If this test ever fails, the derivation changed. That is not a test to update — it is a
+    /// compatibility break, and the correct response is a NEW `info` label, never new constants here.
+    @Nested
+    class HistoricalVectors {
+        @Test
+        void caPublicKey_matchesTheHistoricalVector_forThePinnedSecret() {
+            assertThat(caPublicKeyHex(CLUSTER_SECRET))
+                .isEqualTo("3059301306072a8648ce3d020106082a8648ce3d030107034200040e2a1f1aa22fd397eb33245d23847f92"
+                           + "2aacc80d336e990c7d65a17ee9afd18ae4a839c99453736c893cbc56799df4ba8583381e6f50c6235b69"
+                           + "4a00b2848e46");
+        }
+
+        @Test
+        void caPublicKey_matchesTheHistoricalVector_forTheDevSecret() {
+            assertThat(caPublicKeyHex(DEV_SECRET))
+                .isEqualTo("3059301306072a8648ce3d020106082a8648ce3d030107034200046d0ac4cbf87ed829dd80ad920fada9b1"
+                           + "49df0c7629696f3029d724d2652736dcb4a8cce332b3fae56a7658fdc16961dd14b060202f80346d96ca"
+                           + "c40e8575c640");
+        }
+
+        /// The gossip label under a FIXED version. `currentGossipKey()` is wall-clock derived
+        /// (`aether-gossip-key-v<date>`) and cannot be pinned; `deriveVersionedGossipKey` can, and it
+        /// runs the same HKDF path.
+        @Test
+        void versionedGossipKey_matchesTheHistoricalVector() {
+            var key = versionedGossipKey(CLUSTER_SECRET, PINNED_GOSSIP_VERSION);
+
+            assertThat(key.keyId()).isEqualTo(-1260787674);
+            assertThat(HexFormat.of().formatHex(key.key()))
+                .isEqualTo("51e142c53d35905ca025e743c05ed0fa17673f1002528873aa185fbe16b47f3a");
+        }
+
+        @Test
+        void versionedGossipKey_matchesTheHistoricalVector_forTheDevSecret() {
+            var key = versionedGossipKey(DEV_SECRET, PINNED_GOSSIP_VERSION);
+
+            assertThat(key.keyId()).isEqualTo(-486143897);
+            assertThat(HexFormat.of().formatHex(key.key()))
+                .isEqualTo("90c5574a9f9802629aae21402f41247d4c25f05066f769fc9676c0f5ed1dda29");
+        }
+
+        /// Discrimination control. Without it, an implementation returning a constant would satisfy
+        /// every vector above if the constant happened to be right for one secret; more practically,
+        /// it proves the helpers below read something secret-dependent rather than a fixed field.
+        @Test
+        void theVectors_areSecretDependent_notConstants() {
+            assertThat(caPublicKeyHex(CLUSTER_SECRET)).isNotEqualTo(caPublicKeyHex(DEV_SECRET));
+            assertThat(versionedGossipKey(CLUSTER_SECRET, PINNED_GOSSIP_VERSION).keyId())
+                .isNotEqualTo(versionedGossipKey(DEV_SECRET, PINNED_GOSSIP_VERSION).keyId());
+        }
+    }
+
     // ===== Assertion helpers =====
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static String caPublicKeyHex(byte[] secret) {
+        try {
+            var pem = selfSignedCertificateProvider(secret).unwrap().caCertificate().unwrap().certificatePem();
+            var certificate = CertificateFactory.getInstance("X.509")
+                                                .generateCertificate(new ByteArrayInputStream(pem));
+
+            return HexFormat.of().formatHex(certificate.getPublicKey().getEncoded());
+        } catch (Exception e) {
+            throw new AssertionError("unable to read the CA public key", e);
+        }
+    }
+
+    private static GossipKey versionedGossipKey(byte[] secret, String version) {
+        return ((SelfSignedCertificateProvider) selfSignedCertificateProvider(secret).unwrap())
+            .deriveVersionedGossipKey(version)
+            .unwrap();
+    }
+
 
     private static void assertKeysDiffer(GossipKey current, GossipKey previous) {
         assertThat(previous.keyId()).isNotEqualTo(current.keyId());

@@ -1,5 +1,7 @@
 # Integration Test Overhaul v2 -- Implementation Spec
 
+> **Path note (2026-10-03, #960):** this document predates the `/api/v1` migration (#300). A node serves `/api/v1/health` and `/api/v1/cluster/topology` (leader-bound, authenticated) and the unversioned probes `/health/live` and `/health/ready`; the unversioned `/api/health`, `/api/cluster/topology` and `/health` paths below return 404. Kept as written for history.
+
 | Field   | Value                                    |
 |---------|------------------------------------------|
 | Status  | Approved -- ready for implementation     |
@@ -25,8 +27,8 @@ run-tests.sh --env docker|remote|cloud [--suites X,Y] [--skip-build] [--skip-dep
     +-- aether cluster bootstrap env/docker.toml    --> Cluster A (5 nodes, non-destructive)
     +-- aether cluster bootstrap env/docker-b.toml  --> Cluster B (5 nodes, destructive)
     |
-    +-- aether artifact push (test-echo, test-persistence, test-full)
-    +-- aether blueprint deploy (per cluster)
+    +-- aether artifacts push (test-echo, test-persistence, test-full)
+    +-- aether blueprints deploy (per cluster)
     |
     +-- wait_for_lb_ready (both clusters)
     |
@@ -78,7 +80,7 @@ run-tests.sh --env docker|remote|cloud [--suites X,Y] [--skip-build] [--skip-dep
    a. Resolve TOML template: `env/${env}.toml` -> expand `${env:...}` placeholders
    b. `aether cluster bootstrap env/${env}.toml --cluster cluster-a --yes --wait --timeout 300`
    c. `aether cluster bootstrap env/${env}-b.toml --cluster cluster-b --yes --wait --timeout 300`
-   d. Push test artifacts: `aether artifact push` for each blueprint JAR
+   d. Push test artifacts: `aether artifacts push` for each blueprint JAR
    e. Deploy blueprints to each cluster per suite requirements
 4. Wait for LB ready on both clusters (poll `/api/health` via cluster status endpoint)
 5. Detect capabilities (Section 8)
@@ -107,7 +109,7 @@ version = "1.0.0-rc1"
 
 [core_topology]
 min = 3
-max = 15
+max = 9
 max_unavailable = 1
 
 [source.docker]
@@ -125,8 +127,6 @@ swim = 6100
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "30s"
-startup_cooldown = "15s"
 
 [runtime.default]
 type = "docker"
@@ -174,6 +174,7 @@ max_unavailable = 1
 [source.hetzner-eu]
 type = "cloud"
 provider = "hetzner"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "fsn1-dc14"
 region = "eu-central"
 credentials = "${env:HCLOUD_TOKEN}"
@@ -181,6 +182,7 @@ load_balancer = "none"
 
 [source.hetzner-eu.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 
 [operations.ports]
@@ -596,6 +598,7 @@ Dedicated PostgreSQL VM provisioned during bootstrap:
 ```toml
 [databases.forge]
 type = "dedicated-vm"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance = "cx22"
 ```
 

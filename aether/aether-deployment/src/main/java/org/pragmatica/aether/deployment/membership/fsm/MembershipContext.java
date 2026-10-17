@@ -22,7 +22,7 @@ import org.pragmatica.statemachine.Fsm;
 /// the terminal incarnation) and is therefore constructed fresh on every entry via [`#dead`]; a
 /// rejoin produces a fresh OBSERVED instance via [`#observedRejoin`].
 ///
-/// Thread safety: the incarnation high-water mark is an `AtomicLong`. State singletons are `final`.
+/// Thread safety: both evidence high-water marks use `AtomicLong`. State singletons are `final`.
 public final class MembershipContext {
     private final Fsm<MembershipState, MembershipEvent> fsm;
     private final NodeId member;
@@ -36,6 +36,11 @@ public final class MembershipContext {
     /// this identity — even when the DEAD-triggering event (`Stopped`, `JoinGraceExpiredNeverHealthy`,
     /// drain) carries no incarnation of its own.
     private final AtomicLong lastSeenIncarnation = new AtomicLong(0);
+    /// The per-process random boot token this identity's process evidence carries; `0` until first
+    /// sight. Governor reports and direct worker admission share this domain, never the SWIM mark.
+    /// Compared by EQUALITY only (owner ruling, session 28): a different token for a known identity is
+    /// a new process, and a dead identity never returns — recovery is a fresh NodeId.
+    private final AtomicLong bootToken = new AtomicLong(0);
 
     MembershipContext(Fsm<MembershipState, MembershipEvent> fsm, NodeId member) {
         this.fsm = fsm;
@@ -65,6 +70,16 @@ public final class MembershipContext {
         return lastSeenIncarnation.get();
     }
 
+    /// Accept process evidence carrying `token` when it is the first token seen for this identity
+    /// (recording it) or equals the recorded one. A different token is a different process.
+    public boolean acceptBootToken(long token) {
+        return bootToken.compareAndSet(0, token) || bootToken.get() == token;
+    }
+
+    public long bootToken() {
+        return bootToken.get();
+    }
+
     // --- Per-FSM state instances ---
     public MembershipState.Observed observed() {
         return observed;
@@ -91,7 +106,7 @@ public final class MembershipContext {
         return departing;
     }
 
-    /// Fresh DEAD instance per entry, stamped with the current incarnation high-water mark.
+    /// Fresh DEAD instance per entry, stamped with the SWIM incarnation high-water mark.
     public MembershipState.Dead dead() {
         return new MembershipState.Dead(this, lastSeenIncarnation.get());
     }

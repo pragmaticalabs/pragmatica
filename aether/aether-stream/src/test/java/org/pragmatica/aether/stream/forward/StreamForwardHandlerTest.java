@@ -111,6 +111,24 @@ class StreamForwardHandlerTest {
             assertThat(response.correlationId()).isEqualTo(CORRELATION_ID);
         }
 
+        /// #1230: a forward reaching a node whose committed ownership names someone else — the HRW owner
+        /// during the reshuffle lag, before the leader commits the change — is refused RETRYABLE, so the
+        /// forwarder's bounded retry (#485) absorbs the lag instead of surfacing it; nothing lands here.
+        @Test
+        void onPublishForward_committedOwnerElsewhere_respondsRetryable_andAppendsNothing() {
+            partitionManager.createStream(streamConfig(STREAM));
+            partitionManager.ownerWriteAdmission((_, _) -> Option.some(REQUESTER));
+            var request = publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+
+            handler.onPublishForward(request);
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isFalse();
+            assertThat(response.retryable()).isTrue();
+            assertThat(partitionManager.nextExpectedOffset(STREAM, PARTITION)).isZero();
+        }
+
         @Test
         void onPublishForward_partitionOutOfRange_respondsWithError() {
             partitionManager.createStream(streamConfig(STREAM));
@@ -149,7 +167,136 @@ class StreamForwardHandlerTest {
         }
     }
 
+    /// #1235: a consumer forward is answered up to the VISIBLE position; a catch-up forward (a replica
+    /// backfilling, a new owner pulling from a survivor) up to the APPENDED head.
+    @Nested
+    class VisibilityTests {
+        private static final NodeId PEER = NodeId.randomNodeId();
+
+        private StreamPartitionManager pendingManager;
+
+        @BeforeEach
+        void publishAnUnacknowledgedEvent() {
+            var registry = replicaRegistry();
+
+            registry.registerReplica(STREAM, PARTITION, GOVERNOR);
+            registry.registerReplica(STREAM, PARTITION, PEER);
+            pendingManager = streamPartitionManager(Long.MAX_VALUE,
+                                                    EvictionListener.NOOP,
+                                                    replicationManager(GOVERNOR, registry));
+            pendingManager.createStream(streamConfig(STREAM,
+                                                     1,
+                                                     RetentionPolicy.retentionPolicy(),
+                                                     "earliest",
+                                                     1_048_576L,
+                                                     ConsistencyMode.EVENTUAL,
+                                                     3,
+                                                     2,
+                                                     StreamCompression.NONE,
+                                                     Option.none()));
+            pendingManager.publishLocal(STREAM, PARTITION, PAYLOAD, TIMESTAMP);
+            handler = streamForwardHandler(GOVERNOR, pendingManager, (target, message) -> sentMessages.add(new SentMessage(target,
+                                                                                                                          message)));
+        }
+
+        @Test
+        void consumerReadForward_doesNotServeAnUnacknowledgedEvent() {
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).isEmpty();
+        }
+
+        @Test
+        void catchupReadForward_fromARegisteredReplica_servesTheAppendedEvent() {
+            handler.onReadForward(readForward(PEER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false, true));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).hasSize(1);
+            assertThat(response.events().getFirst().data()).isEqualTo(PAYLOAD);
+            assertThat(response.historyVouched()).as("answered as a replica catch-up: the history is vouched").isTrue();
+        }
+
+        /// CTO ruling (#1235 Fork A): the flag alone must not let an arbitrary reader opt out of
+        /// visibility. A node outside the partition's replica set gets a consumer read.
+        @Test
+        void catchupReadForward_fromANonReplica_isServedOnlyTheVisiblePosition() {
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 0L, 10, false, true));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.events()).isEmpty();
+            assertThat(response.historyVouched()).as("a consumer-read answer says it is not a replica answer").isFalse();
+        }
+    }
+
     // SPEC: §11.2 ReadForward handler tests
+    /// #1873: a consumer read carries the owner epoch it last read under; the serving owner checks the cursor against its
+    /// committed epoch starts and answers the events with the epoch they were served under, or a typed divergence.
+    @Nested
+    class EpochValidatedReadTests {
+        private final org.pragmatica.aether.slice.generation.Epoch e1 = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 1L, 1L);
+        private final org.pragmatica.aether.slice.generation.Epoch e2 = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 1L, 2L);
+
+        @org.junit.jupiter.api.BeforeEach
+        void ownerAtEpochTwoBeganAtOffsetThree() {
+            partitionManager.createStream(streamConfig(STREAM));
+            for (var i = 0; i < 5; i++) {
+                partitionManager.publishLocal(STREAM, PARTITION, ("r" + i).getBytes(), 100L + i);
+            }
+            partitionManager.ownershipRecords((_, _) -> Option.some(new org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue(GOVERNOR,
+                                                                                                                                                     e2,
+                                                                                                                                                     2L,
+                                                                                                                                                     org.pragmatica.hlc.HlcTimestamp.ZERO,
+                                                                                                                                                     List.of(GOVERNOR),
+                                                                                                                                                     3L,
+                                                                                                                                                     false,
+                                                                                                                                                     List.of(),
+                                                                                                                                                     List.of(new org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart(e1, 0L),
+                                                                                                                                                             new org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart(e2, 3L)))));
+        }
+
+        @Test
+        void aCursorPastTheNewEpochsStart_isAnsweredWithTheTypedDivergence() {
+            handler.onReadForward(StreamForwardMessage.ReadForward.validatedReadForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 5L, 10, e1));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isFalse();
+            assertThat(response.epochDiverged()).isTrue();
+            assertThat(response.divergenceResumeAt()).isEqualTo(3L);
+            assertThat(response.ownerEpoch()).isEqualTo(e2);
+            assertThat(response.events()).isEmpty();
+        }
+
+        @Test
+        void aCursorBelowTheNewEpochsStart_isServed_stampedWithTheOwnersEpoch() {
+            handler.onReadForward(StreamForwardMessage.ReadForward.validatedReadForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 2L, 10, e1));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.success()).isTrue();
+            assertThat(response.ownerEpoch()).isEqualTo(e2);
+            assertThat(response.events()).extracting(RawEventDto::offset).containsExactly(2L, 3L, 4L);
+        }
+
+        /// A catch-up read of the replication class is never validated: a replica backfilling needs the records of the
+        /// lineage it holds, whatever epoch the owner is at.
+        @Test
+        void aCatchUpRead_isNotValidated() {
+            handler.onReadForward(readForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, 5L, 10, false, true));
+
+            var response = (ReadForwardResponse) sentMessages.getFirst().message();
+
+            assertThat(response.epochDiverged()).isFalse();
+        }
+    }
+
     @Nested
     class ReadForwardTests {
         private static final long FROM_OFFSET = 0L;
@@ -256,7 +403,7 @@ class StreamForwardHandlerTest {
                                              "latest",
                                              1_048_576L,
                                              ConsistencyMode.EVENTUAL,
-                                             2,
+                                             3,
                                              minSyncReplicas,
                                              StreamCompression.NONE,
                                              Option.none());
@@ -277,6 +424,24 @@ class StreamForwardHandlerTest {
             assertThat(response.correlationId()).isEqualTo(CORRELATION_ID);
         }
 
+        /// #1564 (v1680 N-r3-4): the owner's pre-append floor refusal (`NOT_ENOUGH_REPLICAS`) crosses the forward as
+        /// RETRYABLE, not as a permanent failure: nothing was appended, and it passes once the replica set registers.
+        /// The forwarder then bounded-retries, and the Management API answers 503 instead of 500.
+        @Test
+        void onPublishForward_replicaFloorNotMet_respondsRetryable_andAppendsNothing() {
+            var handler = handlerFor(2);
+
+            handler.onPublishForward(publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP));
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isFalse();
+            assertThat(response.retryable()).as("a pre-append floor refusal is retryable: " + response.errorMessage())
+                                            .isTrue();
+            assertThat(response.outcomeUnknown()).isFalse();
+            assertThat(barrierManager.nextExpectedOffset(STREAM, PARTITION)).as("refused before the append").isZero();
+        }
+
         @Test
         void onPublishForward_minSyncOne_acksWithoutAwaitingReplication() {
             var handler = handlerFor(1);
@@ -290,6 +455,33 @@ class StreamForwardHandlerTest {
                 .as("min-sync-replicas<=1 carries no peer-ack barrier and must stay a plain local-append ack")
                 .isTrue();
             assertThat(response.offset()).isGreaterThanOrEqualTo(0L);
+        }
+
+        /// #1290 review M1: on the lazy-materialization path the handler read `min-sync` 0 (the stream did
+        /// not exist here yet), so the floor it passes is always -1. The manager must take the floor from
+        /// the committed config it materializes from: a `min-sync = 2` config with no peer is refused
+        /// CLEANLY (nothing appended), not appended-then-reported-unknown. RED when that floor is dropped:
+        /// the append lands and the post-append barrier reports outcome-unknown.
+        @Test
+        void onPublishForward_materializedFromCommittedConfig_checksThatConfigsFloorBeforeAppending() {
+            barrierManager = streamPartitionManager(Long.MAX_VALUE,
+                                                    EvictionListener.NOOP,
+                                                    replicationManager(GOVERNOR, replicaRegistry()));
+            barrierManager.committedConfigSource(_ -> Option.some(configWithMinSync(2)));
+            var handler = streamForwardHandler(GOVERNOR,
+                                               barrierManager,
+                                               (target, message) -> sentMessages.add(new SentMessage(target, message)));
+
+            handler.onPublishForward(publishForward(REQUESTER, CORRELATION_ID, STREAM, PARTITION, PAYLOAD, TIMESTAMP));
+
+            assertThat(sentMessages).hasSize(1);
+            var response = (PublishForwardResponse) sentMessages.getFirst().message();
+            assertThat(response.success()).isFalse();
+            assertThat(response.outcomeUnknown()).as("a pre-append floor refusal is a clean failure: " + response.errorMessage())
+                                                 .isFalse();
+            assertThat(barrierManager.partitionBuffer(STREAM, PARTITION).map(buffer -> buffer.headOffset()).or(-1L))
+                .as("the stream is materialized and nothing was appended")
+                .isEqualTo(-1L);
         }
     }
 

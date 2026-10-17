@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.deploy;
 
 import java.util.List;
@@ -46,7 +45,8 @@ public class DeployCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--traffic", description = "Initial canary traffic percentage (0-100)", defaultValue = "5")
     private int trafficPercent;
 
-    @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of instances", defaultValue = "1")
+    // Default mirrors SliceSpec.DEFAULT_INSTANCES (#1495); the server refuses fewer than 3.
+    @CommandLine.Option(names = {"-n", "--instances"}, description = "Number of instances (at least 3)", defaultValue = "3")
     private int instances;
 
     @CommandLine.Option(names = "--error-rate", description = "Max error rate threshold (0.0-1.0)", defaultValue = "0.01")

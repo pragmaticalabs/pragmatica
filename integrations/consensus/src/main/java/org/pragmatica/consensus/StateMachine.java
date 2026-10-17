@@ -52,6 +52,17 @@ public interface StateMachine<C extends Command> {
     /// @return The results of processing each command, in order
     <R> List<R> process(Batch<C> batch);
 
+    /// Apply a committed batch and atomically publish its global next-slot revision.
+    /// Implementations exposing snapshots to concurrent readers override this under their state lock.
+    default <R> List<R> processCommitted(Batch<C> batch, long nextSlot) {
+        return process(batch);
+    }
+
+    /// Atomically restore snapshot content and its global next-slot revision.
+    default Result<Unit> restoreCommittedSnapshot(byte[] snapshot, long nextSlot) {
+        return restoreSnapshot(snapshot);
+    }
+
     /// Create a snapshot of the current state machine state.
     /// The snapshot should be serializable and capture the complete state.
     ///
@@ -110,7 +121,7 @@ public interface StateMachine<C extends Command> {
     ///
     /// Two batches with the same id are required to have identical content (the id is a
     /// content hash). Differing ids indicate a programming error and are rejected.
-    @SuppressWarnings("JBCT-EX-01")  // TODO(RC2): merge() returns a bare Batch from the consensus
+    @SuppressWarnings("JBCT-EX-01")  // throws on differing ids (a programming error), not a Result
     default Batch<C> merge(Batch<C> a, Batch<C> b) {
         if (!a.id().equals(b.id())) {
             log.error("Cannot merge batches with different ids: {} vs {}", a.id(), b.id());

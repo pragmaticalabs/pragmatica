@@ -5,28 +5,32 @@ This is a monorepo: **Pragmatica Core** (functional-programming library — `Res
 **Aether** (the distributed application runtime). They have different licenses (see below) and
 different maturity levels, but share one build and one contribution process.
 
-For anything beyond a small fix, please open an issue first to discuss the approach before
-investing in a PR — this is a fast-moving pre-GA codebase and some things you'd expect to be
-stable (APIs under `aether/`, in particular) are still in flux.
+Pre-GA, we are not accepting external code contributions. Issues, bug reports and design
+discussion are welcome. The sections on branches, pull requests, CI on a fork and sign-off below
+describe the maintainers' own workflow, and the one that will apply to external contributors once
+contributions open; they are not an invitation to send a pull request today.
+
+Open an issue to report a bug or to discuss a design. This is a fast-moving pre-GA codebase, and
+some things you would expect to be stable (APIs under `aether/`, in particular) are still in flux.
 
 **Found a security issue?** Do not open a public issue — see [SECURITY.md](SECURITY.md) for
 private reporting.
 
 ## License implications of contributing — read this first
 
-This repository is dual-licensed by directory; **your contribution takes the license of the
-directory it lands in.** From [`LICENSE`](LICENSE):
+This repository is Apache-2.0 by default; **your contribution takes the license of the
+module it lands in.** From [`LICENSE`](LICENSE) and [`tools/license/bsl-modules.txt`](tools/license/bsl-modules.txt):
 
 | Path | License |
 |---|---|
-| `core/`, `integrations/`, `examples/`, `jbct/` (except the two paths below) | Apache-2.0 |
-| `aether/`, `jbct/slice-processor/`, `jbct/slice-processor-tests/` | Business Source License 1.1 |
+| everything not listed below (`core/`, `integrations/`, `examples/`, `jbct/`, and the rest of `aether/`) | Apache-2.0 |
+| `aether/node`, `aether/aether-deployment`, `aether/aether-control`, `aether/aether-ttm`, `aether/aether-ttm-onnx`, `aether/aether-stream`, `aether/aether-invoke`, `aether/ember`, `aether/forge/forge-api`, `aether/forge/forge-core`, `aether/forge/forge-tests` | Business Source License 1.1 |
 
-**BSL-1.1 is not an OSI-approved open-source license.** If your PR touches `aether/` or the
-slice-processor, you are contributing to a source-available codebase whose Change Date is
+**BSL-1.1 is not an OSI-approved open-source license.** If your PR touches one of the BSL modules
+above, you are contributing to a source-available codebase whose Change Date is
 2030-01-01 (after which that code relicenses to Apache-2.0), and whose Additional Use Grant
 excludes Managed Service / SaaS offerings — the Licensor (Pragmatica Labs) retains that
-commercial right in the meantime. Full terms: [`aether/LICENSE`](aether/LICENSE). By submitting a
+commercial right in the meantime. Full terms: the `LICENSE` file inside each BSL module. By submitting a
 PR you agree your contribution is offered under the license terms of the module it's submitted
 to — there is no separate CLA in this repository as of this writing.
 
@@ -39,8 +43,9 @@ New source files need the SPDX header matching their module:
   // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
   // See LICENSE in the repository root for full terms.
   ```
-- Apache-2.0 files may carry a shorter header or none; the module's own `LICENSE` file governs
-  either way (per `LICENSE` at the repo root).
+- Apache-2.0 files may carry the block in [`docs/legal/apache-header.txt`](docs/legal/apache-header.txt) or
+  none; the root `LICENSE` governs either way. `tools/license/relicense.py` applies both headers from
+  the module list, and `tools/check-licence-closure.py` (CI) checks them.
 
 ## Development setup
 
@@ -83,8 +88,8 @@ therefore runs only where a pom opts back in: `aether/pom.xml` sets `jbct.skip` 
 whole Aether tree, and several `examples/` poms do the same for their own subtrees.
 
 The population that matters is the reactor modules that contain a `src/main/java` at all, since
-those are the only ones the gate could examine. There are 118 of them, and **the gate examines 71
-and skips 47.** The skipped 47 are `core/`, every module under `integrations/`, every module under
+those are the only ones the gate could examine. There are roughly 120 of them, and **the gate examines roughly 73
+and skips 47** [counts approximate at rc4, from a walk of the root pom's `<modules>`; they drift as modules are added]. The skipped 47 are `core/`, every module under `integrations/`, every module under
 `jbct/`, `testing/`, and `examples/pragmatica-lite`. So the gate does not examine the Core library,
 and does not examine a single integration. **A green gate is not coverage for those trees**, and you
 should not read one as evidence that code you added there conforms. This gap is real, known and
@@ -102,9 +107,14 @@ your own change introduces; leave the rest, and say in the PR that you did.
 For quick iteration on a single module: `mvn test -pl <module>`. The full matrix CI actually runs
 is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — format+lint check, `mvn install
 -pl '!examples'`, the postgres-async integration suite, an end-to-end `mvn verify` over
-`examples/`, and a separate Forge-tests job (`-Pwith-e2e`) [mechanism:
-`.github/workflows/ci.yml`]. There is no separate staging environment; passing this matrix is the
-bar for merge.
+`examples/`, a separate Forge-tests job (`-Pwith-e2e`, everything except `@Tag("Heavy")`), and a
+`stub-suites` job running the cloud harness stub suites `aether/tests/integration/test/test-*.sh`
+[mechanism: `.github/workflows/ci.yml`]. There is no separate staging environment; passing this
+matrix is the bar for merge. The `@Tag("Heavy")` forge probes are not part of that matrix. They run
+in [`.github/workflows/heavy-forge.yml`](.github/workflows/heavy-forge.yml): nightly on `main`, on
+`workflow_dispatch`, and on any pull request labelled `run-heavy`. The nightly run exercises `main`,
+which lags the release branch, so for a change on the release branch use the `run-heavy` label.
+Add the label when your change touches auto-heal, drains, membership or stream ownership, which only those probes exercise.
 
 **`build.sh` does not run a cluster — run `./forge.sh` before pushing.** Steps 4-5 of `build.sh`
 *compile* the e2e and Forge tests; nothing local executes them [mechanism: `build.sh` step 4 runs
@@ -160,6 +170,9 @@ written for Claude Code, but their rule sections are ordinary prose and adapt to
 
 ## Branches, commits, and pull requests
 
+This section is the maintainers' workflow, and the one that will apply to external contributors
+once contributions open (see the policy at the top).
+
 - Fork the repository and branch off the **current release branch**, not `main`. Development
   integrates on the release branch; `main` lags it substantially and is not where changes land.
   The README's **Current release branch** line names the one in effect.
@@ -174,6 +187,9 @@ written for Claude Code, but their rule sections are ordinary prose and adapt to
 - Open the PR against the same release branch you forked from — again, the README names the current
   one. A maintainer will review, request changes if needed, and choose the merge strategy at merge
   time.
+- Do not edit `CHANGELOG.md`. Add your entry as `changelog.d/<issue-number>-<slug>.md` in the format
+  described in [`changelog.d/README.md`](changelog.d/README.md); the file is assembled at release
+  prep, and a CI check refuses a direct edit. Documentation-only PRs need no fragment.
 
 ### CI on a pull request from a fork
 
@@ -187,9 +203,9 @@ required from you while it waits.
 ### Sign-off
 
 There is no automated DCO or CLA check gating PRs in this repository today [mechanism:
-`.github/workflows/` contains `ci.yml` and `release.yml` — no DCO/CLA bot is configured]. We
-nonetheless ask that you certify the provenance of your contribution by adding a `Signed-off-by`
-trailer (`git commit -s`), per the
+`.github/workflows/` contains no DCO/CLA workflow (`ls .github/workflows` over its seven
+workflow files) — no DCO/CLA bot is configured]. We nonetheless ask that you certify the provenance of your contribution by adding a
+`Signed-off-by` trailer (`git commit -s`), per the
 [Developer Certificate of Origin](https://developercertificate.org/). This is a request, not (yet)
 an enforced gate — expect it to become one before GA, given the dual-license surface above.
 
@@ -199,6 +215,10 @@ an enforced gate — expect it to become one before GA, given the dual-license s
   the test, and watch it go red. A test that stays green while the code it covers is gone pins
   nothing, however much it asserts — and this is the most common reason a PR needs a second round.
   Rebuilding the fixture inside the test is the usual way this goes wrong.
+- **One changelog fragment per PR**, as `changelog.d/<issue-number>-<slug>.md`. Every bullet carries
+  its evidence: `[verified: <test path>]` where a live-path test pins the claim, `[mechanism: ...]`
+  where it is traced through the code. Format and the CI check are in
+  [`changelog.d/README.md`](changelog.d/README.md). Documentation-only PRs need no fragment.
 - **Scope discipline.** Only the files your change needs. Drive-by reformatting, unrelated renames
   and opportunistic fixes make a diff hard to review and slow it down; send them separately.
 - **Expect one review round**, with specific and cited findings — a file and line, the mechanism, or
@@ -216,7 +236,7 @@ witness behavior that violates this, report it via the same private channel as a
 
 - [`README.md`](README.md) — module map and quick start.
 - [`SECURITY.md`](SECURITY.md) — vulnerability reporting and Aether's trust model.
-- [`LICENSE`](LICENSE) — the license map; [`aether/LICENSE`](aether/LICENSE) for the full BSL-1.1
-  text; [`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0) for the full Apache-2.0 text.
+- [`LICENSE`](LICENSE) — the license map; each BSL module's own `LICENSE` file (for example
+  [`aether/node/LICENSE`](aether/node/LICENSE)) for the full BSL-1.1 text; [`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0) for the full Apache-2.0 text.
 - [`build.sh`](build.sh) and [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — the build
   and CI gate, respectively.

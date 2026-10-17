@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.replication.ReplicaRegistry.replicaRegistry;
 import static org.pragmatica.aether.stream.replication.ReplicationManager.replicationManager;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck.replicateAck;
@@ -110,6 +111,27 @@ class SyncReplicationProvisioningTest {
 
         var result = provisioned.manager().awaitReplication(STREAM, PARTITION, OFFSET, 2).await();
         assertThat(result.isFailure()).isTrue();
+    }
+
+    @Test
+    void ensureReplicaFloor_refusesNotEnoughReplicas_whenPeersBelowMinAcks() {
+        // #1236: the same too-small cluster as above, asked BEFORE the append. Refusing here is what
+        // makes NOT_ENOUGH_REPLICAS mean "not in the log".
+        var provisioned = Provisioned.provision(3, 2);
+
+        provisioned.manager()
+                   .ensureReplicaFloor(STREAM, PARTITION, 2)
+                   .onSuccess(_ -> fail("floor of 2 peers with 1 provisioned must refuse"))
+                   .onFailure(cause -> assertThat(cause).isEqualTo(ReplicationError.General.NOT_ENOUGH_REPLICAS));
+    }
+
+    @Test
+    void ensureReplicaFloor_admits_whenPeersMeetMinAcks() {
+        // #1236: the floor is exactly met (1 peer, minAcks=1) — the pre-check must not refuse a
+        // satisfiable publish; acks are still awaited after the append.
+        var provisioned = Provisioned.provision(2, 3);
+
+        assertThat(provisioned.manager().ensureReplicaFloor(STREAM, PARTITION, 1).isSuccess()).isTrue();
     }
 
     @Test

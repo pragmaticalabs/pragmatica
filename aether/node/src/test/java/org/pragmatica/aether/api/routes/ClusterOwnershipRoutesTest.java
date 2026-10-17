@@ -48,9 +48,9 @@ class ClusterOwnershipRoutesTest {
     private static final NodeId GOVERNOR = NodeId.nodeId("gov-1").unwrap();
     private static final NodeId DHT_OWNER = NodeId.nodeId("core-1").unwrap();
     private static final NodeId STREAM_OWNER = NodeId.nodeId("core-2").unwrap();
-    private static final Epoch COMMUNITY_EPOCH = Epoch.epoch(5, 2);
-    private static final Epoch DHT_EPOCH = Epoch.epoch(6, 1);
-    private static final Epoch STREAM_EPOCH = Epoch.epoch(7, 3);
+    private static final Epoch COMMUNITY_EPOCH = Epoch.epoch(0L, 5, 2);
+    private static final Epoch DHT_EPOCH = Epoch.epoch(0L, 6, 1);
+    private static final Epoch STREAM_EPOCH = Epoch.epoch(0L, 7, 3);
 
     private KVStore<AetherKey, AetherValue> store;
     private OwnershipEpochHighWater highWater;
@@ -151,7 +151,7 @@ class ClusterOwnershipRoutesTest {
     class FenceWindow {
         @Test
         void assembleOwnershipResponse_highWaterAheadOfCommitted_marksEntryFenced() {
-            highWater.advance(OwnershipDomain.dhtPartition("partition-3"), Epoch.epoch(9, 0));
+            highWater.advance(OwnershipDomain.dhtPartition("partition-3"), Epoch.epoch(0L, 9, 0));
 
             ClusterTopologyRoutes.assembleOwnershipResponse(node, "dht")
                                  .onFailure(cause -> fail("dht ownership must succeed: " + cause.message()))
@@ -208,15 +208,35 @@ class ClusterOwnershipRoutesTest {
         }
     }
 
+    @Test
+    void workerOwnershipResponseExplicitlyIdentifiesItsPartialView() {
+        var response = ClusterTopologyRoutes.assembleOwnershipResponse(nodeOver(store, highWater, false), "community").unwrap();
+        assertThat(response.completeClusterView()).isFalse();
+        assertThat(response.entries()).hasSize(1);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private void seed(AetherKey key, AetherValue value) {
+        if (value instanceof GovernorAnnouncementValue) {
+            var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(GOVERNOR, 1);
+            store.process(store.createBatch((List) List.of(new Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, leader))));
+            store.process(store.createBatch(List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), leader, java.util.List.of(), java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Mutation<>(key, store.get(key), org.pragmatica.lang.Option.some(value)))))));
+            return;
+        }
         store.process(store.createBatch(List.of(new Put<>(key, value))));
     }
 
     private static ManageableNode nodeOver(KVStore<AetherKey, AetherValue> store, OwnershipEpochHighWater highWater) {
+        return nodeOver(store, highWater, true);
+    }
+
+    private static ManageableNode nodeOver(KVStore<AetherKey, AetherValue> store, OwnershipEpochHighWater highWater,
+                                          boolean complete) {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, _) -> switch (method.getName()) {
                                                            case "kvStore" -> store;
+                                                           case "hasCompleteClusterView" -> complete;
                                                            case "ownershipEpochHighWater" -> Option.some(highWater);
                                                            default -> unsupported(method.getName());
                                                        });

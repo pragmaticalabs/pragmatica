@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.slice.blueprint;
+
+import org.pragmatica.aether.slice.ReplicationFactors;
+
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
+/// #1282 (review F1): a blueprint `External` stream source is user input, and the slice's stream factories
+/// MINT whatever engine key it resolves to. An address in the `topic` or `entity` namespace resolves to a
+/// `topic:…`/`entity:…` engine key — a stream kind only internal provisioning may create. An `entity:`
+/// key can EXACTLY collide with a real keyspace log (keyspace names may contain `:`). No legitimate
+/// reference exists: spec §11.2 allows an External source to name another blueprint's namespace or the
+/// `system` namespace, and a real durable-topic stream (`topic:<ns>:<name>:<ver>`) is not even addressable
+/// in the three-part form. So the parser refuses it at validation, before any binding is published.
+class StreamConfigParserReservedSourceTest {
+
+    @Test
+    void externalSource_topicNamespace_isRefused() {
+        assertRefused("topic:orders:1.0.0", "topic:");
+    }
+
+    @Test
+    void externalSource_entityNamespace_isRefused() {
+        assertRefused("entity:orders:1.0.0", "entity:");
+    }
+
+    /// Spec §11.2: a consumer may reference the `system` namespace. Its engine key carries the `system:` kind prefix, but the
+    /// gate exempts the system namespace: the source is a READ-ONLY reference (#1338), so it must still parse.
+    @Test
+    void externalSource_systemNamespace_stillParses() {
+        assertParses("system:cluster-events:1.0.0");
+    }
+
+    @Test
+    void externalSource_anotherBlueprintsNamespace_stillParses() {
+        assertParses("io.acme.inventory:stock-updates:2.0.0");
+    }
+
+    /// #1338: a `system` source is read-only, so a role that writes is refused at validation with its own named cause.
+    @Test
+    void externalSystemSource_producerOrBothRole_isRefusedWithTheNamedCause() {
+        for (var role : new String[]{"producer", "both", " Producer "}) {
+            var result = StreamConfigParser.parseResources("[streams.inbox]\nsource = \"system:cluster-events:1.0.0\"\nrole = \"" + role + "\"\n",
+                                                           ReplicationFactors.BUILT_IN);
+
+            assertThat(result.isFailure()).as("role '%s' must be refused", role).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(StreamSourceError.SystemSourceNotConsumer.class)
+                                                       .satisfies(c -> assertThat(c.message()).contains("system:cluster-events:1.0.0").contains("read-only")));
+        }
+    }
+
+    /// The same writing role on a non-system External source stays legal (this rule is about system streams only), and a
+    /// system source with no role or a consumer role still parses.
+    @Test
+    void externalSource_writingRoleOnANonSystemNamespace_andNoRoleOnSystem_stillParse() {
+        StreamConfigParser.parseResources("[streams.inbox]\nsource = \"io.acme.inventory:stock-updates:2.0.0\"\nrole = \"producer\"\n", ReplicationFactors.BUILT_IN)
+                          .onFailure(cause -> fail("non-system source with a producer role must parse: " + cause.message()));
+        StreamConfigParser.parseResources("[streams.inbox]\nsource = \"system:cluster-events:1.0.0\"\n", ReplicationFactors.BUILT_IN)
+                          .onFailure(cause -> fail("system source with no role must parse: " + cause.message()));
+    }
+
+    private static void assertRefused(String source, String prefix) {
+        StreamConfigParser.parseResources(toml(source), ReplicationFactors.BUILT_IN)
+                          .onSuccess(_ -> fail("External source '" + source + "' must be refused"))
+                          .onFailure(cause -> assertThat(cause.message()).contains(source)
+                                                                         .contains("'" + prefix + "'"));
+    }
+
+    private static void assertParses(String source) {
+        StreamConfigParser.parseResources(toml(source), ReplicationFactors.BUILT_IN)
+                          .onFailure(cause -> fail("External source '" + source + "' must parse: " + cause.message()));
+    }
+
+    private static String toml(String source) {
+        return "[streams.inbox]\nsource = \"" + source + "\"\nrole = \"consumer\"\n";
+    }
+}

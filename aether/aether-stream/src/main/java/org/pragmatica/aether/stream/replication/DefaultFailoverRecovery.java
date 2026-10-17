@@ -10,22 +10,33 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.aether.stream.replication.FailoverRecovery.RecoveryResult.recoveryResult;
 import static org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest.catchupRequest;
 
 
+/// #1244 backfill-commit ruling, applied to this failover path on 2026-09-20 (CTO ruling, #1235 × #1244):
+/// replica WAL frames carry no per-record fsync and a WAL-backed record becomes visible on this replica
+/// only at the barrier, so each recovered partition commits through the replica WAL barrier
+/// (`StreamPartitionManager::syncReplicated`) ONCE, after its last `appendRecovered` and before it
+/// counts as recovered — one fsync per partition per run, and the recovered records are visible here when
+/// the run completes instead of when the next live batch's barrier happens to cover them. A failed
+/// barrier fails the run: the events landed in RAM but were never made durable or visible here.
 final class DefaultFailoverRecovery implements FailoverRecovery {
     private final ReplicaRegistry registry;
-    private final StreamPartitionRecovery partitionRecovery;
+    private final AlignedRecovery partitionRecovery;
     private final CatchupTransport transport;
+    private final ReplicationReceiveHandler.ReplicaDurability durability;
 
     DefaultFailoverRecovery(ReplicaRegistry registry,
-                            StreamPartitionRecovery partitionRecovery,
-                            CatchupTransport transport) {
+                            AlignedRecovery partitionRecovery,
+                            CatchupTransport transport,
+                            ReplicationReceiveHandler.ReplicaDurability durability) {
         this.registry = registry;
         this.partitionRecovery = partitionRecovery;
         this.transport = transport;
+        this.durability = durability;
     }
 
     @Override
@@ -62,20 +73,46 @@ final class DefaultFailoverRecovery implements FailoverRecovery {
 
         return transport.requestCatchup(bestReplica.nodeId(),
                                         request)
-                        .map(response -> applyRecoveredEvents(streamName, partition, response));
+                        .flatMap(response -> applyRecoveredEvents(streamName, partition, response).async())
+                        .flatMap(count -> durability.sync(streamName, partition)
+                                                    .map(_ -> count));
     }
 
-    private long applyRecoveredEvents(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
+    /// #1505 F1: event `i` lands at ITS OWN source offset `response.fromOffset() + i`, never at the local tail.
+    /// `fromOffset` came from a remote watermark, and the local ring may already hold some of those offsets:
+    /// they are verified, not re-appended. The first refusal stops the apply and fails the recovery of this
+    /// partition: a gap, or a divergent held entry, which quarantines the partition.
+    private Result<Long> applyRecoveredEvents(String streamName,
+                                              int partition,
+                                              ReplicationMessage.CatchupResponse response) {
+        return partitionRecovery.applyAttributed(streamName,
+                                                 partition,
+                                                 response.fromOffset(),
+                                                 response.toOffset(),
+                                                 response.history(),
+                                                 () -> applyPayloads(streamName, partition, response));
+    }
+
+    /// #1596: runs only after the source's owner-epoch slice passed N13 and was recorded; a failure here settles that
+    /// install by trimming it (#1638 B1).
+    private Result<Long> applyPayloads(String streamName, int partition, ReplicationMessage.CatchupResponse response) {
         var payloads = response.payloads();
         var timestamps = response.timestamps();
         var count = Math.min(payloads.size(), timestamps.size());
 
-        IntStream.range(0, count).forEach(i -> partitionRecovery.appendRecoveredEvent(streamName,
-                                                                                      partition,
-                                                                                      payloads.get(i),
-                                                                                      timestamps.get(i)));
+        for (var i = 0; i < count; i++) {
+            var result = partitionRecovery.appendRecovered(streamName,
+                                                           partition,
+                                                           response.fromOffset() + i,
+                                                           payloads.get(i),
+                                                           timestamps.get(i));
 
-        return count;
+            if (result.isFailure()) {
+                return result;
+            }
+        }
+
+        return Result.success((long) count);
     }
 
     private static Option<ReplicaDescriptor> findBestReplica(List<ReplicaDescriptor> replicas) {

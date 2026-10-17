@@ -23,6 +23,7 @@ provider = "hetzner"
 # longer aborts the whole cluster bootstrap. Different nodes may land in different zones
 # (cross-zone is desirable). A single `zone = "<loc>"` still works (treated as a 1-element
 # list); when neither `zone` nor `zones` is set the provider falls back to `region`.
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zones = ["fsn1", "nbg1", "hel1"]
 region = "nbg1"           # Default location used when no zone placement hint is set (single-attempt fallback).
 credentials = "${env:HCLOUD_TOKEN}"
@@ -31,6 +32,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cpx32"
 image = "ubuntu-22.04"
 
@@ -57,8 +59,8 @@ swim = 6100
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "30s"
-startup_cooldown = "15s"
+# #675: the tunables that used to sit here (retry_interval, startup_cooldown,
+# provision_stability_window, provisioning_timeout) never reached a node and are now refused.
 
 [source.hetzner-eu.node_config.app-http]
 # Integration test config: app-http server enabled, security disabled.
@@ -97,4 +99,4 @@ async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}_testpersistence"
 
 [runtime.default]
 type = "container"
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc4-candidate"

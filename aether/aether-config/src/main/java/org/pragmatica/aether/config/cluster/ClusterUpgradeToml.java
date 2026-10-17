@@ -1,0 +1,161 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.config.cluster;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+
+import static org.pragmatica.lang.Result.success;
+
+
+/// #1543 part C — the committed TOML's `[cluster] version` is the version replacements provision
+/// (`NodeUserDataRenderer` reads image tag and jar URL from it), so an upgrade must change THAT, not only the
+/// `ClusterConfigValue.version` copy beside it. Two operations: rewrite the one line, and name the runtime
+/// profiles whose pinned `image`/`jar_url` would make the rewrite a no-op for replacements.
+public sealed interface ClusterUpgradeToml {
+    record unused() implements ClusterUpgradeToml {}
+
+    /// SemVer 2.0 `MAJOR.MINOR.PATCH` with an optional pre-release (`1.0.0`, `1.0.0-rc5`, `1.0.0-alpha.1`): the shape of our own release
+    /// versions. Build metadata (`+...`) is deliberately not accepted: the version becomes an image tag, and `+` is not a legal tag
+    /// character. Numeric parts and numeric pre-release identifiers carry no leading zeros, as SemVer requires.
+    Pattern UPGRADE_VERSION = Pattern.compile("^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)"
+                                             + "(-(0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?$");
+
+    Pattern SAFE_VERSION = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._+-]*$");
+    Pattern SECTION_HEADER = Pattern.compile("^\\s*\\[([^\\[\\]]*)\\]\\s*(#.*)?$");
+    Pattern ANY_TABLE_HEADER = Pattern.compile("^\\s*\\[.*$");
+    Pattern VERSION_LINE = Pattern.compile("^(\\s*version\\s*=\\s*)\"[^\"]*\"(.*)$");
+    String CLUSTER_SECTION = "cluster";
+
+    /// Whether `version` is a version an upgrade may target: SemVer 2.0 with an optional pre-release, no build metadata.
+    static boolean isUpgradeVersion(String version) {
+        return Option.option(version)
+                     .filter(candidate -> UPGRADE_VERSION.matcher(candidate).matches())
+                     .isPresent();
+    }
+
+    /// Rewrites the `version` line of the `[cluster]` table. The result is re-parsed and must read back
+    /// exactly `targetVersion`: a TOML whose version is not a plain `version = "…"` line in `[cluster]`
+    /// (inherited from a template, single-quoted, …) is refused rather than half-rewritten.
+    static Result<String> withVersion(String toml, String targetVersion) {
+        if (toml.indexOf('\r') >= 0) {
+            return new ClusterConfigError.ParseFailed("Committed config uses CRLF line endings, which the version rewrite does not handle; "
+                                                     + "re-apply it with LF line endings, then retry the upgrade").result();
+        }
+
+        if (!SAFE_VERSION.matcher(targetVersion).matches()) {
+            return new ClusterConfigError.ParseFailed("Target version '" + targetVersion
+                                                     + "' is not a valid version string").result();
+        }
+
+        return rewriteVersionLine(toml, targetVersion).flatMap(rewritten -> confirmVersion(rewritten, targetVersion));
+    }
+
+    /// Names (sorted, distinct) of the runtime profiles referenced by a source role whose launch artifact is
+    /// pinned LITERALLY: `image` for container runtimes, `jar_url` for JVM runtimes — exactly the field
+    /// [NodeUserDataRenderer] prefers over the version-derived default. A pin carrying `{version}` follows the version.
+    static List<String> pinnedRuntimeProfiles(ClusterBootstrapConfig config) {
+        return referencedRuntimeRefs(config).stream()
+                                    .filter(ref -> isPinned(config, ref))
+                                    .sorted()
+                                    .toList();
+    }
+
+    /// Names (sorted) of the DOCKER sources with a role whose image does not follow the cluster version: the role's runtime profile
+    /// is missing, pins no image, or pins one without [NodeUserDataRenderer#VERSION_PLACEHOLDER]. A replacement of such a role boots
+    /// the provider's one configured image, so the upgrade would roll nodes onto the SAME image; it is refused instead (#1543 F2).
+    static List<String> dockerSourcesWithoutVersionedImage(ClusterBootstrapConfig config) {
+        return config.sources()
+                     .values()
+                     .stream()
+                     .filter(source -> source.type() == SourceType.DOCKER)
+                     .filter(source -> source.roles()
+                                             .values()
+                                             .stream()
+                                             .anyMatch(role -> !followsVersion(config, role)))
+                     .map(source -> source.name()
+                                          .value())
+                     .sorted()
+                     .toList();
+    }
+
+    private static boolean followsVersion(ClusterBootstrapConfig config, RoleSubTable role) {
+        return Option.option(config.runtimes().get(role.runtimeRef()))
+                     .flatMap(RuntimeProfile::image)
+                     .filter(image -> image.contains(NodeUserDataRenderer.VERSION_PLACEHOLDER))
+                     .isPresent();
+    }
+
+    private static Set<String> referencedRuntimeRefs(ClusterBootstrapConfig config) {
+        return config.sources()
+                     .values()
+                     .stream()
+                     .flatMap(source -> source.roles()
+                                              .values()
+                                              .stream())
+                     .map(RoleSubTable::runtimeRef)
+                     .collect(Collectors.toSet());
+    }
+
+    /// True when the launch artifact the profile selects (`image` for container runtimes, `jar_url` otherwise) is a
+    /// literal, i.e. carries no [NodeUserDataRenderer#VERSION_PLACEHOLDER].
+    private static boolean pinsLiterally(RuntimeProfile profile) {
+        return (profile.isContainer()
+                ? profile.image()
+                : profile.jarUrl()).filter(value -> !value.contains(NodeUserDataRenderer.VERSION_PLACEHOLDER))
+                                   .isPresent();
+    }
+
+    private static boolean isPinned(ClusterBootstrapConfig config, String runtimeRef) {
+        return Option.option(config.runtimes().get(runtimeRef))
+                     .filter(ClusterUpgradeToml::pinsLiterally)
+                     .isPresent();
+    }
+
+    private static Result<String> rewriteVersionLine(String toml, String targetVersion) {
+        var lines = toml.split("\n", -1);
+        var out = new ArrayList<String>(lines.length);
+        var inCluster = false;
+        var replaced = false;
+
+        for (var line : lines) {
+            var header = SECTION_HEADER.matcher(line);
+
+            if (header.matches()) {
+                inCluster = CLUSTER_SECTION.equals(header.group(1).strip());
+            } else if (ANY_TABLE_HEADER.matcher(line).matches()) {
+                inCluster = false;
+            }
+
+            var versionLine = VERSION_LINE.matcher(line);
+
+            if (inCluster && !replaced && versionLine.matches()) {
+                out.add(versionLine.group(1) + "\"" + targetVersion + "\"" + versionLine.group(2));
+                replaced = true;
+            } else {
+                out.add(line);
+            }
+        }
+
+        return replaced
+               ? success(String.join("\n", out))
+               : new ClusterConfigError.ParseFailed("Committed config has no `version = \"…\"` line under [cluster] to rewrite").result();
+    }
+
+    private static Result<String> confirmVersion(String rewritten, String targetVersion) {
+        return ClusterBootstrapConfigParser.parse(rewritten)
+                                           .map(config -> config.cluster()
+                                                                .version())
+                                           .filter(new ClusterConfigError.ParseFailed("Rewritten config does not read back cluster.version '" + targetVersion
+                                                                                     + "'"),
+                                                   targetVersion::equals)
+                                           .map(_ -> rewritten);
+    }
+}

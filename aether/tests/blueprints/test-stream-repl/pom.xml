@@ -11,14 +11,14 @@
     <packaging>jar</packaging>
 
     <name>Test Blueprint - Stream (Replicated)</name>
-    <description>RF=2 synchronously-replicated stream — for the 02-chaos replica-failover test</description>
+    <description>RF=3 synchronously-replicated stream — for the 02-chaos replica-failover test</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
         <maven.deploy.skip>true</maven.deploy.skip>
         <jbct.skip>false</jbct.skip>
-        <platform.version>1.0.0-rc3</platform.version>
+        <platform.version>1.0.0-rc4</platform.version>
     </properties>
 
     <dependencies>

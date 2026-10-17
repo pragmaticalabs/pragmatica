@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.cli.cluster;
 
@@ -129,6 +128,12 @@ class UserDataTemplatePeersTest {
                        "JVM mode must pass --management-port= so Main.parseManagementPort uses operator port");
         }
 
+        /// #1021 moved the launch under systemd, so the peers conditional now lives in the launcher
+        /// script the unit's ExecStart points at rather than in the cloud-init body. The PROPERTY is
+        /// unchanged and is why the conditional was kept verbatim instead of being pushed into
+        /// ExecStart: an empty peer list — the normal state of a bootstrap node's first boot — must
+        /// omit `--peers` ENTIRELY, so the node falls through to Main's default peer chain rather than
+        /// parsing an empty value.
         @Test
         void render_emitsPeersFlagOnlyWhenPeersListNonEmpty() {
             var withPeers = renderJvm(List.of("eu-1-core-0:1.2.3.4:6000"));
@@ -138,18 +143,64 @@ class UserDataTemplatePeersTest {
                        "JVM mode must pass --peers= when AETHER_PEERS is non-empty");
             assertTrue(withoutPeers.contains("PEERS_ARG=\"\""),
                        "JVM mode must default PEERS_ARG to empty so the conditional check evaluates");
-            assertTrue(withoutPeers.contains("if [ -n \"${AETHER_PEERS}\" ]"),
+            assertTrue(withoutPeers.contains("if [ -n \"${AETHER_PEERS:-}\" ]"),
                        "JVM mode must guard --peers= behind a non-empty check on AETHER_PEERS so the " +
                        "node falls through to Main's default peer chain when peers are unknown");
         }
 
+        /// #1021 — the secret used to be an inline `AETHER_CLUSTER_SECRET="..." java` prefix. It now
+        /// reaches the JVM through the unit's EnvironmentFile, which is the same channel with a
+        /// different carrier; the property being pinned is still that `Main.resolveClusterSecret`
+        /// finds it in the process environment.
         @Test
-        void render_emitsClusterSecretViaInlineEnvForJvm() {
+        void render_emitsClusterSecretIntoTheUnitEnvFile() {
             var script = renderJvm(List.of());
 
-            assertTrue(script.contains("AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\" java"),
-                       "JVM mode must export AETHER_CLUSTER_SECRET into the java process environment " +
-                       "so Main.resolveClusterSecret reads it (env fallback path)");
+            assertTrue(script.contains("AETHER_CLUSTER_SECRET_FILE=/etc/aether/cluster-secret"),
+                       "JVM mode must point the node at the secret file via the systemd env file so "
+                       + "Main.resolveClusterSecret reads it from the file (#828)");
+            assertFalse(script.contains("AETHER_CLUSTER_SECRET=${AETHER_CLUSTER_SECRET}") || script.contains("AETHER_CLUSTER_SECRET=\""),
+                        "#828: the secret value must not be written into the unit's environment");
+            assertTrue(script.contains("EnvironmentFile=-/etc/aether/node.env"),
+                       "the unit must read that env file, or the secret never reaches the JVM");
+        }
+
+        /// #1021 — the node runs UNDER a unit, so a crash leaves a queryable local trace instead of a
+        /// silent absence. `Restart=no` is asserted here as well as in `SystemdUnitTemplateTest`,
+        /// because what ships to a VM is this rendered script and a template correct in isolation
+        /// proves nothing about what was actually emitted.
+        @Test
+        void render_launchesTheJvmUnderASystemdUnit_thatDoesNotRestartIt() {
+            var script = renderJvm(List.of());
+
+            assertTrue(script.contains("/etc/systemd/system/aether-node.service"), "the unit file must be written");
+            assertTrue(script.contains("systemctl daemon-reload"), "systemd must be told to re-read units");
+            assertTrue(script.contains("systemctl start aether-node.service"), "the unit must be started");
+            assertFalse(script.contains("systemctl enable"),
+                        "the unit must NOT start on boot: a rebooted VM would relaunch under a node id the cluster has "
+                        + "already removed, be refused, and bill without joining (#1467, #1543)");
+            assertTrue(script.contains("ExecStart=/opt/aether/run-node.sh"), "the unit must launch the node launcher");
+            assertTrue(script.contains("exec java "),
+                       "the launcher must exec so systemd's MAINPID is the JVM, not a wrapper shell");
+            assertTrue(script.contains("Restart=no"),
+                       "terminal-removal membership: a crashed node must NOT restart under the same identity");
+            assertFalse(script.contains("Restart=on-failure") || script.contains("Restart=always"),
+                        "a restarting policy resurrects a terminally-removed NodeId — see docs/operators/deployment-recovery.md");
+            assertFalse(script.contains("nohup java"),
+                        "#1021: the bare backgrounded launch is what left systemctl with nothing to report");
+        }
+
+        /// The env file carries AETHER_CLUSTER_SECRET, so it gets the same owner-only treatment #287
+        /// gave `aether.toml` for the same secret. `chmod` precedes the write, so the bytes are never
+        /// briefly world-readable.
+        @Test
+        void render_writesTheUnitEnvFileOwnerOnly_beforeWritingTheSecretIntoIt() {
+            var script = renderJvm(List.of());
+
+            assertTrue(script.contains("chmod 600 /etc/aether/node.env"), "the env file must be owner-only");
+            assertTrue(script.contains("(umask 077; install -d -m 0755 /etc/aether && printf '%s' '"),
+                       "the secret file is created under umask 077, so its bytes are never briefly world-readable");
+            assertTrue(script.contains("chmod 0400 /etc/aether/cluster-secret"), "and is read-only afterwards");
         }
     }
 

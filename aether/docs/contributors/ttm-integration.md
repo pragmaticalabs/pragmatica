@@ -167,7 +167,7 @@ The TTM model expects a tensor of shape `[1, input_window_minutes, num_features]
 |---------|-------------|
 | `cpu_usage` | Cluster-wide CPU utilization (0.0-1.0) |
 | `request_rate` | Requests per second |
-| `latency_p95` | 95th percentile latency (ms) |
+| `interval_mean_latency_p95` | 95th percentile of interval mean latencies (ms) |
 | `active_instances` | Total active slice instances |
 
 ### Output Format
@@ -232,5 +232,5 @@ node/src/main/java/org/pragmatica/aether/metrics/
 ## See Also
 
 - [Metrics and Control](metrics-control.md) - Overall control architecture
-- [Architecture](architecture.md) - System design
+- [Architecture](../architecture/00-overview.md) - System design
 - [Scaling](../operators/scaling.md) - Scaling behavior from operator perspective

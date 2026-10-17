@@ -58,7 +58,7 @@ public sealed interface ResolvedCodecs {
     private static TypeCodec<BenchmarkEnum> resolvedBenchmarkEnumCodec() {
         return new TypeCodec<>(BenchmarkEnum.class, TAG_BENCHMARK_ENUM, _ -> TAG_BENCHMARK_ENUM,
             (_, buf, value) -> SliceCodec.writeCompact(buf, value.ordinal()),
-            (_, buf) -> BenchmarkEnum.values()[SliceCodec.readCompact(buf)]);
+            (_, buf) -> SliceCodec.readEnum(buf, BenchmarkEnum.values(), BenchmarkEnum.UNKNOWN));
     }
 
     // --- MixedRecord: captures pre-resolved SimpleRecord + BenchmarkEnum writers/readers ---

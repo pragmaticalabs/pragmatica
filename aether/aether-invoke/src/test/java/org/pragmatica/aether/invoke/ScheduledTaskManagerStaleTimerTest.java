@@ -50,7 +50,7 @@ class ScheduledTaskManagerStaleTimerTest {
         stateWrites = new CopyOnWriteArrayList<>();
         leaderManager = new ScheduledTaskManagerTest.TestLeaderManager(self);
         manager = ScheduledTaskManager.scheduledTaskManager(registry, stubInvoker, self,
-                                                            stateWrites::add, leaderManager);
+                                                            stateWrites::add, _ -> Option.none(), leaderManager);
     }
 
     @AfterEach

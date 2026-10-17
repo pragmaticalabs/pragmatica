@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.testkit;
 
 import java.util.Map;
@@ -9,6 +8,7 @@ import java.util.Map;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Option.option;
 
@@ -35,6 +35,17 @@ public record MapResourceProvider(Map<ResourceKey, Object> resources) implements
     @Override
     public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
         return provide(resourceType, configSection);
+    }
+
+    /// Deliberate no-op, not an inherited one (#892).
+    ///
+    /// The kit hands back instances the TEST registered and owns; closing them here would close
+    /// objects the test still holds, and the map is deliberately immutable. A test that needs to
+    /// observe a release asserts on its own resource, the way `ReleaseIdentityTest` does against
+    /// the real provider.
+    @Override
+    public Promise<Unit> releaseAll(String sliceId) {
+        return Promise.unitPromise();
     }
 
     /// A resource coordinate: the runtime type the generated factory asks for plus its config

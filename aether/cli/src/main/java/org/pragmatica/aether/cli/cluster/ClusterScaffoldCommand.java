@@ -1,13 +1,14 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.cli.ExitCode;
+import org.pragmatica.aether.cli.cluster.init.CoreWorkerSplit;
 import org.pragmatica.aether.config.cluster.ClusterIdentity;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
@@ -33,7 +34,14 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     @Option(names = "--template", required = true, description = "Output template: docker-compose")
     private String format;
 
-    @Option(names = "--nodes", defaultValue = "5", description = "Number of compose-fixed nodes (default 5)")
+    /// A scaffolded compose file is a SINGLE tier of fixed nodes, so one number is honest here and
+    /// `--nodes` is kept rather than split into `--core-nodes`/`--worker-nodes` (#1019).
+    ///
+    /// Default stays 5 rather than the production default of 7: every node runs on one machine, where
+    /// the cost of two more JVMs is real and availability is not the goal. 5 is the smallest value the
+    /// authoring minimum admits. This command CREATES a manifest and is on no boot path, which is why
+    /// it carries the policy minimum at all.
+    @Option(names = "--nodes", defaultValue = "5", description = "Number of compose-fixed nodes (default 5, minimum 5)")
     private int nodes;
 
     @Option(names = "--image", defaultValue = "aether-node:local", description = "Container image to use (default aether-node:local)")
@@ -47,6 +55,12 @@ class ClusterScaffoldCommand implements Callable<Integer> {
 
     @Option(names = "--cluster-port", defaultValue = "6000", description = "QUIC cluster transport port (default 6000)")
     private int clusterPort;
+
+    /// The `[source.<name>]` of the cluster config the nodes will be governed by. Each node gets it as `AETHER_SOURCE`: a node learns
+    /// its source only from that variable, and without it the label is `default`, which no config names, so a replacement (an
+    /// upgrade's, an auto-heal's) is refused for want of a source. `docker` is the name the repo's docker configs use.
+    @Option(names = "--source", defaultValue = "docker", description = "Source name of the cluster config these nodes belong to (default docker)")
+    private String source;
 
     @CommandLine.ParentCommand
     private ClusterCommand parent;
@@ -62,7 +76,14 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     private Result<String> renderValidated(ClusterName clusterName) {
-        return validateFormat().flatMap(_ -> render(clusterName));
+        return validateFormat().flatMap(_ -> validateSource())
+                             .flatMap(_ -> render(clusterName));
+    }
+
+    private Result<String> validateSource() {
+        return SourceName.sourceName(source)
+                         .map(SourceName::value)
+                         .mapError(_ -> new ScaffoldError.InvalidSource(source));
     }
 
     private Result<String> validateFormat() {
@@ -73,7 +94,7 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     private Result<String> render(ClusterName clusterName) {
-        if (nodes < 3) {
+        if (nodes < CoreWorkerSplit.MINIMUM_CORE_NODES) {
             return new ScaffoldError.InvalidNodeCount(nodes).result();
         }
 
@@ -82,7 +103,8 @@ class ClusterScaffoldCommand implements Callable<Integer> {
                                                            image,
                                                            mgmtPortBase,
                                                            appPortBase,
-                                                           clusterPort));
+                                                           clusterPort,
+                                                           source));
     }
 
     private static int onSuccess(String rendered) {
@@ -98,17 +120,26 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     sealed interface ScaffoldError extends Cause {
+        record InvalidSource(String value) implements ScaffoldError {
+            @Override
+            public String message() {
+                return "Invalid --source '" + value + "': expected a source name such as docker or primary";
+            }
+        }
+
         record UnsupportedFormat(String format) implements ScaffoldError {
             @Override
             public String message() {
-                return "Unsupported --format '" + format + "' (supported: docker-compose)";
+                return "Unsupported --template '" + format + "' (supported: docker-compose)";
             }
         }
 
         record InvalidNodeCount(int nodes) implements ScaffoldError {
             @Override
             public String message() {
-                return "Invalid --nodes " + nodes + " (must be >= 3)";
+                return "Invalid --nodes " + nodes
+                     + " (must be >= " + CoreWorkerSplit.MINIMUM_CORE_NODES
+                     + "): below that a rolling restart leaves no fault budget";
             }
         }
     }

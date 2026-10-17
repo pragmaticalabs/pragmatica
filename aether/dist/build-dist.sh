@@ -261,7 +261,7 @@ if echo "$TARGETS" | grep -q "node"; then
         "aether-node" \
         "$AETHER_DIR/node/target/aether-node.jar" \
         "aether-node" \
-        "-XX:+UseZGC -Xmx512m" \
+        "-XX:+ExitOnOutOfMemoryError -XX:+UseZGC -Xmx512m" \
         "Ports
 -----
     8090/udp    Cluster communication (QUIC)

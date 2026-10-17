@@ -1,5 +1,6 @@
 package org.pragmatica.storage;
 
+import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.lang.Result;
@@ -58,16 +59,44 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
 
         var now = System.currentTimeMillis();
         var cutoff = now - config.gracePeriodMs();
+        // #737 fix round 2: grace runs from orphanedAt (when refCount reached 0), not
+        // lastAccessedAt (when it was last read) -- the two diverge for a long-idle-but-still-
+        // referenced block, which must get a full grace period from the moment it is orphaned.
         var collected = metadataStore.listAllLifecycles()
                                      .stream()
                                      .filter(BlockLifecycle::isOrphaned)
-                                     .filter(lc -> lc.lastAccessedAt() <= cutoff)
+                                     .filter(lc -> lc.orphanedAt() <= cutoff)
                                      .limit(config.batchSize())
-                                     .map(lc -> deleteBlock(lc.blockId()))
+                                     .map(this::deleteBlock)
                                      .reduce(0, Integer::sum);
 
         stats.updateAndGet(s -> s.withCollected(collected, now));
         log.debug("GC cycle completed: {} block(s) collected", collected);
+
+        return collected;
+    }
+
+    @Override
+    public int collectOrphansDurableIn(MetadataSnapshot durable) {
+        if (!active) {
+            return 0;
+        }
+
+        var durableOrphans = durable.lifecycles()
+                                    .stream()
+                                    .filter(BlockLifecycle::isOrphaned)
+                                    .map(BlockLifecycle::blockId)
+                                    .collect(Collectors.toSet());
+        var collected = metadataStore.listAllLifecycles()
+                                     .stream()
+                                     .filter(BlockLifecycle::isOrphaned)
+                                     .filter(lc -> durableOrphans.contains(lc.blockId()))
+                                     .limit(config.batchSize())
+                                     .map(this::deleteBlock)
+                                     .reduce(0, Integer::sum);
+
+        stats.updateAndGet(s -> s.withCollected(collected, System.currentTimeMillis()));
+        log.debug("Pressure GC collected {} block(s) orphaned in snapshot epoch {}", collected, durable.epoch());
 
         return collected;
     }
@@ -79,9 +108,24 @@ final class DefaultStorageGarbageCollector implements StorageGarbageCollector {
 
     /// Synchronous block deletion. Uses .await() because GC runs on a dedicated
     /// background thread, not on the hot path. Blocking here is intentional.
-    private int deleteBlock(BlockId blockId) {
-        return instance.delete(blockId)
+    ///
+    /// #250: uses [StorageInstance#deleteFromPrivateTiers], never [StorageInstance#delete] --
+    /// orphan status here comes from THIS node's local metadata, which is not authoritative
+    /// for a cluster-shared tier (another node may still hold a live reference).
+    ///
+    /// #801: passes the record AS SCANNED, not just its id. The scan is a snapshot, and a
+    /// deduplicating put can land on the block between the scan and this call; the instance
+    /// deletes only if the record still equals the scanned one, and reports `false` otherwise,
+    /// which is not a collection.
+    private int deleteBlock(BlockLifecycle orphan) {
+        return instance.deleteFromPrivateTiers(orphan)
                        .await()
-                       .fold(_ -> 0, _ -> 1);
+                       .fold(_ -> 0, DefaultStorageGarbageCollector::countOf);
+    }
+
+    private static int countOf(boolean collected) {
+        return collected
+               ? 1
+               : 0;
     }
 }
