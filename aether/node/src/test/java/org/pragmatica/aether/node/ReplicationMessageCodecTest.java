@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.replication.ReplicationMessage.BatchSync;
 import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRequest;
@@ -13,6 +14,7 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage.CatchupRespon
 import org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateAck;
 import org.pragmatica.aether.stream.replication.ReplicationMessage.ReplicateEvents;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -59,7 +61,16 @@ class ReplicationMessageCodecTest {
 
     @Test
     void replicateAck_roundTrips() {
-        var original = new ReplicateAck(REPLICA, "app:orders:2.1.0", 0, 7L);
+        var original = new ReplicateAck(REPLICA, "app:orders:2.1.0", 0, 7L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+
+        ReplicationMessage decoded = CODEC.decode(CODEC.encode(original));
+
+        assertThat(decoded).isEqualTo(original);
+    }
+
+    @Test
+    void commitAdvance_roundTrips() {
+        var original = new ReplicationMessage.CommitAdvance(GOVERNOR, "app:orders:2.1.0", 2, 41L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
 
         ReplicationMessage decoded = CODEC.decode(CODEC.encode(original));
 
@@ -86,9 +97,12 @@ class ReplicationMessageCodecTest {
 
     @Test
     void catchupResponse_roundTrips_withPayloads() {
+        var history = List.of(ProvenanceEntry.provenanceEntry(Epoch.epoch(0,1, 0), Option.none(), 0),
+                              ProvenanceEntry.provenanceEntry(Epoch.epoch(0,2, 3), Option.some("01J9ZQ3V8K2M4N6P8R0T2V4X6Z"), 1));
         var original = new CatchupResponse(GOVERNOR, "app:orders:2.1.0", 1, 0L, 2L,
                                            List.of(new byte[]{7}, new byte[]{8, 8}),
-                                           List.of(11L, 22L));
+                                           List.of(11L, 22L),
+                                           history);
 
         ReplicationMessage decoded = CODEC.decode(CODEC.encode(original));
 
@@ -99,5 +113,6 @@ class ReplicationMessageCodecTest {
         assertThat(response.timestamps()).containsExactly(11L, 22L);
         assertThat(response.payloads()).usingElementComparator(Arrays::compare)
                                        .containsExactly(new byte[]{7}, new byte[]{8, 8});
+        assertThat(response.history()).as("#1596: the source's owner-epoch slice crosses the wire intact").isEqualTo(history);
     }
 }

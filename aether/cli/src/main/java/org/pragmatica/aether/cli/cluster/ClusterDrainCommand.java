@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.List;
@@ -12,6 +11,7 @@ import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -34,7 +34,7 @@ class ClusterDrainCommand implements Callable<Integer> {
     @Parameters(index = "0", description = "Node ID to drain")
     private String nodeId;
 
-    @Option(names = "--wait", description = "Wait for drain to complete (DECOMMISSIONED)")
+    @Option(names = "--wait", description = "Wait for the drain to complete (membership commits the node's departure)")
     private boolean waitForCompletion;
 
     @Option(names = "--timeout", description = "Timeout in seconds when waiting (default: 120)")
@@ -42,6 +42,9 @@ class ClusterDrainCommand implements Callable<Integer> {
 
     @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
     private boolean skipConfirmation;
+
+    @Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+    private boolean overrideFloor;
 
     @CommandLine.ParentCommand
     private ClusterCommand parent;
@@ -62,6 +65,7 @@ class ClusterDrainCommand implements Callable<Integer> {
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> ClusterHttpClient.post(NODE_DRAIN,
                                                                  List.of(nodeId),
+                                                                 ClusterHttpClient.forceQuery(overrideFloor),
                                                                  "{}"))
                             .flatMap(MAPPER::readTree)
                             .fold(this::onFailure, this::onDrainInitiated);
@@ -78,14 +82,14 @@ class ClusterDrainCommand implements Callable<Integer> {
 
         System.out.printf("Drain initiated for node %s (state: %s)%n", nodeId, state);
         if (waitForCompletion) {
-            return pollUntilDecommissioned();
+            return pollUntilDrained();
         }
 
         return ExitCode.SUCCESS;
     }
 
     private static int handleDrainRejection(String state, String message) {
-        if (state.contains("DRAINING") || state.contains("DECOMMISSIONED")) {
+        if (state.contains("DRAINING")) {
             System.out.printf("Node already %s: %s%n", state, message);
 
             return ExitCode.SUCCESS;
@@ -97,34 +101,32 @@ class ClusterDrainCommand implements Callable<Integer> {
     }
 
     @SuppressWarnings("JBCT-SEQ-01")
-    private int pollUntilDecommissioned() {
-        System.out.printf("Waiting for node %s to reach DECOMMISSIONED (timeout: %ds)...%n", nodeId, timeoutSeconds);
+    private int pollUntilDrained() {
+        System.out.printf("Waiting for node %s to finish draining (timeout: %ds)...%n", nodeId, timeoutSeconds);
         var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
 
         while (System.currentTimeMillis() < deadline) {
-            var stateResult = queryNodeLifecycleState();
+            var lifecycle = ClusterHttpClient.fetch(NODE_LIFECYCLE_GET, List.of(nodeId));
 
-            if ("DECOMMISSIONED".equals(stateResult)) {
-                System.out.printf("Node %s is now DECOMMISSIONED.%n", nodeId);
+            if (DrainCompletion.isDeparted(lifecycle)) {
+                System.out.printf("Node %s has departed (membership committed its departure).%n", nodeId);
 
                 return ExitCode.SUCCESS;
             }
 
-            System.out.printf("  Current state: %s%n", stateResult);
+            System.out.printf("  Current state: %s%n", describeState(lifecycle));
             sleepQuietly();
         }
 
-        System.err.printf("Timeout: node %s did not reach DECOMMISSIONED within %ds.%n", nodeId, timeoutSeconds);
+        System.err.printf("Timeout: node %s did not finish draining within %ds.%n", nodeId, timeoutSeconds);
 
         return ExitCode.TIMEOUT;
     }
 
-    private String queryNodeLifecycleState() {
-        return ClusterHttpClient.fetch(NODE_LIFECYCLE_GET,
-                                       List.of(nodeId))
-                                .flatMap(MAPPER::readTree)
-                                .map(ClusterDrainCommand::extractState)
-                                .or("UNKNOWN");
+    private static String describeState(Result<String> lifecycle) {
+        return lifecycle.flatMap(MAPPER::readTree)
+                        .map(ClusterDrainCommand::extractState)
+                        .or("UNKNOWN");
     }
 
     private static String extractState(JsonNode node) {

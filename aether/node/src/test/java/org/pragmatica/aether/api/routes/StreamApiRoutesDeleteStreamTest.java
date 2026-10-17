@@ -7,6 +7,7 @@ package org.pragmatica.aether.api.routes;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 
 import java.lang.reflect.Proxy;
@@ -39,8 +40,13 @@ class StreamApiRoutesDeleteStreamTest {
         };
     }
 
+    /// #1224: `namespacesService` is now live (not `null`) because `deleteStream` releases the
+    /// catalog reference in addition to the physical ring teardown. None of this file's fixtures go
+    /// through the catalog-registering `createStream` handler — they call
+    /// [StreamPartitionManager#createStream] directly — so the release always misses the registry and
+    /// exercises the `NOT_FOUND`-tolerance path rather than an actual removal.
     private static StreamApiRoutes routesFor(StreamPartitionManager manager) {
-        return StreamApiRoutes.streamApiRoutes(() -> nodeWith(manager), null, null, null);
+        return StreamApiRoutes.streamApiRoutes(() -> nodeWith(manager), StreamNamespacesService.inMemory(), null, null);
     }
 
     @Test

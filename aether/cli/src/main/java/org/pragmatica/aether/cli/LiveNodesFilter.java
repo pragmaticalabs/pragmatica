@@ -1,13 +1,13 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -23,12 +23,29 @@ public sealed interface LiveNodesFilter {
 
     /// Filter the `nodes` array of a `LiveNodesResponse` to entries with `swimAlive=true`
     /// and recompute `liveCount`/`zombieCount`. Returns the original JSON unchanged when it
-    /// cannot be parsed (the caller's downstream formatter then surfaces the parse problem).
+    /// cannot be parsed, or carries no `nodes` array at all (#1033: an error envelope from a
+    /// failed fetch used to be rebuilt into `{"nodes":[],…}`, erasing the error) — the caller's
+    /// downstream formatter then surfaces the parse problem or the error.
     static String onlyAlive(String json) {
         return MAPPER.readTree(json)
+                     .filter(NotALiveNodesDocument.INSTANCE,
+                             root -> root.path("nodes")
+                                         .isArray())
                      .map(LiveNodesFilter::rebuildAliveOnly)
                      .flatMap(MAPPER::writeAsString)
                      .or(json);
+    }
+
+    enum NotALiveNodesDocument implements Cause {
+        INSTANCE("Not a live-nodes document: no `nodes` array");
+        private final String message;
+        NotALiveNodesDocument(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
     }
 
     /// Extract the boolean `reachable` field from a `NodeEndpointResponse`. Absent / unparseable

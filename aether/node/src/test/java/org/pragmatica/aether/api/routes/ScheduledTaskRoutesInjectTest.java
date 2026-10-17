@@ -4,11 +4,13 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.ScheduledTaskInjectResponse;
+import org.pragmatica.aether.api.routes.ScheduledTaskRoutes.TaskStateResponse;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.ScheduledTaskManager;
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry;
@@ -37,6 +39,9 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.lang.reflect.Proxy;
 import java.util.ArrayList;
@@ -62,6 +67,10 @@ class ScheduledTaskRoutesInjectTest {
     private static final String SECTION = "demo.section";
     private static final String ARTIFACT = "org.example:demo:1.0.0";
     private static final String METHOD = "tick";
+    // `RecordingNode#self()` reports this id; `StubRegistry#addTask` defaults every task to
+    // ALL-mode, so `/inject`'s state key is now scoped by this node (mirrors the automatic
+    // path, #841 follow-up) rather than the pre-#841 unscoped key.
+    private static final NodeId SELF_NODE = new NodeId("node-self");
 
     private StubRegistry registry;
     private StubStateRegistry stateRegistry;
@@ -84,6 +93,156 @@ class ScheduledTaskRoutesInjectTest {
                                                        invoker.asSliceInvoker(),
                                                        stateRegistry,
                                                        devMode);
+    }
+
+    private ScheduledTaskRoutes routesWith(RecordingInvoker withInvoker) {
+        return ScheduledTaskRoutes.scheduledTaskRoutes(registry,
+                                                       stubManager(),
+                                                       () -> node.asManageableNode(),
+                                                       withInvoker.asSliceInvoker(),
+                                                       stateRegistry,
+                                                       () -> true);
+    }
+
+    /// #1723: /inject is judged by the callee's COMPLETION, not by the request being enqueued. The invoker models a remote
+    /// callee faithfully: the fire-and-forget `invoke` resolves at once while the completion fails. The route must answer a
+    /// failure and record no success, and a completion that never arrived (outcome unknown) must be recorded as such, not as
+    /// a failure and not as an execution.
+    @Nested
+    class CompletionOutcome {
+        @Test
+        void inject_calleeFailsAfterTheRequestWasAccepted_isAFailure_andRecordsNoSuccess() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.lang.utils.Causes.cause("callee failed");
+            var result = invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isFailure(), () -> "a fire whose callee failed must not read as executed: " + result);
+            assertTrue(node.commands.stream()
+                                    .flatMap(List::stream)
+                                    .noneMatch(command -> String.valueOf(command).contains("totalExecutions=1")),
+                       () -> "no success state may be written: " + node.commands);
+        }
+
+        @Test
+        void inject_unknownOutcome_isRecordedAsUnknown_notAsAFailureAndNotAsAnExecution() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.aether.invoke.SliceInvokerError.CompletionUnknown.completionUnknown(Artifact.artifact(ARTIFACT).unwrap(), MethodName.methodName(METHOD).unwrap(), org.pragmatica.lang.utils.Causes.cause("timed out"));
+            var result = invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isFailure(), "the caller is told the fire did not complete");
+            var written = node.commands.stream()
+                                       .flatMap(List::stream)
+                                       .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                       .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                       .toList();
+
+            assertEquals(1, written.size(), "one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_UNKNOWN, written.getFirst().lastOutcome());
+            assertEquals(0, written.getFirst().consecutiveFailures(), "unknown is not a failure");
+            assertEquals(0, written.getFirst().totalExecutions(), "unknown is not an execution");
+            assertEquals(1, written.getFirst().completionTimeouts());
+        }
+
+        /// The failure half of the same rule: a callee that answered with a failure is recorded as a FAILURE (the streak
+        /// moves), never as UNKNOWN. Without this, recording every failed /inject as unknown would pass every test here.
+        @Test
+        void inject_calleeFails_isRecordedAsAFailure_notAsUnknown() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.lang.utils.Causes.cause("callee failed");
+            invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+            var written = node.commands.stream()
+                                       .flatMap(List::stream)
+                                       .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                       .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                       .toList();
+
+            assertEquals(1, written.size(), "one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getFirst().lastOutcome());
+            assertEquals(1, written.getFirst().consecutiveFailures(), "a failure moves the streak");
+            assertEquals(0, written.getFirst().completionTimeouts(), "a failure is not a timeout");
+            assertEquals("callee failed", written.getFirst().lastFailureMessage());
+        }
+
+        /// #1723 (owner ruling N1): the callee's response arrives after the injected fire was recorded UNKNOWN. It is the
+        /// fire's real outcome and is written over the row: an execution, no longer counted as unknown.
+        @Test
+        void inject_lateSuccessResponse_resolvesTheUnknownFire_intoAnExecution() {
+            var lateOutcome = injectWithUnknownOutcome();
+
+            lateOutcome.succeed(Unit.unit());
+            var written = awaitWrittenStates(2);
+
+            assertEquals(2, written.size(), "the unknown write, then the resolution");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_SUCCESS, written.getLast().lastOutcome());
+            assertEquals(1, written.getLast().totalExecutions(), "the late answer makes the fire an execution");
+            assertEquals(1, written.getLast().lateResolutions(), "a late answer is counted");
+        }
+
+        @Test
+        void inject_lateFailureResponse_resolvesTheUnknownFire_intoAFailure() {
+            var lateOutcome = injectWithUnknownOutcome();
+
+            lateOutcome.fail(org.pragmatica.lang.utils.Causes.cause("callee failed late"));
+            var written = awaitWrittenStates(2);
+
+            assertEquals(2, written.size(), "the unknown write, then the resolution");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getLast().lastOutcome());
+            assertEquals(1, written.getLast().consecutiveFailures(), "the late answer makes the fire a failure");
+            assertEquals("callee failed late", written.getLast().lastFailureMessage());
+            assertEquals(1, written.getLast().lateResolutions());
+        }
+
+        /// Injects a fire that times out, commits the UNKNOWN row it wrote (as the KV store would), and returns the
+        /// fire's late outcome for the test to settle.
+        private Promise<Unit> injectWithUnknownOutcome() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+            var lateOutcome = Promise.<Unit> promise();
+
+            remoteLike.failure = org.pragmatica.aether.invoke.SliceInvokerError.CompletionUnknown.completionUnknown(Artifact.artifact(ARTIFACT).unwrap(), MethodName.methodName(METHOD).unwrap(), org.pragmatica.lang.utils.Causes.cause("timed out"), lateOutcome);
+            invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+            var unknown = writtenStates();
+
+            assertEquals(1, unknown.size(), "premise: one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_UNKNOWN, unknown.getFirst().lastOutcome(), "premise");
+            node.commands.stream()
+                         .flatMap(List::stream)
+                         .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                         .forEach(command -> stateRegistry.put((ScheduledTaskStateKey) ((KVCommand.Put<?, ?>) command).key(),
+                                                               (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value()));
+
+            return lateOutcome;
+        }
+
+        /// The late outcome is applied on the promise's own thread: wait for the write, bounded.
+        private List<ScheduledTaskStateValue> awaitWrittenStates(int count) {
+            var deadline = System.currentTimeMillis() + 3_000L;
+
+            while (writtenStates().size() < count && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            return writtenStates();
+        }
+
+        private List<ScheduledTaskStateValue> writtenStates() {
+            return node.commands.stream()
+                                .flatMap(List::stream)
+                                .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                .toList();
+        }
     }
 
     @Nested
@@ -112,11 +271,15 @@ class ScheduledTaskRoutesInjectTest {
         @Test
         void inject_invokesTask_writesSuccessState_andAdvancesLastExecution() {
             registry.addTask(SECTION, ARTIFACT, METHOD);
+            // StubRegistry defaults the task to ALL-mode, so /inject now keys state by this
+            // node (SELF_NODE, via RecordingNode#self()) rather than the pre-#841 unscoped key
+            // — seed the same per-node key here so priorState is actually found.
             var key = ScheduledTaskStateKey.scheduledTaskStateKey(SECTION,
                                                                    artifact(ARTIFACT),
-                                                                   new MethodName(METHOD));
+                                                                   new MethodName(METHOD),
+                                                                   SELF_NODE);
             var priorTimestamp = System.currentTimeMillis() - 5_000;
-            stateRegistry.put(key, new ScheduledTaskStateValue(priorTimestamp, 0, 0, 7, "", priorTimestamp));
+            stateRegistry.put(key, new ScheduledTaskStateValue(priorTimestamp, 0, 0, 7, "", priorTimestamp, 0));
 
             var routes = routesWithDevMode(true);
 
@@ -160,6 +323,67 @@ class ScheduledTaskRoutesInjectTest {
                           "previousExecutionMs must be 0 when no prior state entry exists");
             assertTrue(response.currentExecutionMs() > 0,
                        "currentExecutionMs must be a stamped non-zero timestamp");
+        }
+    }
+
+    /// #841 follow-up (owner ruling: fix in this PR, not just document): `invokeAndAdvanceState`
+    /// keyed EVERY execution mode with the pre-#841 unscoped `ScheduledTaskStateKey`. Once the
+    /// aggregation fix landed, that made an ALL-mode `/inject` write orphaned — 200 response,
+    /// advancing counters, permanently invisible on every Management API surface, because those
+    /// surfaces now filter the unscoped key out. `injectStateKeyFor` closes this by mirroring
+    /// `ScheduledTaskManager.TaskOps#stateKeyFor`: ALL-mode scoped by this node, SINGLE-mode
+    /// unchanged (still races the leader's automatic fire on that key — `/trigger` writes no state
+    /// entry, so it is not a racer here — a documented TOCTOU caveat, not addressed here).
+    @Nested
+    class KeyScoping {
+
+        @Test
+        void inject_onSingleModeTask_stillUsesUnscopedKey_unchangedFromBefore() {
+            registry.addTask(SECTION, ARTIFACT, METHOD, ExecutionMode.SINGLE);
+            var unscopedKey = ScheduledTaskStateKey.scheduledTaskStateKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD));
+            var priorTimestamp = System.currentTimeMillis() - 5_000;
+            stateRegistry.put(unscopedKey, new ScheduledTaskStateValue(priorTimestamp, 0, 0, 3, "", priorTimestamp, 0));
+            var routes = routesWithDevMode(true);
+
+            var response = invokeInject(routes, new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD))
+                            .onFailure(cause -> fail("Inject must succeed: " + cause.message()))
+                            .await()
+                            .or((ScheduledTaskInjectResponse) null);
+
+            assertNotNull(response, "Response must be non-null on success");
+            assertEquals(priorTimestamp, response.previousExecutionMs(),
+                          "SINGLE-mode must still read prior state from the unscoped key, unchanged");
+            assertEquals(1, node.commands.size(), "Exactly one KV apply expected");
+            var written = (KVCommand.Put<?, ?>) node.commands.get(0).get(0);
+            assertEquals(unscopedKey, written.key(), "SINGLE-mode write must still target the unscoped key");
+        }
+
+        @Test
+        void inject_onAllModeTask_advancesStateVisibleOnStateEndpoint() {
+            var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubKvSerializer(), stubKvDeserializer());
+            var localRegistry = new StubRegistry();
+            localRegistry.addTask(SECTION, ARTIFACT, METHOD, ExecutionMode.ALL);
+            var localInvoker = new RecordingInvoker();
+            var routes = ScheduledTaskRoutes.scheduledTaskRoutes(localRegistry,
+                                                                  stubManager(),
+                                                                  () -> nodeOverRealStore(store, SELF_NODE),
+                                                                  localInvoker.asSliceInvoker(),
+                                                                  new StubStateRegistry(),
+                                                                  () -> true);
+
+            invokeInject(routes, new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD))
+                .onFailure(cause -> fail("Inject must succeed: " + cause.message()))
+                .await();
+
+            var state = routes.getTaskStateForTest(SECTION, ARTIFACT, METHOD)
+                               .onFailure(cause -> fail("State read must succeed: " + cause.message()))
+                               .await()
+                               .or((TaskStateResponse) null);
+
+            assertNotNull(state, "State response must be non-null");
+            assertEquals(1, state.totalExecutions(),
+                         "Inject's write must land on this node's per-node row so ALL-mode aggregation counts it");
+            assertTrue(state.lastExecutionAt() > 0, "lastExecutionAt must advance past zero");
         }
     }
 
@@ -327,12 +551,51 @@ class ScheduledTaskRoutesInjectTest {
         return Artifact.artifact(s).unwrap();
     }
 
+    /// Real `KVStore` (not the command-recording `RecordingNode` double) so `KeyScoping`'s
+    /// ALL-mode visibility test can both write (via `apply`) and read back (via the ALL-mode
+    /// aggregation's `kvStore().forEach`) through the same backing store — mirrors the fixture
+    /// in `ScheduledTaskRoutesAllModeAggregationTest`.
+    private static ManageableNode nodeOverRealStore(KVStore<AetherKey, AetherValue> store, NodeId self) {
+        return (ManageableNode) Proxy.newProxyInstance(
+            ManageableNode.class.getClassLoader(),
+            new Class[]{ManageableNode.class},
+            (_, method, args) -> switch (method.getName()) {
+                case "kvStore" -> store;
+                case "self" -> self;
+                case "apply" -> {
+                    @SuppressWarnings("unchecked")
+                    var commands = (List<KVCommand<AetherKey>>) args[0];
+
+                    store.process(store.createBatch(commands));
+                    yield Promise.success(List.of());
+                }
+                default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
+            }
+        );
+    }
+
+    private static Serializer stubKvSerializer() {
+        return new Serializer() {
+            @Override public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private static Deserializer stubKvDeserializer() {
+        return new Deserializer() {
+            @Override public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
+    }
+
     private static ScheduledTaskManager stubManager() {
         return new ScheduledTaskManager() {
             @Override public void onLeaderChange(LeaderChange leaderChange) {}
             @Override public void onQuorumStateChange(ClusterStateNotification notification) {}
             @Override public int activeTimerCount() { return 0; }
             @Override public void stop() {}
+            @Override public boolean tryClaim(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) { return true; }
+            @Override public void release(org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey key) {}
         };
     }
 
@@ -340,18 +603,24 @@ class ScheduledTaskRoutesInjectTest {
         private final List<ScheduledTask> tasks = new ArrayList<>();
 
         void addTask(String section, String artifactStr, String methodStr) {
+            addTask(section, artifactStr, methodStr, ExecutionMode.ALL);
+        }
+
+        void addTask(String section, String artifactStr, String methodStr, ExecutionMode mode) {
             tasks.add(new ScheduledTask(section,
                                         artifact(artifactStr),
                                         new MethodName(methodStr),
                                         new NodeId("node-1"),
                                         "1s",
                                         "",
-                                        ExecutionMode.ALL,
+                                        mode,
                                         false));
         }
 
         @Override public void onScheduledTaskPut(ValuePut<ScheduledTaskKey, AetherValue.ScheduledTaskValue> valuePut) {}
         @Override public void onScheduledTaskRemove(ValueRemove<ScheduledTaskKey, AetherValue.ScheduledTaskValue> valueRemove) {}
+        @Override public void onScheduledTaskPausePut(ValuePut<AetherKey.ScheduledTaskPauseKey, AetherValue.ScheduledTaskPauseValue> valuePut) {}
+        @Override public void onScheduledTaskPauseRemove(ValueRemove<AetherKey.ScheduledTaskPauseKey, AetherValue.ScheduledTaskPauseValue> valueRemove) {}
         @Override public List<ScheduledTask> allTasks() { return List.copyOf(tasks); }
         @Override public List<ScheduledTask> singleModeTasks() { return List.of(); }
         @Override public List<ScheduledTask> localTasks(NodeId self) { return List.copyOf(tasks); }
@@ -386,7 +655,16 @@ class ScheduledTaskRoutesInjectTest {
                 SliceInvoker.class.getClassLoader(),
                 new Class[]{SliceInvoker.class},
                 (_, method, args) -> {
+                    // #1723: models a REMOTE callee faithfully. The fire-and-forget `invoke` resolves at once (the request
+                    // was handed to the transport) whatever the callee does; only the completion-aware call reports the
+                    // callee's outcome (`failure`). A route that judged the fire by `invoke` would read every fire as a success.
                     if ("invoke".equals(method.getName()) && args != null && args.length == 3) {
+                        var slice = (Artifact) args[0];
+                        var methodName = (MethodName) args[1];
+                        invocations.add(new Invocation(slice.asString(), methodName.name()));
+                        return Promise.success(Unit.unit());
+                    }
+                    if ("invokeAwaitingCompletion".equals(method.getName()) && args != null && args.length == 3) {
                         var slice = (Artifact) args[0];
                         var methodName = (MethodName) args[1];
                         invocations.add(new Invocation(slice.asString(), methodName.name()));
@@ -418,6 +696,9 @@ class ScheduledTaskRoutesInjectTest {
                         var typedList = (List<KVCommand<AetherKey>>) list;
                         commands.add(typedList);
                         return Promise.success(List.of());
+                    }
+                    if ("self".equals(method.getName())) {
+                        return SELF_NODE;
                     }
                     throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
                 }

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.http;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -26,6 +27,7 @@ import org.pragmatica.aether.http.fsm.AppHttpState;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.aether.update.VersionRouting;
+import org.pragmatica.aether.http.HttpRoutePublisher.LocalResolution;
 import org.pragmatica.aether.http.HttpRoutePublisher.LocalRouteInfo;
 import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
@@ -45,12 +47,9 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.observability.HttpRequestObserver;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
-import org.pragmatica.aether.dht.MapSubscription;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.HttpNodeRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
@@ -60,9 +59,11 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
@@ -77,6 +78,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -93,18 +95,16 @@ import static org.pragmatica.lang.Unit.unit;
 
 
 public interface AppHttpServer {
+    Unit setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission admission);
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(CertificateBundle newBundle);
+
+    /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
+
     Option<Integer> boundPort();
-
-    @MessageReceiver
-    @Contract
-    void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut);
-
-    @MessageReceiver
-    @Contract
-    void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove);
 
     @Contract
     void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
@@ -132,6 +132,8 @@ public interface AppHttpServer {
     @Contract
     void onNodeRemoved(MembershipDecision.NodeRemoved nodeRemoved);
 
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
+
     @MessageReceiver
     @Contract
     void onNodeDecommissioned(MembershipDecision.NodeDecommissioned nodeDecommissioned);
@@ -143,22 +145,6 @@ public interface AppHttpServer {
 
     Option<HttpForwarder> httpForwarder();
     Option<HttpRoutePublisher> httpRoutePublisher();
-
-    default MapSubscription<HttpNodeRouteKey, HttpNodeRouteValue> asHttpRouteSubscription() {
-        return new MapSubscription<>() {
-            @Override
-            @Contract
-            public void onPut(HttpNodeRouteKey key, HttpNodeRouteValue value) {
-                onRoutePut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
-            }
-
-            @Override
-            @Contract
-            public void onRemove(HttpNodeRouteKey key) {
-                onRouteRemove(new ValueRemove<>(new KVCommand.Remove<>(key), Option.none()));
-            }
-        };
-    }
 
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        ForwardingTimeouts forwardingTimeouts,
@@ -292,6 +278,7 @@ public interface AppHttpServer {
 class AppHttpServerAdapter implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerAdapter.class);
 
+    private final TlsRotation tlsRotation = TlsRotation.tlsRotation("app-http");
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
     private final HttpRouteRegistry routeRegistry;
@@ -309,8 +296,25 @@ class AppHttpServerAdapter implements AppHttpServer {
     private final Option<HttpForwarder> httpForwarder;
     private final AppHttpContext context;
     private final TimeSpan requestBudget;
+
+    private volatile org.pragmatica.aether.invoke.InvocationAdmission invocationAdmission = org.pragmatica.aether.invoke.InvocationAdmission.open();
+
     private volatile boolean quorumEstablished;
+
+    @Override
+    public Unit setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission admission) {
+        this.invocationAdmission = admission;
+
+        return Unit.unit();
+    }
+
     private final AtomicLong routeNotReadyRejections = new AtomicLong();
+
+    /// #1456 test seam: runs between the bind completing and the just-bound server being published to
+    /// the FSM, so a test can hold a start inside that window and call `stop()` there. The window is
+    /// sub-millisecond in production, which is why the race is only reachable deterministically from
+    /// here. No-op unless a test installs a hook.
+    private volatile Runnable beforePublish = () -> {};
 
     AppHttpServerAdapter(AppHttpConfig config,
                          ForwardingTimeouts forwardingTimeouts,
@@ -386,13 +390,41 @@ class AppHttpServerAdapter implements AppHttpServer {
         return ctx.stopped();
     }
 
+    /// The `NONE` arm may install `permitAllValidator` only because `handleRequestInScope` refuses
+    /// every auth-requiring policy with `NO_VALIDATOR_CONFIGURED` before the validator is consulted;
+    /// the `JWT` arm has no such pre-check, so its no-config fallback must itself deny (#888).
     private static SecurityValidator buildSecurityValidator(AppHttpConfig config) {
         return switch (config.securityMode()) {
             case API_KEY -> SecurityValidator.apiKeyValidator(config.apiKeys());
-            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(SecurityValidator.permitAllValidator());
+            case JWT -> config.jwtConfig().map(SecurityValidator::jwtValidator).or(() -> jwtModeWithoutConfigValidator(config.enabled()));
             case NONE -> SecurityValidator.permitAllValidator();
         };
     }
+
+    /// #888: `security_mode = "jwt"` with no `[app-http] jwks_url` used to fall back to
+    /// `permitAllValidator`, which has no policy switch and hands EVERY caller a context holding
+    /// `Role.ADMIN` + `Role.SERVICE` — so `role:admin` routes were served to anonymous requests, a
+    /// state strictly MORE permissive than `security_mode = "none"`. A JWT node that cannot verify a
+    /// token must refuse everything a token would have gated: `denyUnlessPublicValidator` serves
+    /// `public` routes with an empty context and answers `401 NO_VALIDATOR_CONFIGURED` to the rest.
+    ///
+    /// Logged at ERROR, not WARN (#902 review ruling): the operator declared `jwt` and nothing can
+    /// verify a token, so every non-public route on this node will answer `401` -- a declared-intent
+    /// contradiction, not a degraded default. Only logged for a server that will actually serve:
+    /// the validator is built at construction, before `start()` consults `enabled()`, and a disabled
+    /// server refuses nothing. Pinned by `AppHttpServerJwtMissingConfigLogTest`.
+    private static SecurityValidator jwtModeWithoutConfigValidator(boolean serverEnabled) {
+        if (serverEnabled) {
+            log.error(JWT_MISSING_CONFIG_MESSAGE);
+        }
+
+        return SecurityValidator.denyUnlessPublicValidator();
+    }
+
+    private static final String JWT_MISSING_CONFIG_MESSAGE = "[app-http] security_mode = \"jwt\" but [app-http] jwks_url is missing:"
+                                                           + " no JWT configuration is present, so every non-public app route on this"
+                                                           + " node will be REFUSED with 401. Set jwks_url (and issuer/audience) or"
+                                                           + " change security_mode, then restart the node (#888).";
 
     private static Option<HttpForwarder> buildHttpForwarder(NodeId selfNodeId,
                                                             HttpRouteRegistry routeRegistry,
@@ -478,21 +510,48 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                 wg)))
                                      .or(HttpServer.httpServer(serverConfig, handler));
 
-        return serverPromise.map(this::registerStartedH1Server)
+        return serverPromise.map(this::holdAtPublishGate)
+                            .map(this::registerStartedH1Server)
                             .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
                                                           config.port(),
                                                           cause.message()));
     }
 
+    /// #1456 test seam — see [#beforePublish].
+    @Contract
+    void beforePublishForTest(Runnable hook) {
+        beforePublish = hook;
+    }
+
+    private HttpServer holdAtPublishGate(HttpServer server) {
+        beforePublish.run();
+
+        return server;
+    }
+
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
+        // A QUIC context that cannot be built refuses the start (fail closed). A BIND failure of the HTTP/3 listener is
+        // non-fatal only when HTTP/1.1 also serves (BOTH); with HTTP/3 as the only app protocol it would leave the node
+        // running with no app listener at all, so it is propagated.
+        return quicTls.fold(cause -> quicTlsRefused(cause),
+                            context -> tolerateBindFailureWhenH1Serves(startH3WithSslContext(context)));
+    }
 
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
-                                                    cause.message()))
-                      .map(this::startH3WithSslContext)
-                      .or(Promise::unitPromise)
-                      .recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit);
+    private Promise<Unit> tolerateBindFailureWhenH1Serves(Promise<Unit> h3Start) {
+        return config.httpProtocol()
+                     .includesH1()
+               ? h3Start.recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit)
+               : h3Start;
+    }
+
+    private Promise<Unit> quicTlsRefused(Cause cause) {
+        var failure = new HttpServerError.TlsFailed("app-http-h3", config.port(), cause);
+
+        log.error("HTTP server 'app-http-h3' will not start: {}", failure.message());
+
+        return failure.promise();
     }
 
     private static Unit logH3DisabledAndReturnUnit(Cause cause) {
@@ -523,13 +582,29 @@ class AppHttpServerAdapter implements AppHttpServer {
         handleRequest(request, response);
     }
 
+    /// The operator-supplied identity for this listener, if `[app-http.tls]` is configured.
+    ///
+    /// Takes precedence over the cluster identity. Server-auth only by construction —
+    /// [TlsConfig#server(java.nio.file.Path, java.nio.file.Path)] carries no client-auth trust — so a
+    /// public client is never asked for a certificate it cannot have (#967).
+    private Option<TlsConfig> appTls() {
+        return config.tls()
+                     .map(appTls -> TlsConfig.server(java.nio.file.Path.of(appTls.certPath()),
+                                                     java.nio.file.Path.of(appTls.keyPath())));
+    }
+
     private HttpServerConfig buildServerConfig() {
         var serverConfig = HttpServerConfig.httpServerConfig("app-http",
                                                              config.port())
                                            .withMaxContentLength(config.maxRequestSize());
-
-        return tls.map(serverConfig::withTls)
-                  .or(serverConfig);
+        // #967: never demand a client certificate from callers of a USER-facing listener. The node's
+        // cluster TlsConfig is Mutual, so building this listener from it made every slice request
+        // require a cluster-CA client cert — a certificate that, under `auto_generate`, is derived
+        // from the cluster secret and never written to disk. See AppHttpConfig.tls() for the
+        // operator-supplied identity that a public listener actually needs.
+        return appTls().orElse(() -> tls.map(TlsConfig::serverAuthOnly))
+                     .map(serverConfig::withTls)
+                     .or(serverConfig);
     }
 
     private Unit registerStartedH1Server(HttpServer server) {
@@ -564,18 +639,38 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
 
         log.info("Rotating app HTTP server TLS certificate");
+        // The new TLS material is built before the running listeners are touched: a bundle that does not build is
+        // refused and the current certificate keeps serving, instead of stopping the listeners and restarting them
+        // without TLS.
+        return tlsRotation.validate(newBundle,
+                                    config.httpProtocol().includesH1(),
+                                    config.httpProtocol().includesH3())
+                          .fold(tlsRotation::<Unit> refuse,
+                                _ -> rotateValidated(newBundle));
+    }
+
+    @Contract
+    @Override
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        tlsRotation.useSink(sink);
+    }
+
+    private Promise<Unit> rotateValidated(CertificateBundle newBundle) {
         var previous = context.currentServers();
         var currentRoutes = context.currentRoutes();
 
         context.dispatch(new AppHttpEvents.CertRotationRequested(newBundle));
-
-        return context.stopServersAsync(previous.server(),
-                                        previous.h3())
-                      .flatMap(_ -> restartWithNewBundle(newBundle))
-                      .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
-                                                                                                pair.h3(),
-                                                                                                currentRoutes)))
-                      .mapToUnit();
+        // #1612: a failed stop is logged and the restart goes ahead (ListenerStops.stoppedForRestart).
+        return ListenerStops.stoppedForRestart(context.stopServersAsync(previous.server(),
+                                                                        previous.h3()),
+                                               log,
+                                               "App HTTP listeners")
+                            .flatMap(_ -> restartWithNewBundle(newBundle))
+                            .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
+                                                                                                      pair.h3(),
+                                                                                                      currentRoutes)))
+                            .mapToUnit()
+                            .onSuccessRun(tlsRotation::applied);
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
@@ -662,9 +757,9 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private static Option<TlsConfig> buildTlsFromBundle(CertificateBundle newBundle) {
         var identity = new TlsConfig.Identity.FromProvider(newBundle.certificatePem(), newBundle.privateKeyPem());
-        var trust = new TlsConfig.Trust.FromCaBytes(newBundle.caCertificatePem());
-
-        return Option.some(new TlsConfig.Server(identity, Option.some(trust)));
+        // #967: server-auth only, matching buildServerConfig(). Carrying the CA as clientAuth here
+        // would re-arm ClientAuth.REQUIRE at the first certificate rotation.
+        return Option.some(new TlsConfig.Server(identity, Option.<TlsConfig.Trust> none()));
     }
 
     @Override
@@ -690,11 +785,24 @@ class AppHttpServerAdapter implements AppHttpServer {
                                          .collect(java.util.stream.Collectors.toSet());
         var remoteRoutes = routeRegistry.allRoutes()
                                         .stream()
-                                        .filter(route -> !localIdentities.contains(route.httpMethod()
-                                                                                  + ":" + route.pathPrefix()))
+                                        .flatMap(route -> remoteView(route, localIdentities).stream())
                                         .toList();
 
         return RouteTable.routeTable(localRoutes, remoteRoutes);
+    }
+
+    /// #1678 (C1): a base this node also serves keeps, in the REMOTE view, the sibling shapes it does NOT serve, so a
+    /// request for a sibling that lives only elsewhere is forwarded instead of answered 404 by a local sibling. When
+    /// the publisher cannot name its shapes, the whole base is local, as before.
+    private Option<HttpRouteRegistry.RouteInfo> remoteView(HttpRouteRegistry.RouteInfo route,
+                                                           Set<String> localIdentities) {
+        if (!localIdentities.contains(route.routeIdentity())) {
+            return Option.some(route);
+        }
+
+        return httpRoutePublisher.flatMap(pub -> pub.localShapeKeys(route.httpMethod(),
+                                                                    route.pathPrefix()))
+                                 .flatMap(route::withoutShapeKeys);
     }
 
     @Override
@@ -705,6 +813,12 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Override
     @Contract
     public void onQuorumStateChange(ClusterStateNotification notification) {
+        if (notification.demoted()) {
+            keepRoutingAsObserver();
+
+            return;
+        }
+
         var established = notification.state() == ClusterStateNotification.State.ACTIVE;
 
         quorumEstablished = established;
@@ -718,18 +832,14 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
     }
 
-    @Override
+    // #1790: leaving the electorate of a live quorum is not quorum loss. The node keeps applying
+    // committed decisions as an observer, so its route registry stays current and quiescing would only
+    // refuse requests it can forward. Routing and `quorumEstablished` are deliberately left untouched:
+    // the drain's admission gate (InvocationAdmission DRAINING) is the one designed refusal. A genuine
+    // quorum loss while observing arrives as a plain PASSIVE and quiesces through the branch above.
     @Contract
-    public void onRoutePut(ValuePut<HttpNodeRouteKey, HttpNodeRouteValue> valuePut) {
-        log.debug("HttpNodeRouteKey added, rebuilding router");
-        publishRouteTable();
-    }
-
-    @Override
-    @Contract
-    public void onRouteRemove(ValueRemove<HttpNodeRouteKey, HttpNodeRouteValue> valueRemove) {
-        log.debug("HttpNodeRouteKey removed, rebuilding router");
-        publishRouteTable();
+    private void keepRoutingAsObserver() {
+        log.info("Demoted to observer of a live quorum — keeping app HTTP routing; drain admission gate governs refusal");
     }
 
     @Override
@@ -765,8 +875,9 @@ class AppHttpServerAdapter implements AppHttpServer {
 
             return;
         }
-
-        var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable);
+        // #1678 (v1670 R2-N4): ONE local resolution per request; the policy check and the dispatch below both read it.
+        var local = httpRoutePublisher.flatMap(pub -> pub.resolveLocal(method, normalizedPath));
+        var effectivePolicy = resolveEffectivePolicy(method, normalizedPath, routeTable, local);
 
         if (requiresAuthentication(effectivePolicy) && config.securityMode() == SecurityMode.NONE) {
             handleSecurityFailure(response, SecurityError.NO_VALIDATOR_CONFIGURED, path, requestId, method);
@@ -786,34 +897,71 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              method,
                                                              normalizedPath,
                                                              path,
-                                                             requestId));
+                                                             requestId,
+                                                             local));
     }
 
-    private SecurityPolicy resolveEffectivePolicy(String method, String normalizedPath, RouteTable routeTable) {
-        var routePolicy = findRouteSecurityPolicy(method, normalizedPath, routeTable);
+    private SecurityPolicy resolveEffectivePolicy(String method,
+                                                  String normalizedPath,
+                                                  RouteTable routeTable,
+                                                  Option<LocalResolution> local) {
+        var routePolicy = findRouteSecurityPolicy(method, normalizedPath, routeTable, local);
 
         return routePolicy.or(globalSecurityPolicy());
     }
 
+    /// A LOCAL route match governs the request's policy outright: `dispatchToRoute` is local-first,
+    /// so a request matching a local route is normally served locally, and the policy that authorizes
+    /// it must come from the route that serves it. `Unspecified` on a matched local route therefore
+    /// means "inherit the global policy" (`resolveEffectivePolicy` falls back), never "ask a remote
+    /// node".
+    ///
+    /// CLOSED by #884, which is the route-selection work that #866 review G4 deferred this to.
+    /// "Matches locally" and "is served locally" used to be decided by two different comparisons
+    /// over two different collections; both now resolve through the one
+    /// `HttpRoutePublisher.findLocalRoute` call ([#resolveLocalRoute] builds dispatch's key from
+    /// its answer), so they cannot diverge. G4's other half -- that `startsWith` against a stored
+    /// prefix is not a slash-boundary test -- is closed at the source: `HttpRouteDefinition`
+    /// normalizes `pathPrefix` to a trailing slash in its constructor, so a local `/api/v1/pricing`
+    /// is stored as `/api/v1/pricing/` and no longer matches `/api/v1/pricing-admin/report`.
+    ///
+    /// Keying the local branch on the POLICY rather than on the MATCH is what #866 review F2 found:
+    /// remote lookup is prefix-based and `computeRouteTable` excludes a remote route only on exact
+    /// `method:pathPrefix` identity, so a broader remote prefix survives and can govern a narrower
+    /// local path. Once `Public` became adoptable (`isExplicitPolicy` now filters `Unspecified`
+    /// instead of `Public`), that fallthrough could WEAKEN a local undeclared route to public --
+    /// the exact partially-migrated state the #763 remedy instructions produce.
     private Option<SecurityPolicy> findRouteSecurityPolicy(String method,
                                                            String normalizedPath,
-                                                           RouteTable routeTable) {
-        var localPolicy = httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method, normalizedPath))
-                                            .map(LocalRouteInfo::security)
-                                            .filter(AppHttpServerAdapter::isExplicitPolicy);
+                                                           RouteTable routeTable,
+                                                           Option<LocalResolution> local) {
+        var localRoute = local.map(LocalResolution::route);
 
-        if (localPolicy.isPresent()) {
-            return localPolicy;
+        if (localRoute.isPresent()) {
+            return localRoute.map(LocalRouteInfo::security)
+                             .filter(AppHttpServerAdapter::isExplicitPolicy);
         }
 
         return findMatchingRemoteRoute(routeTable.remoteRoutes(),
                                        method,
-                                       normalizedPath).map(route -> SecurityPolicy.fromString(route.security()))
+                                       normalizedPath).map(this::remoteRoutePolicy)
                                       .filter(AppHttpServerAdapter::isExplicitPolicy);
     }
 
+    /// #1659: a route this node does not host is judged by THIS node's committed security overrides wherever one
+    /// matches it -- applied to the route's declared policy by the same rule the hosting node uses -- so an
+    /// override is enforced, and a relaxed one relaxes, at every ingress without depending on a peer's republish.
+    /// With no matching override the replicated policy applies, which the registry reports as the strongest any
+    /// serving node published: while they disagree the route is as strict as its strictest node.
+    private SecurityPolicy remoteRoutePolicy(HttpRouteRegistry.RouteInfo route) {
+        return httpRoutePublisher.flatMap(publisher -> publisher.committedOverride(route.httpMethod(),
+                                                                                   route.pathPrefix(),
+                                                                                   SecurityPolicy.fromString(route.declaredSecurity())))
+                                 .or(() -> SecurityPolicy.fromString(route.security()));
+    }
+
     private static boolean isExplicitPolicy(SecurityPolicy policy) {
-        return ! (policy instanceof SecurityPolicy.Public());
+        return ! (policy instanceof SecurityPolicy.Unspecified());
     }
 
     private SecurityPolicy globalSecurityPolicy() {
@@ -846,7 +994,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                        String method,
                                        String normalizedPath,
                                        String path,
-                                       String requestId) {
+                                       String requestId,
+                                       Option<LocalResolution> local) {
         var principal = securityContext.principal().value();
 
         if (config.securityEnabled()) {
@@ -866,7 +1015,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                                                                             routeTable,
                                                                                                             method,
                                                                                                             normalizedPath,
-                                                                                                            requestId))));
+                                                                                                            requestId,
+                                                                                                            local))));
     }
 
     private void dispatchToRoute(HttpRequest request,
@@ -874,19 +1024,16 @@ class AppHttpServerAdapter implements AppHttpServer {
                                  RouteTable routeTable,
                                  String method,
                                  String normalizedPath,
-                                 String requestId) {
+                                 String requestId,
+                                 Option<LocalResolution> local) {
         // Local fast path: a request matching a locally-hosted ACTIVE slice dispatches locally
         // REGARDLESS of isRouteReady()/republish-in-progress state. The live publisher registry
-        // (allLocalRoutes) is the source of truth for local availability — NOT the propagating
-        // route-table snapshot, which transiently reports empty during generation churn while the
-        // slice instance is still serving. Only requests needing REMOTE forwarding consult the
-        // snapshot and the route-ready barrier.
-        var localRouteOpt = httpRoutePublisher.flatMap(pub -> findMatchingLocalRoute(pub.allLocalRoutes(),
-                                                                                     method,
-                                                                                     normalizedPath));
-
-        if (localRouteOpt.isPresent()) {
-            dispatchLocalRoute(request, response, routeTable, method, normalizedPath, localRouteOpt.unwrap(), requestId);
+        // is the source of truth for local availability — NOT the propagating route-table
+        // snapshot, which transiently reports empty during generation churn while the slice
+        // instance is still serving. Only requests needing REMOTE forwarding consult the snapshot
+        // and the route-ready barrier.
+        if (local.isPresent()) {
+            dispatchLocalRoute(request, response, routeTable, method, normalizedPath, local.unwrap(), requestId);
 
             return;
         }
@@ -907,10 +1054,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                                     RouteTable routeTable,
                                     String method,
                                     String normalizedPath,
-                                    HttpNodeRouteKey localRouteKey,
+                                    LocalResolution local,
                                     String requestId) {
-        if (shouldForwardForStrategy(localRouteKey, method, normalizedPath, routeTable)) {
-            var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
+        var localRouteKey = routeKeyOf(local.route());
+
+        if (shouldForwardForStrategy(local.route(), method, normalizedPath, routeTable)) {
+            var remoteRouteOpt = findRemoteRouteOfTheServingShape(routeTable.remoteRoutes(), method, normalizedPath);
 
             if (remoteRouteOpt.isPresent()) {
                 log.debug("Deployment strategy routing — forwarding {} {} to remote [{}]",
@@ -923,7 +1072,7 @@ class AppHttpServerAdapter implements AppHttpServer {
             }
         }
 
-        handleLocalRoute(request, response, localRouteKey, requestId);
+        handleLocalRoute(request, response, localRouteKey, local.router(), requestId);
     }
 
     private void dispatchRemoteRoute(HttpRequest request,
@@ -937,18 +1086,11 @@ class AppHttpServerAdapter implements AppHttpServer {
         var routeReady = isRouteReady();
 
         if (!routeReady && httpRoutePublisher.isPresent()) {
-            logRouteNotReadyRejection("Node starting, routes not yet synchronized",
-                                      method,
-                                      request.path(),
-                                      requestId,
-                                      routeReady,
-                                      false);
+            var reason = notReadyReason();
+
+            logRouteNotReadyRejection(reason, method, request.path(), requestId, routeReady, false);
             recordRouteNotReadyRejection(method, request.path());
-            sendProblem(response,
-                        HttpStatus.SERVICE_UNAVAILABLE,
-                        "Node starting, routes not yet synchronized",
-                        request.path(),
-                        requestId);
+            sendProblem(response, HttpStatus.SERVICE_UNAVAILABLE, reason, request.path(), requestId);
 
             return;
         }
@@ -979,6 +1121,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private static final long ROUTE_NOT_READY_LOG_EVERY_NTH = 100L;
+    private static final String NODE_STARTING_REASON = "Node starting, routes not yet synchronized";
+    private static final String NODE_QUIESCED_REASON = "Node quiesced: no quorum";
+
+    private String notReadyReason() {
+        return context.isQuiesced()
+               ? NODE_QUIESCED_REASON
+               : NODE_STARTING_REASON;
+    }
 
     @Contract
     private void logRouteNotReadyRejection(String reason,
@@ -1008,25 +1158,24 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private record RoutingDecision(Artifact artifact, ActiveRouting activeRouting) {}
 
-    private boolean shouldForwardForStrategy(HttpNodeRouteKey localRouteKey,
+    private boolean shouldForwardForStrategy(LocalRouteInfo localRoute,
                                              String method,
                                              String normalizedPath,
                                              RouteTable routeTable) {
-        return resolveRoutingDecision(method, normalizedPath).map(decision -> evaluateRoutingDecision(decision.artifact(),
-                                                                                                      decision.activeRouting(),
-                                                                                                      method,
-                                                                                                      normalizedPath,
-                                                                                                      routeTable))
+        return resolveRoutingDecision(localRoute).map(decision -> evaluateRoutingDecision(decision.artifact(),
+                                                                                          decision.activeRouting(),
+                                                                                          method,
+                                                                                          normalizedPath,
+                                                                                          routeTable))
                                      .or(false);
     }
 
-    private Option<RoutingDecision> resolveRoutingDecision(String method, String normalizedPath) {
-        return strategyCoordinator.flatMap(coordinator -> httpRoutePublisher.flatMap(pub -> pub.findLocalRoute(method,
-                                                                                                               normalizedPath))
-                                                                            .flatMap(info -> Artifact.artifact(info.artifactCoord()).option())
-                                                                            .flatMap(artifact -> coordinator.activeRouting(artifact.base())
-                                                                                                            .map(routing -> new RoutingDecision(artifact,
-                                                                                                                                                routing))));
+    private Option<RoutingDecision> resolveRoutingDecision(LocalRouteInfo localRoute) {
+        return strategyCoordinator.flatMap(coordinator -> Artifact.artifact(localRoute.artifactCoord())
+                                                                  .option()
+                                                                  .flatMap(artifact -> coordinator.activeRouting(artifact.base())
+                                                                                                  .map(routing -> new RoutingDecision(artifact,
+                                                                                                                                      routing))));
     }
 
     private boolean evaluateRoutingDecision(Artifact artifact,
@@ -1071,7 +1220,7 @@ class AppHttpServerAdapter implements AppHttpServer {
     private boolean hasMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
                                            String method,
                                            String normalizedPath) {
-        return findMatchingRemoteRoute(remoteRoutes, method, normalizedPath).isPresent();
+        return findRemoteRouteOfTheServingShape(remoteRoutes, method, normalizedPath).isPresent();
     }
 
     private void handleSecurityFailure(ResponseWriter response,
@@ -1136,17 +1285,29 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
     }
 
-    private Option<HttpNodeRouteKey> findMatchingLocalRoute(Set<HttpNodeRouteKey> localRoutes,
-                                                            String method,
-                                                            String normalizedPath) {
-        return Option.from(localRoutes.stream()
-                                      .filter(key -> key.httpMethod()
-                                                        .equalsIgnoreCase(method))
-                                      .filter(key -> pathMatchesPrefix(normalizedPath,
-                                                                       key.pathPrefix()))
-                                      .findFirst());
+    /// #884: dispatch names the local route through the publisher's SINGLE selection rule -- the
+    /// very call the authorization path makes ([#findRouteSecurityPolicy] ->
+    /// `HttpRoutePublisher.findLocalRoute`) -- so the route whose policy admits a request is the
+    /// route that serves it. There is one search, not two that agree by coincidence.
+    ///
+    /// What was here before was the second search: a scan of `pub.allLocalRoutes()` taking the
+    /// first match. That set is a `Set.copyOf` result, an `ImmutableCollections.SetN` whose probe
+    /// sequence is seeded from a per-JVM `SALT`, so over a nested prefix pair it picked the parent
+    /// on some node starts and the child on others while the policy half picked by an unrelated
+    /// hash order. Nothing refused the disagreement, and nothing could observe it: a request could
+    /// be authorized under one slice's policy and answered by another slice.
+    ///
+    /// `findLocalRoute` applies the active security overrides to the route it returns, which
+    /// touches `security()` only -- method, prefix and artifact come back unchanged -- so the key
+    /// built here is the same key the old scan produced for the route it happened to pick.
+    private HttpNodeRouteKey routeKeyOf(LocalRouteInfo route) {
+        return HttpNodeRouteKey.httpNodeRouteKey(route.httpMethod(), route.pathPrefix(), selfNodeId);
     }
 
+    /// #1659 (v1670): the LONGEST matching remote prefix wins, the rule the hosting node applies to its local routes
+    /// (`HttpRoutePublisher.findLocalRoute`, #884). The forwarded request is served by that longest route and is not
+    /// re-authorized there, so authorizing it here by a shorter, broader route -- which `findFirst` over the
+    /// ascending registry picked -- let a PUBLIC parent admit requests its protected child would refuse.
     private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
                                                                         String method,
                                                                         String normalizedPath) {
@@ -1155,7 +1316,20 @@ class AppHttpServerAdapter implements AppHttpServer {
                                                              .equalsIgnoreCase(method))
                                        .filter(route -> pathMatchesPrefix(normalizedPath,
                                                                           route.pathPrefix()))
-                                       .findFirst());
+                                       .max(Comparator.comparingInt(route -> normalizePath(route.pathPrefix()).length()))).map(route -> route.servingShape(normalizedPath));
+    }
+
+    /// #1678 (C1): as [#findMatchingRemoteRoute], but only when a remote sibling's SHAPE matches `normalizedPath`. A
+    /// deployment-strategy forward must reach a node serving the same route, never the whole base's fallback.
+    private Option<HttpRouteRegistry.RouteInfo> findRemoteRouteOfTheServingShape(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
+                                                                                 String method,
+                                                                                 String normalizedPath) {
+        return Option.from(remoteRoutes.stream()
+                                       .filter(route -> route.httpMethod()
+                                                             .equalsIgnoreCase(method))
+                                       .filter(route -> pathMatchesPrefix(normalizedPath,
+                                                                          route.pathPrefix()))
+                                       .max(Comparator.comparingInt(route -> normalizePath(route.pathPrefix()).length()))).flatMap(route -> route.matchingShape(normalizedPath));
     }
 
     private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {
@@ -1200,15 +1374,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     private void handleLocalRoute(HttpRequest request,
                                   ResponseWriter response,
                                   HttpNodeRouteKey routeKey,
+                                  Option<SliceRouter> servingRouter,
                                   String requestId) {
         log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
-        httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
-                                                              routeKey.pathPrefix()))
-                          .onEmpty(() -> handleMissingLocalRouter(response,
-                                                                  request.path(),
-                                                                  routeKey,
-                                                                  requestId))
-                          .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
+        servingRouter.onEmpty(() -> handleMissingLocalRouter(response,
+                                                             request.path(),
+                                                             routeKey,
+                                                             requestId))
+                     .onPresent(router -> invokeLocalRouter(request, response, router, routeKey, requestId));
     }
 
     private void handleMissingLocalRouter(ResponseWriter response,
@@ -1229,20 +1402,31 @@ class AppHttpServerAdapter implements AppHttpServer {
         var startTime = System.nanoTime();
 
         routeInfo.onPresent(info -> recordMetricsStart(info));
-        router.handle(httpCtx)
-              .onSuccess(responseData -> handleLocalRouterSuccess(response,
-                                                                  responseData,
-                                                                  requestId,
-                                                                  routeInfo,
-                                                                  startTime,
-                                                                  httpCtx))
-              .onFailure(cause -> handleLocalRouterFailure(response,
-                                                           request.path(),
-                                                           requestId,
-                                                           cause,
-                                                           routeInfo,
-                                                           startTime,
-                                                           httpCtx));
+        invocationAdmission.execute(() -> router.handle(httpCtx),
+                                    result -> emitLocalResult(result,
+                                                              response,
+                                                              request,
+                                                              requestId,
+                                                              routeInfo,
+                                                              startTime,
+                                                              httpCtx));
+    }
+
+    private void emitLocalResult(Result<HttpResponseData> result,
+                                 ResponseWriter response,
+                                 HttpRequest request,
+                                 String requestId,
+                                 Option<ResolvedRoute> routeInfo,
+                                 long startTime,
+                                 HttpRequestContext httpCtx) {
+        result.apply(cause -> handleLocalRouterFailure(response,
+                                                       request.path(),
+                                                       requestId,
+                                                       cause,
+                                                       routeInfo,
+                                                       startTime,
+                                                       httpCtx),
+                     data -> handleLocalRouterSuccess(response, data, requestId, routeInfo, startTime, httpCtx));
     }
 
     private void handleLocalRouterSuccess(ResponseWriter response,
@@ -1271,12 +1455,22 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     private void handleLocalRouteFailure(ResponseWriter response, String path, String requestId, Cause cause) {
         switch (cause) {
+            case org.pragmatica.aether.invoke.InvocationAdmission.Error ignored -> sendProblem(response,
+                                                                                               HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                               HttpError.clientMessage(cause),
+                                                                                               path,
+                                                                                               requestId);
             case RateGuardError.LimitExceeded exceeded -> sendRateLimitResponse(response, path, requestId, exceeded);
+            case Cause transientCause when transientCause.isTransient() -> sendProblem(response,
+                                                                                       HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                       HttpError.clientMessage(transientCause),
+                                                                                       path,
+                                                                                       requestId);
             default -> {
                 log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
                 sendProblem(response,
                             HttpStatus.INTERNAL_SERVER_ERROR,
-                            "Request processing failed: " + cause.message(),
+                            "Request processing failed: " + HttpError.clientMessage(cause),
                             path,
                             requestId);
             }
@@ -1331,14 +1525,11 @@ class AppHttpServerAdapter implements AppHttpServer {
         var httpCtx = toHttpRequestContext(request, requestId);
 
         httpForwarder.unwrap()
-                     .forward(httpCtx,
-                              route.httpMethod(),
-                              route.pathPrefix(),
-                              requestId)
+                     .forward(httpCtx, route, requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
                      .onFailure(cause -> sendProblem(response,
                                                      HttpStatus.GATEWAY_TIMEOUT,
-                                                     cause.message(),
+                                                     HttpError.clientMessage(cause),
                                                      request.path(),
                                                      requestId));
     }
@@ -1367,8 +1558,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                                         HttpForwardRequest request,
                                         String prefix,
                                         Cause cause) {
-        log.error("{} [{}]: {}", prefix, request.requestId(), cause.message());
-        sendForwardError(network, request, prefix + ": " + cause.message());
+        log.error("{} [{}]: {} (cause chain: {})",
+                  prefix,
+                  request.requestId(),
+                  cause.message(),
+                  HttpError.causeChain(cause));
+        sendForwardError(network, request, prefix + ": " + HttpError.clientMessage(cause));
     }
 
     @Contract
@@ -1406,7 +1601,10 @@ class AppHttpServerAdapter implements AppHttpServer {
         var method = httpCtx.method();
         var path = httpCtx.path();
         var normalizedPath = normalizePath(path);
-        var routerOpt = httpRoutePublisher.flatMap(pub -> findLocalRouterForPath(pub, method, normalizedPath));
+        // #1678 (v1670 R2-N4): ONE resolution names both the route this request is re-authorized against and the
+        // router that serves it, so an undeploy between two lookups cannot pair a parent's policy with a child's router.
+        var local = httpRoutePublisher.flatMap(pub -> pub.resolveLocal(method, normalizedPath));
+        var routerOpt = local.flatMap(LocalResolution::router);
 
         if (routerOpt.isEmpty()) {
             log.warn("No local router for forwarded request {} {} [{}]", method, path, request.requestId());
@@ -1415,20 +1613,150 @@ class AppHttpServerAdapter implements AppHttpServer {
             return;
         }
 
+        reauthorizeForwarded(httpCtx, request, network, ser, method, normalizedPath, local).onPresent(securityContext -> serveAuthenticatedForwarded(securityContext,
+                                                                                                                                                     httpCtx,
+                                                                                                                                                     request,
+                                                                                                                                                     network,
+                                                                                                                                                     ser,
+                                                                                                                                                     routerOpt.unwrap(),
+                                                                                                                                                     method,
+                                                                                                                                                     normalizedPath));
+    }
+
+    /// #1678 (v1670 R2-N6): a forwarded request runs its slice under the SecurityContext this host just validated,
+    /// bound exactly as the local path binds it (`dispatchAuthenticated`), so slice code reading the principal or its
+    /// roles sees the caller whether the request arrived locally or was forwarded.
+    @Contract
+    private void serveAuthenticatedForwarded(SecurityContext securityContext,
+                                             HttpRequestContext httpCtx,
+                                             HttpForwardRequest request,
+                                             ClusterNetwork network,
+                                             Serializer ser,
+                                             SliceRouter router,
+                                             String method,
+                                             String normalizedPath) {
+        ScopedValue.where(SecurityContextHolder.scopedValue(),
+                          securityContext)
+                   .run(() -> InvocationContext.runWithContext(request.requestId(),
+                                                               securityContext.principal().value(),
+                                                               request.sender().id(),
+                                                               0,
+                                                               true,
+                                                               () -> serveForwarded(httpCtx,
+                                                                                    request,
+                                                                                    network,
+                                                                                    ser,
+                                                                                    router,
+                                                                                    method,
+                                                                                    normalizedPath)));
+    }
+
+    /// #1659 (v1670): the host RE-AUTHORIZES every forwarded request against the route it will actually serve it by
+    /// -- its own longest local match, with its own committed overrides. The ingress authorized against ITS view:
+    /// while a route or an override propagates, that view can lack a narrower, stricter child route the host already
+    /// serves (`/api/admin/` under a PUBLIC `/api/`), or a stricter override. Authorizing only at the ingress let such
+    /// a request through with no check against the route that served it: fail open. Checked at both ends, a request
+    /// is served only when BOTH policies admit it, so a propagation window in either direction fails closed. The
+    /// forwarded context carries the client's headers, so the credential is the one the ingress saw. A refusal goes
+    /// back as the same 401/403 problem response the ingress would send, so the client sees the status.
+    private Option<SecurityContext> reauthorizeForwarded(HttpRequestContext httpCtx,
+                                                         HttpForwardRequest request,
+                                                         ClusterNetwork network,
+                                                         Serializer ser,
+                                                         String method,
+                                                         String normalizedPath,
+                                                         Option<LocalResolution> local) {
+        var policy = resolveEffectivePolicy(method, normalizedPath, context.currentRoutes(), local);
+
+        if (requiresAuthentication(policy) && config.securityMode() == SecurityMode.NONE) {
+            refuseForwarded(SecurityError.NO_VALIDATOR_CONFIGURED, httpCtx, request, network, ser, method);
+
+            return Option.none();
+        }
+
+        return securityValidator.validate(httpCtx, policy)
+                                .flatMap(ctx -> enforceRoleIfRequired(ctx, policy))
+                                .onFailure(cause -> refuseForwarded(cause, httpCtx, request, network, ser, method))
+                                .option();
+    }
+
+    @Contract
+    private void refuseForwarded(Cause cause,
+                                 HttpRequestContext httpCtx,
+                                 HttpForwardRequest request,
+                                 ClusterNetwork network,
+                                 Serializer ser,
+                                 String method) {
+        var statusAndMessage = mapSecurityError(cause);
+        var status = statusAndMessage.status();
+        var problem = ProblemDetail.problemDetail(status,
+                                                  statusAndMessage.clientMessage(),
+                                                  httpCtx.path(),
+                                                  request.requestId());
+
+        log.warn("[{}] Forwarded {} {} refused by this host's own authorization: {}",
+                 request.requestId(),
+                 method,
+                 httpCtx.path(),
+                 cause.message());
+        recordSecurityDenial(cause, httpCtx.path(), request.requestId(), method);
+        JSON_MAPPER.writeAsString(problem)
+                   .onSuccess(json -> sendForwardSuccess(network,
+                                                         request,
+                                                         ser,
+                                                         HttpResponseData.httpResponseData(status.code(),
+                                                                                           refusalHeaders(status),
+                                                                                           json.getBytes(StandardCharsets.UTF_8))))
+                   .onFailure(serializationFailure -> sendForwardError(network,
+                                                                       request,
+                                                                       "Forwarded request refused: " + statusAndMessage.clientMessage()));
+    }
+
+    private Map<String, String> refusalHeaders(HttpStatus status) {
+        var contentType = Map.entry("Content-Type", "application/problem+json");
+
+        return switch (config.securityMode()) {
+            case JWT -> status == HttpStatus.UNAUTHORIZED
+                        ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "Bearer realm=\"Aether\""))
+                        : Map.ofEntries(contentType);
+            case API_KEY -> status == HttpStatus.UNAUTHORIZED
+                            ? Map.ofEntries(contentType, Map.entry("WWW-Authenticate", "ApiKey realm=\"Aether\""))
+                            : Map.ofEntries(contentType);
+            case NONE -> Map.ofEntries(contentType);
+        };
+    }
+
+    @Contract
+    private void serveForwarded(HttpRequestContext httpCtx,
+                                HttpForwardRequest request,
+                                ClusterNetwork network,
+                                Serializer ser,
+                                SliceRouter router,
+                                String method,
+                                String normalizedPath) {
         var routeInfo = resolveRouteInfo(method, normalizedPath);
         var startTime = System.nanoTime();
 
         routeInfo.onPresent(this::recordMetricsStart);
-        routerOpt.unwrap()
-                 .handle(httpCtx)
-                 .onSuccess(responseData -> handleForwardSuccess(network,
-                                                                 request,
-                                                                 ser,
-                                                                 responseData,
-                                                                 routeInfo,
-                                                                 startTime,
-                                                                 httpCtx))
-                 .onFailure(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, httpCtx));
+        invocationAdmission.execute(() -> router.handle(httpCtx),
+                                    result -> emitForwardResult(result,
+                                                                network,
+                                                                request,
+                                                                ser,
+                                                                routeInfo,
+                                                                startTime,
+                                                                httpCtx));
+    }
+
+    private void emitForwardResult(Result<HttpResponseData> result,
+                                   ClusterNetwork network,
+                                   HttpForwardRequest request,
+                                   Serializer ser,
+                                   Option<ResolvedRoute> routeInfo,
+                                   long startTime,
+                                   HttpRequestContext httpCtx) {
+        result.apply(cause -> handleForwardFailure(network, request, cause, routeInfo, startTime, httpCtx),
+                     data -> handleForwardSuccess(network, request, ser, data, routeInfo, startTime, httpCtx));
     }
 
     private void handleForwardSuccess(ClusterNetwork network,
@@ -1452,12 +1780,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                       long startTime,
                                       HttpRequestContext httpCtx) {
         routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
-        sendForwardError(network, request, cause.message());
-    }
-
-    private Option<SliceRouter> findLocalRouterForPath(HttpRoutePublisher pub, String method, String normalizedPath) {
-        return findMatchingLocalRoute(pub.allLocalRoutes(), method, normalizedPath).flatMap(key -> pub.findLocalRouter(key.httpMethod(),
-                                                                                                                       key.pathPrefix()));
+        log.warn("[{}] Forwarded request failed (cause chain: {})", request.requestId(), HttpError.causeChain(cause));
+        sendForwardError(network, request, HttpError.clientMessage(cause));
     }
 
     private void sendForwardSuccess(ClusterNetwork network,
@@ -1497,6 +1821,14 @@ class AppHttpServerAdapter implements AppHttpServer {
     @Contract
     public void onHttpForwardResponse(HttpForwardResponse response) {
         httpForwarder.onPresent(fwd -> fwd.onHttpForwardResponse(response));
+    }
+
+    @Override
+    @Contract
+    public org.pragmatica.lang.Unit onNodeDeparture(NodeId node) {
+        httpForwarder.onPresent(forwarder -> forwarder.onNodeDeparture(node));
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     @Override

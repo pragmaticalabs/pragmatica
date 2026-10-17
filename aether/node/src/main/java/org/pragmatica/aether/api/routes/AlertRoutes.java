@@ -12,7 +12,6 @@ import org.pragmatica.aether.api.AlertManager.AlertHistoryView;
 import org.pragmatica.aether.api.AlertManager.AlertView;
 import org.pragmatica.aether.api.AlertManager.ThresholdView;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
-import org.pragmatica.aether.api.ManagementApiResponses.AlertsClearedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertsResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdRemovedResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.ThresholdSetResponse;
@@ -28,6 +27,21 @@ import org.pragmatica.lang.Result;
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
+/// Alert and threshold management routes.
+///
+/// **`POST /api/v1/alerts/clear` was REMOVED in #957, and it is the one alerting surface that was
+/// removed rather than re-pointed.** The rule for this redesign was to re-point surfaces that read
+/// node-local volatile state, because the defect was where they read from, not that they existed.
+/// That rule governs QUERIES. Clear was a MUTATION of state that no longer exists, and it was
+/// measurably already a no-op: `activeAlertsAsList` re-adds every stream `AlertInjected` whose id is
+/// absent from the local map, so clearing the map emptied the dedup set and the alerts returned on the
+/// next read — 2 seconds later, at the dashboard's poll rate. It only appeared to work in the
+/// bootstrap window, when the stream read returns empty. Threshold alerts are re-derived from live
+/// metrics within one tick, so clearing those was equally transient.
+///
+/// An operator therefore has no supported way to dismiss an injected alert. That is true TODAY and is
+/// not a regression; doing it properly needs a tombstone event, which is tracked separately rather
+/// than smuggled in under the word "clear".
 public final class AlertRoutes implements RouteSource {
     private final AlertManager alertManager;
 
@@ -48,11 +62,10 @@ public final class AlertRoutes implements RouteSource {
         return Stream.of(ManagementRoutes.<List<ThresholdView>> route(ManagementRoute.THRESHOLDS_LIST).toJson(alertManager::thresholdsAsList),
                          ManagementRoutes.<AlertsResponse> route(ManagementRoute.ALERTS).toJson((Handler<AlertsResponse>) ctx -> buildAlertsResponse()),
                          ManagementRoutes.<List<AlertView>> route(ManagementRoute.ALERTS_ACTIVE).toJson((Handler<List<AlertView>>) ctx -> alertManager.activeAlertsAsList()),
-                         ManagementRoutes.<List<AlertHistoryView>> route(ManagementRoute.ALERTS_HISTORY).toJson(alertManager::alertHistoryAsList),
+                         ManagementRoutes.<List<AlertHistoryView>> route(ManagementRoute.ALERTS_HISTORY).toJson((Handler<List<AlertHistoryView>>) ctx -> alertManager.alertHistoryAsList()),
                          ManagementRoutes.<ThresholdSetResponse> route(ManagementRoute.THRESHOLD_SET)
                                          .withBody(ThresholdRequest.class)
                                          .toJson(this::handleSetThreshold),
-                         ManagementRoutes.<AlertsClearedResponse> route(ManagementRoute.ALERTS_CLEAR).toJson(this::handleClearAlerts),
                          ManagementRoutes.<AlertInjectResponse> route(ManagementRoute.ALERTS_INJECT)
                                          .withBody(InjectRequest.class)
                                          .toJson(this::handleInjectAlert),
@@ -93,12 +106,6 @@ public final class AlertRoutes implements RouteSource {
         return Result.success(req);
     }
 
-    private AlertsClearedResponse handleClearAlerts() {
-        alertManager.clearAlerts();
-
-        return new AlertsClearedResponse("alerts_cleared");
-    }
-
     private Promise<ThresholdRemovedResponse> handleDeleteThreshold(String metric) {
         if (metric.isEmpty()) {
             return AlertError.METRIC_REQUIRED.promise();
@@ -108,10 +115,13 @@ public final class AlertRoutes implements RouteSource {
                            .map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
     }
 
+    /// `/api/v1/alerts` — active + history in one response. Both halves are async since #957: active
+    /// is the derived view plus a cluster-wide injected-alert union, history is a bounded projection
+    /// over the cluster event log.
     private Promise<AlertsResponse> buildAlertsResponse() {
         return alertManager.activeAlertsAsList()
-                           .map(active -> new AlertsResponse(active,
-                                                             alertManager.alertHistoryAsList()));
+                           .flatMap(active -> alertManager.alertHistoryAsList()
+                                                          .map(history -> new AlertsResponse(active, history)));
     }
 
     private enum AlertError implements Cause {

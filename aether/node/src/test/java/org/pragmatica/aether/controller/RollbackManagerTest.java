@@ -21,6 +21,8 @@ import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
@@ -29,6 +31,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Serializer;
+import io.netty.buffer.ByteBuf;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -53,6 +57,7 @@ class RollbackManagerTest {
         config = RollbackConfig.rollbackConfig();
         clusterNode = new TestClusterNode(SELF);
         kvStore = new TestKVStore();
+        kvStore.seedCommittedLeader(SELF);
         leaderManager = new TestLeaderManager();
         rollbackManager = RollbackManager.rollbackManager(SELF, config, clusterNode, kvStore, leaderManager);
     }
@@ -130,14 +135,16 @@ class RollbackManagerTest {
 
             rollbackManager.onAllInstancesFailed(createFailureEvent(v2));
 
+            // #1573: ONE fenced leader transaction — the persisted rollback record first, then the target.
             assertThat(clusterNode.appliedCommands).hasSize(1);
-            var command = clusterNode.appliedCommands.getFirst();
-            assertThat(command).isInstanceOf(KVCommand.Put.class);
-            var put = (KVCommand.Put<AetherKey, AetherValue>) command;
-            assertThat(put.key()).isInstanceOf(SliceTargetKey.class);
-            var sliceTargetKey = (SliceTargetKey) put.key();
+            assertThat(clusterNode.appliedCommands.getFirst()).isInstanceOf(KVCommand.LeaderTransaction.class);
+            var mutations = ((KVCommand.LeaderTransaction<?, ?>) clusterNode.appliedCommands.getFirst()).mutations();
+            assertThat(mutations).hasSize(2);
+            assertThat(mutations.getFirst().key()).isInstanceOf(PreviousVersionKey.class);
+            assertThat(mutations.get(1).key()).isInstanceOf(SliceTargetKey.class);
+            var sliceTargetKey = (SliceTargetKey) mutations.get(1).key();
             assertThat(sliceTargetKey.artifactBase()).isEqualTo(v1.base());
-            var sliceTargetValue = (SliceTargetValue) put.value();
+            var sliceTargetValue = (SliceTargetValue) mutations.get(1).replacement().unwrap();
             assertThat(sliceTargetValue.currentVersion().withQualifier()).isEqualTo("1.0.0");
         }
     }
@@ -243,7 +250,14 @@ class RollbackManagerTest {
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             appliedCommands.addAll(commands);
-            return Promise.success((List<R>) commands.stream().map(_ -> Unit.unit()).toList());
+            return Promise.success((List<R>) commands.stream().map(TestClusterNode::accepted).toList());
+        }
+
+        /// #1573 N2: a rollback is a leader transaction; this double accepts every one.
+        private static Object accepted(KVCommand<AetherKey> command) {
+            return command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+                   ? new KVCommand.TransactionResult(transaction.transactionId(), true)
+                   : Unit.unit();
         }
     }
 
@@ -251,7 +265,16 @@ class RollbackManagerTest {
         private final ConcurrentHashMap<AetherKey, AetherValue> data = new ConcurrentHashMap<>();
 
         TestKVStore() {
-            super(MessageRouter.mutable(), null, null);
+            super(MessageRouter.mutable(), new Serializer() {
+                @Override
+                public <T> void write(ByteBuf byteBuf, T object) {}
+            }, null);
+        }
+
+        /// #1573 N2: a rollback commits only while this node is the committed leader.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        void seedCommittedLeader(NodeId leader) {
+            process(createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(leader, 1)))));
         }
 
         @Override

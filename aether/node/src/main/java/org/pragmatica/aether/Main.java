@@ -6,7 +6,9 @@ package org.pragmatica.aether;
 
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -14,20 +16,32 @@ import java.util.List;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
+import java.util.concurrent.TimeUnit;
 
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.config.ClusterConfig;
+import org.pragmatica.aether.config.ClusterSizeGate;
+import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
+import org.pragmatica.aether.config.cluster.CloudCredentialSchema;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.MembershipConfigBinding;
 import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.config.TimeoutsConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.config.Environment;
 import org.pragmatica.aether.config.SliceConfig;
@@ -50,12 +64,17 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.security.CertificateProvider;
 import org.pragmatica.net.tcp.security.SelfSignedCertificateProvider;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.storage.EncryptionError;
 import org.pragmatica.swim.NettySwimTransport;
 
+import com.sun.management.HotSpotDiagnosticMXBean;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LoggerContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -86,8 +105,9 @@ public record Main(String[] args) {
         var nodeLabels = collectNodeLabels();
         var environment = resolveEnvironment(aetherConfig);
         var peers = parsePeers(nodeId, port, nodeLabels, aetherConfig, environment);
+
+        enforceMinimumClusterSize(staticPeersConfigured(), configuredClusterNodes(aetherConfig), peers.size());
         var sliceConfig = parseSliceConfig(aetherConfig);
-        var dhtConfig = parseDhtConfig(aetherConfig);
 
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
         var coreMax = parseCoreMax(aetherConfig);
@@ -98,7 +118,9 @@ public record Main(String[] args) {
                                      .coreNodes(peers)
                                      .managementPort(managementPort)
                                      .sliceConfig(sliceConfig)
-                                     .artifactRepo(dhtConfig)
+                                     // #1777 track 1: placeholder only — the DHT's factors come from the committed
+                                     // `[replication]` section once consensus state is restored
+                                     .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
                                      .coreMax(coreMax)
                                      .appHttp(resolveAppHttp(aetherConfig))
                                      .tls(appHttpTls)
@@ -116,8 +138,11 @@ public record Main(String[] args) {
                                      // enforceClusterNamePresent() above already aborted the boot if this
                                      // were missing or malformed, so the value is present and validated.
                                      .withClusterName(resolveClusterName())
-                                     .withAutoHeal(resolveAutoHeal(aetherConfig));
+                                     .withAutoHeal(resolveAutoHeal(aetherConfig))
+                                     .withStorageEncryption(resolveStorageEncryption(aetherConfig))
+                                     .withAlerts(resolveAlertConfig(aetherConfig));
 
+        config = withResolvedClusterSecret(config, aetherConfig);
         enforceWalDurabilityBootable(config);
         // Review catch (#634 batch): assembly failures — the routed-type codec guard included — get
         // the same FATAL + exit shape as the other boot gates, not an uncaught-exception stack trace.
@@ -201,6 +226,57 @@ public record Main(String[] args) {
         verifyClusterNamePresent(System.getenv("AETHER_CLUSTER_NAME")).onFailure(this::abortBoot);
     }
 
+    /// #782 fix round — a cluster is at least three nodes, gated on the CONFIGURED topology, never
+    /// on however many peers a boot attempt happened to resolve. The two differ exactly at cloud
+    /// discovery's majority-at-timeout arm (`awaitDiscoveredCorePeers`, :611-663): a healthy
+    /// majority boot of a three-node cluster can legitimately resolve 2 peers when one VM is slow,
+    /// and gating on that resolved count would abort the exact boot that arm exists to allow. See
+    /// [#expectedClusterSize] for the per-arm rule. Delegates to the pure, unit-tested
+    /// [ClusterSizeGate#enforce] guard and exits on violation, the same `verify* -> abortBoot` idiom
+    /// as the cluster-name and dev-mode gates above.
+    @Contract
+    private void enforceMinimumClusterSize(boolean staticPeersConfigured, int configuredNodes, int resolvedPeerCount) {
+        ClusterSizeGate.enforce(expectedClusterSize(staticPeersConfigured, configuredNodes, resolvedPeerCount)).onFailure(this::abortBoot);
+    }
+
+    /// The CONFIGURED expected topology size for the size gate above — pure and unit-tested at the
+    /// real call-site arithmetic (not just `ClusterSizeGate#enforce` in isolation).
+    ///
+    /// Static peers (`--peers=`/`CLUSTER_PEERS`) have no found-vs-expected split: the parsed list
+    /// plus self IS the configuration (`MainPeerAssemblyTest` proves 2 peers + self = 3), so
+    /// `resolvedPeerCount` is already correct there. Discovery and config-generated peers DO have
+    /// that split — `configuredNodes` is `cluster().nodes()`, the SAME value
+    /// `awaitDiscoveredCorePeers`'s `expected` parameter is given (both read it via
+    /// [#configuredClusterNodes], so they cannot silently drift apart) — so a majority-at-timeout
+    /// boot must gate on what was configured, not on what was found.
+    static int expectedClusterSize(boolean staticPeersConfigured, int configuredNodes, int resolvedPeerCount) {
+        if (staticPeersConfigured) {
+            return resolvedPeerCount;
+        }
+
+        return configuredNodes > 0
+               ? configuredNodes
+               : resolvedPeerCount;
+    }
+
+    /// Whether `--peers=`/`CLUSTER_PEERS` is what `parsePeers` will resolve against — mirrors that
+    /// method's own precedence check so [#expectedClusterSize] asks the identical question `parsePeers`
+    /// already answered, rather than re-deriving it from the resolved list after the fact.
+    private boolean staticPeersConfigured() {
+        return findArg("--peers=").isPresent() || findEnv("CLUSTER_PEERS").isPresent();
+    }
+
+    /// Single source for the discovery arm's target (`discoverCloudCorePeers`'s `expected`) and the
+    /// boot-time size gate's `configuredNodes` (`enforceMinimumClusterSize`) — both must read the
+    /// identical field, or a gate that silently drifted from the discovery wait would reproduce the
+    /// #782 fix-round bug this replaces. 0 means "unset" (mirrors `ClusterConfig#UNBOUNDED`'s
+    /// convention).
+    private static int configuredClusterNodes(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(cfg -> cfg.cluster()
+                                          .nodes())
+                           .or(0);
+    }
+
     /// #298 — the cluster name for runtime config, read from the same env var the boot gate keys on
     /// and parsed with the SAME grammar ([ClusterName#PATTERN], which [#verifyClusterNamePresent]
     /// now also uses). Reached only after [#enforceClusterNamePresent] has passed, so the empty case
@@ -232,10 +308,13 @@ public record Main(String[] args) {
     /// non-durable streams were opted into explicitly — otherwise every publish acks with NO fsync and
     /// "durable entity" silently becomes "in-memory entity". Delegates to the pure
     /// [AetherNode#verifyWalBootable] guard (tested via `WalAvailabilityGateTest`), exits on violation —
-    /// the same `verify* -> abortBoot` idiom as the cluster-name and dev-mode gates above.
+    /// the same `verify* -> abortBoot` idiom as the cluster-name and dev-mode gates above. The streams
+    /// block tier gets the same gate (#1567 F12, [AetherNode#verifyStreamSegmentsBootable]).
     @Contract
     private void enforceWalDurabilityBootable(AetherNodeConfig config) {
-        AetherNode.verifyWalBootable(config).onFailure(this::abortBoot);
+        AetherNode.verifyWalBootable(config)
+                  .flatMap(_ -> AetherNode.verifyStreamSegmentsBootable(config))
+                  .onFailure(this::abortBoot);
     }
 
     /// Boot gate: insecure dev-mode must be fundamentally incompatible with a real
@@ -268,10 +347,27 @@ public record Main(String[] args) {
         System.exit(1);
     }
 
-    private Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
+    /// Package-private (not private) so the boot gate can be VERIFIED rather than asserted: `run()`
+    /// calls this and `.expect`s the result, so a node with no cluster secret aborts here — which is
+    /// what makes `BootstrapAdminKeyLeg`'s random-key fallback unreachable in production. Pinned by
+    /// `MainClusterSecretStampTest#resolveTls_noClusterSecretAnywhere_failsSoTheNodeCannotBoot`.
+    Result<TlsBundle> resolveTls(NodeId nodeId, List<NodeInfo> peers, Option<AetherConfig> aetherConfig) {
+        return resolveTls(nodeId, peers, aetherConfig, environmentClusterSecret());
+    }
+
+    /// Same, with the `AETHER_CLUSTER_SECRET` source injected instead of read from the ambient
+    /// environment. Verification finding SF4: the boot-gate test carries the whole "the fallback is
+    /// unreachable via the boot path" argument, and while it read `System.getenv` directly it had to
+    /// be guarded by an `assumeTrue` — so on any machine with that variable exported it SKIPPED, and a
+    /// skip reads as green. Injecting the source removes the guard: the test now states the
+    /// environment it is testing instead of hoping for one.
+    Result<TlsBundle> resolveTls(NodeId nodeId,
+                                 List<NodeInfo> peers,
+                                 Option<AetherConfig> aetherConfig,
+                                 Option<String> environmentSecret) {
         var tlsCfg = resolveTlsConfig(aetherConfig);
 
-        return resolveClusterSecret(tlsCfg).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
+        return resolveClusterSecret(tlsCfg, environmentSecret).flatMap(SelfSignedCertificateProvider::selfSignedCertificateProvider)
                                    .flatMap(provider -> {
                                                 var hostname = findHostnameFromPeers(nodeId, peers);
 
@@ -292,12 +388,70 @@ public record Main(String[] args) {
                       .map(this::buildConfigProvider);
     }
 
+    /// Exit code of a refused cloud integration (#2058): the config HAS a `[cloud]` section and the integration it names cannot be
+    /// created (missing credentials, unknown provider, an invalid provider setting). `EX_UNAVAILABLE` (sysexits.h 69); 65 is the refused
+    /// config file (#2052), 78 the refused identity. A supervisor must not restart with the same configuration: it fails identically
+    /// (`aether/docs/reference/node-operations.md#exit-codes`).
+    static final int CLOUD_INTEGRATION_REFUSED_EXIT_CODE = 69;
+
+    /// The `[cloud.credentials]` keys each provider's factory requires, so the refusal can tell the operator what to add. Derived from
+    /// `CloudCredentialSchema` (pinned against the factories by `CloudCredentialSchemaTest`), the one list the CLI also validates with.
+    static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Stream.of("hetzner", "aws", "gcp", "azure").collect(Collectors.toUnmodifiableMap(provider -> provider,
+                                                                                                                                                 provider -> String.join(", ",
+                                                                                                                                                                         CloudCredentialSchema.requiredKeys(provider))));
+
+    /// The node's cloud integration (#2058). No `[cloud]` section: none, deliberately (docker compose, forge, bare runs). A `[cloud]`
+    /// section whose integration cannot be created REFUSES the boot: without it the leader cannot provision, replace or scale, and the
+    /// node used to log one line and run without it until the first incident. "Cannot be created" includes a factory THROWING on a
+    /// malformed provider setting (a non-numeric `ssh_key_ids`), lifted into the same refusal rather than an uncaught exception; and a
+    /// docker section can be refused too: its provider rejects a `[backup] path` outside `/data` (the named-volume rule, #1968).
     private Option<EnvironmentIntegration> resolveEnvironment(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(AetherConfig::cloud)
-                           .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
-                                                                                .onFailure(cause -> log.error("Failed to create cloud environment: {}",
-                                                                                                              cause.message()))
-                                                                                .option());
+        return resolveCloudIntegration(aetherConfig.flatMap(config -> config.cloud()
+                                                                            .map(cloud -> withEffectiveBackup(cloud,
+                                                                                                              config.backup()))),
+                                       EnvironmentIntegrationFactory::createFromConfig).onFailure(this::refuseCloudIntegration)
+                                      .expect("unreachable: refuseCloudIntegration exits");
+    }
+
+    /// Package-private and pure with the factory injected, so the decision is testable per provider without a process.
+    static Result<Option<EnvironmentIntegration>> resolveCloudIntegration(Option<CloudConfig> cloudConfig,
+                                                                          Fn1<Result<EnvironmentIntegration>, CloudConfig> create) {
+        return cloudConfig.fold(() -> Result.success(Option.<EnvironmentIntegration> none()),
+                                cloud -> Result.lift(Causes::fromThrowable,
+                                                     () -> create.apply(cloud))
+                                               .flatMap(created -> created)
+                                               .map(Option::some)
+                                               .mapError(cause -> cloudIntegrationRefusal(cloud.provider(),
+                                                                                          cause)));
+    }
+
+    private static Cause cloudIntegrationRefusal(String provider, Cause cause) {
+        var keys = Option.option(REQUIRED_CREDENTIAL_KEYS.get(provider))
+                         .map(required -> " The provider's [cloud.credentials] TOML keys must provide: " + required
+                                         + " (the bootstrap overlay renders the source's node_config [cloud.credentials], its region/zone/location and, for hetzner, its credentials; add the missing ones under [source.<name>.node_config.cloud.credentials])")
+                         .or("");
+
+        return Causes.cause("the [cloud] section names provider '" + provider
+                           + "' but its integration could not be created: " + cause.message()
+                           + "." + keys);
+    }
+
+    /// The operator signal: FATAL in the log, on stderr, and a distinct exit code (a node that never booted cannot raise a cluster event).
+    @Contract
+    private void refuseCloudIntegration(Cause cause) {
+        var message = "FATAL: refusing to start: " + cause.message();
+
+        log.error(message);
+        System.err.println(message);
+        System.err.flush();
+        System.exit(CLOUD_INTEGRATION_REFUSED_EXIT_CODE);
+    }
+
+    /// #1968: the provider that mints replacements learns this node's EFFECTIVE `[backup]`, from its TOML or its environment alike,
+    /// so a replacement carries the same backup whatever the leader's source of it was. A provider without a node TOML (Docker)
+    /// reads it from the compute map; others ignore the extra entries.
+    static CloudConfig withEffectiveBackup(CloudConfig cloud, BackupConfig backup) {
+        return cloud.withCompute(backup.asEnvironment());
     }
 
     private static HttpProtocol resolveManagementHttpProtocol(Option<AetherConfig> aetherConfig) {
@@ -311,6 +465,28 @@ public record Main(String[] args) {
         return aetherConfig.map(AetherConfig::storage)
                            .filter(m -> !m.isEmpty())
                            .or(Map.of());
+    }
+
+    private static Option<StorageEncryptionConfig> resolveStorageEncryption(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::storageEncryption);
+    }
+
+    /// #957 boot gate — resolve `[alerts]` and REFUSE TO BOOT on an invalid one.
+    ///
+    /// This is the ticket's fail-closed clause, and it needed no new validator:
+    /// [AlertConfig#check] composes `WebhookConfig.check()`, which was fully written — url, retry-count
+    /// and timeout guards, each with a typed cause — and called by NOTHING before this. A webhook
+    /// enabled with no URLs, or a hysteresis margin outside `[0.0, 1.0)`, now aborts boot with a FATAL
+    /// naming the field, instead of the node starting and silently dropping every alert it should have
+    /// delivered.
+    ///
+    /// No `[alerts]` section resolves to `Option.empty()` and the shipped defaults, unvalidated because
+    /// there is nothing to validate.
+    private Option<AlertConfig> resolveAlertConfig(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.flatMap(AetherConfig::alerts)
+                           .map(alerts -> alerts.check()
+                                                .onFailure(this::abortBoot)
+                                                .expect("unreachable: abortBoot exits"));
     }
 
     private static Option<BackupConfig> resolveBackup(Option<AetherConfig> aetherConfig) {
@@ -338,15 +514,29 @@ public record Main(String[] args) {
     /// #298 — carry `[cluster] max_nodes` into the auto-heal config the node runs with. Until this
     /// existed the builder fell through to `AutoHealConfig.DEFAULT`, so no auto-heal setting was
     /// operator-tunable at all and the fleet cap had no way to be set outside a test.
+    /// #675 — the three `[timeouts.scaling] auto_heal_*` timings are carried the same way; the
+    /// cooldown parsed into `TimeoutsConfig` and stopped there while the runtime honoured only
+    /// `DEFAULT`'s 15s, and the provisioning timeout and SWIM-hints TTL had no key at all.
     ///
     /// `UNBOUNDED` (0, the same "unset" sentinel `coreMax` uses) leaves the cap absent, which is
     /// what every existing config gets — provisioning stays unbounded until an operator opts in.
-    private static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+    static AutoHealConfig resolveAutoHeal(Option<AetherConfig> aetherConfig) {
+        var withTimings = aetherConfig.map(AetherConfig::timeouts)
+                                      .map(TimeoutsConfig::scaling)
+                                      .map(Main::withAutoHealTimings)
+                                      .or(AutoHealConfig.DEFAULT);
+
         return aetherConfig.map(AetherConfig::cluster)
                            .map(ClusterConfig::maxNodes)
                            .filter(maxNodes -> maxNodes > ClusterConfig.UNBOUNDED)
-                           .map(AutoHealConfig.DEFAULT::withMaxNodes)
-                           .or(AutoHealConfig.DEFAULT);
+                           .map(withTimings::withMaxNodes)
+                           .or(withTimings);
+    }
+
+    private static AutoHealConfig withAutoHealTimings(TimeoutsConfig.ScalingTimeouts scaling) {
+        return AutoHealConfig.DEFAULT.withStartupCooldown(scaling.autoHealStartupCooldown())
+                                     .withProvisioningTimeout(scaling.autoHealProvisioningTimeout())
+                                     .withSwimHintsTtl(scaling.autoHealSwimHintsTtl());
     }
 
     private static MembershipConfig liftMembershipBinding(MembershipConfigBinding binding) {
@@ -371,16 +561,64 @@ public record Main(String[] args) {
                      .or("localhost");
     }
 
-    private static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg) {
+    /// Package-private (not private) so `MainClusterSecretStampTest` can assert that the CA path and
+    /// the #980 admin-key path resolve the SAME secret — re-inlining a separate reader into either
+    /// would otherwise be silent.
+    static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg) {
+        return resolveClusterSecret(tlsCfg, environmentClusterSecret());
+    }
+
+    static Result<byte[]> resolveClusterSecret(TlsConfig tlsCfg, Option<String> environmentSecret) {
+        return resolveClusterSecretValue(tlsCfg, environmentSecret).map(s -> s.getBytes(StandardCharsets.UTF_8))
+                                        .toResult(MISSING_CLUSTER_SECRET);
+    }
+
+    /// #980 — stamp the cluster secret onto the node config, from which `BootstrapAdminKeyLeg`
+    /// derives the bootstrap admin API key at first leadership, so `aether cluster bootstrap` can
+    /// authenticate its own quorum poll. `resolveTls` has already aborted the boot if the secret were
+    /// missing, so this is present on any node that reaches here.
+    ///
+    /// Extracted from `run()` and package-private ONLY so it is reachable from a test. Inline in the
+    /// builder chain it was unpinnable: replacing the argument with `Option.empty()` left all 1,299
+    /// `aether/node` tests green, which made the whole feature rest on a line nothing defended.
+    /// `MainClusterSecretStampTest` now drives this. What remains unpinned is the CALL to it from
+    /// `run()` — deleting that line is still silent here, and is caught only by
+    /// `EmberBootstrapAdminKeyAuthTest`'s equivalent for the in-JVM path or by a cloud bootstrap.
+    static AetherNodeConfig withResolvedClusterSecret(AetherNodeConfig config, Option<AetherConfig> aetherConfig) {
+        return withResolvedClusterSecret(config, aetherConfig, environmentClusterSecret());
+    }
+
+    static AetherNodeConfig withResolvedClusterSecret(AetherNodeConfig config,
+                                                      Option<AetherConfig> aetherConfig,
+                                                      Option<String> environmentSecret) {
+        return config.withClusterSecret(resolveClusterSecretValue(resolveTlsConfig(aetherConfig), environmentSecret));
+    }
+
+    /// #980 — the single reader of the cluster secret's two sources (`[tls] cluster_secret`, then
+    /// `AETHER_CLUSTER_SECRET`). The CA/gossip derivation ([#resolveClusterSecret]) and the bootstrap
+    /// admin key derivation stamped onto [AetherNodeConfig] both read through here, so a node can
+    /// never derive its certificate from one secret and its admin key from another.
+    private static Option<String> resolveClusterSecretValue(TlsConfig tlsCfg, Option<String> environmentSecret) {
         return Option.option(tlsCfg.clusterSecret())
                      .filter(s -> !s.isBlank())
-                     .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank()))
-                     .map(s -> s.getBytes(StandardCharsets.UTF_8))
-                     .toResult(MISSING_CLUSTER_SECRET);
+                     .orElse(environmentSecret);
+    }
+
+    /// The ambient `AETHER_CLUSTER_SECRET`, blank-filtered — the ONLY place this process reads it.
+    /// Every resolver above takes it as a parameter so tests can state the environment rather than
+    /// inherit it (SF4).
+    private static Option<String> environmentClusterSecret() {
+        return ambientClusterSecret(System::getenv);
+    }
+
+    /// The ambient secret with the environment supplied: `AETHER_CLUSTER_SECRET` or the file `AETHER_CLUSTER_SECRET_FILE` names (#828).
+    /// A broken file reads as absent here; the start-up gate in [#loadConfig] is what refuses it.
+    static Option<String> ambientClusterSecret(Fn1<String, String> env) {
+        return ClusterSecretSource.resolve(env).fold(_ -> Option.<String> none(), value -> value);
     }
 
     private static final Cause MISSING_CLUSTER_SECRET = Causes.cause("No cluster secret configured. Set 'cluster_secret' in [tls] section "
-                                                                    + "or AETHER_CLUSTER_SECRET environment variable. "
+                                                                    + "or AETHER_CLUSTER_SECRET_FILE (a file path) or AETHER_CLUSTER_SECRET environment variable. "
                                                                     + "A cluster secret is required for TLS certificate generation.");
 
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
@@ -388,18 +626,68 @@ public record Main(String[] args) {
                            .or(SliceConfig.sliceConfig());
     }
 
-    private org.pragmatica.dht.DHTConfig parseDhtConfig(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::dhtReplication)
-                           .map(dhtRepl -> org.pragmatica.dht.DHTConfig.withReplication(dhtRepl.targetRf()))
-                           .flatMap(Result::option)
-                           .or(org.pragmatica.dht.DHTConfig.DEFAULT);
+    /// Exit code of a refused configuration (#2052): a config file was GIVEN (`--config=`) and is missing, unreadable, malformed or fails
+    /// validation. `EX_DATAERR` (sysexits.h 65): `78` is already scoped to the refused-identity halt, whose supervisor rule differs.
+    /// A supervisor must not restart with the same configuration: it fails identically (documented at
+    /// `aether/docs/reference/node-operations.md#exit-codes`).
+    static final int CONFIG_REFUSED_EXIT_CODE = 65;
+
+    /// The node's configuration (#2052). `--config=<path>` is the ONLY way a config file reaches this process: the image entrypoint, the
+    /// cloud-init unit and `build-and-push.sh` all pass it. NOT given: the node boots on defaults (deliberate: forge, tests and bare
+    /// `java -jar` runs). GIVEN: the file must load and validate, or the node REFUSES to start. It used to log one line and boot on
+    /// defaults, which silently drops the operator's TLS, port, peers and secret settings.
+    private Option<AetherConfig> loadConfig() {
+        return ClusterSecretSource.validate(System::getenv)
+                                  .flatMap(_ -> resolveConfig(findArg("--config=")))
+                                  .onFailure(this::refuseConfig)
+                                  .expect("unreachable: refuseConfig exits");
     }
 
-    private Option<AetherConfig> loadConfig() {
-        return findArg("--config=").map(Path::of)
-                      .filter(p -> p.toFile()
-                                    .exists())
-                      .flatMap(this::loadConfigFile);
+    /// Package-private and pure so the decision is testable without a process: no argument gives no configuration; an argument that is
+    /// blank, names no regular file, or names a file that does not load and validate gives a failure naming the argument and the cause.
+    static Result<Option<AetherConfig>> resolveConfig(Option<String> givenPath) {
+        return givenPath.fold(() -> Result.success(Option.<AetherConfig> none()), Main::loadGivenConfig);
+    }
+
+    private static Result<Option<AetherConfig>> loadGivenConfig(String raw) {
+        var given = raw.strip();
+
+        if (given.isEmpty()) {
+            return Causes.cause("--config= was given with an empty path; give the path of the node configuration file or omit the argument").result();
+        }
+
+        return Result.lift(Causes::fromThrowable,
+                           () -> Path.of(given))
+                     .mapError(cause -> Causes.cause("--config=" + printable(given)
+                                                    + " is not a valid path: " + cause.message()))
+                     .flatMap(path -> loadExisting(given, path));
+    }
+
+    private static Result<Option<AetherConfig>> loadExisting(String given, Path path) {
+        if (!Files.isRegularFile(path)) {
+            return Causes.cause("config file '" + given + "' (--config=) does not exist or is not a regular file").result();
+        }
+
+        return ConfigLoader.load(path)
+                           .map(Option::some)
+                           .mapError(cause -> Causes.cause("config file '" + given
+                                                          + "' (--config=) could not be loaded or validated: " + cause.message()));
+    }
+
+    private static String printable(String value) {
+        return value.replace("\0", "\\0");
+    }
+
+    /// The refusal reaches the operator beyond a log line: the log (FATAL), stderr (a supervisor or `docker logs` shows it whatever the
+    /// logging setup), and a distinct exit code. A node that never booted cannot raise a cluster event, so these are the whole signal.
+    @Contract
+    private void refuseConfig(Cause cause) {
+        var message = "FATAL: refusing to start: " + cause.message();
+
+        log.error(message);
+        System.err.println(message);
+        System.err.flush();
+        System.exit(CONFIG_REFUSED_EXIT_CODE);
     }
 
     /// #336 — publish the resolved `--config=` path as the `aether.config.path` system property so
@@ -417,13 +705,6 @@ public record Main(String[] args) {
                .map(Path::toAbsolutePath)
                .onPresent(p -> System.setProperty(AetherNode.CONFIG_PATH_PROPERTY,
                                                   p.toString()));
-    }
-
-    private Option<AetherConfig> loadConfigFile(Path path) {
-        return ConfigLoader.load(path)
-                           .onFailure(cause -> log.error("Failed to load config: {}",
-                                                         cause.message()))
-                           .option();
     }
 
     private void logStartupInfo(NodeId nodeId,
@@ -446,22 +727,130 @@ public record Main(String[] args) {
                  cfg.node().heap());
     }
 
+    /// #749: a shutdown hook with no bound at all parks forever if `node.stop()` never settles. 30s is
+    /// generous relative to `EmberCluster`'s 10s-per-node test bound (this covers ONE node, not N in
+    /// parallel) while still failing the container's stop/restart grace period loudly instead of silently.
+    private static final TimeSpan SHUTDOWN_TIMEOUT = TimeSpan.timeSpan(30).seconds();
+    /// #838 review round 1, BLOCKING 1 (owner-confirmed): `System.exit()` from inside a shutdown hook
+    /// DEADLOCKS -- `Shutdown.exit()` blocks on the `Shutdown` class monitor already held by the thread
+    /// running `runHooks()`, which is the very thread executing this hook, so it joins itself. Proven by
+    /// the reviewer: hung past 2 minutes, ignored SIGTERM, needed SIGKILL. `Runtime.getRuntime().halt(int)`
+    /// bypasses that machinery entirely -- the same pattern already used by the drain-completed self-exit
+    /// at `AetherNode.java:415,437` -- at the cost of running no further shutdown hooks and no appender
+    /// flush of its own, so both are done explicitly and synchronously immediately before the halt.
+    ///
+    /// Exit code 3 = shutdown did not complete within [#SHUTDOWN_TIMEOUT]; documented at
+    /// `aether/docs/reference/node-operations.md#exit-codes`. Code 2 is already owned by the
+    /// drain-completed self-exit in `AetherNode`/`DrainProcedure`; reusing it here would have been a
+    /// second, independent bug stacked on top of the deadlock. Which call inside `node.stop()` actually
+    /// blocked is UNKNOWN (#749 acceptance item 1) -- the thread dump below is what will eventually answer
+    /// that from a real occurrence, not a diagnosis made here.
+    static final int SHUTDOWN_TIMEOUT_EXIT_CODE = 3;
+    /// #838 review round 1: bound on [#flushLogs] so a wedged appender (blocking async queue,
+    /// unreachable network sink) cannot re-introduce the unbounded hang the halt seam below exists
+    /// to remove. Generous relative to typical flush latency, small relative to [#SHUTDOWN_TIMEOUT]
+    /// so it cannot itself consume the process's shutdown budget.
+    private static final TimeSpan FLUSH_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+
     private void registerShutdownHook(AetherNode node) {
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node)));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> shutdownNode(node,
+                                                                           SHUTDOWN_TIMEOUT,
+                                                                           Main::flushLogs,
+                                                                           Runtime.getRuntime()::halt)));
     }
 
-    private void shutdownNode(AetherNode node) {
+    /// Synchronous flush of the log4j2 context, bounded by [#FLUSH_TIMEOUT] -- halt() performs no
+    /// appender flush of its own, so anything not flushed here is lost with the process. #838 review
+    /// round 1: [LogManager#shutdown()] has no timeout of its own; [LoggerContext#stop(long,TimeUnit)]
+    /// does, and is used instead so a wedged appender bounds the flush rather than hanging it.
+    private static void flushLogs() {
+        var ctx = (LoggerContext) LogManager.getContext(false);
+
+        ctx.stop(FLUSH_TIMEOUT.millis(), TimeUnit.MILLISECONDS);
+    }
+
+    /// Package-private and parameterized (timeout / log-flush / halt as injected seams) so the expiry
+    /// path is unit-testable without pinning a real 30s clock or touching the shared log4j2 context in
+    /// the surefire fork. Production wiring is [#registerShutdownHook].
+    static void shutdownNode(AetherNode node, TimeSpan timeout, Runnable flushLogs, IntConsumer haltFn) {
         log.info("Shutdown requested, stopping node...");
-        node.stop().await();
+        var stopping = node.stop();
+        var result = stopping.await(timeout);
+
+        if (!stopping.isResolved()) {
+            log.error("Node did not stop within {}; halting with code {} (shutdown timeout -- see "
+                     + "aether/docs/reference/node-operations.md#exit-codes). Thread dump follows.",
+                      timeout,
+                      SHUTDOWN_TIMEOUT_EXIT_CODE);
+            dumpThreads();
+            // #838 review round 1: halt is in `finally` so a throwing flushLogs.run() cannot preempt
+            // it and restore the unbounded hang this method exists to remove -- flushLogs itself is
+            // bounded (see its doc), so this can delay the halt by at most FLUSH_TIMEOUT, never hang it.
+            try {
+                flushLogs.run();
+            } finally {
+                haltFn.accept(SHUTDOWN_TIMEOUT_EXIT_CODE);
+            }
+
+            return;
+        }
+
+        result.onFailure(cause -> log.error("Node stop() completed with failure: {}", cause.message()));
         log.info("Node stopped");
+    }
+
+    /// Best-effort diagnostic: a failed dump is logged and never blocks the halt it was meant to explain.
+    private static void dumpThreads() {
+        captureThreadDump().onSuccess(lines -> lines.forEach(line -> log.error("{}", line)))
+                         .onFailure(cause -> log.error("Failed to capture shutdown-timeout thread dump: {}",
+                                                       cause.message()));
+    }
+
+    /// #838 review round 1, SHOULD-FIX: [ThreadMXBean#dumpAllThreads] omits virtual threads -- exactly the
+    /// kind of thread a hung `node.stop()` is likely blocked on, since the async offloads it waits on run
+    /// on them. [HotSpotDiagnosticMXBean#dumpThreads] includes virtual threads; it writes a pre-formatted
+    /// dump to a file rather than returning `ThreadInfo[]`, and refuses to overwrite an existing file, so
+    /// a fresh path is created and deleted around each call regardless of outcome.
+    ///
+    /// #838 review round 1, JBCT-EX-01: returns [Result] rather than throwing -- a checked [IOException]
+    /// on this best-effort diagnostic path must not propagate past [#dumpThreads], which logs-and-continues
+    /// on either outcome rather than branching on a caught exception.
+    static Result<List<String>> captureThreadDump() {
+        return Result.lift(() -> {
+            var dumpPath = Files.createTempFile("aether-thread-dump-", ".txt");
+
+            Files.delete(dumpPath);  // dumpThreads(String, ...) refuses to write over an existing file
+            try {
+                ManagementFactory.getPlatformMXBean(HotSpotDiagnosticMXBean.class).dumpThreads(dumpPath.toString(),
+                                                                                               HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
+
+                return Files.readAllLines(dumpPath, StandardCharsets.UTF_8);
+            } finally {
+                Files.deleteIfExists(dumpPath);
+            }
+        });
     }
 
     private void startNodeAndWait(AetherNode node, NodeId nodeId) {
         node.start()
             .onSuccess(_ -> log.info("Node {} is running. Press Ctrl+C to stop.", nodeId))
-            .onFailure(cause -> exitWithError(cause.message()))
+            .onFailure(cause -> onStartFailure(cause, this::exitWithError))
             .await();
         waitForInterrupt();
+    }
+
+    /// #1052 fix round 2 (N-2): a stop requested while the DHT encryption-marker check is still retrying
+    /// ends `start()` with [EncryptionError.DhtMarkerCheckAbandoned]. That is the operator's own stop
+    /// (SIGTERM -> [#registerShutdownHook] -> `node.stop()`), not a boot failure, so it is logged at INFO
+    /// and the hook that issued the stop keeps ownership of the process exit. Every other start failure
+    /// is fatal as before (`exit(1)` via [#exitWithError]). Package-private with the exit injected so
+    /// `MainShutdownTest` can pin both branches without a `System.exit`.
+    static void onStartFailure(Cause cause, Consumer<String> exitWithError) {
+        switch (cause) {
+            case EncryptionError.DhtMarkerCheckAbandoned stopped -> log.info("Stop requested before start completed; not a boot failure: {}",
+                                                                             stopped.message());
+            default -> exitWithError.accept(cause.message());
+        }
     }
 
     private void exitWithError(String message) {
@@ -546,19 +935,25 @@ public record Main(String[] args) {
     /// parsed list is returned UNCHANGED and no resolution runs — `selfInfo` was discarded there
     /// anyway. The CTM-provisioned-replacement case (self ABSENT) is the one that previously
     /// appended a poisoned hostname-based entry; it now appends a resolved one.
-    private List<NodeInfo> parsePeers(NodeId self,
-                                      int selfPort,
-                                      Map<String, String> labels,
-                                      Option<AetherConfig> aetherConfig,
-                                      Option<EnvironmentIntegration> environment) {
+    ///
+    /// #1475: every fallback arm is passed as a SUPPLIER. `Option.orElse(Option)` evaluates its
+    /// argument before `orElse` runs, so the discovery arm used to execute even when `--peers=` had
+    /// already won: a CTM replacement (which always carries `--peers=`) blocked up to 300s polling the
+    /// provider for a full core set it cannot find while drained or killed nodes are dead, then either
+    /// joined late or — below a quorum — threw and exited, leaving the leader counting it in flight.
+    List<NodeInfo> parsePeers(NodeId self,
+                              int selfPort,
+                              Map<String, String> labels,
+                              Option<AetherConfig> aetherConfig,
+                              Option<EnvironmentIntegration> environment) {
         return findArg("--peers=").map(peersStr -> resolvePeersFromString(peersStr, self, selfPort, labels, aetherConfig))
-                      .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> resolvePeersFromString(peersStr,
-                                                                                              self,
-                                                                                              selfPort,
-                                                                                              labels,
-                                                                                              aetherConfig)))
-                      .orElse(discoverCloudCorePeers(self, selfPort, labels, aetherConfig, environment))
-                      .orElse(aetherConfig.map(cfg -> generatePeersFromConfig(cfg, self)))
+                      .orElse(() -> findEnv("CLUSTER_PEERS").map(peersStr -> resolvePeersFromString(peersStr,
+                                                                                                    self,
+                                                                                                    selfPort,
+                                                                                                    labels,
+                                                                                                    aetherConfig)))
+                      .orElse(() -> discoverCloudCorePeers(self, selfPort, labels, aetherConfig, environment))
+                      .orElse(() -> aetherConfig.map(cfg -> generatePeersFromConfig(cfg, self)))
                       .or(() -> List.of(bootstrapSelfInfo(self, selfPort, labels)));
     }
 
@@ -567,8 +962,8 @@ public record Main(String[] args) {
     /// discovers its core peers from the provider API instead of having them pushed over SSH.
     ///
     /// Placement in the chain is deliberate: AFTER the explicit arms — an operator's list always
-    /// wins, and CTM-provisioned replacements keep their user-data `CLUSTER_PEERS` path
-    /// byte-identical — but BEFORE `generatePeersFromConfig`, whose hostname-indexed synthesis is
+    /// wins, and a CTM-provisioned replacement is launched with `--peers=` (its user-data `PEERS`,
+    /// turned into the argument by the image entrypoint), so it never reaches this arm — but BEFORE `generatePeersFromConfig`, whose hostname-indexed synthesis is
     /// meaningless on cloud and is exactly why the SSH push existed. Forge/compose/bare-metal nodes
     /// configure no `[cloud]` section, so no provider materializes and their resolution is
     /// unchanged.
@@ -581,8 +976,7 @@ public record Main(String[] args) {
                                                           Map<String, String> labels,
                                                           Option<AetherConfig> aetherConfig,
                                                           Option<EnvironmentIntegration> environment) {
-        var expected = aetherConfig.map(cfg -> cfg.cluster()
-                                                  .nodes()).or(0);
+        var expected = configuredClusterNodes(aetherConfig);
 
         return environment.flatMap(EnvironmentIntegration::discovery)
                           .filter(_ -> expected > 0)
@@ -890,7 +1284,17 @@ public record Main(String[] args) {
         envLookup.apply("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));
         envLookup.apply("AETHER_POOL").onPresent(p -> labels.put(NodeInfo.LABEL_POOL, p));
         envLookup.apply("AETHER_SOURCE").onPresent(s -> labels.put(NodeInfo.LABEL_SOURCE, s));
-        envLookup.apply("AETHER_ROLE").onPresent(r -> labels.put(NodeInfo.LABEL_ROLE, r));
+        // #1543 part C: the running binary's own version, so an upgrade can see what each node actually runs.
+        labels.put(NodeInfo.LABEL_VERSION, AetherNode.VERSION);
+        // #689: the default is deliberate (blank counts as core — the safe failure direction for
+        // the core tier) and unchanged; what was missing is the node saying so. A worker started
+        // without this label joins the core set on every peer and nothing else reports why.
+        envLookup.apply("AETHER_ROLE")
+                 .onPresent(r -> labels.put(NodeInfo.LABEL_ROLE, r))
+                 .onEmpty(() -> log.warn("AETHER_ROLE is not set: this node advertises no role label and every peer will "
+                                        + "classify it as CORE (blank counts as core). Intended workers must be launched "
+                                        + "with AETHER_ROLE=worker (aether-role=worker label); a core node may leave it "
+                                        + "unset. See #689."));
 
         return Map.copyOf(labels);
     }

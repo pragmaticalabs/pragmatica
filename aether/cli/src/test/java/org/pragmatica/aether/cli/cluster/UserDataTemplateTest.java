@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.cli.cluster;
 
@@ -198,8 +197,20 @@ class UserDataTemplateTest {
                    "docker run must export MANAGEMENT_PORT so the management API binds the operator port");
         assertTrue(script.contains("-e PEERS=\"${AETHER_PEERS}\""),
                    "docker run must export PEERS — Dockerfile entrypoint converts it to --peers=");
-        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\""),
-                   "docker run must export AETHER_CLUSTER_SECRET so TLS init resolves the seed");
+        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET_FILE=\"/run/secrets/aether-cluster-secret\""),
+                   "docker run must name the mounted secret file so TLS init resolves the seed");
+        assertFalse(script.contains("-e AETHER_CLUSTER_SECRET="), "#828: no secret env var in the container");
+    }
+
+    @Test
+    void render_secretWithShellMetacharacters_isWrittenVerbatimByTheQuotedPrintf() {
+        // #828: the secret is a single-quoted printf operand now, so a quote, a dollar and a backtick in it must survive
+        // (it used to be a double-quoted shell assignment, which mangled `"`, `$` and a backtick).
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var script = UserDataTemplate.render(config, config.sources().get("eu-1"), NodeRole.CORE, "node-1", 0, "a'b$c`d\"e",
+                                             clusterName("prod-cluster").unwrap(), TomlDocument.EMPTY);
+
+        assertTrue(script.contains("printf '%s' 'a'\\''b$c`d\"e' > /opt/aether/config/cluster-secret"), script);
     }
 
     @Test
@@ -220,8 +231,8 @@ class UserDataTemplateTest {
 
         assertTrue(script.contains("-e AETHER_CLUSTER_NAME=\"prod-cluster\""),
                    "docker run must export AETHER_CLUSTER_NAME from the threaded cluster name");
-        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\""),
-                   "AETHER_CLUSTER_SECRET must still be emitted (shell-var form) via the allow-list");
+        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET_FILE=\"/run/secrets/aether-cluster-secret\""),
+                   "the secret file reference must still be emitted via the allow-list (#828)");
     }
 
     @Test
@@ -406,8 +417,12 @@ class UserDataTemplateTest {
 
         assertTrue(script.contains("AETHER_ADVERTISE_HOST=\"$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \\([0-9.]*\\).*/\\1/p' | head -n1)\" || true"),
                    "JVM-mode must also resolve the VM's routable IPv4 with the provider-agnostic command");
-        assertTrue(script.contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then export AETHER_ADVERTISE_HOST; fi"),
-                   "JVM-mode must export AETHER_ADVERTISE_HOST only when the resolved host is non-empty");
+        // #1021 — same property, new carrier: the resolved host reaches the JVM through the unit's
+        // EnvironmentFile instead of a shell `export`. The conditional is what is load-bearing and is
+        // preserved verbatim: an unset value must leave the var ABSENT, not present-and-empty, so the
+        // node's own SWIM-reflection chain takes over rather than advertising nothing.
+        assertTrue(script.contains("if [ -n \"${AETHER_ADVERTISE_HOST}\" ]; then echo \"AETHER_ADVERTISE_HOST=${AETHER_ADVERTISE_HOST}\" >> /etc/aether/node.env; fi"),
+                   "JVM-mode must write AETHER_ADVERTISE_HOST into the unit env file only when the resolved host is non-empty");
         assertFalse(script.contains("ADVERTISE_ENV"),
                     "JVM-mode must not use the container-only ADVERTISE_ENV docker-run construct");
     }

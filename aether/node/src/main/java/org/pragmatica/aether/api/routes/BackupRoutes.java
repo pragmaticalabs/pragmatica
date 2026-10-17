@@ -4,93 +4,60 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
-import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
-import org.pragmatica.aether.api.OperationalEvent;
-import org.pragmatica.aether.backup.BackupService;
-import org.pragmatica.aether.backup.BackupService.BackupInfo;
-import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.node.backup.BackupGenesis;
+import org.pragmatica.aether.node.backup.BackupGenesis.GenesisDeclared;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 
 
+/// #1532 — `POST /backup/declare-genesis` (ADMIN, leader): make this cluster's state the KV backup head
+/// in place of a backup of another lineage. See [BackupGenesis] for what it refuses and why.
 public final class BackupRoutes implements RouteSource {
-    private final Supplier<BackupService> backupServiceSupplier;
     private final Supplier<ManageableNode> nodeSupplier;
 
-    private BackupRoutes(Supplier<BackupService> backupServiceSupplier, Supplier<ManageableNode> nodeSupplier) {
-        this.backupServiceSupplier = backupServiceSupplier;
+    private BackupRoutes(Supplier<ManageableNode> nodeSupplier) {
         this.nodeSupplier = nodeSupplier;
     }
 
-    public static BackupRoutes backupRoutes(Supplier<BackupService> backupServiceSupplier,
-                                            Supplier<ManageableNode> nodeSupplier) {
-        return new BackupRoutes(backupServiceSupplier, nodeSupplier);
+    public static BackupRoutes backupRoutes(Supplier<ManageableNode> nodeSupplier) {
+        return new BackupRoutes(nodeSupplier);
     }
-
-    record BackupResponse(boolean success, String message) {
-        static BackupResponse backupResponse(boolean success, String message) {
-            return new BackupResponse(success, message);
-        }
-    }
-
-    record RestoreRequest(String commit) {}
 
     @Override
     public Stream<Route<?>> routes() {
-        return Stream.of(ManagementRoutes.<BackupResponse> route(ManagementRoute.BACKUP_TRIGGER).toJson(this::triggerBackup),
-                         ManagementRoutes.<List<BackupInfo>> route(ManagementRoute.BACKUPS_LIST).toJson(this::listBackups),
-                         ManagementRoutes.<BackupResponse> route(ManagementRoute.BACKUP_RESTORE)
-                                         .withBody(RestoreRequest.class)
-                                         .toJson(this::restoreBackup));
+        return Stream.of(ManagementRoutes.<GenesisDeclared> route(ManagementRoute.BACKUP_DECLARE_GENESIS).toJson(_ -> declareGenesis()));
     }
 
-    private BackupResponse triggerBackup() {
-        var response = backupServiceSupplier.get()
-                                            .backupNow()
-                                            .fold(cause -> BackupResponse.backupResponse(false,
-                                                                                         cause.message()),
-                                                  _ -> BackupResponse.backupResponse(true, "Backup completed"));
+    Promise<GenesisDeclared> declareGenesis() {
+        var node = nodeSupplier.get();
 
-        AuditLog.backupCreated(response.success(), response.message());
-        emitBackupCreated(response);
-
-        return response;
+        return node.backupGenesis()
+                   .map(genesis -> genesis.declare(node::<Object> apply))
+                   .or(BackupRouteError.BACKUP_NOT_ENABLED::promise);
     }
 
-    private void emitBackupCreated(BackupResponse response) {
-        if (response.success()) {
-            nodeSupplier.get().route(OperationalEvent.BackupCreated.backupCreated("latest", "api"));
+    enum BackupRouteError implements Cause, HttpStatusAware {
+        BACKUP_NOT_ENABLED("The KV backup is not enabled on this node ([backup] enabled = true with a path)");
+        private final String message;
+        BackupRouteError(String message) {
+            this.message = message;
         }
-    }
-
-    private List<BackupInfo> listBackups() {
-        return backupServiceSupplier.get()
-                                    .listBackups()
-                                    .or(List.of());
-    }
-
-    private Promise<BackupResponse> restoreBackup(RestoreRequest request) {
-        var response = backupServiceSupplier.get()
-                                            .restore(request.commit())
-                                            .fold(cause -> BackupResponse.backupResponse(false,
-                                                                                         cause.message()),
-                                                  _ -> BackupResponse.backupResponse(true, "Restore completed"));
-
-        AuditLog.backupRestored(response.success(), request.commit(), response.message());
-        emitBackupRestored(request.commit(), response);
-
-        return Promise.success(response);
-    }
-
-    private void emitBackupRestored(String commitId, BackupResponse response) {
-        if (response.success()) {
-            nodeSupplier.get().route(OperationalEvent.BackupRestored.backupRestored(commitId, "api"));
+        @Override
+        public String message() {
+            return message;
+        }
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 }

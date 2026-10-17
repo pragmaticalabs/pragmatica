@@ -6,10 +6,14 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.backup.RestoreGate;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
@@ -23,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Result.unitResult;
+import static org.pragmatica.lang.Unit.unit;
 
 /// Fix #1 — proves the system-stream registration is LEVEL-TRIGGERED and self-healing:
 ///   - a transient `createStream` commit failure is RETRIED until it commits;
@@ -36,6 +41,76 @@ class SystemStreamRegistrarTest {
 
     private static LeaderNotification.LeaderChange lost() {
         return LeaderNotification.leaderChange(Option.empty(), false);
+    }
+
+    @Test
+    void leaderNotification_schedulesInitialPass_withoutCallingCommitOnNotificationThread() {
+        var scheduler = new CapturingScheduler();
+        var calls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            calls.incrementAndGet();
+            return unitResult();
+        }, Result::unitResult, scheduler);
+
+        registrar.onLeaderChange(gained());
+        registrar.onLeaderChange(gained());
+
+        assertThat(calls.get()).isZero();
+        assertThat(scheduler.delays()).hasSize(1);
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
+    }
+
+    @Test
+    void staleScheduledActivation_cannotRunOrClearNewTermPass() {
+        var scheduler = new CapturingScheduler();
+        var calls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            calls.incrementAndGet();
+            return unitResult();
+        }, Result::unitResult, scheduler);
+
+        registrar.onLeaderChange(gained());
+        registrar.onLeaderChange(lost());
+        registrar.onLeaderChange(gained());
+        scheduler.fireNext(); // Deliberately executes the cancelled old term callback.
+        assertThat(calls.get()).isZero();
+        assertThat(scheduler.hasPending()).isTrue();
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
+    }
+
+    @Test
+    void leadershipChangesDuringRegistration_doNotOverlapOrRunOldTermsSecondLeg() {
+        var scheduler = new CapturingScheduler();
+        var registrarRef = new AtomicReference<SystemStreamRegistrar>();
+        var calls = new AtomicInteger();
+        var bootstrapCalls = new AtomicInteger();
+        var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+            if (calls.incrementAndGet() == 1) {
+                registrarRef.get().onLeaderChange(lost());
+                registrarRef.get().onLeaderChange(gained());
+                scheduler.fireNext(); // New term cannot overlap the still-running old term.
+                assertThat(calls.get()).isEqualTo(1);
+                return StreamError.General.STREAM_CONFIG_COMMIT_FAILED.result();
+            }
+            return unitResult();
+        }, () -> {
+            bootstrapCalls.incrementAndGet();
+            return unitResult();
+        }, scheduler);
+        registrarRef.set(registrar);
+
+        registrar.onLeaderChange(gained());
+        scheduler.fireNext();
+        assertThat(bootstrapCalls.get()).isZero();
+        assertThat(scheduler.hasPending()).isTrue();
+        scheduler.fireNext();
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(bootstrapCalls.get()).isEqualTo(1);
+        assertThat(registrar.isComplete()).isTrue();
     }
 
     @Nested
@@ -53,9 +128,15 @@ class SystemStreamRegistrarTest {
                                                                         () -> StreamError.General.STREAM_ALREADY_EXISTS.result(),
                                                                         scheduler);
 
-            // Leader-gain runs the first pass immediately: createStream fails (transient) → a retry is
+            // Leader-gain SCHEDULES the first pass (#1419: never inline — see FIRST_PASS_DELAY) and
+            // returns without touching a leg. Firing it: createStream fails (transient) → a retry is
             // scheduled; bootstrap leg latches DONE (ALREADY_EXISTS).
             registrar.onLeaderChange(gained());
+            assertThat(createStreamCalls.get())
+                .as("the first pass is scheduled, not run on the notification thread")
+                .isZero();
+
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete()).isFalse();
             assertThat(scheduler.hasPending()).isTrue();
@@ -89,6 +170,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
 
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete())
@@ -113,6 +195,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(scheduler.hasPending()).isTrue();
 
@@ -139,6 +222,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
 
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete())
@@ -148,6 +232,268 @@ class SystemStreamRegistrarTest {
 
             scheduler.fireAll();
             assertThat(createStreamCalls.get()).isEqualTo(1);
+        }
+
+        /// #1564 B1: a cluster-events CF the committed core count cannot satisfy used to be retried every ≤30 s at
+        /// DEBUG, forever. A replication-policy refusal is terminal: one attempt, no retry, and the refusal reaches
+        /// the operator sink exactly once.
+        @Test
+        void onLeaderChange_replicationPolicyRefusal_latchesWithoutRetrying_andReachesTheSinkOnce() {
+            var createStreamCalls = new AtomicInteger();
+            var refusals = new ArrayList<org.pragmatica.lang.Cause>();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+                                                                            createStreamCalls.incrementAndGet();
+                                                                            return new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                      5).result();
+                                                                        },
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        refusals::add);
+
+            registrar.onLeaderChange(gained());
+            // fireNext, never fireAll: were the refusal retried, fireAll would loop forever instead of failing.
+            scheduler.fireNext();
+
+            assertThat(createStreamCalls.get()).isEqualTo(1);
+            assertThat(scheduler.hasPending()).as("a refusal is never retried").isFalse();
+            assertThat(refusals).singleElement().isInstanceOf(ReplicationFactorsError.ConfirmationOutOfRange.class);
+        }
+
+        /// #1564 B1: the operator clears a refusal by committing a corrected cluster config, which re-arms the
+        /// refused leg and runs it at once.
+        @Test
+        void onClusterConfigChanged_afterRefusal_rearmsAndCommits() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var createStreamCalls = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+                                                                            createStreamCalls.incrementAndGet();
+                                                                            return refuse.get()
+                                                                                   ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                        5).result()
+                                                                                   : unitResult();
+                                                                        },
+                                                                        () -> unitResult(),
+                                                                        scheduler);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            assertThat(scheduler.hasPending()).as("the refusal latched without a retry").isFalse();
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+
+            assertThat(scheduler.hasPending()).isTrue();
+            scheduler.fireAll();
+            assertThat(createStreamCalls.get()).as("refused once, then committed after the config change").isEqualTo(2);
+            assertThat(registrar.isComplete()).isTrue();
+            registrar.onClusterConfigChanged();
+            assertThat(scheduler.hasPending()).as("a committed leg is never re-armed").isFalse();
+        }
+
+        /// v1680 N-r3-1: the refusal is cleared once the re-armed leg commits — the recovery sink runs exactly once,
+        /// and never for a leg that was not refused.
+        @Test
+        void recoverySink_runsOnceWhenARefusedLegCommits_andNeverOtherwise() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            assertThat(recoveries.get()).as("a refusal is not a recovery").isZero();
+
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+            assertThat(recoveries.get()).as("the re-armed leg committed").isEqualTo(1);
+
+            registrar.onClusterConfigChanged();
+            assertThat(scheduler.hasPending()).isFalse();
+            assertThat(recoveries.get()).as("a committed leg recovers once").isEqualTo(1);
+        }
+
+        /// v1735 X4b: a re-armed leg that is REFUSED AGAIN has not recovered — the sink must not clear a still-refused
+        /// state; the refusal is reported again instead.
+        @Test
+        void recoverySink_doesNotRun_whenTheReArmedLegIsRefusedAgain() {
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                5).result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+
+            assertThat(refusals.get()).as("refused, re-armed, refused again").isEqualTo(2);
+            assertThat(recoveries.get()).as("a still-refused leg never clears").isZero();
+        }
+
+        /// v1735 X4c: after a re-arm the stream may already be committed (another leader committed it) — the leg
+        /// answers `STREAM_ALREADY_EXISTS`, which is the committed state, so the refusal is cleared once.
+        @Test
+        void recoverySink_runsOnce_whenTheReArmedLegFindsTheStreamAlreadyCommitted() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : StreamError.General.STREAM_ALREADY_EXISTS.result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+
+            assertThat(registrar.isComplete()).isTrue();
+            assertThat(recoveries.get()).isEqualTo(1);
+        }
+
+        /// v1735 r3: the refusal alert is leader-local, so a node that loses leadership clears it (and un-latches the
+        /// leg, so a re-elected node attempts — and reports — again).
+        @Test
+        void deactivate_withALatchedRefusal_clearsItsReport_andReArmsOnTheNextLeadership() {
+            var calls = new AtomicInteger();
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> {
+                                                                            calls.incrementAndGet();
+                                                                            return new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                      5).result();
+                                                                        },
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(recoveries.get()).as("the former leader clears its report").isEqualTo(1);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireAll();
+            assertThat(calls.get()).as("re-elected, the refused leg is attempted again").isEqualTo(2);
+            assertThat(refusals.get()).as("and a refusal that still holds is reported again").isEqualTo(2);
+        }
+
+        /// v1735 r3, end to end on one node: the refusal alert the leader raised is gone from ITS `/api/alerts/active`
+        /// once it loses leadership. The sinks are wired exactly as `AetherNode` wires them (inject local, clear by name).
+        @Test
+        @SuppressWarnings("unchecked")
+        void formerLeader_alertIsGoneFromActiveAlerts_afterLeadershipLoss() {
+            var alerts = org.pragmatica.aether.api.AlertManager.readOnly(org.mockito.Mockito.mock(org.pragmatica.cluster.state.kvstore.KVStore.class));
+            var name = "cluster-events-registration-refused";
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                5).result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        cause -> alerts.injectLocal(name, "CRITICAL", cause.message())
+                                                                                       .await(),
+                                                                        () -> alerts.clearInjected(name));
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            assertThat(activeNames(alerts)).as("the leader lists its refusal").contains(name);
+
+            registrar.onLeaderChange(lost());
+            assertThat(activeNames(alerts)).as("a former leader keeps no stale refusal").doesNotContain(name);
+        }
+
+        private static List<String> activeNames(org.pragmatica.aether.api.AlertManager alerts) {
+            return alerts.activeAlertsAsList()
+                         .await()
+                         .or(List.of())
+                         .stream()
+                         .map(org.pragmatica.aether.api.AlertManager.AlertView::name)
+                         .toList();
+        }
+
+        /// v1735 r3 residual: a corrected config re-armed the refused leg (no longer latched, still recovering), its pass
+        /// then fails TRANSIENTLY, and the node loses leadership — the alert is still up, so it must still be cleared.
+        @Test
+        void deactivate_whileAReArmedLegIsStillFailingTransiently_clearsTheReport() {
+            var refuse = new java.util.concurrent.atomic.AtomicBoolean(true);
+            var recoveries = new AtomicInteger();
+            var refusals = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> refuse.get()
+                                                                              ? new ReplicationFactorsError.ConfirmationOutOfRange(3,
+                                                                                                                                   5).result()
+                                                                              : StreamError.General.STREAM_CONFIG_COMMIT_FAILED.result(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> refusals.incrementAndGet(),
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            refuse.set(false);
+            registrar.onClusterConfigChanged();
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(refusals.get()).isEqualTo(1);
+            assertThat(recoveries.get()).as("the re-armed-but-uncommitted refusal is cleared on leadership loss")
+                                        .isEqualTo(1);
+        }
+
+        @Test
+        void deactivate_withoutARefusal_clearsNothing() {
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+            registrar.onLeaderChange(lost());
+
+            assertThat(recoveries.get()).isZero();
+        }
+
+        @Test
+        void recoverySink_neverRunsForALegThatWasNotRefused() {
+            var recoveries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> unitResult(),
+                                                                        scheduler,
+                                                                        _ -> {},
+                                                                        recoveries::incrementAndGet);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+
+            assertThat(registrar.isComplete()).isTrue();
+            assertThat(recoveries.get()).isZero();
         }
 
         @Test
@@ -170,6 +516,7 @@ class SystemStreamRegistrarTest {
                                                                         scheduler);
 
             registrar.onLeaderChange(gained());
+            scheduler.fireNext();
             assertThat(createStreamCalls.get()).isEqualTo(1);
             assertThat(bootstrapCalls.get()).isEqualTo(1);
             assertThat(registrar.isComplete()).isFalse();
@@ -185,6 +532,36 @@ class SystemStreamRegistrarTest {
             assertThat(registrar.isComplete()).isTrue();
             assertThat(scheduler.hasPending()).isFalse();
         }
+
+        /// #1533: on a fresh cluster the restore gate refuses a seeder's write with `RestorePending` until the
+        /// restore decision commits. That refusal is retryable. A leg that latched DONE on it would never
+        /// write its seed, and the registrar would report complete without having done anything.
+        @Test
+        void onLeaderChange_restorePending_isRetried_untilTheGateOpens() {
+            var bootstrapResult = new AtomicReference<Result<?>>(new RestoreGate.RestorePending("stream-namespace/system",
+                                                                                                "restore decision pending").result());
+            var bootstrapCalls = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> {
+                                                                            bootstrapCalls.incrementAndGet();
+                                                                            return bootstrapResult.get();
+                                                                        },
+                                                                        scheduler);
+
+            registrar.onLeaderChange(gained());
+            scheduler.fireNext();
+
+            assertThat(registrar.isComplete()).as("RestorePending must not latch the leg DONE")
+                                              .isFalse();
+            assertThat(scheduler.hasPending()).isTrue();
+
+            bootstrapResult.set(unitResult());
+            scheduler.fireNext();
+
+            assertThat(bootstrapCalls.get()).isEqualTo(2);
+            assertThat(registrar.isComplete()).isTrue();
+        }
     }
 
     @Nested
@@ -199,17 +576,20 @@ class SystemStreamRegistrarTest {
                                                                         () -> unitResult(),
                                                                         scheduler);
 
-            // First pass (leader-gain) schedules retry #1; then fire 7 more passes to walk the curve
-            // past the clamp point (16s → 32s clamps to MAX=30s).
+            // Leader-gain schedules the FIRST pass at zero delay (#1419); each of the 8 fired passes
+            // then schedules one retry, walking the curve past the clamp point (16s → 32s clamps to
+            // MAX=30s). The zero-delay head is the fix's own signature: it must not consume a
+            // backoff step.
             registrar.onLeaderChange(gained());
-            for (int i = 0; i < 7; i++) {
+            for (int i = 0; i < 8; i++) {
                 scheduler.fireNext();
             }
 
             var nanos = scheduler.delays().stream().map(TimeSpan::nanos).toList();
 
-            assertThat(nanos).as("backoff doubles from INITIAL then saturates at MAX")
-                             .containsExactly(SystemStreamRegistrar.INITIAL_BACKOFF.nanos(),
+            assertThat(nanos).as("the first pass is armed at zero delay, then backoff doubles from INITIAL and saturates at MAX")
+                             .containsExactly(SystemStreamRegistrar.FIRST_PASS_DELAY.nanos(),
+                                              SystemStreamRegistrar.INITIAL_BACKOFF.nanos(),
                                               TimeSpan.timeSpan(1L).seconds().nanos(),
                                               TimeSpan.timeSpan(2L).seconds().nanos(),
                                               TimeSpan.timeSpan(4L).seconds().nanos(),
@@ -217,6 +597,9 @@ class SystemStreamRegistrarTest {
                                               TimeSpan.timeSpan(16L).seconds().nanos(),
                                               SystemStreamRegistrar.MAX_BACKOFF.nanos(),
                                               SystemStreamRegistrar.MAX_BACKOFF.nanos());
+            assertThat(SystemStreamRegistrar.FIRST_PASS_DELAY.nanos())
+                .as("the first pass must start immediately — only the THREAD changes")
+                .isZero();
 
             assertThat(SystemStreamRegistrar.INITIAL_BACKOFF.millis())
                 .as("INITIAL_BACKOFF contract is 500ms")
@@ -227,9 +610,93 @@ class SystemStreamRegistrarTest {
         }
     }
 
+    /// #1419 — the registrar must not run a leg on the thread that delivered the `LeaderChange`.
+    ///
+    /// On the real path that thread is Rabia's single apply thread, inside `commitChanges`, and BOTH
+    /// legs block it: `createStream` awaits the `StreamConfigKey` commit (`StreamPartitionManager`'s
+    /// pre-existing 10 s await — latent on rc4 today) and `bootstrap` awaits the catalog commit
+    /// (`KvBackedStreamRegistry`, added by #968). Each of those commits can only be applied by the
+    /// very thread that is waiting for it, so an inline pass waits on something it is itself
+    /// preventing — the await burns its whole bound and consensus is frozen for that long.
+    ///
+    /// Both tests reproduce that causal shape exactly: the leg awaits a promise that ONLY the caller
+    /// can resolve, and only AFTER `onLeaderChange` has returned. Run inline the leg cannot commit at
+    /// all (it times out, the registrar never latches DONE, and the call takes the whole bound); run
+    /// off the notification thread it commits on the first pass. One test per leg, because the fix
+    /// moves the pass rather than either leg, and leg 1's stall predates #968.
+    @Nested
+    class OffTheNotificationThread {
+        private static final TimeSpan LEG_BOUND = TimeSpan.timeSpan(2L).seconds();
+
+        @Test
+        void onLeaderChange_bootstrapLegCommitOnlyPossibleAfterReturn_commitsAndNeverBlocksTheCaller() {
+            var commit = Promise.<Unit> promise();
+            var legEntries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> unitResult(),
+                                                                        () -> awaitCommit(commit, legEntries),
+                                                                        scheduler);
+
+            assertLegRunsOffTheCallersThread(registrar, scheduler, commit, legEntries);
+        }
+
+        @Test
+        void onLeaderChange_createStreamLegCommitOnlyPossibleAfterReturn_commitsAndNeverBlocksTheCaller() {
+            var commit = Promise.<Unit> promise();
+            var legEntries = new AtomicInteger();
+            var scheduler = new CapturingScheduler();
+            var registrar = SystemStreamRegistrar.systemStreamRegistrar(() -> awaitCommit(commit, legEntries),
+                                                                        () -> unitResult(),
+                                                                        scheduler);
+
+            assertLegRunsOffTheCallersThread(registrar, scheduler, commit, legEntries);
+        }
+
+        private static void assertLegRunsOffTheCallersThread(SystemStreamRegistrar registrar,
+                                                             CapturingScheduler scheduler,
+                                                             Promise<Unit> commit,
+                                                             AtomicInteger legEntries) {
+            var startNanos = System.nanoTime();
+
+            registrar.onLeaderChange(gained());
+
+            var elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000L;
+
+            assertThat(legEntries.get())
+                .as("the leg must not be entered on the notification thread — on the real path that is "
+                    + "Rabia's apply thread and the leg awaits a put only it can commit (#1419)")
+                .isZero();
+            assertThat(elapsedMillis)
+                .as("onLeaderChange must return without waiting; inline it burns the leg's whole %s bound", LEG_BOUND)
+                .isLessThan(LEG_BOUND.millis());
+
+            // Exactly what the apply thread does once released: apply the commit the leg waits on.
+            commit.succeed(unit());
+            scheduler.fireNext();
+
+            assertThat(legEntries.get()).isEqualTo(1);
+            assertThat(registrar.isComplete())
+                .as("the awaited commit lands, so the leg latches DONE on its FIRST pass")
+                .isTrue();
+            assertThat(scheduler.hasPending())
+                .as("both legs DONE — nothing further scheduled")
+                .isFalse();
+        }
+
+        /// A leg whose consensus commit is resolvable only by the thread that delivered the
+        /// notification, after it returns. Bounded so the inline (defective) arrangement fails loudly
+        /// instead of hanging the suite.
+        private static Result<?> awaitCommit(Promise<Unit> commit, AtomicInteger legEntries) {
+            legEntries.incrementAndGet();
+
+            return commit.await(LEG_BOUND);
+        }
+    }
+
     /// Deterministic [`SystemStreamRegistrar.RetryScheduler`] seam: captures each scheduled runnable
     /// instead of timing it so the test can drive retry passes explicitly. A fired runnable is removed
-    /// before invocation (mirroring the production `pendingRetry.set(null)` at the top of `onRetryFire`).
+    /// before invocation (mirroring the production `pendingRetry.set(null)` in `claimPass`). Every
+    /// pass is captured here, including the first (#1419).
     private static final class CapturingScheduler implements SystemStreamRegistrar.RetryScheduler {
         private final List<Runnable> pending = new ArrayList<>();
         private final List<TimeSpan> delays = new ArrayList<>();

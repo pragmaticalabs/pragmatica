@@ -8,13 +8,18 @@ package org.pragmatica.aether.deployment.node;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.SliceActionConfig;
+import org.pragmatica.aether.http.HttpRoutePublisher;
+import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.SliceStore.LoadedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -34,6 +39,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 class NodeDeploymentManagerTest {
 
@@ -52,6 +60,10 @@ class NodeDeploymentManagerTest {
         sliceStore = new TestSliceStore();
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
+        // #1068: every start here is a LIVE deployment, so the committed SliceTarget names the test
+        // artifact's version; a start with no target is a rollback leftover and is refused.
+        kvStore.put(SliceTargetKey.sliceTargetKey(createTestArtifact().base()),
+                    SliceTargetValue.sliceTargetValue(createTestArtifact().version(), 1));
         invocationHandler = new TestInvocationHandler();
         manager = NodeDeploymentManager.nodeDeploymentManager(
                 self, router, sliceStore, clusterNode, kvStore, invocationHandler
@@ -89,6 +101,94 @@ class NodeDeploymentManagerTest {
         sendNodeArtifactPut(artifact, SliceState.LOAD);
 
         assertThat(sliceStore.loadCalls).isEmpty();
+    }
+
+    // === Demotion vs quorum loss (#1790) ===
+
+    @Test
+    void demotion_doesNotSuspendActiveSlice_routesStayPublished() {
+        var artifact = createTestArtifact();
+        var publisher = mock(HttpRoutePublisher.class);
+        var observerManager = managerWithActiveSlice(artifact, publisher);
+
+        observerManager.onQuorumStateChange(ClusterStateNotification.demotion());
+
+        verify(publisher, never()).unpublishRoutes(artifact);
+    }
+
+    @Test
+    void demotion_keepsProcessingSliceCommands_asANonSuspendedNode() {
+        var artifact = createTestArtifact();
+        var observerManager = managerWithActiveSlice(artifact, mock(HttpRoutePublisher.class));
+
+        observerManager.onQuorumStateChange(ClusterStateNotification.demotion());
+        observerManager.onNodeArtifactPut(artifactPut(artifact, SliceState.LOAD));
+
+        assertThat(sliceStore.loadCalls).containsExactly(artifact);
+    }
+
+    @Test
+    void genuineQuorumLoss_suspendsActiveSlice_unpublishingRoutes() {
+        var artifact = createTestArtifact();
+        var publisher = mock(HttpRoutePublisher.class);
+        var voterManager = managerWithActiveSlice(artifact, publisher);
+
+        voterManager.onQuorumStateChange(ClusterStateNotification.passive());
+
+        verify(publisher).unpublishRoutes(artifact);
+    }
+
+    @Test
+    void v1796_demotionAfterGenuineLoss_doesNotRestoreSlices() {
+        var artifact = createTestArtifact();
+        var publisher = mock(HttpRoutePublisher.class);
+        var observerManager = managerWithActiveSlice(artifact, publisher);
+
+        observerManager.onQuorumStateChange(ClusterStateNotification.passive());
+        verify(publisher).unpublishRoutes(artifact);
+        org.mockito.Mockito.clearInvocations(publisher);
+        observerManager.onQuorumStateChange(ClusterStateNotification.demotion());
+
+        org.mockito.Mockito.verifyNoInteractions(publisher);
+    }
+
+    @Test
+    void quorumLoss_afterDemotion_stillSuspendsActiveSlice() {
+        var artifact = createTestArtifact();
+        var publisher = mock(HttpRoutePublisher.class);
+        var observerManager = managerWithActiveSlice(artifact, publisher);
+
+        observerManager.onQuorumStateChange(ClusterStateNotification.demotion());
+        observerManager.onQuorumStateChange(ClusterStateNotification.passive());
+
+        verify(publisher).unpublishRoutes(artifact);
+    }
+
+    private NodeDeploymentManager managerWithActiveSlice(Artifact artifact, HttpRoutePublisher publisher) {
+        var withPublisher = NodeDeploymentManager.nodeDeploymentManager(self,
+                                                                        new org.pragmatica.net.tcp.NodeAddress("", 0),
+                                                                        router,
+                                                                        sliceStore,
+                                                                        clusterNode,
+                                                                        kvStore,
+                                                                        invocationHandler,
+                                                                        SliceActionConfig.sliceActionConfig(),
+                                                                        SliceCodec.sliceCodec(List.of()),
+                                                                        Option.some(publisher),
+                                                                        Option.none());
+
+        sliceStore.markAsLoadedWithSlice(artifact);
+        withPublisher.onQuorumStateChange(ClusterStateNotification.active());
+        withPublisher.onNodeArtifactPut(artifactPut(artifact, SliceState.ACTIVE));
+
+        return withPublisher;
+    }
+
+    private ValuePut<NodeArtifactKey, NodeArtifactValue> artifactPut(Artifact artifact, SliceState state) {
+        var key = NodeArtifactKey.nodeArtifactKey(self, artifact);
+        var command = new KVCommand.Put<NodeArtifactKey, NodeArtifactValue>(key, NodeArtifactValue.nodeArtifactValue(state));
+
+        return new ValuePut<>(command, Option.none());
     }
 
     // === Key Filtering Tests ===

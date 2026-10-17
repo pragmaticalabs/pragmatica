@@ -16,6 +16,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -25,8 +26,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
+/// Implements [AsyncCloseable] because, when webhooks are enabled, it owns a JDK `HttpClient` whose selector
+/// thread otherwise outlives the node (#1097's class).
 @SuppressWarnings("JBCT-RET-01")
-public class AlertForwarder {
+public class AlertForwarder implements AsyncCloseable {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
     private static final long RETRY_BASE_MS = 200L;
     private static final long RETRY_CAP_MS = 30_000L;
@@ -52,6 +55,15 @@ public class AlertForwarder {
 
     public static AlertForwarder alertForwarder(AlertConfig config) {
         return new AlertForwarder(config);
+    }
+
+    /// Releases the webhook client, when there is one. Idempotent: the client's shutdown is.
+    @Override
+    public Promise<Unit> close() {
+        return httpOps.filter(AsyncCloseable.class::isInstance)
+                      .map(AsyncCloseable.class::cast)
+                      .map(AsyncCloseable::close)
+                      .or(Promise.unitPromise());
     }
 
     public Promise<Unit> forward(AlertEvent event) {
@@ -150,6 +162,7 @@ public class AlertForwarder {
             case AlertEvent.SliceFailureAlert sfa -> appendSliceFailureFields(sb, sfa);
             case AlertEvent.ThresholdAlert ta -> appendThresholdFields(sb, ta);
             case AlertEvent.AlertResolved ar -> appendResolvedFields(sb, ar);
+            case AlertEvent.NodeHealthAlert nha -> appendNodeHealthFields(sb, nha);
         }
 
         sb.append("}");
@@ -174,6 +187,16 @@ public class AlertForwarder {
 
         sb.append("],");
         sb.append("\"lastError\":\"").append(escapeJson(sfa.lastError())).append("\"");
+    }
+
+    /// #926: node-health alerts forward to the configured webhooks like every other alert kind. This is
+    /// the one alerting surface that leaves the cluster entirely, so it is the surface least affected by
+    /// the failure being reported — a webhook POST needs no leader, no quorum and no healthy peer.
+    private void appendNodeHealthFields(StringBuilder sb, AlertEvent.NodeHealthAlert nha) {
+        sb.append("\"type\":\"NODE_FAILED\",");
+        sb.append("\"nodeId\":\"").append(nha.nodeId().id()).append("\",");
+        sb.append("\"observedBy\":\"").append(nha.observedBy().id()).append("\",");
+        sb.append("\"reason\":\"").append(escapeJson(nha.reason())).append("\"");
     }
 
     private void appendThresholdFields(StringBuilder sb, AlertEvent.ThresholdAlert ta) {

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.nio.file.Files;
@@ -20,10 +19,12 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.net.tcp.security.ClusterSecretDerivation;
 
 import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.CLUSTER_FORMATION;
+import static org.pragmatica.lang.Option.option;
 
 
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
@@ -42,16 +43,11 @@ sealed interface BootstrapPhaseFormation {
                           ClusterBootstrapOrchestrator.API_KEY_BYTES);
         var managementPort = ctx.config().operations().ports().management();
         var scheme = managementScheme(ctx);
-        var healthTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
-                                                                              .operations()
-                                                                              .timeouts()
-                                                                              .healthCheck());
-        var quorumTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
-                                                                              .operations()
-                                                                              .timeouts()
-                                                                              .quorumFormation());
+        var waits = formationWaits(ctx.config());
+        var healthTimeoutMs = waits.healthMs();
+        var quorumTimeoutMs = waits.quorumMs();
         var requiredCores = ctx.config().derivedCoreCount();
-        var configuredKey = extractConfiguredApiKey(ctx.config());
+        var managementKey = resolveManagementKey(ctx);
 
         return waitForHealth(ctx.addresses(),
                              managementPort,
@@ -61,8 +57,19 @@ sealed interface BootstrapPhaseFormation {
                                                                 quorumTimeoutMs,
                                                                 requiredCores,
                                                                 scheme,
-                                                                configuredKey))
+                                                                managementKey))
                             .flatMap(_ -> finalizeClusterFormation(ctx, apiKey));
+    }
+
+    /// The node-health and quorum-formation waits in force: the config's `[operations.timeouts]`, capped by a `--timeout` given on the command
+    /// ([BootstrapWaitCap]). One place, so a test can assert both without waiting them out.
+    record FormationWaits(long healthMs, long quorumMs) {}
+
+    static FormationWaits formationWaits(ClusterBootstrapConfig config) {
+        var timeouts = config.operations().timeouts();
+
+        return new FormationWaits(BootstrapWaitCap.cappedMs(ClusterBootstrapOrchestrator.parseDurationMs(timeouts.healthCheck())),
+                                  BootstrapWaitCap.cappedMs(ClusterBootstrapOrchestrator.parseDurationMs(timeouts.quorumFormation())));
     }
 
     private static String managementScheme(BootstrapContext ctx) {
@@ -103,10 +110,7 @@ sealed interface BootstrapPhaseFormation {
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> waitForHealth(List<NodeAddress> addresses,
-                                              int managementPort,
-                                              long timeoutMs,
-                                              String scheme) {
+    static Result<Unit> waitForHealth(List<NodeAddress> addresses, int managementPort, long timeoutMs, String scheme) {
         if (addresses.isEmpty()) {
             return Result.unitResult();
         }
@@ -115,8 +119,7 @@ sealed interface BootstrapPhaseFormation {
                           addresses.size(),
                           timeoutMs / 1000);
         var promises = addresses.stream()
-                                .map(addr -> pollSingleNodeHealth(addr.publicIp(),
-                                                                  managementPort,
+                                .map(addr -> pollSingleNodeHealth(addr.managementHostPort(managementPort),
                                                                   timeoutMs,
                                                                   scheme))
                                 .toList();
@@ -137,9 +140,9 @@ sealed interface BootstrapPhaseFormation {
         return Result.unitResult();
     }
 
-    private static Promise<Unit> pollSingleNodeHealth(String ip, int port, long timeoutMs, String scheme) {
+    private static Promise<Unit> pollSingleNodeHealth(String hostPort, long timeoutMs, String scheme) {
         return Promise.promise(resolver -> {
-            var url = scheme + "://" + ip + ":" + port + "/health/live";
+            var url = scheme + "://" + hostPort + "/health/live";
             var deadline = System.currentTimeMillis() + timeoutMs;
 
             while (System.currentTimeMillis() < deadline) {
@@ -157,30 +160,38 @@ sealed interface BootstrapPhaseFormation {
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> waitForQuorum(List<NodeAddress> addresses,
-                                              int managementPort,
-                                              long timeoutMs,
-                                              int requiredCores,
-                                              String scheme,
-                                              Option<String> apiKey) {
+    static Result<Unit> waitForQuorum(List<NodeAddress> addresses,
+                                      int managementPort,
+                                      long timeoutMs,
+                                      int requiredCores,
+                                      String scheme,
+                                      Option<String> apiKey) {
         if (addresses.isEmpty()) {
             return Result.unitResult();
         }
 
-        var endpoint = addresses.getFirst().publicIp();
+        var endpoint = addresses.getFirst().managementHostPort(managementPort);
         var quorumFloor = quorumFloor(requiredCores);
 
-        System.out.printf("  Waiting for quorum at %s://%s:%d (need %d of %d core(s), timeout: %ds)%n",
+        System.out.printf("  Waiting for quorum at %s://%s (need %d of %d core(s), timeout: %ds)%n",
                           scheme,
                           endpoint,
-                          managementPort,
                           quorumFloor,
                           requiredCores,
                           timeoutMs / 1000);
         var deadline = System.currentTimeMillis() + timeoutMs;
+        // Remember what the cluster view last REPORTED, so a timeout can say what was seen rather
+        // than assert a count nobody measured. Absent means the view was never readable at all.
+        var lastObserved = Option.<Integer> none();
 
         while (System.currentTimeMillis() < deadline) {
-            if (quorumReached(endpoint, managementPort, scheme, requiredCores, quorumFloor, apiKey)) {
+            var observed = observedNodeCount(endpoint, scheme, apiKey);
+
+            if (observed.isPresent()) {
+                lastObserved = observed;
+            }
+
+            if (quorumReached(endpoint, scheme, requiredCores, quorumFloor, apiKey)) {
                 System.out.printf("  Quorum established (>= %d of %d core(s))%n", quorumFloor, requiredCores);
 
                 return Result.unitResult();
@@ -189,7 +200,8 @@ sealed interface BootstrapPhaseFormation {
             ClusterBootstrapOrchestrator.sleepQuietly(ClusterBootstrapOrchestrator.POLL_INTERVAL_MS);
         }
 
-        return new BootstrapError.QuorumNotEstablished(0, quorumFloor).result();
+        return new BootstrapError.QuorumNotEstablished(lastObserved.or(BootstrapError.QuorumNotEstablished.UNOBSERVED),
+                                                       quorumFloor).result();
     }
 
     /// Strict majority floor for a cluster of `requiredCores` (`n/2 + 1`), mirroring
@@ -208,23 +220,35 @@ sealed interface BootstrapPhaseFormation {
     /// `nodeCount` + `quorum`) and require the reported member count to meet the strict-majority floor.
     /// For a single-core cluster the lightweight readiness probe is sufficient.
     private static boolean quorumReached(String endpoint,
-                                         int managementPort,
                                          String scheme,
                                          int requiredCores,
                                          int quorumFloor,
                                          Option<String> apiKey) {
         if (requiredCores <= 1) {
-            var readyUrl = scheme + "://" + endpoint + ":" + managementPort + "/health/ready";
+            var readyUrl = scheme + "://" + endpoint + "/health/ready";
 
             return ClusterBootstrapOrchestrator.httpGet(readyUrl).isSuccess();
         }
 
-        var healthUrl = scheme + "://" + endpoint + ":" + managementPort + "/api/v1/health";
+        var healthUrl = scheme + "://" + endpoint + "/api/v1/health";
 
         return ClusterBootstrapOrchestrator.httpGet(healthUrl, apiKey)
                                            .flatMap(JSON::readTree)
                                            .map(node -> healthMeetsFloor(node, quorumFloor))
                                            .or(false);
+    }
+
+    /// The member count the cluster's own health view reports, or empty when that view could not be
+    /// read (unreachable, 401, unparseable body). Empty is NOT zero, and the two must not be
+    /// conflated in an error message — see [BootstrapError.QuorumNotEstablished].
+    private static Option<Integer> observedNodeCount(String endpoint, String scheme, Option<String> apiKey) {
+        var healthUrl = scheme + "://" + endpoint + "/api/v1/health";
+
+        return ClusterBootstrapOrchestrator.httpGet(healthUrl, apiKey)
+                                           .flatMap(JSON::readTree)
+                                           .map(node -> node.path("nodeCount")
+                                                            .asInt(0))
+                                           .option();
     }
 
     /// Decide whether the `/api/health` view has reached the quorum floor: the leader must report
@@ -251,9 +275,9 @@ sealed interface BootstrapPhaseFormation {
                                                                         .map(SshPublicKey::value)
                                                                         .toList());
         var configJson = buildConfigJson(persistedToml);
-        var configuredKey = extractConfiguredApiKey(ctx.config());
+        var managementKey = resolveManagementKey(ctx);
 
-        return retryFormationPost(endpoint + "/api/v1/cluster/config", configJson, "cluster config", configuredKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
+        return retryFormationPost(endpoint + "/api/v1/cluster/config", configJson, "cluster config", managementKey).onSuccess(_ -> System.out.println("  Cluster config stored in KV-Store"));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -271,10 +295,36 @@ sealed interface BootstrapPhaseFormation {
         var keyJson = "{\"keyId\":\"" + keyId
                     + "\",\"keyHash\":\"" + keyHash
                     + "\",\"authorizationRole\":\"ADMIN\",\"gracePeriodMs\":300000,\"auditAction\":\"CREATED\",\"operatorHint\":\"bootstrap\"}";
-        var configuredKey = extractConfiguredApiKey(ctx.config());
+        var managementKey = resolveManagementKey(ctx);
 
-        return retryFormationPost(endpoint + "/api/v1/cluster/keys", keyJson, "API key", configuredKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
+        return retryFormationPost(endpoint + "/api/v1/cluster/keys", keyJson, "API key", managementKey).onSuccess(_ -> System.out.printf("  API key stored (keyId=%s)%n",
                                                                                                                                          keyId));
+    }
+
+    /// #980 — the credential this CLI presents to the cluster it is forming.
+    ///
+    /// An operator-configured ADMIN key still wins where one exists: it is accepted from node boot,
+    /// while the derived key becomes valid only once the leader has committed its hash. With no
+    /// configured key — the case for EVERY cluster created by `aether cluster init`, which never
+    /// writes one — the key is DERIVED from the cluster secret this run minted in phase VALIDATE and
+    /// the nodes booted with. That is bit-for-bit the value `BootstrapAdminKeyLeg` registers
+    /// cluster-side, so the quorum poll authenticates instead of taking a 401 from a healthy cluster.
+    ///
+    /// Empty only when there is neither a configured key nor a cluster secret; the poll then runs
+    /// unauthenticated exactly as before, leaving a non-secured cluster unaffected.
+    static Option<String> resolveManagementKey(BootstrapContext ctx) {
+        return extractConfiguredApiKey(ctx.config()).orElse(() -> derivedAdminKey(ctx.clusterSecret()));
+    }
+
+    private static Option<String> derivedAdminKey(String clusterSecret) {
+        return option(clusterSecret).filter(secret -> !secret.isBlank())
+                     .flatMap(BootstrapPhaseFormation::deriveOrWarn);
+    }
+
+    private static Option<String> deriveOrWarn(String clusterSecret) {
+        return ClusterSecretDerivation.bootstrapAdminKey(clusterSecret)
+                                      .onFailure(cause -> System.err.println("  Warning: could not derive the bootstrap admin key: " + cause.message()))
+                                      .option();
     }
 
     private static Option<String> extractConfiguredApiKey(ClusterBootstrapConfig config) {
@@ -350,14 +400,14 @@ sealed interface BootstrapPhaseFormation {
         return result.fold(cause -> cause.message(), _ -> "");
     }
 
-    private static String buildManagementEndpoint(BootstrapContext ctx) {
+    static String buildManagementEndpoint(BootstrapContext ctx) {
         var port = ctx.config().operations().ports().management();
-        var ip = ctx.addresses().getFirst().publicIp();
+        var hostPort = ctx.addresses().getFirst().managementHostPort(port);
         var scheme = ctx.config().operations().tls().autoGenerate()
                      ? "https"
                      : "http";
 
-        return scheme + "://" + ip + ":" + port;
+        return scheme + "://" + hostPort;
     }
 
     static String buildConfigJson(String rawTomlContent) {

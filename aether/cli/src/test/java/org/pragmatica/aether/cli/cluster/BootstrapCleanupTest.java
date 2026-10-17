@@ -1,16 +1,19 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.cli.cluster;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.cli.cluster.BootstrapState.PhaseStatus;
 import org.pragmatica.aether.cli.cluster.CreatedResource.ProvisionedVm;
 import org.pragmatica.aether.cli.cluster.CreatedResource.SshKeyResource;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
@@ -25,12 +28,18 @@ import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
@@ -629,6 +638,13 @@ class BootstrapCleanupTest {
                                              Map.of("core-source", handle));
     }
 
+    /// #1022 — the sweep's ledger seam, stubbed. These tests sweep under the borrowed cluster name
+    /// `prod`; the production recorder writes the real `~/.aether/clusters/prod/bootstrap-state.json`,
+    /// so a no-op here is what keeps a green test from appending to an operator's genuine ledger.
+    /// Tests that assert WHAT is recorded use a capturing recorder instead.
+    private static final Fn2<Result<Unit>, ClusterName, CreatedResource> NOOP_LEDGER_RECORDER =
+        (_, _) -> Result.unitResult();
+
     private static Fn1<HetznerClient, String> sweepingClientFactory(HetznerClient client, List<String> tokens) {
         return token -> recordSweepFactory(token, client, tokens);
     }
@@ -652,7 +668,7 @@ class BootstrapCleanupTest {
                            new SshKey(99L, "aether-bootstrap-production-op", "fp-99", "pk-99"),
                            new SshKey(43L, "aether-bootstrap-other-op", "fp-43", "pk-43"),
                            new SshKey(44L, "someones-laptop", "fp-44", "pk-44"));
-        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of());
+        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of(), Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
@@ -676,7 +692,7 @@ class BootstrapCleanupTest {
     void destroy_sshKeyAlreadyGone_toleratedNoFailure() {
         var deleteCalls = new ArrayList<Long>();
         var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"));
-        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of(42L));
+        var client = new SweepingHetznerClient(keys, deleteCalls, Set.of(42L), Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
@@ -692,7 +708,7 @@ class BootstrapCleanupTest {
     // --- RFC-0017 stage 6 / C3: cluster-scoped VM sweep ---
 
     private static Server vmServer(long id, String name) {
-        return new Server(id, name, "running", null, null, null, null, Map.of("aether-cluster", "prod"));
+        return new Server(id, name, "running", null, null, null, null, Map.of("aether-cluster", "prod"), null);
     }
 
     /// The selector is built from the cluster name — scoped BY CONSTRUCTION. The sweep deletes
@@ -706,14 +722,15 @@ class BootstrapCleanupTest {
         var envReads = new ArrayList<String>();
         var factoryTokens = new ArrayList<String>();
         var servers = List.of(vmServer(101L, "prod-worker-r123-0"), vmServer(102L, "prod-worker-r123-1"));
-        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(), selectors);
+        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(), selectors, Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
         var result = BootstrapCleanup.sweepClusterVms(state,
                                                       clusterName("prod").unwrap(),
                                                       recordingGetenv(env, envReads),
-                                                      sweepingClientFactory(client, factoryTokens));
+                                                      sweepingClientFactory(client, factoryTokens),
+                                                      NOOP_LEDGER_RECORDER);
 
         assertTrue(result.isSuccess(), () -> "VM sweep must succeed: " + result);
         assertEquals(List.of("aether-cluster=prod"), selectors,
@@ -731,14 +748,15 @@ class BootstrapCleanupTest {
     @Test
     void destroy_vmSweep_protectedCluster_refusedBeforeAnyProviderCall() {
         var factoryTokens = new ArrayList<String>();
-        var client = new VmSweepingHetznerClient(List.of(), new ArrayList<>(), Set.of(), new ArrayList<>());
+        var client = new VmSweepingHetznerClient(List.of(), new ArrayList<>(), Set.of(), new ArrayList<>(), Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
         var result = BootstrapCleanup.sweepClusterVms(state,
                                                       clusterName("test-pg").unwrap(),
                                                       recordingGetenv(env, new ArrayList<>()),
-                                                      sweepingClientFactory(client, factoryTokens));
+                                                      sweepingClientFactory(client, factoryTokens),
+                                                      NOOP_LEDGER_RECORDER);
 
         assertTrue(result.isFailure(), "sweeping a protected cluster must fail, not skip silently");
         result.onFailure(cause -> assertTrue(cause.message().contains("protected")
@@ -753,17 +771,148 @@ class BootstrapCleanupTest {
     void destroy_vmSweep_alreadyGoneVm_tolerated() {
         var deleteCalls = new ArrayList<Long>();
         var servers = List.of(vmServer(101L, "prod-core-0"), vmServer(102L, "prod-worker-r1-0"));
-        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(101L), new ArrayList<>());
+        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(101L), new ArrayList<>(), Set.of());
         var state = stateWithHetznerHandle();
         var env = Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE);
 
         var result = BootstrapCleanup.sweepClusterVms(state,
                                                       clusterName("prod").unwrap(),
                                                       recordingGetenv(env, new ArrayList<>()),
-                                                      sweepingClientFactory(client, new ArrayList<>()));
+                                                      sweepingClientFactory(client, new ArrayList<>()),
+                                                      NOOP_LEDGER_RECORDER);
 
         assertTrue(result.isSuccess(), () -> "an already-gone VM must be tolerated: " + result);
         assertEquals(List.of(101L, 102L), deleteCalls, "both deletes must still be attempted");
+    }
+
+    // --- #1022: the label sweep records what the ledger never held ---
+
+    /// A ledger state carrying an already-recorded `ProvisionedVm` for `recordedId`, so a test can tell
+    /// a bootstrap-minted VM (recorded at creation by `BootstrapPhaseProvision.recordProvisionedVm`)
+    /// from a CTM auto-heal replacement, which no operator-side code ever saw created.
+    private static BootstrapState stateWithRecordedVm(String recordedId) {
+        return stateWithHetznerHandle().withResource(CreatedResource.ProvisionedVm.provisionedVm("hetzner",
+                                                                                                 recordedId,
+                                                                                                 "core-source",
+                                                                                                 "core"));
+    }
+
+    /// Records BOTH the ledger appends and the deletes into ONE list, because the ordering is the
+    /// property under test and two separate lists could not express it. A record written after its
+    /// server is gone buys nothing: the whole point is that a teardown which then fails part-way leaves
+    /// the ledger naming what is still billing.
+    private static Fn2<Result<Unit>, ClusterName, CreatedResource> capturingRecorder(List<String> events) {
+        return (name, resource) -> captureRecord(events, name, resource);
+    }
+
+    private static Result<Unit> captureRecord(List<String> events, ClusterName name, CreatedResource resource) {
+        events.add("record:" + name + ":" + ((CreatedResource.ProvisionedVm) resource).resourceId());
+
+        return Result.unitResult();
+    }
+
+    private static VmSweepingHetznerClient recordingDeleteClient(List<Server> servers, List<String> events) {
+        return new VmSweepingHetznerClient(servers, new EventRecordingList(events), Set.of(), new ArrayList<>(), Set.of());
+    }
+
+    /// The `deleteCalls` sink the sweep already writes to, teed into the shared ordering list. Extending
+    /// `ArrayList` rather than adding a parameter keeps `VmSweepingHetznerClient` untouched, so every
+    /// existing sweep test keeps exercising the same stub.
+    static final class EventRecordingList extends ArrayList<Long> {
+        private final transient List<String> events;
+
+        EventRecordingList(List<String> events) {
+            this.events = events;
+        }
+
+        @Override
+        public boolean add(Long serverId) {
+            events.add("delete:" + serverId);
+
+            return super.add(serverId);
+        }
+    }
+
+    /// #1022 — the sweep is the ONLY operator-side code that ever sees a CTM auto-heal replacement, so
+    /// it is the first and last chance to put that VM in the ledger. Both swept VMs are unknown to this
+    /// ledger, and every record must precede every delete.
+    @Test
+    void vmSweep_recordsUnrecordedVmsInTheLedger_beforeDeletingThem() {
+        var events = new ArrayList<String>();
+        var servers = List.of(vmServer(101L, "prod-core-r9-0"), vmServer(102L, "prod-core-r9-1"));
+
+        var result = BootstrapCleanup.sweepClusterVms(stateWithHetznerHandle(),
+                                                      clusterName("prod").unwrap(),
+                                                      recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                      new ArrayList<>()),
+                                                      sweepingClientFactory(recordingDeleteClient(servers, events),
+                                                                            new ArrayList<>()),
+                                                      capturingRecorder(events));
+
+        assertTrue(result.isSuccess(), () -> "VM sweep must succeed: " + result);
+        assertEquals(List.of("record:prod:101", "record:prod:102", "delete:101", "delete:102"),
+                     events,
+                     "every unrecorded VM must be written to the ledger BEFORE any of them is deleted — a"
+                     + " record made after the delete cannot help a teardown that fails part-way");
+    }
+
+    /// The ledger must not grow a SECOND entry for a VM it already names. The sweep selector matches
+    /// every cluster-labelled VM, bootstrap-minted ones included, so an unfiltered append would
+    /// duplicate each of them under the synthesized `label-swept` role — turning the ledger an operator
+    /// reads into a double count of what is billing.
+    @Test
+    void vmSweep_skipsVmsTheLedgerAlreadyNames_recordingOnlyTheRest() {
+        var events = new ArrayList<String>();
+        var servers = List.of(vmServer(101L, "prod-core-0"), vmServer(102L, "prod-core-autoheal-1"));
+
+        var result = BootstrapCleanup.sweepClusterVms(stateWithRecordedVm("101"),
+                                                      clusterName("prod").unwrap(),
+                                                      recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                      new ArrayList<>()),
+                                                      sweepingClientFactory(recordingDeleteClient(servers, events),
+                                                                            new ArrayList<>()),
+                                                      capturingRecorder(events));
+
+        assertTrue(result.isSuccess(), () -> "VM sweep must succeed: " + result);
+        assertEquals(List.of("record:prod:102", "delete:101", "delete:102"),
+                     events,
+                     "only the VM the ledger never held may be appended; both must still be deleted");
+    }
+
+    /// A ledger that cannot be written must not stop the reaping. The server is billing either way, and
+    /// refusing to delete it because a note about it could not be saved turns a full disk into an
+    /// un-reapable cluster. The id still has to reach the operator, so it goes to stderr.
+    @Test
+    void vmSweep_ledgerWriteFailure_stillDeletes_andNamesTheIdOnStderr() {
+        var err = new ByteArrayOutputStream();
+        var originalErr = System.err;
+        var deleteCalls = new ArrayList<Long>();
+        var servers = List.of(vmServer(101L, "prod-core-autoheal-0"));
+        var client = new VmSweepingHetznerClient(servers, deleteCalls, Set.of(), new ArrayList<>(), Set.of());
+
+        System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+
+        var result = sweepWithFailingRecorder(client);
+
+        System.setErr(originalErr);
+
+        assertTrue(result.isSuccess(),
+                   () -> "a ledger write failure must never fail the sweep — the VM is billing either way: " + result);
+        assertEquals(List.of(101L), deleteCalls, "the delete must still be attempted");
+
+        var captured = err.toString(StandardCharsets.UTF_8);
+
+        assertTrue(captured.contains("101") && captured.contains("NOT recorded"),
+                   () -> "the unrecordable server's id must reach stderr; got:\n" + captured);
+    }
+
+    private static Result<Unit> sweepWithFailingRecorder(HetznerClient client) {
+        return BootstrapCleanup.sweepClusterVms(stateWithHetznerHandle(),
+                                                clusterName("prod").unwrap(),
+                                                recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                new ArrayList<>()),
+                                                sweepingClientFactory(client, new ArrayList<>()),
+                                                (_, _) -> Causes.cause("the ledger write failed: disk full").result());
     }
 
     /// Supersedes `destroy_vmSweep_blankClusterName_skipsWithoutProviderCalls`. A blank cluster name
@@ -886,7 +1035,7 @@ class BootstrapCleanupTest {
         var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"));
         var unmappedHandle = SourceCleanupHandle.sourceCleanupHandle("hetzner", Option.some("fsn1"), Map.of());
         var state = stateWithSshKeyAndHandle(unmappedHandle);
-        var sweepingClient = new SweepingHetznerClient(keys, deleteCalls, Set.of());
+        var sweepingClient = new SweepingHetznerClient(keys, deleteCalls, Set.of(), Set.of());
 
         var result = BootstrapCleanup.sweepClusterSshKeys(state,
                                                           clusterName("prod").unwrap(),
@@ -912,10 +1061,14 @@ class BootstrapCleanupTest {
     /// surface as a Hetzner 404 `not_found` `ApiError` (already-gone). All other operations throw.
     /// VM-sweep stub: only the label-scoped listing and server deletion are legal; everything else
     /// is a stub failure so the sweep cannot silently widen its surface.
+    /// `failIds` surface as a Hetzner 422 `resource_in_use` — NOT a 404, so `tolerateServerAlreadyGone`
+    /// does not absorb it and the sweep genuinely fails. That is the arm #994 verification finding SF-4
+    /// needs: a swept, billable VM the sweep could not delete.
     record VmSweepingHetznerClient(List<Server> servers,
                                    List<Long> deleteCalls,
                                    Set<Long> goneIds,
-                                   List<String> selectors) implements HetznerClient {
+                                   List<String> selectors,
+                                   Set<Long> failIds) implements HetznerClient {
         @Override public Promise<List<Server>> listServers(String labelSelector) {
             selectors.add(labelSelector);
             return Promise.success(servers);
@@ -925,6 +1078,9 @@ class BootstrapCleanupTest {
             deleteCalls.add(serverId);
             if (goneIds.contains(serverId)) {
                 return new HetznerError.ApiError(404, "not_found", "server not found").promise();
+            }
+            if (failIds.contains(serverId)) {
+                return new HetznerError.ApiError(422, "resource_in_use", "server is still in use").promise();
             }
             return Promise.success(Unit.unit());
         }
@@ -963,7 +1119,12 @@ class BootstrapCleanupTest {
         }
     }
 
-    record SweepingHetznerClient(List<SshKey> keys, List<Long> deleteCalls, Set<Long> goneIds) implements HetznerClient {
+    /// `failIds` surface as a Hetzner 403 — not a 404 — so `tolerateAlreadyGone` does not absorb it and the
+    /// key sweep genuinely fails (#994 verification finding SF-4: an orphaned credential left on the account).
+    record SweepingHetznerClient(List<SshKey> keys,
+                                 List<Long> deleteCalls,
+                                 Set<Long> goneIds,
+                                 Set<Long> failIds) implements HetznerClient {
         @Override public Promise<List<SshKey>> listSshKeys() {
             return Promise.success(keys);
         }
@@ -972,6 +1133,9 @@ class BootstrapCleanupTest {
             deleteCalls.add(sshKeyId);
             if (goneIds.contains(sshKeyId)) {
                 return new HetznerError.ApiError(404, "not_found", "ssh key not found").promise();
+            }
+            if (failIds.contains(sshKeyId)) {
+                return new HetznerError.ApiError(403, "forbidden", "ssh key is protected").promise();
             }
             return Promise.success(Unit.unit());
         }
@@ -1050,6 +1214,633 @@ class BootstrapCleanupTest {
 
         private static AssertionError fail(String name) {
             return new AssertionError("Test stub: '" + name + "' must not be called by SSH-key cleanup");
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // #994 — delete ORDER, the honest refusal diagnostic, and the enumeration of what was left behind.
+    // ---------------------------------------------------------------------------------------------
+
+    /// Records VM terminations and firewall disposals into ONE ordered list, so a test can assert the
+    /// ORDER of provider calls rather than merely that both happened. `firewallRefusals` scripts a firewall
+    /// the provider will not release, which is the only way to reach the retry diagnostic and the
+    /// left-behind enumeration.
+    static final class OrderRecordingComputeProvider implements ComputeProvider {
+        private final List<String> calls;
+        private final Set<String> refusedTerminations;
+        private final Set<String> alreadyGoneInstances;
+        private int firewallRefusals;
+
+        OrderRecordingComputeProvider(List<String> calls, int firewallRefusals) {
+            this(calls, firewallRefusals, Set.of(), Set.of());
+        }
+
+        /// #994 verification NOTE-5 — `refusedTerminations` fail for a reason that is NOT
+        /// `InstanceNotFound`, so `tolerateAlreadyGone` does not absorb them and the VM stays unreaped:
+        /// the only way to reach `VmAccounting`'s middle branch, which had no test at all.
+        /// `alreadyGoneInstances` fail WITH `InstanceNotFound`, which IS absorbed — the case where the
+        /// count says "accounted for" about a server this cleanup never deleted.
+        OrderRecordingComputeProvider(List<String> calls,
+                                      int firewallRefusals,
+                                      Set<String> refusedTerminations,
+                                      Set<String> alreadyGoneInstances) {
+            this.calls = calls;
+            this.firewallRefusals = firewallRefusals;
+            this.refusedTerminations = refusedTerminations;
+            this.alreadyGoneInstances = alreadyGoneInstances;
+        }
+
+        @Override public Promise<Unit> terminate(InstanceId instanceId) {
+            calls.add("terminate:" + instanceId.value());
+
+            if (alreadyGoneInstances.contains(instanceId.value())) {
+                return EnvironmentError.InstanceNotFound.instanceNotFound(instanceId).unwrap().promise();
+            }
+
+            if (refusedTerminations.contains(instanceId.value())) {
+                return new TestCause("provider refused to terminate " + instanceId.value()).promise();
+            }
+
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> disposeIngress(FirewallId ingressId) {
+            calls.add("disposeIngress:" + ingressId.value());
+
+            if (firewallRefusals > 0) {
+                firewallRefusals--;
+
+                return new HetznerError.ApiError(422,
+                                                 "resource_in_use",
+                                                 "firewall with ID " + ingressId.value() + " is still in use").promise();
+            }
+
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
+            return new TestCause("provision not used").promise();
+        }
+
+        @Override public Promise<List<InstanceInfo>> listInstances() {
+            return Promise.success(List.of());
+        }
+
+        @Override public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return new TestCause("instanceStatus not used").promise();
+        }
+    }
+
+    /// A ledger that records the VM FIRST and the firewall SECOND. This ordering is what makes the rank
+    /// sort load-bearing: `cleanupWith` reverses creation order, so reverse-of-creation ALONE would issue
+    /// the firewall delete first — exactly the 422 sequence #994 reports. Only `destructionRank` puts the
+    /// VM back in front, so removing or inverting that sort reddens the test below.
+    private static BootstrapState stateWithVmThenFirewall() {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+        var resources = List.<CreatedResource>of(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core"),
+                                                 CreatedResource.CloudFirewall.cloudFirewall("hetzner",
+                                                                                             FirewallId.firewallId("77").unwrap(),
+                                                                                             sourceNameOrDefault("hetzner-eu"),
+                                                                                             firewallName("aether-test-hetzner-eu").unwrap()));
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of());
+    }
+
+    /// #994 verification NOTE-5 — TWO recorded VMs, so `deleted < recorded` is reachable. With one VM this
+    /// branch cannot be entered at all, which is why the two existing diagnostic fixtures only ever produced
+    /// 0/0 and 1/1.
+    private static BootstrapState stateWithTwoVmsThenFirewall() {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+        var resources = List.<CreatedResource>of(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core"),
+                                                 new ProvisionedVm("hetzner", "vm-2", "hetzner-eu", "core"),
+                                                 CreatedResource.CloudFirewall.cloudFirewall("hetzner",
+                                                                                             FirewallId.firewallId("77").unwrap(),
+                                                                                             sourceNameOrDefault("hetzner-eu"),
+                                                                                             firewallName("aether-test-hetzner-eu").unwrap()));
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of());
+    }
+
+    private static Result<Unit> cleanupWithProvider(BootstrapState state, ComputeProvider compute) {
+        return BootstrapCleanup.cleanupWith(state,
+                                            BootstrapCleanup.CleanupResolvers.cleanupResolvers()
+                                                    .withCloudComputeFallback(_ -> Result.success(compute))
+                                                    .withSleeper(_ -> {}));
+    }
+
+    /// #997 — the same entry with the pre-firewall VM sweep wired in, which is what `cluster destroy` uses.
+    /// The two-argument form above is the BOOTSTRAP path and deliberately sweeps nothing.
+    private static Result<Unit> cleanupWithProviderAndSweep(BootstrapState state,
+                                                           ComputeProvider compute,
+                                                           Fn0<Result<Unit>> sweep) {
+        return BootstrapCleanup.cleanupWith(state,
+                                            BootstrapCleanup.CleanupResolvers.cleanupResolvers()
+                                                    .withCloudComputeFallback(_ -> Result.success(compute))
+                                                    .withSleeper(_ -> {}),
+                                            Option.some(sweep));
+    }
+
+    /// Records the sweep into the SAME ordered list the provider records its calls into, so the assertion is
+    /// about one interleaved sequence rather than about two independently-observed facts.
+    private static Result<Unit> recordSweep(List<String> calls) {
+        calls.add("sweep");
+
+        return Result.unitResult();
+    }
+
+    private static Result<Unit> failingSweep(List<String> calls) {
+        calls.add("sweep");
+
+        return new TestCause("a swept VM could not be deleted").result();
+    }
+
+    private static CreatedResource.CloudFirewall firewallResource() {
+        return CreatedResource.CloudFirewall.cloudFirewall("hetzner",
+                                                           FirewallId.firewallId("77").unwrap(),
+                                                           sourceNameOrDefault("hetzner-eu"),
+                                                           firewallName("aether-test-hetzner-eu").unwrap());
+    }
+
+    /// A ledger holding VMs and NO firewall — the case in which the rank walk never reaches
+    /// `SWEEP_BEFORE_RANK`, so the sweep can only run from the post-loop call.
+    private static BootstrapState stateWithVmOnly() {
+        return stateWith(List.of(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core")));
+    }
+
+    private static BootstrapState stateWithNoResources() {
+        return stateWith(List.of());
+    }
+
+    private static BootstrapState stateWith(List<CreatedResource> resources) {
+        var phases = new EnumMap<BootstrapPhase, PhaseStatus>(BootstrapPhase.class);
+        for (var phase : BootstrapPhase.values()) {phases.put(phase, PhaseStatus.COMPLETED);}
+
+        return BootstrapState.bootstrapState(CLUSTER_NAME,
+                                             "hash-1",
+                                             "2026-05-01T00:00:00Z",
+                                             phases,
+                                             resources,
+                                             List.of(),
+                                             List.of());
+    }
+
+    /// #997 — where the cluster-labelled VM sweep runs.
+    ///
+    /// The defect: `runCleanup` ran the ledger cleanup (which deletes the firewall) and only THEN the label
+    /// sweep. The sweep exists to reap VMs the ledger never recorded — stage-5 workers, auto-heal
+    /// replacements — so if one of those held the firewall, the firewall delete burned all 6 attempts,
+    /// FAILED, and the sweep then removed the VMs: leaving the firewall stranded, which is the one resource
+    /// the ordering existed to protect.
+    @Nested
+    class PreFirewallVmSweep {
+
+        /// #997 expectation 1, asserted on ONE interleaved call sequence. Both constraints hold at once:
+        /// the recorded VM (a core) dies first, so the leader's worker reconciler cannot re-provision what
+        /// the sweep reaps (RFC-0017 stage 6 / C3), and the sweep completes before the firewall delete is
+        /// attempted, so no unrecorded VM can hold it.
+        @Test
+        void cleanup_sweepsLabelledVms_afterTheRecordedVms_andBeforeTheFirewall() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProviderAndSweep(stateWithVmThenFirewall(),
+                                                     new OrderRecordingComputeProvider(calls, 0),
+                                                     () -> recordSweep(calls));
+
+            assertTrue(result.isSuccess(), () -> "every step must succeed: " + result);
+            assertEquals(List.of("terminate:vm-1", "sweep", "disposeIngress:77"),
+                         calls,
+                         "cores -> label-swept VMs -> firewall. Move the sweep after the firewall and the "
+                         + "firewall delete 422s against a VM the ledger never recorded, then the sweep "
+                         + "deletes that VM and the firewall is stranded (#997).");
+        }
+
+        /// The insertion point is derived from the firewall's OWN rank, not restated as a literal. Pinned as
+        /// the strict invariant — VM rank is below it, firewall rank is at it — so re-ranking either resource
+        /// reddens this instead of silently sliding the sweep to the wrong side of the firewall.
+        @Test
+        void sweepBeforeRank_sitsStrictlyBetweenTheVmRankAndTheFirewallRank() {
+            var vmRank = BootstrapCleanup.destructionRank(new ProvisionedVm("hetzner", "vm-1", "hetzner-eu", "core"));
+            var firewallRank = BootstrapCleanup.destructionRank(firewallResource());
+
+            assertTrue(vmRank < BootstrapCleanup.SWEEP_BEFORE_RANK,
+                       () -> "the sweep must run after every VM-rank delete; vm=" + vmRank
+                             + " sweepBefore=" + BootstrapCleanup.SWEEP_BEFORE_RANK);
+            assertEquals(firewallRank,
+                         BootstrapCleanup.SWEEP_BEFORE_RANK,
+                         "and immediately before the firewall's own rank, read from destructionRank rather "
+                         + "than restated");
+        }
+
+        /// A ledger with VMs and no firewall never reaches `SWEEP_BEFORE_RANK` in the walk, so only the
+        /// post-loop call can run the sweep. Without it the sweep would be skipped for any cluster whose
+        /// firewall was recorded by something other than bootstrap.
+        @Test
+        void cleanup_runsTheSweepExactlyOnce_whenTheLedgerHasNoFirewall() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProviderAndSweep(stateWithVmOnly(),
+                                                     new OrderRecordingComputeProvider(calls, 0),
+                                                     () -> recordSweep(calls));
+
+            assertTrue(result.isSuccess(), () -> "the VM delete and the sweep both succeed: " + result);
+            assertEquals(List.of("terminate:vm-1", "sweep"),
+                         calls,
+                         "exactly one sweep, after the VMs — not zero (walk never reaches the rank) and not "
+                         + "two (both the in-walk and the post-loop call firing)");
+        }
+
+        /// And with nothing in the ledger at all, which is precisely #994's observed state: every VM that
+        /// was created is unrecorded and billing, so the label sweep is the only thing that can find them.
+        @Test
+        void cleanup_runsTheSweepExactlyOnce_whenTheLedgerIsEmpty() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProviderAndSweep(stateWithNoResources(),
+                                                     new OrderRecordingComputeProvider(calls, 0),
+                                                     () -> recordSweep(calls));
+
+            assertTrue(result.isSuccess(), () -> "an empty ledger plus a clean sweep is a success: " + result);
+            assertEquals(List.of("sweep"), calls, "the sweep is the only thing an empty ledger can do");
+        }
+
+        /// #997 expectation 2 — a failed sweep FAILS the cleanup, which is what keeps the bootstrap ledger on
+        /// disk. It used to be reported beside the cleanup: the ledger was deleted, and a second `destroy`
+        /// then found no state, printed "No bootstrap state — skipping resource cleanup", removed the
+        /// registry entry and exited 0 over VMs that were still billing.
+        @Test
+        void cleanup_fails_whenTheVmSweepFails() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProviderAndSweep(stateWithVmThenFirewall(),
+                                                     new OrderRecordingComputeProvider(calls, 0),
+                                                     () -> failingSweep(calls));
+
+            assertTrue(result.isFailure(),
+                       () -> "a sweep that left a VM behind cannot report a successful cleanup: " + result);
+            assertEquals(List.of("terminate:vm-1", "sweep", "disposeIngress:77"),
+                         calls,
+                         "the walk still completes — the firewall delete is attempted and reports the "
+                         + "provider's own verdict rather than being skipped on a guess");
+        }
+    }
+
+    @Nested
+    class DestructionOrder {
+
+        /// #994 expectation 1. Hetzner refuses to delete a firewall still applied to a live server, so every
+        /// server must be deleted BEFORE the thing it references. Asserted on the ORDER of provider calls,
+        /// against a ledger whose record order is the opposite — so the guarantee comes from the rank sort
+        /// and not from an accident of which phase recorded first.
+        @Test
+        void cleanup_deletesVmBeforeFirewall_whenLedgerRecordsVmFirst() {
+            var calls = new ArrayList<String>();
+
+            var result = cleanupWithProvider(stateWithVmThenFirewall(), new OrderRecordingComputeProvider(calls, 0));
+
+            assertTrue(result.isSuccess(), () -> "both deletes must succeed: " + result);
+            assertEquals(List.of("terminate:vm-1", "disposeIngress:77"),
+                         calls,
+                         "VMs must be deleted BEFORE the firewall they hold; the reverse order is the 422 "
+                         + "resource_in_use sequence that stranded two paid servers on 2026-09-11");
+        }
+    }
+
+    @Nested
+    class FirewallRefusalDiagnostic {
+
+        private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        private PrintStream originalOut;
+
+        private PrintStream originalErr;
+
+        @BeforeEach
+        void captureStreams() {
+            originalOut = System.out;
+            originalErr = System.err;
+            System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+            System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+        }
+
+        @AfterEach
+        void restoreStreams() {
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+        }
+
+        private String stdout() {
+            return out.toString(StandardCharsets.UTF_8);
+        }
+
+        private String stderr() {
+            return err.toString(StandardCharsets.UTF_8);
+        }
+
+        /// #994 expectation 2 — the retry line used to read "servers are still detaching; retrying...", which
+        /// asserted a mechanism that was NOT running: the ledger held no VMs, so no server delete had been
+        /// issued and nothing was detaching. That sent an operator to look at server shutdown while the real
+        /// problem was the ledger. The replacement states only what was observed.
+        @Test
+        void cleanup_firewallRefusal_statesObservedState_neverADetachingProcess() {
+            var result = cleanupWithProvider(stateWithFirewall(77L),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
+            assertFalse(stdout().contains("detaching"),
+                        () -> "the diagnostic must not claim servers are detaching when no server delete was "
+                              + "issued; got:\n" + stdout());
+            assertTrue(stdout().contains("the bootstrap ledger records NO VMs for source 'hetzner-eu'"),
+                       () -> "it must state the OBSERVED ledger state — zero VM records is the fact that "
+                             + "explains the refusal; got:\n" + stdout());
+            assertTrue(stdout().contains("resource_in_use"),
+                       () -> "the provider's own refusal must be quoted verbatim, not paraphrased; got:\n" + stdout());
+        }
+
+        /// #997 — the reorder made the old wording FALSE, so the diagnostic had to learn about the sweep.
+        /// With an empty ledger it said "this cleanup has issued no server delete for it", which a sweep that
+        /// had just deleted three unrecorded VMs flatly contradicts — and then advised the operator to "check
+        /// for unrecorded VMs", which is the thing the sweep had already done. That is the #994 class exactly:
+        /// a diagnostic asserting an action instead of reporting an observation.
+        @Test
+        void cleanup_firewallRefusal_reportsThatTheVmSweepRan_whenItDid() {
+            var result = cleanupWithProviderAndSweep(stateWithFirewall(77L),
+                                                     new OrderRecordingComputeProvider(new ArrayList<>(), 99),
+                                                     () -> Result.unitResult());
+
+            assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
+            assertTrue(stdout().contains("the cluster-labelled VM sweep ran before this delete and reported"
+                                         + " success"),
+                       () -> "the sweep is now part of the observed state preceding the refusal; got:\n" + stdout());
+            assertFalse(stdout().contains("this cleanup has issued no server delete"),
+                        () -> "and the unqualified claim is gone — the sweep DID issue deletes; got:\n" + stdout());
+        }
+
+        /// The FAILED verdict, which is the one that changes what an operator should look at: a VM the sweep
+        /// could not remove is a live candidate for what still holds the firewall.
+        @Test
+        void cleanup_firewallRefusal_reportsASweepFailure_asAPossibleHolder() {
+            var result = cleanupWithProviderAndSweep(stateWithFirewall(77L),
+                                                     new OrderRecordingComputeProvider(new ArrayList<>(), 99),
+                                                     () -> new TestCause("swept VM 42 would not delete").result());
+
+            assertTrue(result.isFailure(), "both the sweep and the firewall failed");
+            assertTrue(stdout().contains("the cluster-labelled VM sweep ran before this delete and FAILED"),
+                       () -> "a failed sweep is the most likely holder of a firewall that will not release; "
+                             + "got:\n" + stdout());
+        }
+
+        /// The NOT_RUN control, and the PROTECTED_CLUSTERS guarantee in one: the two-argument `cleanupWith` is
+        /// the BOOTSTRAP rollback path, and it sweeps nothing. That is why `sweepClusterVms`'s refusal of a
+        /// protected cluster — a `Result` FAILURE — cannot become a new bootstrap failure mode: the hook
+        /// defaults to a no-op rather than to the real sweep.
+        ///
+        /// Without this control the two tests above prove only that some clause is printed; they could not
+        /// distinguish a verdict that is read from one that is always the same string.
+        @Test
+        void cleanup_firewallRefusal_saysNoSweepRan_onTheBootstrapPath() {
+            var result = cleanupWithProvider(stateWithFirewall(77L),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
+            assertTrue(stdout().contains("no cluster-labelled VM sweep ran before this delete"),
+                       () -> "the bootstrap path must report the absence, not borrow the destroy path's "
+                             + "wording; got:\n" + stdout());
+            assertFalse(stdout().contains("VM sweep ran before this delete and reported success"),
+                        () -> "and must not claim a sweep it never performed; got:\n" + stdout());
+        }
+
+        /// Positive control for the assertion above: the SAME diagnostic, with VMs in the ledger that this
+        /// cleanup deleted. Without this case, "does not contain 'detaching'" is also satisfied by a
+        /// diagnostic that says nothing at all, and "records NO VMs" could be a hard-coded string.
+        @Test
+        void cleanup_firewallRefusal_reportsVmsItDeleted_whenLedgerRecordsThem() {
+            var result = cleanupWithProvider(stateWithVmThenFirewall(),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            assertTrue(result.isFailure(), "an undeletable firewall must still fail loudly");
+            assertTrue(stdout().contains("this cleanup accounted for all 1 VM(s)"),
+                       () -> "with the ledger's VMs reaped, the observed state is exactly that — and only "
+                             + "then is a provider-side release pending a legitimate reading; got:\n" + stdout());
+            assertFalse(stdout().contains("deleted all 1 VM(s)"),
+                        () -> "NOTE-5: 'deleted' overstates it — an already-gone VM also enters the reaped "
+                              + "set, so the honest word is 'accounted for'; got:\n" + stdout());
+            assertFalse(stdout().contains("records NO VMs"),
+                        () -> "the zero-VM wording must not appear when the ledger DID record one — that "
+                              + "would make the message a constant rather than a reading; got:\n" + stdout());
+        }
+
+        /// #994 expectation 3. "orphan resources may remain" tells an operator that something may be billing
+        /// without telling them what to delete; the list had to be rebuilt by hand from `hcloud server list`.
+        @Test
+        void cleanup_enumeratesEveryResourceLeftBehind_withTypeAndId() {
+            var result = cleanupWithProvider(stateWithFirewall(77L),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            assertTrue(result.isFailure(), "precondition: the firewall could not be reaped");
+            assertTrue(stderr().contains("NOT REAPED"), () -> "the leftover block must be printed; got:\n" + stderr());
+            assertTrue(stderr().contains("[CloudFirewall] id=77"),
+                       () -> "every unreaped resource must be named by TYPE and ID; got:\n" + stderr());
+            assertTrue(stderr().contains("cloud-reaper.sh"),
+                       () -> "and the operator must be told what finishes the job; got:\n" + stderr());
+        }
+
+        /// The enumeration has to survive into the CAUSE, not only stdout: the bootstrap failure path wraps
+        /// this message into `BootstrapFailedWithOrphans`, which is what an operator sees on a non-zero exit
+        /// after the transcript has scrolled away.
+        @Test
+        void cleanup_failureCause_carriesTheEnumeration_notJustTheTranscript() {
+            var result = cleanupWithProvider(stateWithFirewall(77L),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99));
+
+            result.onSuccess(_ -> fail("precondition: cleanup must fail"))
+                  .onFailure(cause -> assertTrue(cause.message().contains("NOT REAPED: [CloudFirewall] id=77"),
+                                                 () -> "the cause must enumerate what was left behind: " + cause.message()));
+        }
+
+        /// #994 verification NOTE-5 — **the middle branch had NO test.** The two existing diagnostic
+        /// fixtures produce only 0/0 and 1/1, so `deleted < recorded` — the reading that tells an operator
+        /// exactly how many recorded VMs are still alive — was never executed, and a mutation that stops
+        /// `deleted` being an observation was undetectable (verifier probe V5, GREEN).
+        @Test
+        void cleanup_firewallRefusal_reportsThePartialCount_whenARecordedVmCouldNotBeDeleted() {
+            var result = cleanupWithProvider(stateWithTwoVmsThenFirewall(),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99, Set.of("vm-2"), Set.of()));
+
+            assertTrue(result.isFailure(), "precondition: one VM and the firewall could not be reaped");
+            assertTrue(stdout().contains("records 2 VM(s) for source 'hetzner-eu' and this cleanup deleted 1 of them"),
+                       () -> "the count must be READ from what cleanup observed, not asserted; got:\n" + stdout());
+            assertTrue(stdout().contains("1 recorded VM(s) were NOT deleted"),
+                       () -> "and the operator needs the remainder stated, because those are the ones still "
+                             + "billing; got:\n" + stdout());
+            assertFalse(stdout().contains("accounted for all"),
+                        () -> "the all-reaped wording must not appear when one VM survived; got:\n" + stdout());
+        }
+
+        /// #994 verification NOTE-5, the other half: an already-gone VM enters the reaped set through
+        /// `tolerateAlreadyGone`, so the full-count branch fires for a server this cleanup did NOT delete.
+        /// That is why the wording is "accounted for" — the adjacent line says which of the two it was.
+        @Test
+        void cleanup_firewallRefusal_doesNotClaimToHaveDeleted_aVmThatWasAlreadyGone() {
+            var result = cleanupWithProvider(stateWithVmThenFirewall(),
+                                             new OrderRecordingComputeProvider(new ArrayList<>(), 99, Set.of(), Set.of("vm-1")));
+
+            assertTrue(result.isFailure(), "precondition: the firewall could not be reaped");
+            assertTrue(stdout().contains("already gone — treating as destroyed"),
+                       () -> "precondition: the VM was absent, not deleted by this run; got:\n" + stdout());
+            assertTrue(stdout().contains("accounted for all 1 VM(s)"),
+                       () -> "it is still accounted for — the ledger's VM is not holding the firewall; "
+                             + "got:\n" + stdout());
+            assertFalse(stdout().contains("cleanup deleted all"),
+                        () -> "but this cleanup deleted nothing, and saying otherwise is the same class as "
+                              + "'servers are still detaching'; got:\n" + stdout());
+        }
+
+        /// A fully successful cleanup must print no leftover block at all — otherwise the block becomes noise
+        /// an operator learns to skip, which is how #994's honest-but-useless message got ignored.
+        @Test
+        void cleanup_printsNoLeftBehindBlock_whenEverythingWasReaped() {
+            var result = cleanupWithProvider(stateWithVmThenFirewall(), new OrderRecordingComputeProvider(new ArrayList<>(), 0));
+
+            assertTrue(result.isSuccess(), () -> "precondition: everything reaped: " + result);
+            assertFalse(stderr().contains("NOT REAPED"),
+                        () -> "nothing was left behind, so nothing must be enumerated; got:\n" + stderr());
+        }
+    }
+
+    /// #994 verification finding SF-4 — `destroy` has THREE teardown paths and the `NOT REAPED` enumeration
+    /// covered one. The claim "a partial cleanup enumerates every resource it left behind, by type and id"
+    /// was therefore true of `cleanupWith` and **false of the command**, and the paths it missed are the
+    /// label-scoped VM sweep and the ssh-key sweep — where the UNRECORDED billable VMs that are #994's whole
+    /// theme actually live. Both now route their failures through `ReapFailure`.
+    @Nested
+    class SweepEnumeration {
+
+        private final ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+        private final ByteArrayOutputStream err = new ByteArrayOutputStream();
+
+        private PrintStream originalOut;
+
+        private PrintStream originalErr;
+
+        @BeforeEach
+        void captureStreams() {
+            originalOut = System.out;
+            originalErr = System.err;
+            System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+            System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
+        }
+
+        @AfterEach
+        void restoreStreams() {
+            System.setOut(originalOut);
+            System.setErr(originalErr);
+        }
+
+        private String stderr() {
+            return err.toString(StandardCharsets.UTF_8);
+        }
+
+        private Result<Unit> sweepVms(Set<Long> failIds) {
+            var servers = List.of(vmServer(101L, "prod-worker-r123-0"), vmServer(102L, "prod-worker-r123-1"));
+            var client = new VmSweepingHetznerClient(servers, new ArrayList<>(), Set.of(), new ArrayList<>(), failIds);
+
+            return BootstrapCleanup.sweepClusterVms(stateWithHetznerHandle(),
+                                                    clusterName("prod").unwrap(),
+                                                    recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                    new ArrayList<>()),
+                                                    sweepingClientFactory(client, new ArrayList<>()),
+                                                    NOOP_LEDGER_RECORDER);
+        }
+
+        private Result<Unit> sweepKeys(Set<Long> failIds) {
+            var keys = List.of(new SshKey(42L, "aether-bootstrap-prod-op", "fp-42", "pk-42"));
+            var client = new SweepingHetznerClient(keys, new ArrayList<>(), Set.of(), failIds);
+
+            return BootstrapCleanup.sweepClusterSshKeys(stateWithHetznerHandle(),
+                                                        clusterName("prod").unwrap(),
+                                                        recordingGetenv(Map.of(NON_DEFAULT_TOKEN_ENV, PROD_TOKEN_VALUE),
+                                                                        new ArrayList<>()),
+                                                        sweepingClientFactory(client, new ArrayList<>()));
+        }
+
+        /// The sweep reaps VMs the LEDGER NEVER RECORDED, so when it cannot delete one there is no other
+        /// record of that server anywhere — which makes the id the only thing standing between the operator
+        /// and a server that bills indefinitely. `"VM sweep failed: <message>"` carried neither type nor id.
+        ///
+        /// Both failing ids are asserted, because "every" is the word the claim uses and a block printing
+        /// only the first satisfies a single-resource test exactly as well.
+        @Test
+        void vmSweep_enumeratesEverySweptVmItCouldNotDelete_withTypeAndId() {
+            var result = sweepVms(Set.of(101L, 102L));
+
+            assertTrue(result.isFailure(), "precondition: the 422 refusals are not tolerated");
+            assertTrue(stderr().contains("NOT REAPED"),
+                       () -> "the sweep must print the leftover block, not just a joined string; got:\n" + stderr());
+            assertTrue(stderr().contains("[ProvisionedVm] id=101"),
+                       () -> "by type and id; got:\n" + stderr());
+            assertTrue(stderr().contains("[ProvisionedVm] id=102"),
+                       () -> "EVERY one of them, not only the first; got:\n" + stderr());
+            assertTrue(stderr().contains("cloud-reaper.sh"),
+                       () -> "and what finishes the job; got:\n" + stderr());
+        }
+
+        /// The enumeration has to survive into the CAUSE as well: `ClusterDestroyCommand.runVmSweep` prints
+        /// `cause.message()`, and that line is what an operator still has after the transcript scrolls.
+        @Test
+        void vmSweep_failureCause_carriesTheEnumeration_notJustTheTranscript() {
+            sweepVms(Set.of(101L)).onSuccess(_ -> fail("precondition: the sweep must fail"))
+                                  .onFailure(cause -> assertTrue(cause.message().contains("NOT REAPED: [ProvisionedVm] id=101"),
+                                                                 () -> "the cause must enumerate: " + cause.message()));
+        }
+
+        /// Positive control for both assertions above. Without it, "stderr contains NOT REAPED" proves only
+        /// that some failure path printed something, and the block could be an always-on line.
+        @Test
+        void vmSweep_printsNoLeftBehindBlock_whenEverySweptVmWasDeleted() {
+            var result = sweepVms(Set.of());
+
+            assertTrue(result.isSuccess(), () -> "precondition: both deletes succeed: " + result);
+            assertFalse(stderr().contains("NOT REAPED"),
+                        () -> "a complete sweep leaves nothing behind, so it must enumerate nothing; got:\n" + stderr());
+        }
+
+        /// An undeleted cluster-scoped key is an orphaned credential on the account, and `SshKeyResource`
+        /// carries its name as well as its id — so this is the one synthesized-free case: every component of
+        /// the enumerated resource is a value the sweep actually observed.
+        @Test
+        void sshKeySweep_enumeratesEveryKeyItCouldNotDelete_withTypeAndId() {
+            var result = sweepKeys(Set.of(42L));
+
+            assertTrue(result.isFailure(), "precondition: a 403 is not an already-gone 404");
+            assertTrue(stderr().contains("NOT REAPED"), () -> "got:\n" + stderr());
+            assertTrue(stderr().contains("[SshKeyResource] id=42"),
+                       () -> "by type and id; got:\n" + stderr());
+            assertTrue(stderr().contains("aether-bootstrap-prod-op"),
+                       () -> "and by the name the operator sees in 'hcloud ssh-key list'; got:\n" + stderr());
+        }
+
+        @Test
+        void sshKeySweep_printsNoLeftBehindBlock_whenEveryKeyWasDeleted() {
+            var result = sweepKeys(Set.of());
+
+            assertTrue(result.isSuccess(), () -> "precondition: the delete succeeds: " + result);
+            assertFalse(stderr().contains("NOT REAPED"),
+                        () -> "positive control for the case above; got:\n" + stderr());
         }
     }
 }

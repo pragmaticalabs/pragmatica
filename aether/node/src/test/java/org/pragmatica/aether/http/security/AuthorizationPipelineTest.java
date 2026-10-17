@@ -196,12 +196,6 @@ class AuthorizationPipelineTest {
         }
 
         @Test
-        void pipeline_success_operatorCreatesBackup() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/v1/backups")
-                .onFailureRun(() -> fail("Expected success"));
-        }
-
-        @Test
         void pipeline_success_operatorDeploysBlueprintFromArtifact() {
             runPipeline(OPERATOR_KEY, "POST", "/api/v1/blueprints/deploy")
                 .onFailureRun(() -> fail("Expected success"));
@@ -224,13 +218,6 @@ class AuthorizationPipelineTest {
         @Test
         void pipeline_denied_operatorShutsDownNode() {
             runPipeline(OPERATOR_KEY, "POST", "/api/v1/nodes/shutdown/node-1")
-                .onSuccessRun(() -> fail("Expected failure"))
-                .onFailure(AuthorizationPipelineTest::assertAccessDenied);
-        }
-
-        @Test
-        void pipeline_denied_operatorRestoresBackup() {
-            runPipeline(OPERATOR_KEY, "POST", "/api/v1/backups/restore")
                 .onSuccessRun(() -> fail("Expected failure"))
                 .onFailure(AuthorizationPipelineTest::assertAccessDenied);
         }
@@ -273,12 +260,6 @@ class AuthorizationPipelineTest {
         @Test
         void pipeline_success_adminShutsDownNode() {
             runPipeline(ADMIN_KEY, "POST", "/api/v1/nodes/shutdown/node-1")
-                .onFailureRun(() -> fail("Expected success"));
-        }
-
-        @Test
-        void pipeline_success_adminRestoresBackup() {
-            runPipeline(ADMIN_KEY, "POST", "/api/v1/backups/restore")
                 .onFailureRun(() -> fail("Expected success"));
         }
 

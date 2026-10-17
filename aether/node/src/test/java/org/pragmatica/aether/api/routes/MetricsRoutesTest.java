@@ -17,7 +17,6 @@ import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
 import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.metrics.timeout.TimeoutMetricsRegistry;
 import org.pragmatica.aether.metrics.timeout.TimeoutSubsystem;
@@ -235,11 +234,22 @@ class MetricsRoutesTest {
         }
     }
 
+    @Test
+    void nodeMetricsReadsPublishedKeysAndConvertsHeapBytesToMebibytes() {
+        collector.nodeMetrics = java.util.Map.of(LOCAL_NODE,
+            java.util.Map.of(ClusterSyncCollector.CPU_USAGE, 0.45,
+                             ClusterSyncCollector.HEAP_USED, 256.0 * 1024 * 1024,
+                             ClusterSyncCollector.HEAP_MAX, 512.0 * 1024 * 1024));
+        assertThat(routesWithDevMode(false).buildNodeMetricsResponse()).containsExactly(
+            new org.pragmatica.aether.api.ManagementApiResponses.NodeMetric(LOCAL_NODE.id(), 0.45, 256, 512));
+    }
+
     // --- helpers ---
 
     private record InjectCall(NodeId nodeId, MetricsSnapshot snapshot) {}
 
     private static final class RecordingCollector {
+        java.util.Map<NodeId, java.util.Map<String, Double>> nodeMetrics = java.util.Map.of();
         final List<InjectCall> injectedSnapshots = new CopyOnWriteArrayList<>();
 
         ClusterSyncCollector asClusterSyncCollector() {
@@ -247,6 +257,7 @@ class MetricsRoutesTest {
                 ClusterSyncCollector.class.getClassLoader(),
                 new Class[]{ClusterSyncCollector.class},
                 (_, method, args) -> {
+                    if ("allMetrics".equals(method.getName())) return nodeMetrics;
                     if ("injectHistoricalSnapshot".equals(method.getName()) && args != null && args.length == 2) {
                         injectedSnapshots.add(new InjectCall((NodeId) args[0], (MetricsSnapshot) args[1]));
                         return null;
@@ -277,7 +288,6 @@ class MetricsRoutesTest {
             var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(
                 GCMetricsCollector.gcMetricsCollector(),
                 EventLoopMetricsCollector.eventLoopMetricsCollector(),
-                NetworkMetricsHandler.networkMetricsHandler(),
                 rabia,
                 InvocationMetricsCollector.invocationMetricsCollector(),
                 MinuteAggregator.minuteAggregator());
@@ -294,6 +304,32 @@ class MetricsRoutesTest {
             assertEquals(2, response.consensus().voteRound1Count());
             assertEquals(1, response.consensus().voteRound2Count());
             assertEquals(0, response.consensus().fastPathCount());
+        }
+
+        /// #1117: the two new fields ride the consensus block of the comprehensive response.
+        @Test
+        void comprehensive_carriesThePendingAgeAndTheApplyTimeoutCount() {
+            var rabia = RabiaMetricsCollector.rabiaMetricsCollector();
+
+            rabia.registerOldestPendingBatchAgeProbe(LOCAL_NODE, () -> 4_321L);
+            rabia.recordApplyTimeout(LOCAL_NODE);
+            rabia.recordApplyTimeout(LOCAL_NODE);
+
+            var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(
+                GCMetricsCollector.gcMetricsCollector(),
+                EventLoopMetricsCollector.eventLoopMetricsCollector(),
+                rabia,
+                InvocationMetricsCollector.invocationMetricsCollector(),
+                MinuteAggregator.minuteAggregator());
+            var routes = MetricsRoutes.metricsRoutes(() -> nodeWithSnapshotCollector(snapshotCollector),
+                                                     ObservabilityRegistry.prometheus(),
+                                                     timeouts,
+                                                     () -> false);
+
+            var response = routes.buildComprehensiveMetricsResponseForTest();
+
+            assertEquals(4_321L, response.consensus().oldestPendingBatchAgeMs());
+            assertEquals(2L, response.consensus().applyTimeoutCount());
         }
 
         private ManageableNode nodeWithSnapshotCollector(ComprehensiveSnapshotCollector snapshotCollector) {

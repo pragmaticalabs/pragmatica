@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.cli.cluster;
 
@@ -127,6 +126,12 @@ class BootstrapPhaseProvisionZoneRotationTest {
 
             result.onSuccess(nodes -> assertThat(nodes).isNull())
                   .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.ProvisionFailed.class));
+            // The cause propagates UNWRAPPED out of the phase (`return result;`), and
+            // ClusterBootstrapCommand.onFailure prints `"Error: " + cause.message()` to stderr — so
+            // this message IS the operator-visible text. That matters more than usual here: the
+            // shipped CLI jar binds slf4j to NOPServiceProvider, so no log line reaches anyone and
+            // this string is the only diagnostic channel that exists.
+            result.onFailure(cause -> assertThat(cause.message()).contains("Node provisioning failed"));
             assertThat(provisioner.callCount)
                     .as("non-capacity error must NOT rotate — provider called exactly once")
                     .isEqualTo(1);

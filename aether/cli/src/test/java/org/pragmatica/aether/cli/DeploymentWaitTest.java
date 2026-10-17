@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
 import java.util.ArrayDeque;
@@ -27,8 +26,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class DeploymentWaitTest {
     private static final String BLUEPRINT_COORDS = "org.example:hello:1.0.0-SNAPSHOT";
 
+    /// #759 review (m) — matches the live `BlueprintResponse` shape
+    /// (`ManagementApiResponses.java`): `targetInstances`/`activeInstances`/`failedInstances`
+    /// plus `statusUrl`, not the retired `slices` count.
     private static final String DEPLOY_RESPONSE = """
-            {"status":"deployed","blueprint":"org.example:hello:1.0.0-SNAPSHOT","slices":1}""";
+            {"status":"pending","blueprint":"org.example:hello:1.0.0-SNAPSHOT","targetInstances":3,\
+            "activeInstances":0,"failedInstances":0,"statusUrl":"/api/v1/blueprints/status/org.example%3Ahello%3A1.0.0-SNAPSHOT"}""";
 
     private static final String COMPLETED_BLUEPRINT_STATUS = """
             {"id":"org.example:hello:1.0.0-SNAPSHOT",
@@ -66,7 +69,8 @@ class DeploymentWaitTest {
 
         @Test
         void blueprintId_responseWithoutBlueprintField_returnsEmpty() {
-            assertTrue(DeploymentWait.blueprintId("{\"status\":\"deployed\",\"slices\":1}").isEmpty());
+            assertTrue(DeploymentWait.blueprintId("{\"status\":\"deployed\",\"targetInstances\":1,\"activeInstances\":1,\"failedInstances\":0}")
+                                     .isEmpty());
         }
 
         @Test

@@ -19,22 +19,40 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 
 public sealed interface AppHttpState extends FsmState<AppHttpState, ClusterFsmEvent> {
+    Logger LOG = LoggerFactory.getLogger(AppHttpState.class);
     AppHttpContext ctx();
 
     record Stopped(AppHttpContext ctx) implements AppHttpState {
         @Override
         @Contract
         public void handle(ClusterFsmEvent event, TransitionRequest<AppHttpState, ClusterFsmEvent> tx) {
-            if (event instanceof StartRequested) {
-                tx.transitionTo(ctx.starting());
-
-                return;
+            switch (event) {
+                case StartRequested _ -> tx.transitionTo(ctx.starting());
+                case H1Ready(HttpServer server) -> tx.handle(() -> stopOrphanedServer(ctx,
+                                                                                      Option.some(server),
+                                                                                      Option.none()));
+                case H3Ready(HttpServer h3) -> tx.handle(() -> stopOrphanedServer(ctx, Option.none(), Option.some(h3)));
+                default -> tx.ignore();
             }
-
-            tx.ignore();
         }
+    }
+
+    /// An H1Ready/H3Ready reaching Stopped means stop() won the race against an in-flight bind: the
+    /// listener exists and is bound, but no state owns it, so nothing will ever close it and its port
+    /// stays held for the life of the process (#1456). Close it here — the same rule
+    /// `SwimHealthState.Stopped` applies to an orphaned SWIM protocol.
+    ///
+    /// The alternative — making stop() wait for start() to finish — is ruled out by #1308: a start
+    /// can stay pending indefinitely when quorum cannot form, which is exactly what the abort path
+    /// exists to escape. Closing from the losing publisher's side needs no wait.
+    private static void stopOrphanedServer(AppHttpContext ctx, Option<HttpServer> server, Option<HttpServer> h3) {
+        LOG.info("App HTTP listener bound after stop() had already run — closing the orphan (#1456)");
+        ctx.stopServers(server, h3);
     }
 
     record Starting(AppHttpContext ctx) implements AppHttpState {

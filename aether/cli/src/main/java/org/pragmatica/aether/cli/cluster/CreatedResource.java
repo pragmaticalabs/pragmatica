@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import org.pragmatica.aether.environment.FirewallId;
@@ -109,6 +108,29 @@ public sealed interface CreatedResource {
         @Override
         public String description() {
             return "Container " + containerId + " (" + sourceName + ")";
+        }
+    }
+
+    /// A docker network BOOTSTRAP created because none existed (#2131). Recorded only when we created it: a network that was already there is
+    /// never in the ledger, so destroy cannot remove one the user provided.
+    record DockerNetwork(String networkName) implements CreatedResource {
+        static DockerNetwork dockerNetwork(String networkName) {
+            return new DockerNetwork(networkName);
+        }
+
+        @Override
+        public String provider() {
+            return "docker";
+        }
+
+        @Override
+        public String resourceId() {
+            return networkName;
+        }
+
+        @Override
+        public String description() {
+            return "Docker network " + networkName + " (created by bootstrap)";
         }
     }
 

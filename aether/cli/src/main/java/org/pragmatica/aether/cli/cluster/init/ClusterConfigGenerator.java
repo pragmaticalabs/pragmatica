@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
 import java.util.List;
@@ -37,6 +36,7 @@ public sealed interface ClusterConfigGenerator {
         appendSource(sb, answers);
         appendRoles(sb, answers);
         answers.database().onPresent(db -> appendDatabase(sb, db));
+        answers.cloud().onPresent(cloud -> appendInfrastructureSsh(sb, cloud));
         appendFirewall(sb, answers);
         appendRuntime(sb, answers);
         appendTls(sb, answers);
@@ -96,6 +96,9 @@ public sealed interface ClusterConfigGenerator {
         }
 
         appendBlank(sb);
+        answers.cloud()
+               .filter(cloud -> answers.target() == SourceType.CLOUD)
+               .onPresent(cloud -> appendCloudCredentials(sb, cloud));
     }
 
     private static void appendCloudFields(StringBuilder sb, CloudAnswers cloud) {
@@ -103,7 +106,27 @@ public sealed interface ClusterConfigGenerator {
                  "provider",
                  cloud.provider().value());
         appendKv(sb, "region", cloud.region());
-        appendKv(sb, "credentials", "${env:" + cloud.credentialEnvVar() + "}");
+        if (cloud.provider() == CloudProviderName.HETZNER) {
+            appendKv(sb,
+                     "credentials",
+                     "${env:" + cloud.credentialEnvVars().get("api_token") + "}");
+        }
+
+        if (cloud.provider() == CloudProviderName.GCP) {
+            appendKv(sb, "zone", cloud.zone());
+        }
+    }
+
+    /// #2059: aws, gcp and azure need several credential keys, which one scalar `credentials` cannot carry. They
+    /// go under `node_config.cloud.credentials` as `${env:...}` references to the env vars the operator named.
+    private static void appendCloudCredentials(StringBuilder sb, CloudAnswers cloud) {
+        if (cloud.provider() == CloudProviderName.HETZNER) {
+            return;
+        }
+
+        appendSection(sb, "source." + SOURCE_NAME + ".node_config.cloud.credentials");
+        cloud.credentialEnvVars().forEach((key, envVar) -> appendKv(sb, key, "${env:" + envVar + "}"));
+        appendBlank(sb);
     }
 
     private static void appendSshFields(StringBuilder sb, SshAnswers ssh) {
@@ -114,14 +137,39 @@ public sealed interface ClusterConfigGenerator {
         appendKvBare(sb,
                      "ssh_port",
                      String.valueOf(ssh.port()));
-        appendKvBare(sb, "hosts", renderStringList(ssh.hosts()));
     }
 
+    /// #1199 — an SSH source sizes each role by its OWN `hosts` list (PF-10 refuses `count`), and the
+    /// parser reads `hosts` only from the role sub-tables, so the host list is split here: the first
+    /// `core` hosts form the core tier and the remainder the worker tier.
     private static void appendRoles(StringBuilder sb, ClusterConfigAnswers answers) {
+        var core = answers.topology().core();
+
+        answers.ssh()
+               .filter(_ -> answers.target() == SourceType.SSH)
+               .onPresent(ssh -> appendSshRoles(sb, ssh, core))
+               .onEmpty(() -> appendCountRoles(sb, answers, core));
+    }
+
+    private static void appendSshRoles(StringBuilder sb, SshAnswers ssh, int core) {
+        var hosts = ssh.hosts();
+        var split = Math.min(core, hosts.size());
+
         appendSection(sb, "source." + SOURCE_NAME + ".core");
-        appendKvBare(sb,
-                     "count",
-                     String.valueOf(answers.topology().core()));
+        appendKvBare(sb, "hosts", renderStringList(hosts.subList(0, split)));
+        appendBlank(sb);
+        if (split < hosts.size()) {
+            appendSection(sb, "source." + SOURCE_NAME + ".worker");
+            appendKvBare(sb,
+                         "hosts",
+                         renderStringList(hosts.subList(split, hosts.size())));
+            appendBlank(sb);
+        }
+    }
+
+    private static void appendCountRoles(StringBuilder sb, ClusterConfigAnswers answers, int core) {
+        appendSection(sb, "source." + SOURCE_NAME + ".core");
+        appendKvBare(sb, "count", String.valueOf(core));
         answers.cloud().onPresent(cloud -> appendKv(sb, "instance_type", cloud.instanceType()));
         appendBlank(sb);
         if (answers.topology().worker() > 0) {
@@ -151,6 +199,21 @@ public sealed interface ClusterConfigGenerator {
             case PasswordSource.FromEnv fromEnv -> "${env:" + fromEnv.envVar() + "}";
             case PasswordSource.Plaintext plaintext -> plaintext.value();
         };
+    }
+
+    /// The section `SshKeyResolver.collectSshKeyFiles` reads — `[infrastructure.ssh]`, key
+    /// `public_key_file`. Emitted for cloud targets only: `resolveOrFailIfCloud` refuses a cloud
+    /// cluster whose key it cannot resolve, and before this the generator wrote no SSH reference at
+    /// all, so `init` produced a file `bootstrap` then rejected.
+    ///
+    /// The key name is `public_key_file` (singular) rather than `public_key_files`: the parser
+    /// accepts both, but the list form WINS when non-empty, so writing the singular leaves an
+    /// operator free to add the plural later without this line silently overriding it.
+    private static void appendInfrastructureSsh(StringBuilder sb, CloudAnswers cloud) {
+        appendSection(sb, "infrastructure.ssh");
+        appendComment(sb, "Public key injected into provisioned VMs; bootstrap resolves it from here.");
+        appendKv(sb, "public_key_file", cloud.sshPublicKeyPath());
+        appendBlank(sb);
     }
 
     private static void appendFirewall(StringBuilder sb, ClusterConfigAnswers answers) {
@@ -233,7 +296,13 @@ public sealed interface ClusterConfigGenerator {
     }
 
     private static void appendTls(StringBuilder sb, ClusterConfigAnswers answers) {
-        if (answers.target() == SourceType.DOCKER || answers.target() == SourceType.FORGE || answers.tls() instanceof TlsAnswers.Skipped) {
+        if (answers.target() == SourceType.DOCKER) {
+            appendDockerPlainHttp(sb);
+
+            return;
+        }
+
+        if (answers.target() == SourceType.FORGE || answers.tls() instanceof TlsAnswers.Skipped) {
             appendCommentedTlsTemplate(sb);
 
             return;
@@ -247,6 +316,16 @@ public sealed interface ClusterConfigGenerator {
         }
 
         appendSecret(sb, answers.secret());
+        appendBlank(sb);
+    }
+
+    /// A docker source cannot serve management TLS (its nodes boot from the image's plain-HTTP configuration), and bootstrap refuses a
+    /// docker source whose config declares TLS (#2089), so the generated config says "no TLS" out loud instead of leaving the default.
+    private static void appendDockerPlainHttp(StringBuilder sb) {
+        appendComment(sb,
+                      "Docker nodes serve the management API over plain HTTP; bootstrap refuses a docker source that declares TLS.");
+        appendSection(sb, "operations.tls");
+        appendKvBare(sb, "auto_generate", "false");
         appendBlank(sb);
     }
 
@@ -304,15 +383,9 @@ public sealed interface ClusterConfigGenerator {
         appendComment(sb, "Advanced configuration (uncomment as needed):");
         appendComment(sb, "------------------------------------------------------------");
         appendComment(sb, "");
-        appendComment(sb, "[operations.auto_heal]");
-        // #575: `enabled` is deliberately absent from this scaffold — it parses into AutoHealSpec,
-        // which the runtime never reads (AutoHealConfig, the type it actually consumes, has no
-        // `enabled` field at all). ClusterBootstrapConfigValidator rejects `enabled = false`
-        // outright rather than let it scaffold a working-looking off switch; showing `enabled = true`
-        // here would be equally misleading since it claims a toggle that does not exist.
-        appendComment(sb, "retry_interval = \"60s\"");
-        appendComment(sb, "startup_cooldown = \"15s\"");
-        appendComment(sb, "");
+        // #575/#675: no `[operations.auto_heal]` scaffold. `enabled = false` is refused (PF-25) and
+        // every tunable that used to be listed here is refused too (PF-26): the runtime reads its
+        // auto-heal settings from the NODE config, never from this document.
         appendComment(sb, "[operations.timeouts]");
         appendComment(sb, "health_check = \"300s\"");
         appendComment(sb, "quorum_formation = \"600s\"");

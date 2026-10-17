@@ -5,10 +5,12 @@
 package org.pragmatica.aether.api.routes;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
@@ -16,18 +18,21 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.PromoteNodeResponse;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
+import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
+import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.node.ManageableNode;
-import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.QueryParameter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -35,12 +40,21 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.http.routing.PathParameter.aString;
 
 
 public final class NodeLifecycleRoutes implements RouteSource {
+    private static final Logger LOG = LoggerFactory.getLogger(NodeLifecycleRoutes.class);
+
     /// 404 (not 500) when the target node has no reported lifecycle state. A plain `Causes.cause`
     /// is not `HttpStatusAware`, so the management error funnel (`ProblemResponses.resolveStatus`)
     /// defaults it to 500; wrapping in `HttpError.httpError(NOT_FOUND, ...)` makes the status
@@ -52,6 +66,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// has no terminal value (a halting node simply stops reporting), so the shutdown route uses
     /// this label for the audit + `NodeLifecycleChanged` event surface only.
     private static final String STOPPED_STATE = "STOPPED";
+    /// `MembershipFsm.memberStates()` reports `getClass().getSimpleName()`; `MembershipState.Dead` is the terminal,
+    /// committed departure of an identity.
+    private static final String MEMBERSHIP_DEAD = "Dead";
 
     private final Supplier<ManageableNode> nodeSupplier;
     /// Membership v2 (B5b) — leader-local DRAIN command sink. Operator `drain` / `shutdown` routes
@@ -69,10 +86,56 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// via the single-arg factory for legacy callers / test fixtures. The registry is leader-owned
     /// and drains are leader-routed, so this read reflects the authoritative pending set.
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
+    /// #1720: the slice `minAvailable` floor guard for operator drain and shutdown, absent for legacy callers and
+    /// fixtures that wire no slice ownership (they keep the budget-only admission they always had).
+    private final Option<SliceFloor> sliceFloor;
+    /// Targets whose operator drain the slice floor refused and that have not been admitted since: the refusal
+    /// event fires on entry, the recovery event on exit. Touched only inside the synchronized admission.
+    private final Set<String> floorRefusedTargets = new HashSet<>();
+
+    /// The slice-floor guard the operator drain/shutdown routes consult (#1720), and the sink through which a
+    /// FORCED breach is reported. `violations` is [SliceOwnershipQuery#minAvailableDrainViolations]: applied to
+    /// `(target, remainingNodes)` it answers every hosted slice the drain would leave below its `minAvailable`.
+    public record SliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations,
+                             OperatorWarningSink warnings) {
+        public static SliceFloor sliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations,
+                                            OperatorWarningSink warnings) {
+            return new SliceFloor(violations, warnings);
+        }
+    }
+
+    /// 409: the operator drain/shutdown would leave a hosted slice below its `minAvailable` ACTIVE instances
+    /// (#1720). Names every slice and its counts; `force` overrides it and is then reported as an operator
+    /// warning rather than done silently.
+    public record SliceFloorBreached(String nodeId, String operation, List<DrainRefusal> breaches) implements HttpStatusAware {
+        @Override
+        public String message() {
+            return "Cannot " + operation
+                 + " node " + nodeId
+                 + ": it would leave " + describe(breaches)
+                 + ". Re-run with force=true (CLI: --override-floor) to override, which takes the slice below its floor.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    static String describe(List<DrainRefusal> breaches) {
+        return breaches.stream()
+                       .map(breach -> breach.artifact()
+                                            .asString()
+                                     + " with " + breach.remainingActive()
+                                     + " ACTIVE instance(s), below its minAvailable " + breach.minAvailable())
+                       .collect(java.util.stream.Collectors.joining("; "));
+    }
 
     private NodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
                                 Consumer<NodeId> drainCommandSink,
-                                Supplier<Set<NodeId>> pendingDrainsSupplier) {
+                                Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                Option<SliceFloor> sliceFloor) {
+        this.sliceFloor = sliceFloor;
         this.nodeSupplier = nodeSupplier;
         this.drainCommandSink = drainCommandSink == null
                                 ? _ -> {}
@@ -85,7 +148,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier) {
         return new NodeLifecycleRoutes(nodeSupplier,
                                        _ -> {},
-                                       Set::of);
+                                       Set::of,
+                                       Option.none());
     }
 
     /// Membership v2 (B5b) — production factory wiring the leader's DRAIN command sink + the
@@ -94,20 +158,44 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
                                                           Consumer<NodeId> drainCommandSink,
                                                           Supplier<Set<NodeId>> pendingDrainsSupplier) {
-        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier);
+        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier, Option.none());
     }
 
-    record LifecycleEntry(String nodeId, String state, long updatedAt) {}
+    /// #1720 — production factory: as above, plus the slice `minAvailable` floor guard.
+    public static NodeLifecycleRoutes nodeLifecycleRoutes(Supplier<ManageableNode> nodeSupplier,
+                                                          Consumer<NodeId> drainCommandSink,
+                                                          Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                                          SliceFloor sliceFloor) {
+        return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier, Option.some(sliceFloor));
+    }
+
+    /// `version` (#1543 part C) is the software version the node advertises in its `version` label; empty when
+    /// this observer has no label for it (a peer known only from steady-state gossip, or a node that predates the label).
+    record LifecycleEntry(String nodeId, String state, long updatedAt, String version) {}
 
     record TransitionResult(boolean success, String nodeId, String state, String message) {}
 
     record InFlightResponse(int count) {}
 
+    /// Package-private accessor for unit tests of the per-node lifecycle GET (#1868).
+    Promise<LifecycleEntry> getNodeLifecycleForTest(String nodeIdStr) {
+        return getNodeLifecycle(nodeIdStr);
+    }
+
     /// Package-private accessor for unit tests that exercise the drain admission path (notably the
     /// disruption-budget guard) without standing up the HTTP routing layer. Production callers go
     /// through the `routes()` stream.
     Promise<TransitionResult> drainNodeForTest(String nodeIdStr) {
-        return drainNode(nodeIdStr);
+        return drainNode(nodeIdStr, false);
+    }
+
+    Promise<TransitionResult> drainNodeForTest(String nodeIdStr, boolean force) {
+        return drainNode(nodeIdStr, force);
+    }
+
+    /// Package-private: the synchronous admission, for the concurrent-admission test (#1720).
+    Result<TransitionResult> admitForTest(NodeId node, boolean drain, boolean force) {
+        return admitOperatorDrain(node, drain, force);
     }
 
     @Override
@@ -122,11 +210,15 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                          .asJson(),
                          ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_DRAIN)
                                          .withPath(aString())
-                                         .to(this::drainNode)
+                                         .withQuery(QueryParameter.aBoolean("force"))
+                                         .to((nodeId, force) -> drainNode(nodeId,
+                                                                          force.or(false)))
                                          .asJson(),
                          ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_SHUTDOWN)
                                          .withPath(aString())
-                                         .to(this::shutdownNode)
+                                         .withQuery(QueryParameter.aBoolean("force"))
+                                         .to((nodeId, force) -> shutdownNode(nodeId,
+                                                                             force.or(false)))
                                          .asJson(),
                          ManagementRoutes.<PromoteNodeResponse> route(ManagementRoute.NODE_PROMOTE)
                                          .withPath(aString())
@@ -162,14 +254,22 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return Promise.success(collectLifecycleEntries(stateFilter, collector.reportedStates()));
     }
 
-    private static List<LifecycleEntry> collectLifecycleEntries(Option<String> stateFilter,
-                                                                Map<NodeId, NodeReportedState> states) {
+    private List<LifecycleEntry> collectLifecycleEntries(Option<String> stateFilter,
+                                                         Map<NodeId, NodeReportedState> states) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
 
         states.forEach((nodeId, state) -> appendIfMatches(entries, nodeId, state, normalizedFilter));
 
         return entries;
+    }
+
+    private String advertisedVersion(NodeId nodeId) {
+        var node = nodeSupplier.get();
+
+        return org.pragmatica.aether.node.AdvertisedVersion.of(nodeId,
+                                                               node.topologyManager(),
+                                                               Option.option(node.membershipFsm()));
     }
 
     /// Readiness-broadcast (failover-readability): 503 carrying the current leader id + best-effort
@@ -197,19 +297,55 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                                 .port());
     }
 
-    private static void appendIfMatches(List<LifecycleEntry> entries,
-                                        NodeId nodeId,
-                                        NodeReportedState state,
-                                        Option<Set<String>> normalizedFilter) {
-        var entry = new LifecycleEntry(nodeId.id(), state.name(), 0L);
+    private void appendIfMatches(List<LifecycleEntry> entries,
+                                 NodeId nodeId,
+                                 NodeReportedState state,
+                                 Option<Set<String>> normalizedFilter) {
+        var entry = new LifecycleEntry(nodeId.id(), state.name(), 0L, advertisedVersion(nodeId));
 
         if (normalizedFilter.map(set -> set.contains(entry.state())).or(true)) {
             entries.add(entry);
         }
     }
 
+    /// Per-node lifecycle GET (#1868). 404 here means ONE thing: this node's MEMBERSHIP has committed the
+    /// node's departure (its `MembershipFsm` state is `Dead`), or the id was never a member. It is NOT "absent
+    /// from the soft readiness view": that view drops a LIVE node on a transient QUIC evict, after three missed
+    /// pongs, and is empty on a freshly elected leader until the first pongs arrive. A node missing from the
+    /// view but not departed answers 503 "readiness unknown" — never the verdict a drain wait reads as
+    /// completion. Without an authoritative or fresh cached view at all it answers 503 + leader hint, as LIST does.
     private Promise<LifecycleEntry> getNodeLifecycle(String nodeIdStr) {
-        return resolveLifecycleState(nodeIdStr).map(state -> new LifecycleEntry(nodeIdStr, state.name(), 0L));
+        if (!nodeSupplier.get().metricsCollector().hasAuthoritativeReadiness()) {
+            return readinessUnavailableError().promise();
+        }
+
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .async()
+                           .flatMap(this::lifecycleEntryOrVerdict);
+    }
+
+    private Promise<LifecycleEntry> lifecycleEntryOrVerdict(NodeId nodeId) {
+        return readLifecycleState(nodeId).map(state -> Promise.success(new LifecycleEntry(nodeId.id(),
+                                                                                          state.name(),
+                                                                                          0L,
+                                                                                          advertisedVersion(nodeId))))
+                                 .or(() -> absentFromReadinessView(nodeId));
+    }
+
+    private Promise<LifecycleEntry> absentFromReadinessView(NodeId nodeId) {
+        var memberState = Option.option(nodeSupplier.get().membershipFsm().memberStates().get(nodeId));
+        var departedOrUnknownId = memberState.filter(state -> !MEMBERSHIP_DEAD.equals(state)).isEmpty();
+
+        return departedOrUnknownId
+               ? LIFECYCLE_NOT_FOUND.promise()
+               : readinessUnknownError(nodeId).promise();
+    }
+
+    /// Tracked and not departed, yet absent from the soft readiness view: a transient gap, not a verdict.
+    private static Cause readinessUnknownError(NodeId nodeId) {
+        return HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
+                                   Causes.cause("readiness of " + nodeId.id()
+                                               + " is unknown: it is a member that has not departed"));
     }
 
     /// Membership v2 (B5b) — operator drain. After the disruption-budget guard and the presence
@@ -218,36 +354,231 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// `drainNodes` set and
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
-    private Promise<TransitionResult> drainNode(String nodeIdStr) {
-        return checkDisruptionBudget(nodeIdStr).map(TransitionResult::message)
-                                    .flatMap(guardNote -> guardAndRequestDrain(nodeIdStr, guardNote));
+    private Promise<TransitionResult> drainNode(String nodeIdStr, boolean force) {
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(node -> admitOperatorDrain(node, true, force))
+                           .async();
     }
 
-    private Promise<TransitionResult> guardAndRequestDrain(String nodeIdStr, String guardNote) {
-        return resolveLifecycleState(nodeIdStr).flatMap(state -> guardDrainState(nodeIdStr, state, guardNote));
+    /// One routes instance is installed per management server. Check and reserve synchronously:
+    /// no Promise callback may interleave another operator admission before the sink updates its set.
+    ///
+    /// #1720 — the slice `minAvailable` floor is checked in this same critical section, so it is serialised
+    /// against concurrent operator drains by the SAME monitor (this method's `synchronized`, on the one routes
+    /// instance) and reads the pending set the sink has just updated: `drainCommandSink.accept` runs inside
+    /// `enqueueOperatorDrain`, under the lock, before the next admission can evaluate. Two requests therefore never
+    /// pass against one "pending drains" snapshot. Pinned by `NodeLifecycleRoutesSliceFloorTest`'s concurrent
+    /// admission test.
+    private synchronized Result<TransitionResult> admitOperatorDrain(NodeId node, boolean requireReady, boolean force) {
+        return checkDisruptionBudgetForTarget(node.id(),
+                                              node).flatMap(budget -> checkDrainReadiness(node, requireReady).map(_ -> budget))
+                                             .flatMap(budget -> checkSliceFloor(node, requireReady, force).map(_ -> budget))
+                                             .map(budget -> enqueueOperatorDrain(node,
+                                                                                 budget.message(),
+                                                                                 requireReady));
     }
 
-    private Promise<TransitionResult> guardDrainState(String nodeIdStr, NodeReportedState current, String guardNote) {
-        if (current != NodeReportedState.READY) {
-            return HttpError.httpError(HttpStatus.CONFLICT,
-                                       Causes.cause("Cannot drain node " + nodeIdStr
-                                                   + " from " + current
-                                                   + " (must be READY)"))
-                            .promise();
+    /// #1720: refuse, 409, an operator drain or shutdown that would leave a hosted slice below its `minAvailable`
+    /// ACTIVE instances, with `remaining = counted members - pending drains - target` (the automatic drain's rule,
+    /// [SliceOwnershipQuery#minAvailableDrainGuard]; workers are members here, slices run on them). `force`
+    /// overrides, and a forced breach raises an operator warning naming every slice, so it is never silent.
+    private Result<org.pragmatica.lang.Unit> checkSliceFloor(NodeId node, boolean drain, boolean force) {
+        return sliceFloor.fold(() -> Result.success(org.pragmatica.lang.Unit.unit()),
+                               floor -> applySliceFloor(floor, node, drain, force));
+    }
+
+    private Result<org.pragmatica.lang.Unit> applySliceFloor(SliceFloor floor,
+                                                             NodeId node,
+                                                             boolean drain,
+                                                             boolean force) {
+        var remaining = new HashSet<>(nodeSupplier.get().membershipFsm().countedMembers());
+        var tracked = nodeSupplier.get().membershipFsm().memberStates();
+
+        closeRefusalsOfDepartedTargets(floor, tracked);
+        if (hasLeftMembership(tracked, node.id())) {
+            // A drain or shutdown of a member that has already left changes no availability: its instances are not
+            // capacity any more, so a "breach" read from the artifact entries it still carries is not caused by this
+            // request. The floor protects the cluster from a departure, and this node has already departed. No refusal
+            // is raised or recorded, so repeating the request cannot alternate refusal and recovery events (#1720).
+            return Result.success(org.pragmatica.lang.Unit.unit());
         }
 
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(nodeId -> enqueueDrainCommand(nodeId, guardNote));
+        remaining.removeAll(pendingDrainsSupplier.get());
+        remaining.remove(node);
+        var breaches = floor.violations().apply(node, remaining);
+        var operation = drain
+                        ? "drain"
+                        : "shutdown";
+
+        if (breaches.isEmpty()) {
+            raiseFloorRecovery(floor, node, operation, "the floor cleared");
+
+            return Result.success(org.pragmatica.lang.Unit.unit());
+        }
+
+        if (!force) {
+            if (floorRefusedTargets.add(node.id())) {
+                OperatorWarnings.raise(LOG,
+                                       floor.warnings(),
+                                       OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                       node.id(),
+                                       "Refused {} of node {}: it would breach the slice floor: {}",
+                                       operation,
+                                       node.id(),
+                                       describe(breaches));
+            }
+
+            return new SliceFloorBreached(node.id(), operation, breaches).result();
+        }
+
+        raiseFloorRecovery(floor, node, operation, "forced past the floor");
+        OperatorWarnings.raise(LOG,
+                               floor.warnings(),
+                               OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
+                               node.id(),
+                               "Forced {} of node {} by {} breaches the slice floor: {}",
+                               operation,
+                               node.id(),
+                               forcingPrincipal(),
+                               describe(breaches));
+
+        return Result.success(org.pragmatica.lang.Unit.unit());
     }
 
-    private Promise<TransitionResult> enqueueDrainCommand(NodeId nodeId, String guardNote) {
-        drainCommandSink.accept(nodeId);
-        var result = drainInitiatedResult(nodeId.id(), guardNote);
+    /// Who forced the request, for the audit trail of a forced breach: the authenticated management principal bound
+    /// by the server for this request, or `unknown` when none is bound (a test, or security off).
+    private static String forcingPrincipal() {
+        return SecurityContextHolder.currentContext()
+                                    .map(context -> context.principal()
+                                                           .value())
+                                    .or("unknown");
+    }
 
-        auditAndEmitLifecycleTransition(result, NodeReportedState.DRAINING.name());
+    /// The recovery counterpart of the refusal event: only when this target WAS refused, and once (the set is
+    /// guarded by the same monitor as admission, so a transition is reported by exactly one request).
+    private void raiseFloorRecovery(SliceFloor floor, NodeId node, String operation, String how) {
+        raiseFloorRecovery(floor, node.id(), operation, how);
+    }
 
-        return Promise.success(result);
+    private void raiseFloorRecovery(SliceFloor floor, String nodeId, String operation, String how) {
+        if (floorRefusedTargets.remove(nodeId)) {
+            OperatorWarnings.raise(LOG,
+                                   floor.warnings(),
+                                   OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+                                   nodeId,
+                                   "Admitted {} of node {} that the slice floor had refused ({})",
+                                   operation,
+                                   nodeId,
+                                   how);
+        }
+    }
+
+    /// #1543 E: the old node's drain in a replacement goes through the SAME admission as `POST /nodes/drain` (readiness, the
+    /// core disruption budget, #1720's slice floor), and is never forced. Success means the drain command was enqueued; a
+    /// refusal is the cause the operator would have received.
+    ///
+    /// A drain already under way is not asked for again: the reconciler repeats this call every tick (and a new leader
+    /// repeats it without knowing the old one's request), and a second admission of a node that is already DRAINING is refused
+    /// for want of readiness, which is not a block of any kind. "Under way" is the commanded set or the node's own reported
+    /// state, so it holds across a leader change.
+    public Promise<Unit> admitReplacementDrain(NodeId node) {
+        if (drainUnderWay(node)) {
+            return Promise.unitPromise();
+        }
+
+        return Promise.resolved(admitOperatorDrain(node, true, false).map(_ -> Unit.unit()));
+    }
+
+    /// Whether a drain of `node` is already commanded or reported by the node itself.
+    public boolean drainUnderWay(NodeId node) {
+        return pendingDrainsSupplier.get()
+                                    .contains(node) || readLifecycleState(node).filter(state -> state == NodeReportedState.DRAINING)
+                                                                         .isPresent();
+    }
+
+    /// Whether `cause` is the slice floor holding a drain back: the one refusal a replacement reports as "blocked".
+    public static boolean isSliceFloorRefusal(org.pragmatica.lang.Cause cause) {
+        return cause instanceof SliceFloorBreached;
+    }
+
+    /// The transition itself: the membership FSM confirmed `node` DEAD on this node. A target refused by the slice floor
+    /// that has now left gets its recovery event, without waiting for another operator request to reach the floor
+    /// check.
+    ///
+    /// Called from the FSM's `onTransition` listener, which the FSM runs UNDER the member's transition guard. Admission
+    /// holds the routes monitor and then calls into the FSM (`onDrainRequested`), which takes that same guard, so taking
+    /// the routes monitor here would be the opposite lock order: a deadlock whenever a member dies while an operator
+    /// drains it. So this method takes NO lock: it only hands the departure to a virtual thread, which waits for the
+    /// routes monitor with nothing else held. Ordering: the recovery is raised only when the refused set still holds the
+    /// target, and the set is only ever written under the monitor, so a recovery always follows its refusal and is raised
+    /// at most once (a departure applied before the refusal finds nothing, and the refusal is never recorded for a
+    /// departed target); it is not lost because the departure always runs after the edge, and any refusal that raced it
+    /// is recorded under the monitor before the departure task can take it.
+    @SuppressWarnings("JBCT-RET-01")
+    public void onMemberDeparted(NodeId node) {
+        Thread.ofVirtual().name("slice-floor-departure-" + node.id()).start(() -> closeRefusalOnDeparture(node));
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private synchronized void closeRefusalOnDeparture(NodeId node) {
+        // The departure was handed off asynchronously, so by the time this runs the member may have rejoined under the same
+        // id (Dead is retained and a higher-incarnation healthy report re-arms it). Judge "left" NOW, under the monitor, not
+        // by the edge that queued this task: a live member must not be reported as having left.
+        var tracked = nodeSupplier.get().membershipFsm().memberStates();
+
+        if (hasLeftMembership(tracked, node.id())) {
+            sliceFloor.onPresent(floor -> raiseFloorRecovery(floor, node, "drain", "the node left the membership"));
+        }
+    }
+
+    /// A refused target that has since left the membership will never be admitted, so its refusal would stay open in
+    /// the event feed for good: close it with the recovery event, naming why, and forget the target.
+    private void closeRefusalsOfDepartedTargets(SliceFloor floor, Map<NodeId, String> tracked) {
+        var departed = floorRefusedTargets.stream().filter(refused -> hasLeftMembership(tracked, refused)).toList();
+
+        departed.forEach(refused -> raiseFloorRecovery(floor, refused, "drain", "the node left the membership"));
+    }
+
+    /// Left means gone from the membership view: untracked, or DEAD. A DEPARTING member is still tracked, still there,
+    /// and a shutdown re-requested against it is the same refusal again, not a recovery. [#countedMembers] would call it
+    /// gone, because it excludes DEPARTING.
+    private static boolean hasLeftMembership(Map<NodeId, String> tracked, String nodeId) {
+        return tracked.entrySet()
+                      .stream()
+                      .noneMatch(entry -> entry.getKey()
+                                               .id()
+                                               .equals(nodeId) && !MEMBERSHIP_DEAD.equals(entry.getValue()));
+    }
+
+    private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {
+        return requireReady
+               ? readLifecycleState(node).toResult(LIFECYCLE_NOT_FOUND)
+                                   .flatMap(state -> requireReadyState(node, state))
+               : Result.success(org.pragmatica.lang.Unit.unit());
+    }
+
+    private Result<org.pragmatica.lang.Unit> requireReadyState(NodeId node, NodeReportedState state) {
+        return state == NodeReportedState.READY
+               ? Result.success(org.pragmatica.lang.Unit.unit())
+               : HttpError.httpError(HttpStatus.CONFLICT,
+                                     Causes.cause("Cannot drain node " + node.id()
+                                                 + " from " + state
+                                                 + " (must be READY)"))
+                          .result();
+    }
+
+    private TransitionResult enqueueOperatorDrain(NodeId node, String guardNote, boolean requireReady) {
+        drainCommandSink.accept(node);
+        var result = requireReady
+                     ? drainInitiatedResult(node.id(), guardNote)
+                     : shutdownInitiatedResult(node.id(), guardNote);
+
+        auditAndEmitLifecycleTransition(result,
+                                        requireReady
+                                        ? NodeReportedState.DRAINING.name()
+                                        : STOPPED_STATE);
+
+        return result;
     }
 
     /// `guardNote` is the disruption-budget guard's own visible decision (see
@@ -269,9 +600,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// post-drain operational count shrank in lockstep and the guard could NEVER reject sequential
     /// in-flight drains, admitting a quorum-losing cascade.
     ///
-    /// Fix: threshold against a STABLE intended size (the configured/peak CORE count, not the live
-    /// present count), and subtract the leader's commanded-but-not-departed CORE drains plus this
-    /// drain from the present CORE set. The current target is removed from the pending set before
+    /// Fix: threshold against installed voting authority and subtract the leader's pending drains
+    /// plus this target from counted members of that exact electorate. Provisioned CORE observers
+    /// carry no votes until installed and cannot inflate availability. The current target is removed from the pending set before
     /// counting so it is charged exactly once even if a prior call already registered it.
     ///
     /// A second, independent defect: the count on both sides was role-blind (`presentMembers()`
@@ -283,67 +614,35 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// needed, is a new feature with its own semantics — not a side effect of this fix. A CORE
     /// target is still checked, now counting CORES ONLY on both sides of the inequality so a
     /// connected worker population never inflates the quorum floor or the post-drain count.
-    private Promise<TransitionResult> checkDisruptionBudget(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(nodeId -> checkDisruptionBudgetForTarget(nodeIdStr, nodeId));
-    }
+    private Result<TransitionResult> checkDisruptionBudgetForTarget(String nodeIdStr, NodeId nodeId) {
+        var node = nodeSupplier.get();
+        var voters = Set.copyOf(node.coreNodeIds());
 
-    private Promise<TransitionResult> checkDisruptionBudgetForTarget(String nodeIdStr, NodeId nodeId) {
-        if (isWorkerRole(nodeId)) {
-            return Promise.success(new TransitionResult(true, nodeIdStr, "", "core-guard skipped (role=worker)"));
+        if (!voters.contains(nodeId) && isWorkerRole(nodeId)) {
+            return Result.success(new TransitionResult(true, nodeIdStr, "", "core-guard skipped (role=worker)"));
         }
 
-        var intendedSize = stableIntendedSize();
-        var minAvailable = (intendedSize / 2) + 1;
-        var availableAfterThisDrain = availableAfterDrain(nodeIdStr);
-
-        if (availableAfterThisDrain >= minAvailable) {
-            return Promise.success(new TransitionResult(true,
-                                                        nodeIdStr,
-                                                        "",
-                                                        "core-guard applied (role=core, available=" + availableAfterThisDrain
-                                                       + ", min=" + minAvailable
-                                                       + ")"));
+        if (voters.isEmpty()) {
+            return HttpError.httpError(HttpStatus.SERVICE_UNAVAILABLE,
+                                       Causes.cause("Installed voter authority is unavailable; cannot admit core drain"))
+                            .result();
         }
 
-        return budgetExceededError(nodeIdStr, availableAfterThisDrain, minAvailable).promise();
-    }
+        var available = new java.util.HashSet<>(node.membershipFsm().coreCountedMembers());
 
-    /// Stable size basis for the budget threshold: the configured core count (`initialTopology`,
-    /// already core-scoped — seeded from `config.topology().coreNodes()`), widened to the live
-    /// CORE-counted present set if that is larger (peak membership), so the threshold does not
-    /// shrink in lockstep with sequential drains. `coreCountedMembers()` (not `presentMembers()`)
-    /// so a connected worker population never inflates the core-quorum floor. Never below 1.
-    private int stableIntendedSize() {
-        var configured = nodeSupplier.get().initialTopology().size();
-        var presentCores = nodeSupplier.get().membershipFsm().coreCountedMembers().size();
+        available.retainAll(voters);
+        available.removeAll(pendingDrainsSupplier.get());
+        available.remove(nodeId);
+        var minimum = voters.size() / 2 + 1;
 
-        return Math.max(Math.max(configured, presentCores), 1);
-    }
-
-    /// Present CORES minus the leader's already-commanded-but-not-departed CORE drains minus this
-    /// drain. `coreCountedMembers()` (not `presentMembers()`) so a connected worker population
-    /// never counts toward the core-quorum floor it doesn't protect. The current target is
-    /// excluded from the pending set first so it is charged exactly once.
-    private int availableAfterDrain(String nodeIdStr) {
-        var presentCores = nodeSupplier.get().membershipFsm().coreCountedMembers().size();
-        var pendingExcludingTarget = pendingCoreDrainsExcluding(nodeIdStr);
-        var available = presentCores - pendingExcludingTarget - 1;
-
-        return Math.max(available, 0);
-    }
-
-    /// Count of leader-commanded pending drains scoped to CORE targets, excluding the current
-    /// target so it is not double-counted (it may already be in the pending set from a retried
-    /// call). A pending WORKER drain carries no core-quorum weight and must not deflate this count.
-    private int pendingCoreDrainsExcluding(String nodeIdStr) {
-        return (int) pendingDrainsSupplier.get()
-                                          .stream()
-                                          .filter(node -> !node.id()
-                                                               .equals(nodeIdStr))
-                                          .filter(node -> !isWorkerRole(node))
-                                          .count();
+        return available.size() >= minimum
+               ? Result.success(new TransitionResult(true,
+                                                     nodeIdStr,
+                                                     "",
+                                                     "core-guard applied (role=core, available=" + available.size()
+                                                    + ", min=" + minimum
+                                                    + ")"))
+               : budgetExceededError(nodeIdStr, available.size(), minimum).result();
     }
 
     private static Cause budgetExceededError(String nodeIdStr, int availableAfterDrain, int minAvailable) {
@@ -355,27 +654,17 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return HttpError.httpError(HttpStatus.CONFLICT, Causes.cause(message));
     }
 
-    /// Disruption-budget role check: label first (present for every node, including cluster-minted
-    /// workers that never receive an `ActivationDirective` entry), the KV override on top for an
-    /// operator's explicit demotion/promotion — mirrors `ClusterConfigRoutes.resolveNodeRole` (same
-    /// KV table, same "not a general role map" caveat: `ActivationDirectivePutReceived` updates only
-    /// `ClusterDeploymentState`'s own worker-set bookkeeping, never `MembershipFsm`'s per-member
-    /// descriptor, so the label remains the only source for a node that was never promoted/demoted).
-    /// The label comes from `MembershipFsm.memberDescriptor` — the SAME source `coreCountedMembers()`
-    /// classifies from, so this per-node check can never diverge from the aggregate count above.
-    /// Unknown/absent role defaults to core: an unclassifiable node is never exempted from the guard
-    /// it might actually need.
+    /// Committed activation role, falling back to the immutable membership descriptor.
+    /// Installed voters are never exempted by this check; the caller checks authority first.
     private boolean isWorkerRole(NodeId nodeId) {
         var label = nodeSupplier.get().membershipFsm().memberDescriptor(nodeId).map(MemberDescriptor::role);
 
         return directiveRoleOverride(nodeId).orElse(label)
-                                    .map(String::toLowerCase)
-                                    .or("core")
-                                    .equals("worker");
+                                    .map(role -> Set.of("worker", "spot").contains(role.toLowerCase(Locale.ROOT)))
+                                    .or(false);
     }
 
-    /// The `ActivationDirective` override only (demotions and manual promotions) — `none()` when
-    /// the node was never promoted/demoted, so callers can fall back to the self-asserted label.
+    /// Committed activation role when assigned; absent before assignment.
     private Option<String> directiveRoleOverride(NodeId nodeId) {
         return nodeSupplier.get()
                            .kvStore()
@@ -387,38 +676,32 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// Membership v2 (B5b) — operator shutdown. Routed through the same DRAIN command channel as
     /// `drain` (the target self-drains then halts via its `DrainProcedure`); the CTM grace-terminate
     /// backstop reaps the container. No `LifecycleWriter` write happens here.
-    private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(this::enqueueShutdownCommand);
+    private Promise<TransitionResult> shutdownNode(String nodeIdStr, boolean force) {
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(node -> admitOperatorDrain(node, false, force))
+                           .async();
     }
 
-    private Promise<TransitionResult> enqueueShutdownCommand(NodeId nodeId) {
-        drainCommandSink.accept(nodeId);
-        var result = shutdownInitiatedResult(nodeId.id());
-
-        auditAndEmitLifecycleTransition(result, STOPPED_STATE);
-
-        return Promise.success(result);
+    Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr) {
+        return shutdownNode(nodeIdStr, false);
     }
 
-    private TransitionResult shutdownInitiatedResult(String nodeIdStr) {
+    Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr, boolean force) {
+        return shutdownNode(nodeIdStr, force);
+    }
+
+    private TransitionResult shutdownInitiatedResult(String nodeIdStr, String guardNote) {
         return new TransitionResult(true,
                                     nodeIdStr,
                                     STOPPED_STATE,
-                                    "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command");
+                                    "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command (" + guardNote
+                                   + ")");
     }
 
-    /// Promote a node from its current role to `targetRole` (CORE or WORKER) by
-    /// writing a fresh `ActivationDirectiveValue` under
-    /// `ActivationDirectiveKey(nodeId)` via consensus. Downstream consumers
-    /// (`ClusterDeploymentManager`) observe the `ActivationDirectivePutReceived`
-    /// notification and align the role-aware node machinery
-    /// (`ForwardingClusterNode` / `SwitchableClusterNode`) to the new role.
+    /// Roles are immutable. This retained endpoint only acknowledges an already matching role.
     Promise<PromoteNodeResponse> promoteNode(String nodeIdStr, PromoteNodeRequest request) {
-        return validatePromote(request).flatMap(role -> resolveAndPromote(nodeIdStr, role))
-                              .async()
-                              .flatMap(plan -> applyPromotion(nodeIdStr, plan));
+        return validatePromote(request).flatMap(role -> confirmImmutableRole(nodeIdStr, role))
+                              .async();
     }
 
     // RET-06: `request` is the deserialized request body (null when absent); the null check IS the
@@ -432,67 +715,46 @@ public final class NodeLifecycleRoutes implements RouteSource {
         var normalised = request.targetRole().trim().toUpperCase(Locale.ROOT);
 
         return switch (normalised) {
-            case ActivationDirectiveValue.CORE, ActivationDirectiveValue.WORKER -> Result.success(normalised);
+            case ActivationDirectiveValue.CORE, ActivationDirectiveValue.WORKER, "SPOT" -> Result.success(normalised);
             default -> PromoteError.UNSUPPORTED_TARGET_ROLE.result();
         };
     }
 
-    private Result<PromotePlan> resolveAndPromote(String nodeIdStr, String targetRole) {
-        return NodeId.nodeId(nodeIdStr).map(id -> new PromotePlan(id, readCurrentRole(id), targetRole));
+    private Result<PromoteNodeResponse> confirmImmutableRole(String nodeIdStr, String targetRole) {
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(this::readCurrentRole)
+                           .flatMap(current -> matchingRoleResponse(nodeIdStr, current, targetRole));
     }
 
-    private String readCurrentRole(NodeId nodeId) {
-        return directiveRoleOverride(nodeId).or(ActivationDirectiveValue.CORE);
+    private Result<String> readCurrentRole(NodeId nodeId) {
+        return nodeSupplier.get()
+                           .membershipFsm()
+                           .memberDescriptor(nodeId)
+                           .map(MemberDescriptor::role)
+                           .filter(role -> !role.isBlank())
+                           .orElse(directiveRoleOverride(nodeId))
+                           .map(role -> role.toUpperCase(Locale.ROOT))
+                           .filter(role -> Set.of("CORE", "WORKER", "SPOT").contains(role))
+                           .toResult(HttpError.httpError(HttpStatus.NOT_FOUND, PromoteError.UNKNOWN_NODE_ROLE));
     }
 
-    @SuppressWarnings("unchecked")
-    private Promise<PromoteNodeResponse> applyPromotion(String nodeIdStr, PromotePlan plan) {
-        if (plan.previousRole().equals(plan.targetRole())) {
-            return Promise.success(noopPromotionResponse(nodeIdStr, plan));
+    private static Result<PromoteNodeResponse> matchingRoleResponse(String nodeId, String current, String requested) {
+        if (!current.equals(requested)) {
+            return HttpError.httpError(HttpStatus.CONFLICT, PromoteError.IMMUTABLE_ROLE).result();
         }
 
-        var key = ActivationDirectiveKey.activationDirectiveKey(plan.nodeId());
-        var value = new ActivationDirectiveValue(plan.targetRole());
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
-
-        return nodeSupplier.get()
-                           .<Object> apply(List.of(command))
-                           .map(_ -> successPromotionResponse(nodeIdStr, plan))
-                           .onSuccess(_ -> auditAndEmitRoleTransition(nodeIdStr, plan));
+        return Result.success(new PromoteNodeResponse(true,
+                                                      nodeId,
+                                                      current,
+                                                      requested,
+                                                      "Node already has immutable role " + current));
     }
-
-    private static PromoteNodeResponse noopPromotionResponse(String nodeIdStr, PromotePlan plan) {
-        return new PromoteNodeResponse(true,
-                                       nodeIdStr,
-                                       plan.previousRole(),
-                                       plan.targetRole(),
-                                       "Node already has role " + plan.targetRole());
-    }
-
-    private static PromoteNodeResponse successPromotionResponse(String nodeIdStr, PromotePlan plan) {
-        return new PromoteNodeResponse(true,
-                                       nodeIdStr,
-                                       plan.previousRole(),
-                                       plan.targetRole(),
-                                       "Promoted node from " + plan.previousRole() + " to " + plan.targetRole());
-    }
-
-    private void auditAndEmitRoleTransition(String nodeIdStr, PromotePlan plan) {
-        AuditLog.nodeLifecycleTransition(nodeIdStr,
-                                         "ROLE:" + plan.targetRole(),
-                                         true,
-                                         "Promoted from " + plan.previousRole() + " to " + plan.targetRole());
-        nodeSupplier.get()
-                    .route(OperationalEvent.NodeLifecycleChanged.nodeLifecycleChanged(nodeIdStr,
-                                                                                      "ROLE:" + plan.targetRole(),
-                                                                                      "api.promote"));
-    }
-
-    private record PromotePlan(NodeId nodeId, String previousRole, String targetRole) {}
 
     private enum PromoteError implements Cause {
         MISSING_TARGET_ROLE("targetRole field is required"),
-        UNSUPPORTED_TARGET_ROLE("targetRole must be one of CORE, WORKER");
+        UNSUPPORTED_TARGET_ROLE("targetRole must be one of CORE, WORKER, SPOT"),
+        UNKNOWN_NODE_ROLE("Node has no known immutable role"),
+        IMMUTABLE_ROLE("Node roles are immutable; provision a new node with the required role");
         private final String message;
         PromoteError(String message) {
             this.message = message;
@@ -504,18 +766,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// Membership-v2 finale: the per-node work-state is read from the real node-authoritative
-    /// `NodeReportedState` readiness view (metrics pong) — the snapshot lifecycle enum was
-    /// removed. `LIFECYCLE_NOT_FOUND` when the node has not reported a pong yet / is absent.
-    private Promise<NodeReportedState> resolveLifecycleState(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(this::lookupLifecycleState);
-    }
-
-    private Promise<NodeReportedState> lookupLifecycleState(NodeId nodeId) {
-        return readLifecycleState(nodeId).async(LIFECYCLE_NOT_FOUND);
-    }
-
+    /// `NodeReportedState` readiness view (metrics pong) — the snapshot lifecycle enum was removed.
     private Option<NodeReportedState> readLifecycleState(NodeId nodeId) {
         return Option.option(nodeSupplier.get().metricsCollector().reportedStates().get(nodeId));
     }

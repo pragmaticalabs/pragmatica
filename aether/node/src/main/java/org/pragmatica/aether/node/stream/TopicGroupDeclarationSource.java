@@ -33,6 +33,16 @@ import org.pragmatica.aether.stream.topic.TopicEventEnvelope;
 /// SAME (stream, partition, group) subscription keys — the manager's key-level dedup admits one
 /// loop, and whichever version's bridge attaches processes for the group, which is exactly the
 /// §6 upgrade semantics (the cursor belongs to the group, not the version).
+///
+/// `distinct()` is the reader half of the #1448 node-scoped key. One subscription row per INSTANCE
+/// means N instances of a slice now yield N subscriptions that map to the byte-identical
+/// [ConsumerDeclaration] — nothing here reads the node. The manager already absorbs duplicates for
+/// placement (`declarationsByGroup`/`distinctBases`), so the un-deduplicated leak is the STATUS
+/// surface: `topicGroupStatuses` emits one row per declaration and would report N identical rows
+/// for one group. The declaration is per-GROUP, not per-instance; dropping the node here is what
+/// makes it so, and it is also why a durable cursor cannot fork — no cursor-keying type
+/// ([StreamConsumerManager.SubscriptionKey], [DurableGroupIdentity#groupId],
+/// `StreamCursorCheckpointKey`) carries a node component, and the node never reaches them anyway.
 @FunctionalInterface
 public interface TopicGroupDeclarationSource {
     List<ConsumerDeclaration> declarations();
@@ -47,6 +57,7 @@ public interface TopicGroupDeclarationSource {
                                   .stream()
                                   .filter(subscription -> topicStreamExists.test(DurableTopicNames.topicStream(subscription.routingKey())))
                                   .map(TopicGroupDeclarationSource::toDeclaration)
+                                  .distinct()
                                   .toList();
     }
 

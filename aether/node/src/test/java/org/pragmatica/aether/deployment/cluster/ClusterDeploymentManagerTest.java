@@ -11,6 +11,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -793,6 +794,7 @@ class ClusterDeploymentManagerTest {
         var value = SliceTargetValue.sliceTargetValue(artifact.version(), 3, 0, Option.some(bpId));
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
+        kvStore.put(key, value);
         manager.onSliceTargetPut(notification);
 
         // Verify LOAD commands were issued (owner didn't break allocation)
@@ -842,8 +844,12 @@ class ClusterDeploymentManagerTest {
             .filter(cmd -> cmd instanceof KVCommand.Put<?, ?>)
             .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
             .filter(put -> put.key() instanceof SliceTargetKey)
-            .forEach(put -> mgr.onSliceTargetPut(
-                new ValuePut<>((KVCommand.Put<SliceTargetKey, SliceTargetValue>) (KVCommand.Put<?, ?>) put, Option.none())));
+            .forEach(put -> {
+                // #1109: the notification follows the commit; the leader allocates only for a COMMITTED target.
+                kvStore.put(put.key(), put.value());
+                mgr.onSliceTargetPut(
+                    new ValuePut<>((KVCommand.Put<SliceTargetKey, SliceTargetValue>) (KVCommand.Put<?, ?>) put, Option.none()));
+            });
         // Replay NodeArtifactKey puts so sliceStates gets populated
         replayNodeArtifactNotifications(mgr);
     }
@@ -859,7 +865,11 @@ class ClusterDeploymentManagerTest {
     }
 
     private void sendSliceTargetPut(Artifact artifact, int instanceCount) {
-        manager.onSliceTargetPut(sliceTargetPut(artifact, instanceCount));
+        var put = sliceTargetPut(artifact, instanceCount);
+
+        // #1109: a notification follows a commit, and the leader allocates only for a COMMITTED target.
+        kvStore.put(put.cause().key(), put.cause().value());
+        manager.onSliceTargetPut(put);
     }
 
     private ValuePut<SliceTargetKey, SliceTargetValue> sliceTargetPut(Artifact artifact, int instanceCount) {
@@ -883,7 +893,7 @@ class ClusterDeploymentManagerTest {
 
     private void trackSliceStateWithFailure(ClusterDeploymentManager mgr, Artifact artifact, NodeId nodeId, Cause failureReason) {
         var key = NodeArtifactKey.nodeArtifactKey(nodeId, artifact);
-        var value = NodeArtifactValue.failedNodeArtifactValue(failureReason);
+        var value = NodeArtifactValue.failedNodeArtifactValue(failureReason, Unrecognised.PERMANENT);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onNodeArtifactPut(notification);
@@ -903,6 +913,8 @@ class ClusterDeploymentManagerTest {
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
         var key = new AppBlueprintKey(blueprint.id());
         var value = new AppBlueprintValue(blueprint);
+        // #1974: committed before its notification, as in production.
+        kvStore.put(key, value);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onAppBlueprintPut(notification);
@@ -911,6 +923,8 @@ class ClusterDeploymentManagerTest {
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint, boolean registerOnly) {
         var key = new AppBlueprintKey(blueprint.id());
         var value = new AppBlueprintValue(blueprint, registerOnly);
+        // #1974: committed before its notification, as in production.
+        kvStore.put(key, value);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onAppBlueprintPut(notification);

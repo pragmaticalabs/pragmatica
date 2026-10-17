@@ -11,7 +11,6 @@ import java.util.function.Supplier;
 
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.ClusterEventAggregator;
-import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
@@ -19,7 +18,9 @@ import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.node.journal.TransitionJournal;
+import org.pragmatica.aether.node.backup.BackupGenesis;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -39,6 +40,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.node.StorageFactory;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
@@ -65,6 +67,36 @@ import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 
 public interface ManageableNode {
     NodeId self();
+
+    /// #1543 E: begin, inspect and settle node replacements. Only a running node has one; a test double that never
+    /// touches replacement routes need not.
+    default org.pragmatica.aether.deployment.cluster.NodeReplacementService nodeReplacementService() {
+        return org.pragmatica.aether.deployment.cluster.NodeReplacementService.unavailable();
+    }
+
+    /// #1543 F: start, inspect, pause, resume and abort the rolling upgrade. A test double that never touches the upgrade routes need not.
+    default org.pragmatica.aether.deployment.cluster.UpgradeRunService upgradeRunService() {
+        return org.pragmatica.aether.deployment.cluster.UpgradeRunService.unavailable();
+    }
+
+    default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+        return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
+    }
+
+    /// Workers retain a scoped committed projection and must forward cluster-wide reads.
+    default boolean hasCompleteClusterView() {
+        return coreNodeIds().contains(self());
+    }
+
+    /// Current core routing candidates, excluding worker entries in bootstrap seeds.
+    default Set<NodeId> coreNodeIds() {
+        return topologyConfig().coreNodes()
+                             .stream()
+                             .filter(info -> "core".equalsIgnoreCase(info.labels().getOrDefault("role", "core")))
+                             .map(org.pragmatica.consensus.net.NodeInfo::id)
+                             .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
     KVStore<AetherKey, AetherValue> kvStore();
     SliceStore sliceStore();
     ClusterSyncCollector metricsCollector();
@@ -78,6 +110,14 @@ public interface ManageableNode {
     /// routes can read live membership (members/health/quiescence) directly, replacing reads
     /// of the generation snapshot. Additive accessor; snapshot accessors remain until a later wave.
     MembershipFsm membershipFsm();
+
+    /// #1652 — the leader's instantaneous live-member count for a community, served by
+    /// `GET /cluster/communities`. An observation, not committed state; [Option#none] when this node
+    /// cannot observe it (not the leader, liveness unwired, no committed roster). Default none keeps
+    /// test proxies compiling; the production node record delegates to its deployment manager.
+    default Option<Integer> communityLiveMembers(String communityId) {
+        return Option.none();
+    }
 
     /// Wave-1 Enrichment A (cluster-topology-overhaul spec) — exposes the per-node transition
     /// journal (every `MembershipFsm` + `PeerState` transition, bounded ring buffer per layer)
@@ -102,7 +142,6 @@ public interface ManageableNode {
     ArtifactMetricsCollector artifactMetricsCollector();
     DeploymentMap deploymentMap();
     ClusterEventAggregator eventAggregator();
-    BackupService backupService();
     StreamPartitionManager streamPartitionManager();
 
     /// The node's sealed-segment index (#634-3/4): per-partition [SegmentIndex.SegmentRef] ranges, the
@@ -137,6 +176,12 @@ public interface ManageableNode {
         return StreamConsumerManager.inactive();
     }
 
+    /// #1333: the projections this node hosts and their cursor-report failure count; none on a proxy
+    /// without a stream runtime, which then answers the topic-group routes with no projection column.
+    default Option<ProjectionNodeSupport> projectionNodeSupport() {
+        return Option.none();
+    }
+
     org.pragmatica.aether.slice.stream.StreamNamespacesService streamNamespacesService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
@@ -167,6 +212,12 @@ public interface ManageableNode {
     /// below quorum?" without log-scraping. Default `Option.none()` keeps `ManageableNode` test
     /// proxies compiling; the production node record supplies the live view.
     default Option<QuorumLossSnapshot> quorumLossSnapshot() {
+        return Option.none();
+    }
+
+    /// #1532 — the change-triggered KV backup's genesis declaration, when `[backup]` is enabled on this
+    /// node. Default `Option.none()` keeps `ManageableNode` test proxies compiling.
+    default Option<BackupGenesis> backupGenesis() {
         return Option.none();
     }
 
@@ -205,6 +256,11 @@ public interface ManageableNode {
     boolean isReady();
     Option<NodeId> leader();
     <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands);
+    /// #543: `SchemaRoutes` needs the orchestrator itself — not just KV read/write — for undo and
+    /// baseline to run through the same artifact-resolution, single-flight fence, and
+    /// `AetherSchemaManager` call path forward migrate already uses, instead of writing a status
+    /// record no reconciler tick ever acts on.
+    SchemaOrchestratorService schemaOrchestrator();
     int managementPort();
     int appHttpPort();
     long uptimeSeconds();

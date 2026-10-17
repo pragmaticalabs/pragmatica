@@ -49,19 +49,15 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     @Override
-    public boolean hasConfiguredCredentials() {
-        return ! keyEntries.isEmpty();
-    }
-
-    @Override
     public Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy) {
         return switch (policy) {
             case SecurityPolicy.Public() -> Result.success(SecurityContext.securityContext());
             case SecurityPolicy.ApiKeyRequired() -> validateApiKey(request);
             case SecurityPolicy.Authenticated() -> validateApiKey(request);
             case SecurityPolicy.RoleRequired _ -> validateApiKey(request);
-            case SecurityPolicy.BearerTokenRequired() -> Result.success(SecurityContext.securityContext());
-            default -> Result.success(SecurityContext.securityContext());
+            case SecurityPolicy.BearerTokenRequired() -> SecurityError.UNENFORCEABLE_POLICY.result();
+            case SecurityPolicy.Unspecified() -> SecurityError.UNRESOLVED_POLICY.result();
+            case SecurityPolicy.unused() -> SecurityError.UNRESOLVED_POLICY.result();
         };
     }
 

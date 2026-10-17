@@ -36,10 +36,156 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1921: a stream-engine refusal on a management route, carrying the status `StreamErrorStatus` classifies it under and the
+    /// engine's own message unchanged.
+    record StreamRefused(HttpStatus status, Cause refusal) implements ManagementServerError {
+        @Override
+        public String message() {
+            return refusal.message();
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return status;
+        }
+    }
+
+    /// #833/#954: a management request whose body or fields the caller got wrong. Carries the route's own
+    /// diagnosis unchanged and answers 400, so a caller's mistake is not reported as a server fault.
+    record InvalidRequest(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
+    /// #954: the resource the request addressed does not exist. Carries the route's own message and answers 404.
+    record NotFound(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_FOUND;
+        }
+    }
+
+    /// #954: a transient server-side condition (a component not yet ready on this node). Answers 503.
+    record ServiceUnavailable(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
+    /// #954: the route exists and the feature is deferred. Answers 501.
+    record NotImplemented(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_IMPLEMENTED;
+        }
+    }
+
+    /// #954: the request is well formed but the cluster's current state refuses it. Answers 409.
+    record Conflict(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record InvalidArtifactPath(String path) implements ManagementServerError {
         @Override
         public String message() {
             return "Invalid artifact path. Expected: /repository/info/{groupPath}/{artifactId}/{version}, got: " + path;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
+    /// #524 SHOULD-FIX 1: the Management-API publish auto-create guard (`ensureStreamExists`) could
+    /// not materialize the stream -- a genuine failure (capacity exhausted, or STRONG consistency
+    /// requiring AHSE storage), never a transient config-visibility race, which the manager resolves
+    /// internally and never surfaces here. The declared partition count is therefore genuinely
+    /// unknown at the route, so `validatePartition` must never guess one (e.g. against a hardcoded
+    /// default) -- this reports 409 naming the stream and the underlying cause instead of silently
+    /// accepting an invalid partition or rejecting a valid one against a fabricated count.
+    record StreamUnavailable(String streamName, String reason) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Stream '" + streamName + "' is not available: " + reason;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1564: a publish refused BEFORE the append because fewer than `confirmation_factor − 1` peers are registered
+    /// (`NOT_ENOUGH_REPLICAS`) — nothing was written, and the refusal passes once the replica set registers (a stream
+    /// created by this very publish has none yet). 503, so a client retries rather than treating it as a server fault.
+    record PublishRetryable(String streamName, Cause cause) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Publish to stream '" + streamName + "' refused before writing, retry: " + cause.message();
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
+    /// #1478: `/info` asks each partition's owner for its head; an owner that cannot answer (unreachable,
+    /// still materializing, no forward path) fails the request with 503 — retryable — never a 500 and
+    /// never an empty partition read as zero events.
+    record StreamInfoUnavailable(String streamName, int partition, Cause cause) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Stream '" + streamName
+                 + "' partition " + partition
+                 + " owner did not answer, retry: " + cause.message();
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
+    /// #524: an explicit `partition` on a Management-API publish named a partition the stream does not
+    /// declare. Names the valid range rather than silently writing to partition 0 or 500ing.
+    record InvalidPartition(int requested, int partitionCount) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Partition %d is out of range; this stream has partitions [0, %d)".formatted(requested,
+                                                                                                partitionCount);
         }
 
         @Override
@@ -59,6 +205,38 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1224: `STREAMS_CREATE` maps `StreamRegistryError.General.ALREADY_REGISTERED` here so the
+    /// duplicate-catalog-entry case reports 409 rather than the sealed interface's plain-`Cause`
+    /// default of 500 (`StreamRegistryError` is not `HttpStatusAware`).
+    record StreamAlreadyRegistered(String address) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Stream '" + address + "' is already registered in the catalog";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1282: a Management-API write would mint a stream whose engine name carries a reserved kind
+    /// prefix (`system:`, `topic:`, `entity:`). Those streams are created only by internal provisioning;
+    /// minting one here would plant an operator-chosen config the real resource later finds in place.
+    record ReservedStreamName(String streamName, String prefix) implements ManagementServerError {
+        @Override
+        public String message() {
+            return "Stream name '" + streamName
+                 + "' uses the reserved prefix '" + prefix
+                 + "'; streams under it are created only by internal provisioning";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
         }
     }
 

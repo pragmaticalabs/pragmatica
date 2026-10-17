@@ -79,4 +79,24 @@ class PresenceMemberSupplierSeamTest {
         assertThat(AetherNode.presenceMemberSupplier(() -> null, SELF)
                              .get()).isEmpty();
     }
+    @Test
+    void observedCoreCandidateDoesNotEnterElectorateUntilInstalled() {
+        var fsm = bootSeededFsm();
+        fsm.onSwimHealthy(PEER_B, 1L);
+        fsm.onSwimHealthy(PEER_C, 1L);
+        var installed = new java.util.concurrent.atomic.AtomicReference<>(Set.of(SELF, PEER_B));
+        var projection = AetherNode.presenceMemberSupplier(() -> fsm, SELF, installed::get);
+
+        assertThat(projection.get()).containsExactlyInAnyOrder(SELF, PEER_B);
+        installed.set(Set.of(SELF, PEER_C));
+        assertThat(projection.get()).containsExactlyInAnyOrder(SELF, PEER_C);
+    }
+
+    @Test
+    void genesisRosterRejectsMissingAndRepeatedIds() {
+        assertThat(AetherNode.parseGenesisVoters("a,,b").isFailure()).isTrue();
+        assertThat(AetherNode.parseGenesisVoters("a,a,b").isFailure()).isTrue();
+        assertThat(AetherNode.parseGenesisVoters("a,b,c").isSuccess()).isTrue();
+    }
+
 }

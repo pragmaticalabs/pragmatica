@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
 import java.io.BufferedReader;
@@ -29,12 +28,13 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+import org.pragmatica.aether.cli.cluster.ClusterRegistry;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.slice.repository.maven.MavenLocalRepoLocator;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
-import org.pragmatica.aether.slice.resource.ResourceVersion;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.http.HttpOperations;
@@ -58,13 +58,18 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 
 
-@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.BackupCommand.class, AetherCli.BackupSingularCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
+@Command(name = "aether", mixinStandardHelpOptions = true, versionProvider = AetherVersionProvider.class, description = "Command-line interface for Aether cluster management", subcommands = {AetherCli.StatusCommand.class, AetherCli.NodesCommand.class, AetherCli.SlicesCommand.class, AetherCli.MetricsCommand.class, AetherCli.HealthCommand.class, AetherCli.ScaleCommand.class, AetherCli.BlueprintCommand.class, AetherCli.ArtifactCommand.class, AetherCli.InvocationMetricsCommand.class, AetherCli.ControllerCommand.class, AetherCli.AlertsCommand.class, AetherCli.ThresholdsCommand.class, AetherCli.TracesCommand.class, AetherCli.ObservabilityCommand.class, AetherCli.LoggingCommand.class, AetherCli.ConfigCommand.class, AetherCli.ScheduledTasksCommand.class, AetherCli.EventsCommand.class, AetherCli.WorkersCommand.class, AetherCli.SchemaCommand.class, AetherCli.AbTestCommand.class, AetherCli.StreamCommand.class, AetherCli.TopicsCommand.class, org.pragmatica.aether.cli.stream.StreamCommand.class, AetherCli.CertCommand.class, AetherCli.RoutesCommand.class, AetherCli.VersionsCommand.class, AetherCli.DhtCommand.class, AetherCli.EntityCommand.class, org.pragmatica.aether.cli.deploy.DeployCommand.class, org.pragmatica.aether.cli.cluster.ClusterCommand.class, org.pragmatica.aether.cli.backup.BackupCommand.class, org.pragmatica.aether.cli.storage.StorageCommand.class, org.pragmatica.aether.cli.whoami.WhoamiCommand.class, org.pragmatica.aether.cli.ttm.TtmCommand.class, GenerateCompletion.class})
 @Contract
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
     @CommandLine.Option(names = {"-c", "--connect", "--endpoint"}, description = "Node address to connect to (host:port)")
     private String nodeAddress;
+
+    /// #584 — true only when [#setAddressFromContextOrDefault] took the endpoint from the active
+    /// context; the context's `api_key_env` is consulted only then (the credential follows the
+    /// endpoint's source, never the other way round).
+    private boolean endpointFromContext;
 
     @CommandLine.Option(names = {"--config"}, description = "Path to aether.toml config file")
     private Path configPath;
@@ -77,6 +82,20 @@ public class AetherCli implements Runnable {
 
     @CommandLine.Option(names = {"--request-timeout"}, description = "Per-request timeout in seconds (default 130, must exceed server-side max of 120). 0 disables.")
     private int requestTimeoutSeconds = 130;
+
+    /// The `-v` verbosity ladder (see [Verbosity]).
+    ///
+    /// Declared on the TOP-LEVEL command only, and deliberately NOT with `scope = INHERIT`: four
+    /// subcommands already declare their own value-taking `-v`/`--version` option, and an inherited
+    /// top-level `-v` would collide with those at startup. The cost of that is positional and is
+    /// stated in the help text: `aether -vv cluster bootstrap ...` raises verbosity, whereas
+    /// `aether cluster bootstrap -vv` does not, because there `-v` belongs to the subcommand.
+    ///
+    /// picocli fills this array with one element per occurrence, so `-vvv` yields length 3.
+    @CommandLine.Option(names = "-v", description = "Increase diagnostic verbosity on stderr: -v INFO, -vv DEBUG, -vvv TRACE. "
+                                                  + "Must be given BEFORE the subcommand (e.g. 'aether -vv cluster bootstrap ...'): "
+                                                  + "after a subcommand, -v is that subcommand's own --version option.")
+    private boolean[] verbosity = new boolean[0];
 
     @CommandLine.Mixin
     private OutputOptions outputOptions = new OutputOptions();
@@ -92,10 +111,16 @@ public class AetherCli implements Runnable {
         var cli = new AetherCli();
         var cmd = new CommandLine(cli);
 
+        cmd.setExecutionStrategy(cli::runWithVerbosity);
         cli.lookupConnection(args);
         cli.tlsSkipVerify = containsTlsSkipVerify(args);
         cli.httpOps = cli.buildHttpOperations();
-        org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        if (cli.endpointFromContext) {
+            org.pragmatica.aether.cli.cluster.ClusterHttpClient.setContextEndpoint(cli.resolveEndpointUrl());
+        } else {
+            org.pragmatica.aether.cli.cluster.ClusterHttpClient.setEndpointOverride(cli.resolveEndpointUrl());
+        }
+
         extractApiKeyArg(args).orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
                         .onPresent(org.pragmatica.aether.cli.cluster.ClusterHttpClient::setApiKeyOverride);
         org.pragmatica.aether.cli.cluster.ClusterHttpClient.setRequestTimeout(resolveRequestTimeoutDuration(args));
@@ -257,11 +282,66 @@ public class AetherCli implements Runnable {
     }
 
     private void setAddressFromConfigOrDefault(Option<Path> configArg) {
-        configArg.filter(Files::exists).onPresent(this::readConfigFromPath).onEmpty(() -> nodeAddress = DEFAULT_ADDRESS);
+        configArg.onPresent(this::readConfigIfPresent).onEmpty(this::setAddressFromContextOrDefault);
+    }
+
+    /// A `--config` the operator named is an explicit, LOCAL choice: a path that does not exist takes
+    /// the config-failure branch (warn, localhost default) — never the active context, or a mistyped
+    /// local file would run the command against the cloud (#584 review SF-3).
+    private void readConfigIfPresent(Path path) {
+        if (Files.exists(path)) {
+            readConfigFromPath(path);
+
+            return;
+        }
+
+        System.err.println("Warning: config file not found: " + path + " — using " + DEFAULT_ADDRESS);
+        nodeAddress = DEFAULT_ADDRESS;
+    }
+
+    /// #584 — endpoint precedence: explicit `--connect`/`--endpoint` or `--config` > the registry's
+    /// active cluster context > the built-in localhost default. This used to install the default
+    /// unconditionally, so `ClusterHttpClient.resolveEndpoint` never reached `registry.current()`
+    /// and a freshly bootstrapped cluster's context routed nothing but `destroy`/`rotate-key`
+    /// (which install their own override): `cluster scale` after bootstrap dialled `localhost:8080`
+    /// and reported the ticket's bare `ConnectException`. The default now applies only when no
+    /// context is set. A registry that cannot be read is treated as no context — the same fallback
+    /// as no registry — since a corrupt file must not stop `aether --connect …` from working.
+    private void setAddressFromContextOrDefault() {
+        var context = activeContext();
+
+        endpointFromContext = context.isPresent();
+        nodeAddress = context.map(ClusterRegistry.ClusterEntry::endpoint).or(DEFAULT_ADDRESS);
+    }
+
+    /// The active context, if it is usable. Each way it can be unusable is said on stderr rather
+    /// than silently becoming the localhost default: a registry that does not parse, a
+    /// `[current] context` naming no entry, an entry with a blank `endpoint` (a hand-edited or
+    /// legacy line — the product never writes one).
+    private static Option<ClusterRegistry.ClusterEntry> activeContext() {
+        var registry = ClusterRegistry.load()
+                                      .onFailure(cause -> System.err.println("Warning: cannot read ~/.aether/clusters.toml (" + cause.message()
+                                                                            + ") — using " + DEFAULT_ADDRESS))
+                                      .option();
+        var current = registry.flatMap(ClusterRegistry::current);
+
+        registry.filter(r -> r.currentContext()
+                              .isPresent() && current.isEmpty())
+                .onPresent(r -> System.err.println("Warning: active cluster context '" + r.currentContext()
+                                                                                          .or("")
+                                                  + "' names no registered cluster — using " + DEFAULT_ADDRESS));
+        current.filter(entry -> entry.endpoint() == null || entry.endpoint()
+                                                                 .isBlank())
+               .onPresent(entry -> System.err.println("Warning: active cluster context '" + entry.name()
+                                                     + "' has no endpoint — using " + DEFAULT_ADDRESS
+                                                     + "; fix ~/.aether/clusters.toml or pass --connect"));
+
+        return current.filter(entry -> entry.endpoint() != null && !entry.endpoint()
+                                                                         .isBlank());
     }
 
     @Contract
-    private void readConfigFromPath(Path path) {
+    void readConfigFromPath(Path path) {
         ConfigLoader.load(path).onSuccess(this::setAddressFromConfig).onFailure(this::onConfigLoadFailure);
         configPath = path;
     }
@@ -301,8 +381,14 @@ public class AetherCli implements Runnable {
     }
 
     private void onConfigLoadFailure(Cause cause) {
-        System.err.println("Warning: Failed to load config: " + cause.message());
+        System.err.println(configLoadWarning(cause));
         nodeAddress = DEFAULT_ADDRESS;
+    }
+
+    /// The CLI keeps going on its default address when a config file fails to load (it is a client, not a node), but the warning carries the
+    /// CAUSE: a bare "failed to load" hides which setting was refused (#909).
+    static String configLoadWarning(Cause cause) {
+        return "Warning: Failed to load config: " + cause.message();
     }
 
     @Contract
@@ -312,6 +398,22 @@ public class AetherCli implements Runnable {
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01", "JBCT-UTIL-02"})
+    /// Apply the [Verbosity] rung, then run the command picocli selected.
+    ///
+    /// This seam exists because the level has to be applied at a specific moment: AFTER parsing
+    /// (only then is the `-v` repeat count known) and BEFORE the selected subcommand runs (that is
+    /// where the diagnostics worth reading are emitted). picocli's execution strategy is exactly
+    /// that point. Registering it on the shared `CommandLine` covers the REPL path too, which
+    /// re-executes against the same instance.
+    ///
+    /// [CommandLine.RunLast] is picocli's own default strategy, so an invocation with no `-v`
+    /// dispatches exactly as it did before this seam was introduced.
+    private int runWithVerbosity(CommandLine.ParseResult parseResult) {
+        return Verbosity.verbosity(verbosity.length)
+                        .apply()
+                        .map(() -> new CommandLine.RunLast().execute(parseResult));
+    }
+
     private void runRepl(CommandLine cmd) {
         System.out.println("Aether v" + BuildInfo.current().displayString() + " - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
@@ -561,9 +663,20 @@ public class AetherCli implements Runnable {
                             AetherCli::extractResponseBody);
     }
 
+    /// `--api-key` > `AETHER_API_KEY` > the active context's `api_key_env` (#584: the same fallback
+    /// `ClusterHttpClient.resolveApiKey` makes, so a context-routed top-level command carries the
+    /// credential the registry recorded for that cluster rather than dialling it unauthenticated).
     private Option<String> resolveApiKey() {
         return option(apiKey).filter(k -> !k.isBlank())
-                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()));
+                     .orElse(() -> option(System.getenv("AETHER_API_KEY")).filter(k -> !k.isBlank()))
+                     .orElse(this::contextApiKey);
+    }
+
+    private Option<String> contextApiKey() {
+        return endpointFromContext
+               ? activeContext().flatMap(ClusterRegistry.ClusterEntry::apiKeyEnv)
+                              .flatMap(envName -> option(System.getenv(envName)))
+               : Option.empty();
     }
 
     private void attachApiKey(HttpRequest.Builder builder) {
@@ -649,10 +762,14 @@ public class AetherCli implements Runnable {
         return formatErrorResponse(response);
     }
 
+    /// A non-2xx is an error whatever its body says. The body is passed through only when it is
+    /// itself an error envelope or a ProblemDetail (so the server's own detail reaches the reader);
+    /// any other body — a gateway's `{"message":"…"}`, HTML, nothing — is wrapped with the status
+    /// (#1033 review: a `500 {"message":"boom"}` used to render as a document, exit 0).
     private static String formatErrorResponse(HttpResult<String> response) {
         var body = response.body();
 
-        if (body != null && body.startsWith("{")) {
+        if (body != null && OutputFormatter.isErrorResponse(body)) {
             return body;
         }
 
@@ -824,9 +941,12 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Node ID")
             private String nodeId;
 
+            @CommandLine.Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+            private boolean overrideFloor;
+
             @Override
             public Integer call() {
-                return executeTransition(NODE_DRAIN, "drain", nodeId, nodesParent);
+                return executeTransition(NODE_DRAIN, "drain", nodeId, nodesParent, overrideFloor);
             }
         }
 
@@ -838,21 +958,24 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Node ID")
             private String nodeId;
 
+            @CommandLine.Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+            private boolean overrideFloor;
+
             @Override
             public Integer call() {
-                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodesParent);
+                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodesParent, overrideFloor);
             }
         }
 
-        @Command(name = "promote", description = "Promote a node to a new role (CORE or WORKER) via consensus")
+        @Command(name = "promote", description = "Acknowledge an existing immutable node role; role changes are refused")
         static class PromoteCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private NodesCommand nodesParent;
 
-            @Parameters(index = "0", description = "Node ID to promote")
+            @Parameters(index = "0", description = "Node ID to check")
             private String nodeId;
 
-            @CommandLine.Option(names = {"--role"}, required = true, description = "Target role: CORE or WORKER (case-insensitive)")
+            @CommandLine.Option(names = {"--role"}, required = true, description = "Existing role: CORE, WORKER or SPOT (case-insensitive)")
             private String role;
 
             @Override
@@ -869,7 +992,7 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    nodesParent.parent.outputOptions(),
-                                                   "promote node " + nodeId + " to " + role.trim().toUpperCase());
+                                                   "acknowledge node " + nodeId + " role " + role.trim().toUpperCase());
             }
         }
 
@@ -976,8 +1099,14 @@ public class AetherCli implements Runnable {
         private static Integer executeTransition(ManagementRoute route,
                                                  String action,
                                                  String nodeId,
-                                                 NodesCommand nodesParent) {
-            var response = nodesParent.parent.post(route, List.of(nodeId), "");
+                                                 NodesCommand nodesParent,
+                                                 boolean overrideFloor) {
+            var response = nodesParent.parent.post(route,
+                                                   List.of(nodeId),
+                                                   overrideFloor
+                                                   ? "force=true"
+                                                   : "",
+                                                   "");
             var errorCode = OutputFormatter.checkResponseError(response,
                                                                nodesParent.parent.outputOptions(),
                                                                "Failed to " + action + " node " + nodeId);
@@ -1302,7 +1431,7 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        @Command(name = "deploy", description = "Deploy a JAR file to the artifact repository")
+        @Command(name = "deploy", description = "Deploy a JAR file to the artifact repository. A coordinate is written once: re-deploying identical content is a no-op, different content is refused (409), and SNAPSHOT versions are refused (400)")
         static class DeployArtifactCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1360,7 +1489,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "push", description = "Push blueprint and its slices from local Maven repository to cluster")
+        @Command(name = "push", description = "Push blueprint and its slices from local Maven repository to cluster. Coordinates are written once: identical content is a no-op, different content is refused (409), and SNAPSHOT versions are refused (400)")
         static class PushArtifactCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1656,8 +1785,8 @@ public class AetherCli implements Runnable {
                 return List.of();
             }
 
-            private static Path findBlueprintJar(String groupId, String artifactId, String version) {
-                var m2Home = System.getProperty("user.home") + "/.m2/repository";
+            static Path findBlueprintJar(String groupId, String artifactId, String version) {
+                var m2Home = MavenLocalRepoLocator.findLocalRepository();
 
                 return Path.of(m2Home,
                                groupId.replace('.', '/'),
@@ -1666,8 +1795,8 @@ public class AetherCli implements Runnable {
                                artifactId + "-" + version + "-blueprint.jar");
             }
 
-            private static Path findSliceJar(String groupId, String artifactId, String version) {
-                var m2Home = System.getProperty("user.home") + "/.m2/repository";
+            static Path findSliceJar(String groupId, String artifactId, String version) {
+                var m2Home = MavenLocalRepoLocator.findLocalRepository();
 
                 return Path.of(m2Home,
                                groupId.replace('.', '/'),
@@ -1846,7 +1975,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "delete", description = "Delete an artifact from the repository")
+        @Command(name = "archive", aliases = "delete", description = "Archive an artifact version: it stops resolving and is delisted, its keys are kept. Allowed once the version has been stored for the minimum retention period (default 7 days, [slice] artifact_archive_retention)")
         static class DeleteCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1869,7 +1998,7 @@ public class AetherCli implements Runnable {
                                                             List.of(parts[0].replace('.', '/'), parts[1], parts[2]));
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    artifactParent.parent.outputOptions(),
-                                                                   "Failed to delete");
+                                                                   "Failed to archive");
 
                 if (errorCode >= 0) {
                     return errorCode;
@@ -1877,7 +2006,7 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    artifactParent.parent.outputOptions(),
-                                                   "Deleted " + coordinates);
+                                                   "Archived " + coordinates);
             }
         }
 
@@ -2298,7 +2427,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "publish", description = "Publish a blueprint already present in the artifact repository (POST /api/blueprints/publish)")
+        @Command(name = "publish", description = "Publish a blueprint already present in the artifact repository (POST /api/v1/blueprints/publish)")
         static class PublishCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private BlueprintCommand blueprintParent;
@@ -2328,9 +2457,23 @@ public class AetherCli implements Runnable {
                     return errorCode;
                 }
 
-                return OutputFormatter.printAction(response,
-                                                   blueprintParent.parent.outputOptions(),
-                                                   "Published blueprint: " + coordinates);
+                var exit = OutputFormatter.printAction(response,
+                                                       blueprintParent.parent.outputOptions(),
+                                                       "Published blueprint: " + coordinates);
+
+                printRejectedStreamBindings(response, blueprintParent.parent.outputOptions());
+
+                return exit;
+            }
+
+            /// #1336: the TABLE success line alone hides the `[streams.X]` declarations the cluster did not
+            /// bind, and (#1564) the deploy-time warnings; JSON/VALUE/CSV already carry the whole body.
+            private static void printRejectedStreamBindings(String response, OutputOptions options) {
+                if (options.isQuiet() || options.format() != OutputFormat.TABLE) {
+                    return;
+                }
+
+                DeployWarnings.publishTableFooter(response).forEach(System.out::println);
             }
         }
 
@@ -2619,7 +2762,7 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "alerts", description = "Alert management", subcommands = {AlertsCommand.ListCommand.class, AlertsCommand.ActiveCommand.class, AlertsCommand.HistoryCommand.class, AlertsCommand.ClearCommand.class, AlertsCommand.InjectCommand.class})
+    @Command(name = "alerts", description = "Alert management", subcommands = {AlertsCommand.ListCommand.class, AlertsCommand.ActiveCommand.class, AlertsCommand.HistoryCommand.class, AlertsCommand.InjectCommand.class})
     static class AlertsCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -2668,19 +2811,6 @@ public class AetherCli implements Runnable {
                 var response = alertsParent.parent.fetch(ALERTS_HISTORY);
 
                 return OutputFormatter.printQuery(response, alertsParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "clear", description = "Clear all active alerts")
-        static class ClearCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private AlertsCommand alertsParent;
-
-            @Override
-            public Integer call() {
-                var response = alertsParent.parent.post(ALERTS_CLEAR, "{}");
-
-                return OutputFormatter.printAction(response, alertsParent.parent.outputOptions(), "Alerts cleared");
             }
         }
 
@@ -3561,228 +3691,6 @@ public class AetherCli implements Runnable {
         }
     }
 
-    @Command(name = "backups", description = "Manage cluster backups", subcommands = {BackupCommand.TriggerCommand.class, BackupCommand.ListCommand.class, BackupCommand.RestoreCommand.class})
-    static class BackupCommand implements Runnable {
-        @CommandLine.ParentCommand
-        private AetherCli parent;
-
-        @Contract
-        @Override
-        public void run() {
-            CommandLine.usage(this, System.out);
-        }
-
-        @Command(name = "trigger", description = "Trigger a manual backup")
-        static class TriggerCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupCommand backupParent;
-
-            @Override
-            public Integer call() {
-                var response = backupParent.parent.post(BACKUP_TRIGGER, "{}");
-
-                return OutputFormatter.printAction(response, backupParent.parent.outputOptions(), "Backup triggered");
-            }
-        }
-
-        @Command(name = "list", description = "List available backups")
-        static class ListCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupCommand backupParent;
-
-            @Override
-            public Integer call() {
-                var response = backupParent.parent.fetch(BACKUPS_LIST);
-
-                return OutputFormatter.printQuery(response, backupParent.parent.outputOptions());
-            }
-        }
-
-        @Command(name = "restore", description = "Restore from a backup")
-        static class RestoreCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupCommand backupParent;
-
-            @Parameters(index = "0", description = "Git commit ID to restore from")
-            private String commitId;
-
-            @CommandLine.Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
-            private boolean skipConfirmation;
-
-            @Override
-            public Integer call() {
-                if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
-                                                                   "This will restore cluster state from backup " + commitId
-                                                                  + ", overwriting current state.")) {
-                    System.out.println("Aborted.");
-
-                    return ExitCode.SUCCESS;
-                }
-
-                var response = backupParent.parent.post(BACKUP_RESTORE, "{\"commit\":\"" + commitId + "\"}");
-
-                return OutputFormatter.printAction(response,
-                                                   backupParent.parent.outputOptions(),
-                                                   "Restore initiated from " + commitId);
-            }
-        }
-    }
-
-    /// Singular `aether backup` parent — operator-facing alias of `aether backups`
-    /// with verb-style `create` / `restore` subcommands as called out in
-    /// `aether/docs/internal/production-readiness-followup-2026-05-21.md` P-NEW-C
-    /// (test target `TC-NEW-G4-kv-store-backup`). Shares the same REST routes
-    /// (`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) as
-    /// the existing plural form — this is an additional CLI surface, not a new
-    /// server endpoint.
-    @Command(name = "backup", description = "Operator-facing backup commands (create/restore/list)", subcommands = {BackupSingularCommand.CreateCommand.class, BackupSingularCommand.RestoreCommand.class, BackupSingularCommand.ListCommand.class})
-    static class BackupSingularCommand implements Runnable {
-        @CommandLine.ParentCommand
-        private AetherCli parent;
-
-        @Contract
-        @Override
-        public void run() {
-            CommandLine.usage(this, System.out);
-        }
-
-        @Command(name = "create", description = "Create a new backup (synchronous; --wait polls for visibility)")
-        @SuppressWarnings({"JBCT-PAT-01", "JBCT-SEQ-01"})
-        static class CreateCommand implements Callable<Integer> {
-            private static final int POLL_INTERVAL_MS = 1000;
-
-            @CommandLine.ParentCommand
-            private BackupSingularCommand backupParent;
-
-            @CommandLine.Option(names = "--wait", description = "Poll /api/backups until the new backup appears (or --timeout elapses)")
-            private boolean waitForCompletion;
-
-            @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when --wait is set", defaultValue = "60")
-            private int timeoutSeconds;
-
-            @Override
-            public Integer call() {
-                var existingCount = waitForCompletion
-                                    ? countExistingBackups()
-                                    : -1;
-                var response = backupParent.parent.post(BACKUP_TRIGGER, "{}");
-                var result = OutputFormatter.printAction(response, backupParent.parent.outputOptions(), "Backup created");
-
-                if (result != ExitCode.SUCCESS || !waitForCompletion) {
-                    return result;
-                }
-
-                return pollUntilBackupVisible(existingCount);
-            }
-
-            private int countExistingBackups() {
-                var response = backupParent.parent.fetch(BACKUPS_LIST);
-
-                return countBackupEntries(response);
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private int pollUntilBackupVisible(int baselineCount) {
-                System.out.printf("Waiting for backup to appear in /api/backups (timeout: %ds)...%n", timeoutSeconds);
-                var deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
-
-                while (System.currentTimeMillis() < deadline) {
-                    var currentCount = countExistingBackups();
-
-                    if (currentCount > baselineCount) {
-                        System.out.printf("Backup visible: %d entries in /api/backups.%n", currentCount);
-
-                        return ExitCode.SUCCESS;
-                    }
-
-                    sleepQuietly();
-                }
-
-                System.err.printf("Timeout: backup did not become visible within %ds.%n", timeoutSeconds);
-
-                return ExitCode.TIMEOUT;
-            }
-
-            @SuppressWarnings("JBCT-EX-01")
-            private static void sleepQuietly() {
-                try {
-                    Thread.sleep(POLL_INTERVAL_MS);
-                } catch (InterruptedException _) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-
-            /// Best-effort count of `"commitId"` occurrences in the BACKUPS_LIST JSON
-            /// envelope. Falls back to 0 on parse error so a missing/empty list does
-            /// not collide with the "saw new entry" condition.
-            static int countBackupEntries(String response) {
-                if (response == null || response.isBlank() || response.contains("\"error\"")) {
-                    return 0;
-                }
-
-                var marker = "\"commitId\"";
-                var idx = 0;
-                var count = 0;
-
-                while ((idx = response.indexOf(marker, idx)) >= 0) {
-                    count++;
-                    idx += marker.length();
-                }
-
-                return count;
-            }
-        }
-
-        @Command(name = "restore", description = "Restore the cluster from a backup commit (synchronous)")
-        static class RestoreCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupSingularCommand backupParent;
-
-            @Parameters(index = "0", description = "Git commit ID to restore from")
-            private String commitId;
-
-            @CommandLine.Option(names = "--wait", description = "Reserved for future async-restore support (currently a no-op — restore is synchronous server-side)")
-            private boolean waitForCompletion;
-
-            @CommandLine.Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
-            private boolean skipConfirmation;
-
-            @Override
-            public Integer call() {
-                if (!DestructiveAction.destructiveAction().confirm(skipConfirmation,
-                                                                   "This will restore cluster state from backup " + commitId
-                                                                  + ", overwriting current state.")) {
-                    System.out.println("Aborted.");
-
-                    return ExitCode.SUCCESS;
-                }
-
-                var response = backupParent.parent.post(BACKUP_RESTORE, buildRestoreBody());
-
-                return OutputFormatter.printAction(response,
-                                                   backupParent.parent.outputOptions(),
-                                                   "Restore initiated from " + commitId);
-            }
-
-            String buildRestoreBody() {
-                return "{\"commit\":\"" + escapeJsonValue(commitId) + "\"}";
-            }
-        }
-
-        @Command(name = "list", description = "List available backups")
-        static class ListCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private BackupSingularCommand backupParent;
-
-            @Override
-            public Integer call() {
-                var response = backupParent.parent.fetch(BACKUPS_LIST);
-
-                return OutputFormatter.printQuery(response, backupParent.parent.outputOptions());
-            }
-        }
-    }
-
     /// #525: `health` and `endpoints` subcommands removed. Per-worker health and per-worker
     /// endpoints are never published to consensus, so those commands could only ever fail. The
     /// routes remain declared and answer an honest 501 (see NotImplementedRoutes) for anyone
@@ -3821,6 +3729,18 @@ public class AetherCli implements Runnable {
         /// It is the field that says whose slices a non-COMPLETED status is holding: activation is
         /// withheld from the slices of THIS blueprint only, never from an unrelated one.
         ///
+        /// `HELD SLICES` (#760/#724 review round 2 item k) names the actual artifacts a blocking
+        /// status is withholding — `OWNING BLUEPRINT` alone answers "whose deploy is stuck", not
+        /// "which of its slices". The REST response already carried `heldSlices` (`SchemaRoutes`)
+        /// with no CLI surface for it; feature-catalog.md described the value as "surfaced ... in the
+        /// OWNING BLUEPRINT column", which was never true — `heldSlices` is a distinct field the table
+        /// never rendered. This column, not a doc rewrite, is the fix: the operator-facing diagnosis
+        /// #760 exists for needs the actual slice names, not just the owner. Renders via
+        /// `OutputFormatter.navigateToField`'s non-value-node fallback (`JsonNode.toString()`), so a
+        /// held row prints as a bracketed JSON array (e.g. `["org.example:my-app-slice:1.0.0"]`)
+        /// rather than a comma-joined list — acceptable for an operator-diagnostic column, not
+        /// dressed up as more than it is.
+        ///
         /// Package-visible (like `SchemaRoutes.baselineDatasource`) so `SchemaStatusTableTest` can
         /// render the real column set over a real response body: a wrong `jsonPath` renders a blank
         /// column rather than failing, so only a test that RUNS the renderer can catch it.
@@ -3830,6 +3750,9 @@ public class AetherCli implements Runnable {
                                                                                   new OutputFormatter.Column("STATUS",
                                                                                                              "status",
                                                                                                              10),
+                                                                                  new OutputFormatter.Column("HELD SLICES",
+                                                                                                             "heldSlices",
+                                                                                                             90),
                                                                                   new OutputFormatter.Column("VERSION",
                                                                                                              "currentVersion",
                                                                                                              7),
@@ -3975,6 +3898,9 @@ public class AetherCli implements Runnable {
             @CommandLine.Option(names = {"-v", "--version"}, required = true, description = "Baseline version")
             private int version;
 
+            @CommandLine.Option(names = "--force", description = "Baseline even while a migration is PENDING or MIGRATING; that migration then never runs (#217, audited)")
+            private boolean force;
+
             /// Baselining inherits the existing record's owning blueprint, so a datasource with no
             /// schema record cannot be baselined (#551) — the server answers with an error rather
             /// than fabricating an unowned record. The error guard is what makes that visible:
@@ -3983,7 +3909,10 @@ public class AetherCli implements Runnable {
             @SuppressWarnings("JBCT-UTIL-02")
             public Integer call() {
                 var output = schemaParent.parent.outputOptions();
-                var response = schemaParent.parent.post(SCHEMA_BASELINE, List.of(datasource), "version=" + version, "{}");
+                var query = force
+                            ? "version=" + version + "&force=true"
+                            : "version=" + version;
+                var response = schemaParent.parent.post(SCHEMA_BASELINE, List.of(datasource), query, "{}");
                 var errorCode = OutputFormatter.checkResponseError(response, output, "Failed to baseline datasource");
 
                 if (errorCode >= 0) {
@@ -4185,6 +4114,95 @@ public class AetherCli implements Runnable {
         }
     }
 
+    /// #1333 durable-topic operator surface (durable-pubsub-spec §9). Both routes are LOCAL: `groups`
+    /// describes the node you asked — its projection column is what THAT node hosts, while the
+    /// consumer/owner assignment and the committed cursor are cluster facts every node answers alike —
+    /// and `rebuild` must be sent to the node consuming the group's partitions, which `groups` names.
+    @Command(name = "topics", description = "Inspect durable-topic consumer groups and rebuild projections", subcommands = {TopicsCommand.GroupsCommand.class, TopicsCommand.RebuildCommand.class})
+    static class TopicsCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Contract
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        /// A topic must be addressed in full (`namespace:topic:version`), for the same reason streams
+        /// are (#1044): a bare name could resolve to two different backing streams.
+        private static Result<ResourceAddress> resolveTopicAddress(String raw) {
+            return raw.contains(":")
+                   ? ResourceAddress.resourceAddress(raw)
+                   : Causes.cause("'" + raw
+                                 + "' is a bare topic name, which is ambiguous: it names no namespace. Use the full"
+                                 + " namespace:topic:version, e.g. '<your-namespace>:" + raw
+                                 + ":1.0.0'.").result();
+        }
+
+        private static int handleAddressError(Cause cause) {
+            System.err.println("Error: invalid topic address: " + cause.message());
+
+            return ExitCode.ERROR;
+        }
+
+        private static List<String> pathOf(ResourceAddress address) {
+            return List.of(address.namespace().value(),
+                           address.name().value(),
+                           address.version().asString());
+        }
+
+        @Command(name = "groups", description = "Show the durable consumer groups over a topic, per partition: assignee, owner, committed cursor and rewind epoch, and the projection state this node hosts")
+        static class GroupsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private TopicsCommand topicsParent;
+
+            @Parameters(index = "0", description = "Topic address: namespace:topic:version")
+            private String address;
+
+            @Override
+            public Integer call() {
+                return resolveTopicAddress(address).fold(TopicsCommand::handleAddressError, this::fetchGroups);
+            }
+
+            private int fetchGroups(ResourceAddress addr) {
+                var response = topicsParent.parent.fetch(TOPICS_GROUPS, pathOf(addr));
+
+                return OutputFormatter.printQuery(response, topicsParent.parent.outputOptions());
+            }
+        }
+
+        /// Rebuilds the projection behind ONE consumer group: captures the replay range, resets the
+        /// projection store to a new generation and rewinds the group's committed cursor under a fenced
+        /// epoch. Answers 409 on a node that does not host the projection — run `aether topics groups` first
+        /// and target the node named as `consumerNode`.
+        @Command(name = "rebuild", description = "Rebuild the projection behind a durable consumer group (LOCAL: target the node consuming the group)")
+        static class RebuildCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private TopicsCommand topicsParent;
+
+            @Parameters(index = "0", description = "Topic address: namespace:topic:version")
+            private String address;
+
+            @Parameters(index = "1", description = "Consumer group id (artifactBase#method, as shown by 'aether topics groups')")
+            private String group;
+
+            @Override
+            public Integer call() {
+                return resolveTopicAddress(address).fold(TopicsCommand::handleAddressError, this::postRebuild);
+            }
+
+            private int postRebuild(ResourceAddress addr) {
+                var params = new java.util.ArrayList<>(pathOf(addr));
+
+                params.add(group);
+                var response = topicsParent.parent.post(TOPICS_GROUP_REBUILD, params, "");
+
+                return OutputFormatter.printQuery(response, topicsParent.parent.outputOptions());
+            }
+        }
+    }
+
     @Command(name = "streams", description = "Manage event streams", subcommands = {StreamCommand.ListCommand.class, StreamCommand.StatusCommand.class, StreamCommand.ConsumersCommand.class, StreamCommand.PublishCommand.class, StreamCommand.ReadCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.ConsumerGroupCommand.class})
     static class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
@@ -4196,17 +4214,43 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        /// Bare name (no colon) defaults to the system-namespace catalog address at the default
-        /// version, preserving `status`/`publish`/`read`/`delete`'s original single-name UX; anything
-        /// containing a colon is parsed as a full `namespace:stream:version` address via the canonical
-        /// [ResourceAddress#resourceAddress] parser. Needed because those four commands now address the
-        /// catalog-form routes (`STREAM_GET`/`STREAMS_PUBLISH`/`STREAM_READ`/`STREAMS_DELETE` —
-        /// management-api-versioning-spec.md hard cutover) instead of the old flat bare-name routes, so
-        /// a non-`system` namespace needs a way in that a bare name alone can't express.
+        /// A stream address must be the full `namespace:stream:version`. A bare name is REFUSED (#1044).
+        ///
+        /// It previously defaulted to the system-namespace catalog address, preserving the original
+        /// single-name UX for `status`/`publish`/`read`/`delete`. That convenience became a silent wrong
+        /// answer when #1040 qualified application streams: a bare name resolved to `system:<name>:1.0.0`,
+        /// which `StreamEngineKey` then reduced to a bare engine key (since #1338 it keys by the full address), while the application stream now
+        /// lives under `<blueprint-ns>:<stream>:<version>`. The command then succeeded and returned an
+        /// EMPTY result — indistinguishable from a stream with no events. Measured on a live 5-node
+        /// cluster 2026-09-13 with 20 events present: the bare name returned 0 of 20, the full identity
+        /// returned 20 of 20, same instant.
+        ///
+        /// This file already made the argument for the neighbouring replicas route: "a stream identity
+        /// that could silently mean two different engine keys is worse than requiring the caller to say
+        /// which one". The same now holds for these four commands, so they refuse rather than guess.
+        /// `system` streams are unaffected in substance — they are still reachable, spelled in full.
+        /// #1480 — the help text for every command that takes a stream address. It used to advertise the
+        /// bare-name default #1044 removed, sending operators to the one form the parser refuses.
+        static final String STREAM_ADDRESS_HELP = "Stream address: namespace:stream:version. A bare name is refused; "
+                                                + "use system:<name>:1.0.0 for a system stream";
+
         private static Result<ResourceAddress> resolveStreamAddress(String raw) {
             return raw.contains(":")
                    ? ResourceAddress.resourceAddress(raw)
-                   : ResourceAddress.systemResource(raw, ResourceVersion.defaultVersion());
+                   : bareStreamNameRefused(raw);
+        }
+
+        /// Names the exact form to retype, including the `system:` spelling for the case the bare name
+        /// used to mean — a refusal that does not say what to write instead just relocates the problem.
+        private static Result<ResourceAddress> bareStreamNameRefused(String raw) {
+            return Causes.cause("'" + raw
+                               + "' is a bare stream name, which is ambiguous: it names no "
+                               + "namespace. Use the full namespace:stream:version — e.g. "
+                               + "'<your-namespace>:" + raw
+                               + ":1.0.0', or 'system:" + raw
+                               + ":1.0.0' for a "
+                               + "system stream. 'aether streams list' shows the catalog address of every "
+                               + "stream.").result();
         }
 
         private static int handleAddressError(Cause cause) {
@@ -4233,7 +4277,7 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            @Parameters(index = "0", description = STREAM_ADDRESS_HELP)
             private String address;
 
             @Override
@@ -4274,11 +4318,18 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            @Parameters(index = "0", description = STREAM_ADDRESS_HELP)
             private String address;
 
             @Parameters(index = "1", description = "Message content")
             private String message;
+
+            /// #524: Management-API publish writes untyped bytes, so it cannot extract an
+            /// `@PartitionKey` the way an app publish does — an explicit `--partition` here is the
+            /// operator choosing a target directly, not key-based routing. Omitted keeps the
+            /// unchanged default: partition 0.
+            @CommandLine.Option(names = "--partition", description = "Target partition (default: 0). Management-API publish does no key-based routing -- it writes untyped bytes with no event to extract a key from, so this is a direct, deliberate target choice.")
+            private Integer partition;
 
             @Override
             public Integer call() {
@@ -4287,7 +4338,9 @@ public class AetherCli implements Runnable {
 
             private int publish(ResourceAddress addr) {
                 var encoded = Base64.getEncoder().encodeToString(message.getBytes());
-                var body = "{\"data\":\"" + encoded + "\"}";
+                var body = partition == null
+                           ? "{\"data\":\"" + encoded + "\"}"
+                           : "{\"data\":\"" + encoded + "\",\"partition\":" + partition + "}";
                 var response = streamParent.parent.post(STREAMS_PUBLISH,
                                                         List.of(addr.namespace().value(),
                                                                 addr.name().value(),
@@ -4305,7 +4358,7 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            @Parameters(index = "0", description = STREAM_ADDRESS_HELP)
             private String address;
 
             @Parameters(index = "1", description = "Partition number")
@@ -4341,30 +4394,29 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "create", description = "Create a new event stream")
+        /// #1224: this legacy body-carried create never registered the catalog entry, so a created
+        /// stream never appeared in `aether streams list` (which reads the registry) — the same
+        /// silently-wrong-answer shape #1044 fixed for the neighbouring bare-name commands. Unlike
+        /// those, there is no ambiguous-but-salvageable input here to resolve: the whole command shape
+        /// (bare name, no namespace) is gone, so it refuses unconditionally rather than guessing an
+        /// address. `aether stream create` (singular) is the catalog-addressed replacement.
+        @Command(name = "create", description = "Removed — use 'aether stream create <namespace:stream:version>'")
         static class CreateCommand implements Callable<Integer> {
-            @CommandLine.ParentCommand
-            private StreamCommand streamParent;
-
-            @Parameters(index = "0", description = "Stream name")
+            @Parameters(index = "0", description = "Stream name (unused — this command is refused)")
             private String name;
 
-            @CommandLine.Option(names = "--partitions", description = "Number of partitions (default: server-side)")
+            @CommandLine.Option(names = "--partitions", description = "Unused — this command is refused")
             private Integer partitions;
 
             @Override
             public Integer call() {
-                var body = buildCreateBody();
-                var response = streamParent.parent.post(STREAM_CREATE, List.of(), body);
+                System.err.println("Error: 'aether streams create' is removed. Use 'aether stream create "
+                                  + "<namespace>:" + name
+                                  + ":<version> [--partitions N]', naming the catalog "
+                                  + "namespace and version explicitly. 'aether streams list' shows the catalog "
+                                  + "address of every stream.");
 
-                return OutputFormatter.printAction(response,
-                                                   streamParent.parent.outputOptions(),
-                                                   "Created stream " + name);
-            }
-
-            private String buildCreateBody() {
-                return option(partitions).map(p -> "{\"name\":\"" + name + "\",\"partitions\":" + p + "}")
-                             .or("{\"name\":\"" + name + "\"}");
+                return ExitCode.ERROR;
             }
         }
 
@@ -4373,7 +4425,7 @@ public class AetherCli implements Runnable {
             @CommandLine.ParentCommand
             private StreamCommand streamParent;
 
-            @Parameters(index = "0", description = "Stream name or address: name | namespace:stream:version (bare name defaults to system:name:1.0.0)")
+            @Parameters(index = "0", description = STREAM_ADDRESS_HELP)
             private String address;
 
             @CommandLine.Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")

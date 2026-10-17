@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.stream;
 
 import java.util.List;
@@ -15,6 +14,7 @@ import org.pragmatica.aether.cli.Prompt;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -30,7 +30,7 @@ import picocli.CommandLine.Parameters;
 /// Exit codes follow [StreamExitCode]: 0=success, 1=error, 2=validation, 3=user-cancelled,
 /// 4=not-found, 5=conflict, 6=gone. HTTP errors are scraped from the JSON envelope returned by
 /// the base CLI HTTP helpers (see [StreamHttpResponse]).
-@Command(name = "stream", description = "Manage event streams (list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.ReplicasCommand.class, StreamCommand.HydrationCommand.class, StreamCommand.TailCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
+@Command(name = "stream", description = "Manage event streams (create, list, show, tail, delete, group create/delete)", subcommands = {StreamCommand.ListCommand.class, StreamCommand.ShowCommand.class, StreamCommand.ReplicasCommand.class, StreamCommand.HydrationCommand.class, StreamCommand.TailCommand.class, StreamCommand.CreateCommand.class, StreamCommand.DeleteCommand.class, StreamCommand.GroupCommand.class})
 public class StreamCommand implements Runnable {
     @CommandLine.ParentCommand
     private AetherCli parent;
@@ -84,8 +84,8 @@ public class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
         private StreamCommand streamParent;
 
-        @Parameters(index = "0", description = "Stream identity — with --local: the local engine key (bare name for "
-                                             + "system-namespace streams, namespace:stream:version for others); "
+        @Parameters(index = "0", description = "Stream identity — with --local: the local engine key (the full "
+                                             + "namespace:stream:version, system streams included); "
                                              + "without: a namespace:stream:version catalog address")
         private String stream;
 
@@ -142,6 +142,33 @@ public class StreamCommand implements Runnable {
                                                                                                               maxEvents,
                                                                                                               follow,
                                                                                                               intervalMs)));
+        }
+    }
+
+    /// #1224: catalog-addressed create — the replacement for the legacy body-carried
+    /// `aether streams create <name>`, which only materialized rings and never registered the
+    /// catalog entry, so a created stream never appeared in `aether stream list`. Address is
+    /// explicit and required, same shape as every other command in this group (no bare-name
+    /// convenience — #1044's reasoning against a silently-ambiguous identity applies here verbatim).
+    /// Idempotent: repeating the command for an address that already exists reports `"exists"`
+    /// rather than failing.
+    @Command(name = "create", description = "Create a stream at a catalog address (idempotent)")
+    public static class CreateCommand implements Callable<Integer> {
+        @CommandLine.ParentCommand
+        private StreamCommand streamParent;
+
+        @Parameters(index = "0", description = "Stream address: namespace:stream:version")
+        private String address;
+
+        @CommandLine.Option(names = "--partitions", description = "Number of partitions (default: server-side)")
+        private Integer partitions;
+
+        @Override
+        public Integer call() {
+            return StreamAddressArg.parse(address).fold(StreamCommand::handleAddressError,
+                                                        addr -> createStream(addr,
+                                                                             Option.option(partitions),
+                                                                             streamParent.parent()));
         }
     }
 
@@ -247,7 +274,7 @@ public class StreamCommand implements Runnable {
     }
 
     /// Per-replica rows are drawn from the `replicas` array; the partition-level fields (`hrwOwner`,
-    /// `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`) live at the response root and are
+    /// `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`, `ownerActivationBlock`) live at the response root and are
     /// visible in `--format json`. NODE marks the resolved HRW owner via `isHrwOwner`; compare a
     /// `CAUGHT_UP` replica's CONFIRMED against the root `ownerHeadOffset` to spot the #333 lag.
     private static final TableSpec REPLICAS_TABLE_SPEC = new TableSpec("Stream Partition Replicas",
@@ -260,8 +287,8 @@ public class StreamCommand implements Runnable {
                                                                        "replicas");
 
     /// #753/local-key-shape fix: `STREAM_REPLICAS_LOCAL`'s "name" param is the raw engine key
-    /// ([StreamManager#engineKey] — bare name for `system`-namespace streams, full
-    /// `namespace:stream:version` for others), never uniformly a rendered catalog address, so
+    /// ([StreamManager#engineKey] — the full `namespace:stream:version` in every
+    /// namespace, `system` included), never uniformly a rendered catalog address, so
     /// `--local` keeps passing `stream` through unparsed exactly as before. The catalog-form
     /// `STREAM_REPLICAS` route is genuinely `(namespace, stream, version, partition)`-shaped and has
     /// no bare-name convenience (unlike `streams status/publish/delete`'s default-to-`system`): a
@@ -358,6 +385,23 @@ public class StreamCommand implements Runnable {
                                             System.out,
                                             System.err,
                                             StreamTailPoller.Sleeper.REAL);
+    }
+
+    /// #1224: `partitions` omitted keeps the server-side default ([StreamApiRoutes#DEFAULT_PARTITIONS]).
+    private static int createStream(ResourceAddress addr, Option<Integer> partitions, AetherCli cli) {
+        var body = partitions.map(p -> "{\"partitions\":" + p + "}").or("{}");
+        var response = cli.post(ManagementRoute.STREAMS_CREATE,
+                                List.of(addr.namespace().value(),
+                                        addr.name().value(),
+                                        addr.version().asString()),
+                                body);
+        var errorCode = OutputFormatter.checkResponseError(response, cli.outputOptions(), "Failed to create stream");
+
+        if (errorCode >= 0) {
+            return mapHttpErrorOrFallback(response, errorCode);
+        }
+
+        return OutputFormatter.printAction(response, cli.outputOptions(), "Created stream: " + addr.asString());
     }
 
     private static int deleteStreamWithConfirmation(ResourceAddress addr, boolean force, AetherCli cli) {

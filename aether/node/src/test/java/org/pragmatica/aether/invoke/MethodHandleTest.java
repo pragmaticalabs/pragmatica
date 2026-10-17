@@ -209,6 +209,9 @@ class MethodHandleTest {
         public void onInvokeResponse(InvocationMessage.InvokeResponse response) {}
 
         @Override
+        public org.pragmatica.lang.Unit onNodeDeparture(org.pragmatica.consensus.NodeId node) { return org.pragmatica.lang.Unit.unit(); }
+
+        @Override
         public void onNodeRemoved(org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved event) {}
 
         @Override
@@ -227,10 +230,6 @@ class MethodHandleTest {
             return 0;
         }
 
-        @Override
-        public Unit setFailureListener(SliceFailureListener listener) {
-            return unit();
-        }
 
         @Override
         public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {

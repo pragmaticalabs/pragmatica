@@ -5,14 +5,19 @@
 package org.pragmatica.aether.node.health;
 
 import java.net.InetSocketAddress;
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.node.health.fsm.SwimHealthContext;
@@ -20,6 +25,7 @@ import org.pragmatica.aether.node.health.fsm.SwimHealthEvents;
 import org.pragmatica.aether.node.health.fsm.SwimHealthState;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.lang.Contract;
@@ -43,6 +49,7 @@ import org.pragmatica.swim.SwimObservation;
 import org.pragmatica.swim.SwimProtocol;
 import org.pragmatica.swim.SwimTransport;
 import org.pragmatica.swim.TransportObservation;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import io.netty.channel.EventLoopGroup;
 import org.slf4j.Logger;
@@ -59,6 +66,48 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
 
     private final SwimHealthContext context;
     private final SwimConfig swimConfig;
+    private volatile Predicate<NodeId> membershipEligibility = _ -> true;
+    private volatile Option<BootTokens> bootTokens = Option.none();
+    private volatile Option<OperatorWarningSink> operatorWarningSink = Option.none();
+    private volatile List<NodeInfo> peerDirectory = List.of();
+
+    public Unit setMembershipEligibility(Predicate<NodeId> eligibility) {
+        membershipEligibility = eligibility;
+        protocol().onPresent(protocol -> protocol.setMembershipEligibility(eligibility));
+
+        return Unit.unit();
+    }
+
+    /// Share the node's boot-token registry with SWIM — the SAME instance the QUIC transport admits
+    /// Hellos through, so a process SWIM refuses cannot re-enter through the transport (terminal removal).
+    public Unit setBootTokens(BootTokens registry) {
+        bootTokens = Option.some(registry);
+        protocol().onPresent(protocol -> protocol.setBootTokens(registry));
+
+        return Unit.unit();
+    }
+
+    /// Route SWIM's operator warnings to this node's cluster event log (#1574). Applied to a protocol
+    /// that is already running, and to any protocol started later.
+    public Unit setOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarningSink = Option.some(sink);
+        protocol().onPresent(protocol -> protocol.setOperatorWarningSink(sink));
+
+        return Unit.unit();
+    }
+
+    /// Address hints start OBSERVED and require ordinary SWIM evidence before admission.
+    public Unit observePeerDirectory(List<NodeInfo> directory) {
+        peerDirectory = List.copyOf(directory);
+        protocol().onPresent(this::seedPeerDirectory);
+
+        return Unit.unit();
+    }
+
+    private void seedPeerDirectory(SwimProtocol protocol) {
+        peerDirectory.forEach(node -> addSeedMember(protocol, node));
+    }
+
     private final List<Consumer<SwimObservation>> pendingObservationListeners = new CopyOnWriteArrayList<>();
 
     /// Transport-observation emitters pending wiring into the underlying [`SwimProtocol`]
@@ -68,10 +117,17 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
 
     private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
+    private final MembershipResyncPolicy resync = MembershipResyncPolicy.membershipResyncPolicy();
+    /// Test seam (#1308): runs on the starting thread once the SWIM port is bound and before the
+    /// protocol is created, so a test can hold the detector in Starting or fail a start after a
+    /// successful bind. Production never replaces it.
+    private volatile Supplier<Result<Unit>> afterBind = Result::unitResult;
+    private final AtomicInteger transportCreations = new AtomicInteger();
 
     private record AnnounceJoinCall(NodeInfo self,
                                     String clusterName,
                                     long incarnation,
+                                    long bootToken,
                                     List<InetSocketAddress> seeds) {}
 
     private CoreSwimHealthDetector(SwimHealthContext context, SwimConfig swimConfig) {
@@ -267,22 +323,48 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         return start(none(), GossipEncryptor.none());
     }
 
-    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    /// When `stop()` already preceded the first start the detector is closed: no transport is built, no
+    /// port is bound, and the start resolves as a no-op success (logged). It must not fail: the caller
+    /// is stopping the node, and a failure would run `failNode`.
     public Promise<Unit> start(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
+        return isClosed()
+               ? refuseClosedStart()
+               : startOpen(sharedEventLoopGroup, gossipEncryptor);
+    }
+
+    private Promise<Unit> refuseClosedStart() {
         context.dispatch(new SwimHealthEvents.StartRequested());
-        var selfPort = findSelfPort();
-        var swimPort = selfPort + SWIM_PORT_OFFSET;
+        log.info("SWIM start refused: the detector is closed (stop() preceded start()); nothing bound");
+
+        return Promise.success(Unit.unit());
+    }
+
+    /// True once a `stop()` that preceded the first start has made the detector terminally stopped.
+    public boolean isClosed() {
+        return lifecycleState() instanceof SwimHealthState.Stopped(_, var closed) && closed;
+    }
+
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
+    private Promise<Unit> startOpen(Option<EventLoopGroup> sharedEventLoopGroup, GossipEncryptor gossipEncryptor) {
+        context.dispatch(new SwimHealthEvents.StartRequested());
+        var swimPort = swimPort();
         var selfHost = findSelfHost();
         var selfAddress = new InetSocketAddress(selfHost, swimPort);
 
-        return createTransport(sharedEventLoopGroup, gossipEncryptor).flatMap(transport -> createAndStartProtocol(transport,
-                                                                                                                  selfAddress,
-                                                                                                                  swimPort,
-                                                                                                                  gossipEncryptor))
+        return createTransport(sharedEventLoopGroup, gossipEncryptor).onSuccessRun(transportCreations::incrementAndGet)
+                              .flatMap(transport -> createAndStartProtocol(transport,
+                                                                           selfAddress,
+                                                                           swimPort,
+                                                                           gossipEncryptor))
                               .async()
                               .onSuccess(context::dispatch)
                               .onFailure(_ -> context.dispatch(new SwimHealthEvents.StartFailed()))
                               .mapToUnit();
+    }
+
+    /// The UDP port [#start] binds: this node's configured port plus [#SWIM_PORT_OFFSET].
+    public int swimPort() {
+        return findSelfPort() + SWIM_PORT_OFFSET;
     }
 
     @Contract
@@ -293,6 +375,16 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     public SwimHealthState lifecycleState() {
         return context.fsm()
                       .current();
+    }
+
+    /// How many transports start() has built: a refused start must leave this at zero.
+    int transportCreationsForTest() {
+        return transportCreations.get();
+    }
+
+    @Contract
+    void afterBindForTest(Supplier<Result<Unit>> hook) {
+        afterBind = hook;
     }
 
     SwimHealthContext contextForTest() {
@@ -350,10 +442,53 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         protocol().onPresent(p -> p.addObservationListener(consumer));
     }
 
+    /// `bootToken` is this process's random boot token, carried on every ANNOUNCE / self-ALIVE so peers
+    /// refuse a different process reusing this NodeId (terminal removal, owner ruling session 28).
     @Contract
-    public void announceJoin(NodeInfo self, String clusterName, long incarnation, List<InetSocketAddress> seeds) {
-        pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, seeds));
-        protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, seeds));
+    public void announceJoin(NodeInfo self,
+                             String clusterName,
+                             long incarnation,
+                             long bootToken,
+                             List<InetSocketAddress> seeds) {
+        pendingAnnounceJoin = option(new AnnounceJoinCall(self, clusterName, incarnation, bootToken, seeds));
+        protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, bootToken, seeds));
+    }
+
+    /// Asks the peers for the committed electorate's members this node's SWIM view still lacks (#1803).
+    ///
+    /// A replacement is minted with the peers that existed when it was minted, so the electorate it later
+    /// joins can name voters its SWIM view never held: the join ack was merged through a scope that did not
+    /// yet include them, and gossip about them is a one-shot. Re-announcing to the seeds and to every member
+    /// already known makes each answer with its view again, merged now through the grown scope; a voter learned
+    /// this way is dialed through the same discovery path as any other SWIM-introduced peer. Paced by
+    /// [MembershipResyncPolicy]; a no-op while nothing is missing, before the announce call is known, or
+    /// while the protocol is not running.
+    @Contract
+    public void requestMembershipView(Set<NodeId> electorate) {
+        protocol().onPresent(protocol -> pendingAnnounceJoin.onPresent(call -> resyncMembership(protocol,
+                                                                                                call,
+                                                                                                electorate)));
+    }
+
+    private void resyncMembership(SwimProtocol protocol, AnnounceJoinCall call, Set<NodeId> electorate) {
+        var self = call.self().id();
+        var known = protocol.members();
+        var missing = electorate.stream()
+                                .filter(voter -> !voter.equals(self) && !known.containsKey(voter))
+                                .collect(Collectors.toUnmodifiableSet());
+
+        if (resync.permits(missing, System.nanoTime())) {
+            protocol.requestMembershipView(call.self(), call.clusterName(), announceTargets(call, known.values()));
+        }
+    }
+
+    private static List<InetSocketAddress> announceTargets(AnnounceJoinCall call, Collection<SwimMember> members) {
+        return Stream.concat(call.seeds().stream(),
+                             members.stream()
+                                    .filter(member -> member.state() == SwimMember.MemberState.ALIVE)
+                                    .map(SwimMember::address))
+                     .distinct()
+                     .toList();
     }
 
     public SwimHealth healthOf(NodeId nodeId) {
@@ -376,6 +511,30 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @Contract
     public void setSwimBlackholed(boolean enabled) {
         transport().onPresent(t -> t.blackhole(enabled));
+    }
+
+    /// Test-only per-peer partition (#1730): drop SWIM traffic to and from `unreachable`, resolved to their SWIM
+    /// addresses from the current membership. An empty set heals.
+    @Contract
+    public void setSwimPeerPartition(java.util.Set<NodeId> unreachable) {
+        var addresses = protocol().map(p -> p.members()
+                                             .values()
+                                             .stream()
+                                             .filter(member -> unreachable.contains(member.nodeId()))
+                                             .map(SwimMember::address)
+                                             .collect(java.util.stream.Collectors.toSet()))
+                                .or(java.util.Set.of());
+
+        transport().onPresent(t -> t.dropPeers(address -> addresses.stream()
+                                                                   .anyMatch(dropped -> sameEndpoint(dropped, address))));
+    }
+
+    private static boolean sameEndpoint(InetSocketAddress left, InetSocketAddress right) {
+        return left.getPort() == right.getPort()
+               && (left.getAddress() == null || right.getAddress() == null || left.getAddress()
+                                                                                  .isLoopbackAddress() && right.getAddress()
+                                                                                                               .isLoopbackAddress() || left.getAddress()
+                                                                                                                                           .equals(right.getAddress()));
     }
 
     private Option<SwimTransport> transport() {
@@ -442,6 +601,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                         .await(timeSpan(5).seconds())
                         .onFailure(cause -> log.error("SWIM transport failed to start: {}",
                                                       cause.message()))
+                        .flatMap(_ -> afterBind.get())
                         .flatMap(_ -> SwimProtocol.swimProtocol(swimConfig,
                                                                 transport,
                                                                 this,
@@ -450,7 +610,8 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
                                                                 context.isBootingSupplier(),
                                                                 context.transportConnected()))
                         .flatMap(SwimProtocol::start)
-                        .map(protocol -> seedAndWrap(protocol, transport, encryptor));
+                        .map(protocol -> seedAndWrap(protocol, transport, encryptor))
+                        .onFailure(_ -> transport.stop());
     }
 
     private SwimHealthEvents.ProtocolReady seedAndWrap(SwimProtocol protocol,
@@ -463,12 +624,17 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         // observationListeners list and were lost — a last-joining node (which learns its peers only
         // from the static seed set, having missed peers' live ANNOUNCE window) then never populated its
         // dial set and, being the higher NodeId that must initiate, never dialed — wedging cold-start.
+        protocol.setMembershipEligibility(membershipEligibility);
+        bootTokens.onPresent(protocol::setBootTokens);
+        operatorWarningSink.onPresent(protocol::setOperatorWarningSink);
         pendingObservationListeners.forEach(protocol::addObservationListener);
         pendingTransportObservationEmitters.forEach(protocol::addTransportObservationEmitter);
         seedMembers(protocol);
+        seedPeerDirectory(protocol);
         pendingAnnounceJoin.onPresent(call -> protocol.announceJoin(call.self(),
                                                                     call.clusterName(),
                                                                     call.incarnation(),
+                                                                    call.bootToken(),
                                                                     call.seeds()));
 
         return new SwimHealthEvents.ProtocolReady(protocol, transport, encryptor);

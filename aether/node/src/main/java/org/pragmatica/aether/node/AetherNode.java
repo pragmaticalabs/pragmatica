@@ -6,22 +6,26 @@ package org.pragmatica.aether.node;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Collection;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiConsumer;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.IntConsumer;
+import java.util.function.LongSupplier;
 import java.util.function.IntSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -29,17 +33,19 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.net.InetSocketAddress;
 
+import org.pragmatica.aether.worker.metadata.WorkerMetadataMessage;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.api.NodeDepartureNotifier;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
-import org.pragmatica.aether.backup.BackupService;
 import org.pragmatica.config.ConfigService;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.config.DynamicConfigurationProvider;
@@ -51,14 +57,33 @@ import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
+import org.pragmatica.aether.controller.AllInstancesFailedDetector;
+import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.controller.ScalingEvent;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
+import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
+import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner;
+import org.pragmatica.aether.deployment.cluster.NodeReplacementService;
+import org.pragmatica.aether.deployment.cluster.UpgradeRunIndex;
+import org.pragmatica.aether.deployment.cluster.UpgradeRunService;
+import org.pragmatica.aether.environment.ProvisionContext;
+import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
+import org.pragmatica.aether.node.backup.BackupGenesis;
+import org.pragmatica.aether.node.backup.BackupPreflight;
+import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
+import org.pragmatica.aether.node.backup.BackupWarning;
+import org.pragmatica.aether.node.backup.GitBackupRepository;
+import org.pragmatica.aether.node.backup.KvBackupService;
+import org.pragmatica.aether.node.backup.RestoreGate;
 import org.pragmatica.aether.node.lifecycle.NodeLifecycle;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
@@ -70,6 +95,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord;
 import org.pragmatica.aether.deployment.membership.fsm.PeerTarget;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.membership.ntt.DrainProcedure;
 import org.pragmatica.aether.deployment.membership.ntt.LeaderReconciler;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumCoConfirmation;
@@ -82,11 +108,11 @@ import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.deployment.schema.AetherSchemaManager;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.deployment.schema.SchemaPolicy;
+import org.pragmatica.aether.resource.interceptor.CacheDhtClient;
 import org.pragmatica.aether.resource.db.DatasourceConnectionProvider;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
-import org.pragmatica.aether.dht.AetherMaps;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.dht.HighWaterOwnerEpochGate;
@@ -98,6 +124,8 @@ import org.pragmatica.aether.endpoint.TopicSubscriptionRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.http.SecurityOverrideSynchronizer;
+import org.pragmatica.aether.http.TlsRotation;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -106,6 +134,7 @@ import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.SliceScopedResourceProvider;
 import org.pragmatica.aether.resource.artifact.ArtifactStore;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.node.entityforward.CommittedEntityStake;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage;
 import org.pragmatica.aether.node.entityforward.EntityForwardService;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
@@ -146,23 +175,37 @@ import org.pragmatica.aether.metrics.deployment.DeploymentMetricsScheduler;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
 import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.storage.DelegatedStorageAdapter;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.EncryptionKeyring;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DefaultStreamPublisher;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
+import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
+import org.pragmatica.aether.stream.CommittedStreamIsrSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
+import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
+import org.pragmatica.aether.stream.OwnerActivation;
+import org.pragmatica.aether.stream.VisibleBounds;
+import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.node.projection.CommitWitness;
+import org.pragmatica.aether.node.projection.PartitionBounds;
+import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
+import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
+import org.pragmatica.aether.node.projection.ProjectionRegistry;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
 import org.pragmatica.aether.node.stream.TopicGroupDeclarationSource;
 import org.pragmatica.aether.node.stream.StreamConsumerRegistry;
@@ -171,6 +214,7 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.stream.StreamAddressResolver;
 import org.pragmatica.aether.stream.StreamPublisherFactory;
 import org.pragmatica.aether.stream.StreamingCoordinator;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
@@ -179,6 +223,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage;
 import org.pragmatica.aether.stream.forward.StreamForwardTransport;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.GovernorFailoverHandler;
+import org.pragmatica.aether.stream.replication.IsrMonitor;
 import org.pragmatica.aether.stream.replication.ForwardCatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
 import org.pragmatica.aether.stream.replication.PartitionKey;
@@ -196,45 +241,61 @@ import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.aether.stream.replication.ReplicationReceiveHandler;
 import org.pragmatica.aether.stream.replication.SelfWatermark;
-import org.pragmatica.aether.stream.replication.StreamPartitionRecovery;
+import org.pragmatica.aether.stream.provenance.PartitionFlags;
+import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.aether.stream.replication.WatermarkTracker;
 import org.pragmatica.aether.stream.segment.CursorStore;
+import org.pragmatica.aether.stream.segment.RefDurability;
 import org.pragmatica.aether.stream.segment.RetentionEnforcer;
+import org.pragmatica.aether.stream.SegmentTierPressure;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.aether.stream.segment.StreamFootprint;
 import org.pragmatica.aether.stream.segment.SegmentReader;
 import org.pragmatica.aether.stream.segment.SegmentSealer;
 import org.pragmatica.aether.stream.segment.StorageSegmentSink;
 import org.pragmatica.aether.stream.segment.TieredStreamReader;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerAssignmentKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.update.AbTestManager;
 import org.pragmatica.aether.update.DeploymentManager;
-import org.pragmatica.aether.worker.bootstrap.WorkerBootstrap;
-import org.pragmatica.aether.worker.deployment.WorkerDeploymentManager;
 import org.pragmatica.aether.worker.governor.CommunityMembershipFilter;
-import org.pragmatica.aether.worker.governor.DecisionRelay;
 import org.pragmatica.aether.worker.governor.GovernorAnnouncer;
+import org.pragmatica.aether.worker.governor.GovernorAuthority;
+import org.pragmatica.aether.worker.governor.GovernorAuthorityClient;
+import org.pragmatica.aether.worker.governor.CommunityDrainCoordinator;
+import org.pragmatica.aether.worker.governor.CommunityPlacementMessage;
+import org.pragmatica.aether.worker.governor.GovernorAuthorityMessage;
+import org.pragmatica.swim.SwimMember;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceDetector;
 import org.pragmatica.aether.worker.governor.GovernorMesh;
-import org.pragmatica.aether.worker.group.GroupMembershipTracker;
 import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
 import org.pragmatica.aether.worker.metrics.SpokesmanPingLoop;
 import org.pragmatica.aether.worker.metrics.WorkerMetricsAggregator;
-import org.pragmatica.aether.worker.mutation.MutationForwarder;
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.BuildInfo;
 import org.pragmatica.aether.config.ReadLinearizationMode;
+import org.pragmatica.aether.config.ReplicationDefaultsConfig;
+import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
-import org.pragmatica.aether.config.WorkerConfig;
+import org.pragmatica.aether.config.StreamingConfig;
+import org.pragmatica.aether.config.StorageEncryptionConfig;
+import org.pragmatica.aether.config.cluster.RollbackPolicyParser;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.cluster.metrics.ConnectivityState;
@@ -253,6 +314,7 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -263,15 +325,15 @@ import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.consensus.topology.TopologyConfig;
-import org.pragmatica.consensus.topology.TopologyManagementMessage;
+import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.aether.metrics.NodeReportedStateHolder;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTAntiEntropy;
-import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTClient;
+import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNetwork;
 import org.pragmatica.dht.DHTNode;
@@ -279,6 +341,7 @@ import org.pragmatica.dht.DHTRebalancer;
 import org.pragmatica.dht.DeparturePushObserver;
 import org.pragmatica.dht.DHTTopologyListener;
 import org.pragmatica.dht.DistributedDHTClient;
+import org.pragmatica.dht.LoggingResolveFallbackObserver;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
@@ -299,6 +362,9 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.DiscoveryProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.SourceName;
+import org.pragmatica.aether.deployment.cluster.SourceComputeRegistry;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.PeerInfo;
 import org.pragmatica.hlc.HlcClock;
@@ -319,6 +385,8 @@ import org.pragmatica.swim.TransportObservation;
 import org.pragmatica.swim.HealthSnapshot;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 import org.pragmatica.serialization.SliceCodec;
@@ -327,6 +395,10 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
@@ -335,12 +407,16 @@ import org.slf4j.LoggerFactory;
 
 public interface AetherNode extends ManageableNode {
     Logger LOG = LoggerFactory.getLogger(AetherNode.class);
+    /// How often a node evicts idle operator-warning throttle keys (#1617 R3): once per throttle window.
+    TimeSpan OPERATOR_WARNING_EVICTION_INTERVAL = TimeSpan.timeSpan(60).seconds();
     /// Read-window upper bound for `events()` on the `system:cluster-events:1.0.0` stream
     /// (B5b — replicated partition transport). The stream's actual retention `maxCount` is now
-    /// config-overridable (see [#resolveClusterEventsMaxCount]); this constant is the read window the
+    /// config-overridable (see [ClusterEventsLimits]); this constant is the read window the
     /// aggregator requests and must stay >= that maxCount so a single fetch covers the full retained
     /// window (the B5a/#239 fix). The default retention maxCount equals this value.
     long CLUSTER_EVENTS_MAX_RETAINED = org.pragmatica.aether.api.ClusterEventAggregator.MAX_RETAINED_EVENTS;
+    /// How often a node re-sends cluster events whose publish has not landed yet (#1640).
+    TimeSpan CLUSTER_EVENT_REDELIVERY_INTERVAL = TimeSpan.timeSpan(1).seconds();
     /// #336 — system property carrying the absolute path of the config file this node loaded
     /// (published by [org.pragmatica.aether.Main] where it resolves `--config=`). The CTM
     /// placeholder-resolution path reads it via [#parseOwnResolvedConfig] to source the leader's own
@@ -382,17 +458,25 @@ public interface AetherNode extends ManageableNode {
     ArtifactMetricsCollector artifactMetricsCollector();
     DeploymentMap deploymentMap();
     ClusterEventAggregator eventAggregator();
-    BackupService backupService();
     StreamPartitionManager streamPartitionManager();
     StreamReadRouter streamReadRouter();
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
     StreamNamespacesService streamNamespacesService();
+    /// #1543 E: begin, inspect and settle node replacements (the leader drives the phases).
+    NodeReplacementService nodeReplacementService();
+    /// #1543 F: start, inspect, pause, resume and abort the rolling upgrade (the leader drives it, one replacement at a time).
+    UpgradeRunService upgradeRunService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
     int connectedNodeCount();
     Map<String, Number> transportMetrics();
+
+    default Map<String, Long> metadataResourceMetrics() {
+        return Map.of();
+    }
+
     Set<NodeId> connectedPeerIds();
     boolean isLeader();
     boolean isReady();
@@ -412,9 +496,51 @@ public interface AetherNode extends ManageableNode {
     @Contract
     default void blackhole(boolean enabled) {}
 
+    /// Test-only per-peer network partition (#1730): drop QUIC messages from, and SWIM datagrams to and from,
+    /// `unreachable`. Applied on both sides of a cut it is a symmetric partition; an empty set heals. Unlike
+    /// [#blackhole(boolean)] it cuts only the named peers, so a minority keeps talking among itself.
+    @Contract
+    default void partitionFrom(java.util.Set<NodeId> unreachable) {}
+
+    /// Additive test fault injection; production authenticated-message policy remains enforced.
+    default Unit setInboundFaultFilter(java.util.function.BiPredicate<NodeId, Message.Wired> filter) {
+        return Unit.unit();
+    }
+
+    /// Process exit code after a completed drain (`DrainProcedure`) and a failed SWIM start.
+    int EXIT_DRAINED = 2;
+    /// Process exit code when the cluster refused this process's identity (#1558, terminal removal): its
+    /// NodeId belongs to a retired or different process, so it can never be admitted. Distinct from
+    /// [#EXIT_DRAINED] so orchestration and the CTM can tell "refused — replace with a fresh NodeId" from
+    /// "drained" by exit status alone. 78 is `EX_CONFIG` in sysexits(3): the node's configured identity is
+    /// unusable, and restarting it unchanged cannot succeed.
+    int EXIT_IDENTITY_REFUSED = 78;
+    /// Process exit code when the SWIM gossip-key divergence gate refuses the boot (#683): gossip arrives
+    /// under a key epoch this node does not hold and none has ever decrypted. Production reaches it through
+    /// `System.exit` so the node's shutdown hooks run ([GossipKeyDivergenceGuard] measured that path); an
+    /// in-JVM host records it and stops only that node (#1312).
+    int EXIT_GOSSIP_KEY_DIVERGED = 1;
+
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         return aetherNode(config,
-                          () -> Runtime.getRuntime().halt(2));
+                          MessageRouter.DelegateRouter.delegate(),
+                          NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs()));
+    }
+
+    /// `processExit` receives the node's exit code — [#EXIT_DRAINED] after a completed drain,
+    /// [#EXIT_IDENTITY_REFUSED] when the cluster refuses this process's identity, [#EXIT_GOSSIP_KEY_DIVERGED]
+    /// when the gossip-key divergence gate refuses the boot. An in-JVM host records it and stops the node;
+    /// production enters through [#aetherNode(AetherNodeConfig)] instead.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config, IntConsumer processExit) {
+        var delegateRouter = MessageRouter.DelegateRouter.delegate();
+        var nodeCodec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
+
+        return aetherNode(config,
+                          delegateRouter,
+                          nodeCodec,
+                          () -> processExit.accept(EXIT_DRAINED),
+                          () -> processExit.accept(EXIT_IDENTITY_REFUSED),
+                          () -> processExit.accept(EXIT_GOSSIP_KEY_DIVERGED));
     }
 
     /// Overload for single-JVM hosting (Forge / Ember). The `jvmExit` hook is invoked by
@@ -435,21 +561,138 @@ public interface AetherNode extends ManageableNode {
         return aetherNode(config,
                           delegateRouter,
                           nodeCodec,
-                          () -> Runtime.getRuntime().halt(2));
+                          () -> Runtime.getRuntime().halt(EXIT_DRAINED),
+                          () -> Runtime.getRuntime().halt(EXIT_IDENTITY_REFUSED),
+                          () -> System.exit(EXIT_GOSSIP_KEY_DIVERGED));
     }
 
+    /// In-JVM hosts: the one `jvmExit` hook serves the drain exit, an identity refusal and a gossip-key
+    /// divergence refusal.
     static Result<AetherNode> aetherNode(AetherNodeConfig config,
                                          MessageRouter.DelegateRouter delegateRouter,
                                          SliceCodec nodeCodec,
                                          Runnable jvmExit) {
-        return config.validate()
-                     .flatMap(_ -> createNode(config, delegateRouter, nodeCodec, jvmExit));
+        return aetherNode(config, delegateRouter, nodeCodec, jvmExit, jvmExit, jvmExit);
     }
 
+    /// `identityRefusedExit` runs when the cluster refuses this process's identity (production:
+    /// `halt(EXIT_IDENTITY_REFUSED)`); `jvmExit` runs after a completed drain (production: `halt(EXIT_DRAINED)`);
+    /// `gossipKeyDivergedExit` runs when the gossip-key divergence gate refuses the boot (production:
+    /// `System.exit(EXIT_GOSSIP_KEY_DIVERGED)`, #1312).
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         Runnable jvmExit,
+                                         Runnable identityRefusedExit,
+                                         Runnable gossipKeyDivergedExit) {
+        return aetherNode(config,
+                          delegateRouter,
+                          nodeCodec,
+                          jvmExit,
+                          identityRefusedExit,
+                          gossipKeyDivergedExit,
+                          variable -> Option.option(System.getenv(variable)));
+    }
+
+    /// The same boot with the process environment supplied as a function. Production passes `System.getenv`
+    /// (the overload above); a boot test passes a map, so an environment-driven refusal such as
+    /// `CLUSTER_EVENTS_MAX_COUNT` (#1571) can be exercised in-process without mutating the JVM's environment.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         Runnable jvmExit,
+                                         Runnable identityRefusedExit,
+                                         Runnable gossipKeyDivergedExit,
+                                         Fn1<Option<String>, String> environment) {
+        return aetherNode(config,
+                          delegateRouter,
+                          nodeCodec,
+                          jvmExit,
+                          identityRefusedExit,
+                          gossipKeyDivergedExit,
+                          environment,
+                          BackupPreflight::requireGit);
+    }
+
+    /// The same boot with the `[backup]` git probe supplied (#2007): production passes [BackupPreflight#requireGit]; a boot
+    /// test passes a stand-in for a git that is missing, hangs or is fine, and counts whether it was asked.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         Runnable jvmExit,
+                                         Runnable identityRefusedExit,
+                                         Runnable gossipKeyDivergedExit,
+                                         Fn1<Option<String>, String> environment,
+                                         Supplier<Result<Unit>> gitProbe) {
+        return config.validate()
+                     .flatMap(_ -> createNode(config,
+                                              delegateRouter,
+                                              nodeCodec,
+                                              jvmExit,
+                                              identityRefusedExit,
+                                              gossipKeyDivergedExit,
+                                              environment,
+                                              gitProbe));
+    }
+
+    /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
+    /// value refuses the boot ([ClusterEventsLimits.InvalidLimit]) instead of reaching the stream engine.
     private static Result<AetherNode> createNode(AetherNodeConfig config,
                                                  MessageRouter.DelegateRouter delegateRouter,
                                                  SliceCodec nodeCodec,
-                                                 Runnable jvmExit) {
+                                                 Runnable jvmExit,
+                                                 Runnable identityRefusedExit,
+                                                 Runnable gossipKeyDivergedExit,
+                                                 Fn1<Option<String>, String> environment,
+                                                 Supplier<Result<Unit>> gitProbe) {
+        return requireBackupGit(config, gitProbe).flatMap(_ -> ClusterEventsLimits.clusterEventsLimits(environment))
+                               .flatMap(limits -> createNodeWithBootToken(config,
+                                                                          delegateRouter,
+                                                                          nodeCodec,
+                                                                          jvmExit,
+                                                                          identityRefusedExit,
+                                                                          gossipKeyDivergedExit,
+                                                                          BootToken.bootToken(),
+                                                                          limits));
+    }
+
+    /// #2007: `[backup]` shells out to git, so a node that has it enabled and cannot run git refuses to boot here, naming `[backup]` and
+    /// git, instead of leaving the restore BLOCKED and cluster-state writes refused after the cluster is up.
+    private static Result<Unit> requireBackupGit(AetherNodeConfig config, Supplier<Result<Unit>> gitProbe) {
+        return enabledBackup(config).fold(() -> Result.success(Unit.unit()),
+                                          _ -> gitProbe.get());
+    }
+
+    private static Result<AetherNode> createNodeWithBootToken(AetherNodeConfig config,
+                                                              MessageRouter.DelegateRouter delegateRouter,
+                                                              SliceCodec nodeCodec,
+                                                              Runnable jvmExit,
+                                                              Runnable identityRefusedExit,
+                                                              Runnable gossipKeyDivergedExit,
+                                                              long bootToken,
+                                                              ClusterEventsLimits clusterEventsLimits) {
+        return resolveStorageEncryptionKeyring(config).flatMap(keyring -> createNodeWithStorage(config,
+                                                                                                delegateRouter,
+                                                                                                nodeCodec,
+                                                                                                jvmExit,
+                                                                                                identityRefusedExit,
+                                                                                                gossipKeyDivergedExit,
+                                                                                                keyring,
+                                                                                                resolvePersistence(config),
+                                                                                                bootToken,
+                                                                                                clusterEventsLimits));
+    }
+
+    private static Result<AetherNode> createNodeWithStorage(AetherNodeConfig config,
+                                                            MessageRouter.DelegateRouter delegateRouter,
+                                                            SliceCodec nodeCodec,
+                                                            Runnable jvmExit,
+                                                            Runnable identityRefusedExit,
+                                                            Runnable gossipKeyDivergedExit,
+                                                            Option<EncryptionKeyring> storageKeyring,
+                                                            RabiaPersistence<KVCommand<AetherKey>> persistence,
+                                                            long bootToken,
+                                                            ClusterEventsLimits clusterEventsLimits) {
         Serializer serializer = nodeCodec;
         Deserializer deserializer = nodeCodec;
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
@@ -462,9 +705,35 @@ public interface AetherNode extends ManageableNode {
                                                                                                                  BootstrapModule.CORE_PARTITION_ID));
         var dhtRing = ConsistentHashRing.<NodeId> consistentHashRing();
 
-        dhtRing.addNode(config.self());
-        config.topology().coreNodes().forEach(peer -> dhtRing.addNode(peer.id()));
-        var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
+        if (!configuredWorker(config)) {
+            dhtRing.addNode(config.self());
+        }
+
+        config.topology()
+              .coreNodes()
+              .stream()
+              .filter(peer -> !peer.id()
+                                   .equals(config.self()) || !configuredWorker(config))
+              .filter(peer -> "core".equalsIgnoreCase(peer.labels().getOrDefault(NodeInfo.LABEL_ROLE, "core")))
+              .forEach(peer -> dhtRing.addNode(peer.id()));
+        // #1777 track 1: the DHT's replication factors come from the cluster's COMMITTED `[replication]` section, which
+        // this node can read only once its consensus state is restored. Until then the node places nothing and its
+        // clients refuse (retryable); [#resolveDhtReplication] applies the factors. FULL replication (the Ember
+        // harness) has no placement and needs none.
+        var dhtNode = config.artifactRepo().isFullReplication()
+                      ? DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo())
+                      : DHTNode.dhtNodeAwaitingReplication(config.self(),
+                                                           dhtStorage,
+                                                           dhtRing,
+                                                           config.artifactRepo(),
+                                                           HlcClock.hlcClock(config.self()));
+        // #1777 track 2: the store starts empty, so every partition this core owns starts catching up — it
+        // refuses rather than answers "absent" until anti-entropy has filled it from the nodes that may hold
+        // its data (the 1 s catch-up tick armed below with the node's other periodic work).
+        if (!configuredWorker(config)) {
+            dhtNode.beginCatchUp();
+        }
+
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(),
@@ -472,10 +741,10 @@ public interface AetherNode extends ManageableNode {
                                                config.activationGated(),
                                                config.clusterFormation());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
-        var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
-        var persistence = resolvePersistence(config);
-        var leaderTerm = new AtomicLong(0L);
-        Supplier<Long> rabiaTermSupplier = leaderTerm::get;
+        var leaderTerm = LeaderTerm.leaderTerm(config.self(),
+                                               () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class));
+        Supplier<Long> rabiaTermSupplier = leaderTerm::current;
+        var epochSources = epochSources(kvStore, leaderTerm);
         // Membership v2: decommission is NTT/membership-driven, not a KV atom. A decommissioned
         // node's process is gone; a restart is a fresh NTT-gated join, so there is no stale KV
         // STOPPED record to refuse rejoin against.
@@ -517,7 +786,7 @@ public interface AetherNode extends ManageableNode {
         // source feeding PresenceGenerationSnapshotSource's BOOTING→NORMAL quorum latch + member
         // projection (PresenceMembershipView.coreMemberIds()/healthyOnDutyCount() →
         // TopologyObserver.haveQuorum). Sourced from the authoritative FSM's CORE-SCOPED counting
-        // projection (MEMBER + SUSPECT, role=worker excluded; unknown role counts as core) — a
+        // projection (MEMBER + SUSPECT, only explicitly admitted CORE identities) — a
         // worker must never inflate the quorum numerator (1 core + 2 workers is NOT quorum 2 of a
         // 3-core config; Rabia has no voter majority). Role filtering happens HERE, on the aether
         // side of the supplier seam: integrations/consensus cannot name aether roles, so the view
@@ -537,13 +806,10 @@ public interface AetherNode extends ManageableNode {
         // `coreObservedMembers` narrows to members with latched first-hand reachability evidence
         // (QUIC handshake or SWIM ALIVE) plus self, restoring the none()-until-converged intent.
         // Placement / heal-deficit / role-assignment consumers keep reading coreCountedMembers.
-        var presenceMemberSupplier = presenceMemberSupplier(membershipFsmRef::get, config.self());
-        IntSupplier presenceCoreSizeSupplier = () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
-                                                            .filter(v -> v instanceof AetherValue.ClusterConfigValue)
-                                                            .map(v -> ((AetherValue.ClusterConfigValue) v).coreCount())
-                                                            .or(() -> config.topology()
-                                                                            .coreNodes()
-                                                                            .size());
+        var installedVoters = new AtomicReference<>(configuredVoters(config));
+        var presenceMemberSupplier = presenceMemberSupplier(membershipFsmRef::get, config.self(), installedVoters::get);
+        IntSupplier presenceCoreSizeSupplier = () -> installedVoters.get()
+                                                                    .size();
         // #114: ctmProvisioned = members whose FSM descriptor source label is "ctm" (CTM
         // auto-provisioned, as opposed to seed/manual). Read DIRECTLY from the FSM. The prior wiring
         // read it from snapshotSource, which itself consumes this supplier to build its membership
@@ -554,7 +820,8 @@ public interface AetherNode extends ManageableNode {
         var snapshotSource = PresenceGenerationSnapshotSource.presenceGenerationSnapshotSource(presenceMemberSupplier,
                                                                                                presenceCoreSizeSupplier,
                                                                                                ctmProvisionedSupplier,
-                                                                                               rabiaTermSupplier);
+                                                                                               rabiaTermSupplier,
+                                                                                               epochSources.incarnation()::current);
         // Membership v2 — `syncHoldRegistry` is consulted by the leader reconciler to skip nodes
         // that are legitimately syncing KV state. The KVSyncResponse signal no longer drives a
         // readiness candidate; the v2 control-heartbeat carries node-reported readiness instead.
@@ -580,6 +847,15 @@ public interface AetherNode extends ManageableNode {
                                    syncHoldRegistry,
                                    syncHoldConfig,
                                    onSyncResponseReceived)
+                        .flatMap(clusterNode -> initializeVoterConfiguration(clusterNode,
+                                                                             config,
+                                                                             installedVoters,
+                                                                             membershipFsmRef))
+                        .map(clusterNode -> installRestoreGate(clusterNode, config, kvStore))
+                        .flatMap(clusterNode -> configuredWorker(config)
+                                                ? clusterNode.configurePassiveClient()
+                                                             .map(ignored -> clusterNode)
+                                                : Result.success(clusterNode))
                         .flatMap(clusterNode -> assembleNode(config,
                                                              delegateRouter,
                                                              kvStore,
@@ -587,93 +863,209 @@ public interface AetherNode extends ManageableNode {
                                                              deferredInvoker,
                                                              clusterNode,
                                                              rabiaMetricsCollector,
-                                                             networkMetricsHandler,
                                                              serializer,
                                                              deserializer,
                                                              nodeCodec,
                                                              dhtNode,
                                                              ownershipEpochHighWater,
                                                              leaderTerm,
+                                                             epochSources,
                                                              hlcClock,
                                                              snapshotSource,
                                                              membershipFsmRef,
                                                              metricsCollectorRef,
                                                              syncHoldRegistry,
-                                                             jvmExit));
+                                                             jvmExit,
+                                                             identityRefusedExit,
+                                                             gossipKeyDivergedExit,
+                                                             storageKeyring,
+                                                             bootToken,
+                                                             clusterEventsLimits));
     }
 
+    /// #253 — resolves the boot-time storage-encryption keyring before any storage tier exists. No
+    /// `[storage.encryption]` block at all is the common, unencrypted case and resolves to
+    /// `Option.empty()` without touching `SecretsProvider`. A `[storage.encryption]` block with no
+    /// `SecretsProvider` wired (`config.environment()` empty, or its `secrets()` empty) can never
+    /// resolve any key, so it fails closed here instead of silently booting unencrypted.
+    private static Result<Option<EncryptionKeyring>> resolveStorageEncryptionKeyring(AetherNodeConfig config) {
+        return config.storageEncryption()
+                     .fold(() -> Result.success(Option.empty()),
+                           encryptionConfig -> config.environment()
+                                                     .flatMap(EnvironmentIntegration::secrets)
+                                                     .fold(() -> Result.<Option<EncryptionKeyring>> failure(new NoSecretsProviderForStorageEncryption()),
+                                                           provider -> StorageEncryption.resolveKeyring(provider,
+                                                                                                        encryptionConfig).map(Option::some)));
+    }
+
+    /// `[storage.encryption]` is configured but no `SecretsProvider` is wired -- every configured
+    /// key reference would be unresolvable, so boot fails rather than silently starting unencrypted.
+    record NoSecretsProviderForStorageEncryption() implements Cause {
+        @Override
+        public String message() {
+            return "storage.encryption is configured but no SecretsProvider is available "
+                 + "(environment integration is absent or does not provide secrets)";
+        }
+    }
+
+    /// Terminal removal (#1528): a peer refused this process's identity — its NodeId belongs to a retired or
+    /// different process, so this process can never be admitted. Log ERROR naming the NodeId and exit
+    /// through the identity-refused exit hook (production: `halt(EXIT_IDENTITY_REFUSED)` = 78, distinct from
+    /// a drain's [#EXIT_DRAINED], so orchestration/CTM can tell the two apart; Ember: stop and remove the node). Runs off the transport thread that delivered the
+    /// refusal, so stopping the node cannot block on its own event loop.
+    private static Unit exitRefusedIdentity(NodeId self, String reason, Runnable identityRefusedExit) {
+        LOG.error("FATAL: this node's identity {} was refused by the cluster: {}. This NodeId belongs to a retired"
+                 + " process; start with a fresh identity. Exiting.",
+                  self.id(),
+                  reason);
+        Thread.ofVirtual().name("refused-identity-exit").start(identityRefusedExit);
+
+        return Unit.unit();
+    }
+
+    /// #957/#969 — the node's alert config, or the shipped defaults when no `[alerts]` section was
+    /// loaded. Validation already happened at boot in `Main.resolveAlertConfig`, so anything arriving
+    /// here has passed [org.pragmatica.aether.config.AlertConfig#check]; an absent section needs none.
+    private static AlertConfig resolveAlertConfig(AetherNodeConfig config) {
+        return config.alerts()
+                     .or(AlertConfig.alertConfig());
+    }
+
+    /// Cores AND workers run in-memory Rabia (owner ruling, session 28: #1390's durable control
+    /// storage is removed; a dead NodeId never returns). A whole-cluster cold restart gets its state back
+    /// from the change-triggered KV backup instead (#1532/#1533, [BackupRestoreCoordinator]), so own-snapshot
+    /// adoption can only ever install state this same process saved.
     private static RabiaPersistence<KVCommand<AetherKey>> resolvePersistence(AetherNodeConfig config) {
+        return RabiaPersistence.inMemory();
+    }
+
+    /// `[backup]` enabled with a path — the one condition for the backup service, its restore source, and
+    /// the restore gate on this node's submit path.
+    private static Option<BackupConfig> enabledBackup(AetherNodeConfig config) {
         return config.backupConfig()
-                     .filter(b -> !b.path()
-                                    .isBlank())
-                     .map(AetherNode::createGitBackedPersistence)
-                     .or(RabiaPersistence::inMemory);
+                     .filter(BackupConfig::enabled)
+                     .filter(backup -> !backup.path()
+                                              .isBlank());
     }
 
-    private static RabiaPersistence<KVCommand<AetherKey>> createGitBackedPersistence(BackupConfig backup) {
-        var backupDir = Path.of(backup.path());
-        var remote = Option.option(backup.remote()).filter(s -> !s.isBlank());
+    /// #1533 — the central restore gate: on a backup-enabled node every batch this node submits to
+    /// consensus is checked by [RestoreGate] before it enters the log.
+    private static RabiaNode<KVCommand<AetherKey>> installRestoreGate(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                                      AetherNodeConfig config,
+                                                                      KVStore<AetherKey, AetherValue> kvStore) {
+        enabledBackup(config).onPresent(_ -> clusterNode.installSubmitGuard(RestoreGate.restoreGate(kvStore)));
 
-        LoggerFactory.getLogger(AetherNode.class).info("Consensus persistence: git-backed at {}", backupDir);
-
-        return RabiaPersistence.gitBacked(backupDir, remote, AetherNode::snapshotToBase64, AetherNode::base64ToSnapshot);
+        return clusterNode;
     }
 
-    private static Result<String> snapshotToBase64(byte[] snapshot) {
-        return Result.success(Base64.getEncoder().encodeToString(snapshot));
+    /// #1532 — the change-triggered KV backup, present only when `[backup] enabled = true` with a path. Its
+    /// repository is `<path>/kv-backup`, apart from anything else written under `[backup] path`.
+    private static Option<KvBackupService> createKvBackupService(AetherNodeConfig config,
+                                                                 KVStore<AetherKey, AetherValue> kvStore,
+                                                                 SliceCodec nodeCodec,
+                                                                 BackupWarning.Sink warnings) {
+        return enabledBackup(config).map(backup -> KvBackupService.kvBackupService(kvStore,
+                                                                                   BackupEntryCodec.backupEntryCodec(nodeCodec),
+                                                                                   kvBackupRepository(backup),
+                                                                                   warnings));
     }
 
-    private static Result<byte[]> base64ToSnapshot(String encoded) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> Base64.getDecoder().decode(encoded.trim()));
+    /// #1533 — the restore source, when this node backs up: the service and the configured restore mode.
+    private static Option<BackupRestoreCoordinator.Source> restoreSource(AetherNodeConfig config,
+                                                                         Option<KvBackupService> kvBackupService) {
+        return Option.all(kvBackupService, enabledBackup(config)).map((service, backup) -> BackupRestoreCoordinator.Source.source(service,
+                                                                                                                                  backup.restore()));
+    }
+
+    private static GitBackupRepository kvBackupRepository(BackupConfig backup) {
+        return GitBackupRepository.gitBackupRepository(Path.of(backup.path()).resolve("kv-backup"),
+                                                       Option.option(backup.remote()),
+                                                       "kv-backup",
+                                                       GitBackupRepository.DEFAULT_TIMEOUT);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void routeKvBackup(List<MessageRouter.Entry<?>> allEntries, KvBackupService service) {
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, service::onValuePut));
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, service::onValueRemove));
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, service::onLeaderChange));
     }
 
     /// NTT reconcile fan-out (membership v2). Fired once per stable presence-sensor membership
     /// transition AND (Wave 7) once per FSM death edge — both gated upstream so an already-handled
-    /// re-fire is a no-op. Propagates the FSM member count to the quorum-loss detector and nudges
-    /// the leader reconciler.
+    /// re-fire is a no-op. Re-evaluates the quorum-loss detector (whose member count is derived from
+    /// current state, see [`#derivedMemberCount`]) and nudges the leader reconciler.
     @Contract
-    private static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                       AtomicReference<MembershipFsm> membershipFsmRef,
-                                       AtomicReference<LeaderReconciler> leaderReconcilerRef,
-                                       NodeId self) {
-        Option.option(membershipFsmRef.get()).onPresent(fsm -> propagateMemberCount(quorumLossDetectorRef, fsm, self));
+    static void onNttReconcile(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                               AtomicReference<LeaderReconciler> leaderReconcilerRef) {
+        Option.option(quorumLossDetectorRef.get()).onPresent(QuorumLossDetector::reevaluate);
         Option.option(leaderReconcilerRef.get()).onPresent(LeaderReconciler::onTopologyUnhealthy);
     }
 
-    /// Feed the quorum-loss detector the current member count. Wave 2 / W1 of the
-    /// cluster-topology-overhaul spec (adopting membership-fsm-unification §6): the numerator is
-    /// the FSM's STRICT CORE count — state exactly MEMBER, role=core; SUSPECT excluded, workers
-    /// excluded. A worker must never hold the
-    /// quorum-loss detector above threshold (1 core + 2 workers is NOT a quorum of a 3-core
-    /// config — Rabia has no voter majority). The strict MEMBER-only numerator is safe against
-    /// premature self-drain on a transient SUSPECT because the detector only fires after the
-    /// `quorumLossDrainThreshold` window elapses below threshold — a flap that recovers within
-    /// the window cancels the pending intent. Wave 7 (parallel-view collapse): the legacy
-    /// pre-FSM fallback to the sampler's role-blind `currentMemberCount` is GONE — the FSM is
-    /// published before the sampler's first 1s tick can fire this path, so the propagation is
-    /// simply skipped in the (unreachable in practice) pre-FSM window; the next reconcile
-    /// trigger after FSM publication propagates.
+    /// The quorum-loss detector's member count, DERIVED FROM CURRENT STATE each time the detector evaluates it
+    /// (#1853). It used to be PUSHED: `propagateMemberCount` computed it from a `voters` snapshot the trigger
+    /// passed in and stored the result in the detector. Its inputs are the FSM's strict core members, their
+    /// observed reachability and the installed voter set, and the push had triggers for the first two only —
+    /// a presence-sampler edge that landed before genesis installed the voters computed against an empty voter
+    /// set, stored 0, and nothing ever recomputed it (rc4 cloud run 9: quorum=false on 4 of 5 nodes for 17
+    /// minutes with consensus active; and, since the detector's arm latch only sets on an evaluation that sees a
+    /// quorate count, no self-fence on a later real quorum loss). A supplier cannot be stale: every read walks
+    /// the live inputs. The edge-detecting half of the detector (arm latch, below-threshold window) is fed by
+    /// [`#wireQuorumCountTriggers`] plus the presence-sampler, Member-boundary and death triggers.
     ///
-    /// #557: the count is [`MembershipFsm#strictCoreObservedMemberCount`], i.e. the strict core
-    /// count narrowed to OBSERVED reachability. The plain strict count is seed-derived — every
-    /// configured core is MEMBER from wiring time — which armed the detector's
-    /// arm-after-first-quorum latch on configuration alone, before the cluster had formed. That
-    /// latch is specified as "has this cluster ever been quorate"; only the observed count means it.
-    @Contract
-    private static void propagateMemberCount(AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                             MembershipFsm membershipFsm,
-                                             NodeId self) {
-        var memberCount = membershipFsm.strictCoreObservedMemberCount(self);
+    /// Wave 2 / W1 of the cluster-topology-overhaul spec (adopting membership-fsm-unification §6): the
+    /// numerator is the FSM's STRICT CORE count — state exactly MEMBER, role=core; SUSPECT excluded, workers
+    /// excluded. A worker must never hold the quorum-loss detector above threshold (1 core + 2 workers is NOT a
+    /// quorum of a 3-core config — Rabia has no voter majority). The strict MEMBER-only numerator is safe against
+    /// premature self-drain on a transient SUSPECT because the detector only fires after the
+    /// `quorumLossDrainThreshold` window elapses below threshold — a flap that recovers within the window
+    /// cancels the pending intent. Wave 7 (parallel-view collapse): the legacy pre-FSM fallback to the
+    /// sampler's role-blind `currentMemberCount` is GONE; before the FSM is published the count is `0`, exactly
+    /// what the push left in place when it skipped that window.
+    ///
+    /// #557: the count is [`MembershipFsm#strictCoreObservedMemberCount`] narrowed to the voters, i.e. the
+    /// strict core count narrowed to OBSERVED reachability. The plain strict count is seed-derived — every
+    /// configured core is MEMBER from wiring time — which armed the detector's arm-after-first-quorum latch on
+    /// configuration alone, before the cluster had formed. That latch is specified as "has this cluster ever
+    /// been quorate"; only the observed count means it.
+    ///
+    /// No installed voter configuration yields `0` without walking the members: nobody is a voter yet.
+    /// The configuration is read ONCE per evaluation, so every member is tested against the same electorate.
+    ///
+    /// **Cost, the read path vs the push it replaces (#929).** The push walked every member twice and built two
+    /// sets per trigger ([`MembershipFsm#coreObservedMembers`], [`MembershipFsm#strictCoreMembers`]). This is
+    /// one allocation-free pass ([`MembershipFsm#strictCoreObservedVoterCount`]) taking each member's monitor
+    /// briefly and one at a time, so it is cheaper per evaluation than the old trigger, and it adds no
+    /// lock-order edge: the only new evaluation sites are the detector's own firing checks (which already hold
+    /// the detector's monitor while the co-confirmation supplier walks the same member map) and the management
+    /// reads, which hold no lock. Evaluations per second are the old trigger rate plus health/status polls.
+    /// [unverified: no microbenchmark was run; the claim is the pass count and allocation, not a timing]
+    static int derivedMemberCount(Option<MembershipFsm> membershipFsm, NodeId self, Option<VoterConfiguration> voters) {
+        return Option.all(membershipFsm, voters)
+                     .map((fsm, electorate) -> fsm.strictCoreObservedVoterCount(self, electorate::contains))
+                     .or(0);
+    }
 
-        Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onMemberCountChanged(memberCount));
+    /// Re-evaluate the quorum-loss detector on the two input changes that carry no FSM transition record
+    /// (#1853): a voter-configuration INSTALL — genesis, a §4 command applied at its slot, or a sync adoption of
+    /// a newer epoch; the electorate is both a filter of the count and the source of the threshold — and a
+    /// member's reachability latch flipping true. Together with the presence-sampler edge, the Member-boundary
+    /// crossing and the death edge these are every input change of the derived count. The voter source calls
+    /// the listener immediately when a configuration is already installed, so wiring after genesis misses
+    /// nothing.
+    @Contract
+    static void wireQuorumCountTriggers(QuorumLossDetector detector,
+                                        MembershipFsm membershipFsm,
+                                        Consumer<Consumer<VoterConfiguration>> voterInstallSource) {
+        voterInstallSource.accept(_ -> detector.reevaluate());
+        membershipFsm.onReachabilityLatched(_ -> detector.reevaluate());
     }
 
     /// True iff this transition crosses the exact-`Member` boundary — i.e. the strict core member
     /// count ([`MembershipFsm#strictCoreMemberCount`], the quorum-loss numerator) changes. Feeding the
     /// detector on this edge (NOT only on the 15s presence down-hysteresis / DEAD edge) is what lets a
     /// node recognize quorum loss promptly when several cores enter SUSPECT at once — the design's own
-    /// safety argument (propagateMemberCount javadoc) already assumes this feed; the splitTimeout window
+    /// safety argument (derivedMemberCount javadoc) already assumes this feed; the splitTimeout window
     /// + refutation-cancel + Fix-C co-confirmation guard against a transient SUSPECT flap.
     private static boolean crossesMemberBoundary(MembershipTransitionRecord record) {
         return "Member".equals(record.fromState()) != "Member".equals(record.toState());
@@ -688,13 +1080,20 @@ public interface AetherNode extends ManageableNode {
     /// stuck members toward effective quorum, so a genuinely partitioned member (FAULTY / UNKNOWN —
     /// no probe-acks reach this node) contributes 0 and the genuine self-fence proceeds, while a
     /// single dead member no longer vetoes suppression for the reachable rest.
-    private static QuorumCoConfirmation buildQuorumCoConfirmation(MembershipFsm membershipFsm,
-                                                                  CoreSwimHealthDetector swimHealthDetector) {
-        var counted = membershipFsm.coreCountedMembers();
-        var strict = membershipFsm.strictCoreMembers();
+    ///
+    /// #1560: both sets are narrowed to the installed voters, but the counted set is NEVER the voter
+    /// set itself. The voter set is health-blind, so counting it re-admitted every peer the FSM had
+    /// already demoted (DEPARTING / DEAD) as a "stuck" member; on an isolated core SWIM still reads
+    /// those peers SUSPECTED (Lifeguard stretches suspicion while every local probe fails), so the
+    /// fence was suppressed with effective quorum 5 of 5 while the node could reach nobody.
+    static QuorumCoConfirmation buildQuorumCoConfirmation(MembershipFsm membershipFsm,
+                                                          Function<NodeId, SwimHealth> swimHealth,
+                                                          Set<NodeId> voters) {
+        var counted = membershipFsm.coreCountedMembers().stream().filter(voters::contains).collect(Collectors.toSet());
+        var strict = membershipFsm.strictCoreMembers().stream().filter(voters::contains).collect(Collectors.toSet());
         var stuck = counted.stream().filter(id -> !strict.contains(id)).toList();
-        var swimAliveStuck = stuck.stream().filter(id -> swimAliveForCoConfirmation(swimHealthDetector, id)).toList();
-        var swimDeadStuck = stuck.stream().filter(id -> !swimAliveForCoConfirmation(swimHealthDetector, id)).toList();
+        var swimAliveStuck = stuck.stream().filter(id -> swimAliveForCoConfirmation(swimHealth, id)).toList();
+        var swimDeadStuck = stuck.stream().filter(id -> !swimAliveForCoConfirmation(swimHealth, id)).toList();
 
         return QuorumCoConfirmation.quorumCoConfirmation(strict.size(), counted.size(), swimAliveStuck, swimDeadStuck);
     }
@@ -702,8 +1101,8 @@ public interface AetherNode extends ManageableNode {
     /// Raw-SWIM aliveness for the Fix C stuck-member discrimination: a stuck (SUSPECT) member counts
     /// as alive when the SWIM protocol layer reports HEALTHY or SUSPECTED — distinguishing a wedged
     /// promotion (reachable, refuting) from a real partition (FAULTY / UNKNOWN).
-    private static boolean swimAliveForCoConfirmation(CoreSwimHealthDetector swimHealthDetector, NodeId id) {
-        var health = swimHealthDetector.healthOf(id);
+    private static boolean swimAliveForCoConfirmation(Function<NodeId, SwimHealth> swimHealth, NodeId id) {
+        var health = swimHealth.apply(id);
 
         return health == SwimHealth.HEALTHY || health == SwimHealth.SUSPECTED;
     }
@@ -714,14 +1113,12 @@ public interface AetherNode extends ManageableNode {
     /// FSM→PresenceSampler eviction used to trigger through the sampler's reconcile callback —
     /// behaviour parity with the sampler removed from the authority loop.
     @Contract
-    private static void onMembershipDeath(NodeId departed,
-                                          Consumer<NodeId> dropDeadPeerLink,
-                                          AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                          AtomicReference<MembershipFsm> membershipFsmRef,
-                                          AtomicReference<LeaderReconciler> leaderReconcilerRef,
-                                          NodeId self) {
+    static void onMembershipDeath(NodeId departed,
+                                  Consumer<NodeId> dropDeadPeerLink,
+                                  AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                  AtomicReference<LeaderReconciler> leaderReconcilerRef) {
         dropDeadPeerLink.accept(departed);
-        onNttReconcile(quorumLossDetectorRef, membershipFsmRef, leaderReconcilerRef, self);
+        onNttReconcile(quorumLossDetectorRef, leaderReconcilerRef);
     }
 
     /// Operator/controller drain sink (M10, cluster-topology-overhaul Wave 7): every drain command
@@ -751,10 +1148,22 @@ public interface AetherNode extends ManageableNode {
     /// re-attempt once the owner becomes CAUGHT_UP. Kept well under the backfill source-wait bound (20s)
     /// so several attempts occur within one wait window; CAUGHT_UP partitions are skipped (no-op).
     TimeSpan STREAM_BACKFILL_REDRIVE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// #1339 residual: a FAILED stream-ownership batch write changes no placement input (the committed record stays
+    /// where it was), so no trigger re-runs the pass, and with a steady leader and stable membership the partition stays
+    /// write-refused. The failure is itself the edge: it re-arms the coalescing reconcile after a delay that doubles from
+    /// this base up to [#STREAM_OWNERSHIP_RETRY_CAP] and resets on the next successful write. The re-armed pass derives
+    /// from current state, so a write that a later trigger already superseded costs one no-op pass.
+    TimeSpan STREAM_OWNERSHIP_RETRY_BASE = TimeSpan.timeSpan(500).millis();
+    /// Upper bound of the [#STREAM_OWNERSHIP_RETRY_BASE] backoff: a persistently failing write retries at this cadence.
+    TimeSpan STREAM_OWNERSHIP_RETRY_CAP = TimeSpan.timeSpan(30).seconds();
     /// Cadence for the metadata snapshot driver (A3b). Drives `SnapshotManager.maybeSnapshot()` across
     /// every storage setup; the manager self-gates on its mutation-count / time-interval trigger, so
     /// this tick only needs to be frequent enough to bound the post-trigger snapshot latency.
     TimeSpan METADATA_SNAPSHOT_INTERVAL = TimeSpan.timeSpan(10).seconds();
+    /// How long a genesis-pending core with no connection to any configured core waits before it dials
+    /// regardless of the single-dialer order (see `bootstrapInitiator`). Cold-start candidates connect
+    /// through designated dials well inside it.
+    TimeSpan PENDING_CORE_ISOLATION_GRACE = TimeSpan.timeSpan(2).seconds();
     /// Cadence for the WAL disk-reclamation driver (streaming-persistence W5). Periodically truncates
     /// every partition's write-ahead log up to its DURABLE last-sealed offset, dropping records already
     /// persisted in cold segments so the WAL does not grow unbounded. `truncate` is threshold-lazy
@@ -782,6 +1191,14 @@ public interface AetherNode extends ManageableNode {
     /// {@code RELEASE_DEBOUNCE_TICKS = 2} flap-debounce window is ≈10s wall-clock (spec §5.4). A no-op tick is
     /// cheap (a sweep of the materialized partitions + empty queues) so a steady-state node pays almost nothing.
     TimeSpan STREAM_RESHUFFLE_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    /// #1730: how often an owner re-evaluates its partitions' in-sync replica sets. Lag itself is bounded by
+    /// `[streaming] isr_lag_max`; this cadence only adds up to one interval to it.
+    TimeSpan ISR_MONITOR_INTERVAL = TimeSpan.timeSpan(1).seconds();
+    /// #903: bound on closing the shared resource scope during stop. A factory close that never resolves must
+    /// not hold storage and the cluster node open behind it; past the bound the step is logged and skipped.
+    TimeSpan SHARED_SCOPE_CLOSE_BOUND = TimeSpan.timeSpan(10).seconds();
+    /// #1730: how soon a refused (moved-record) ownership write is re-decided.
+    TimeSpan OWNERSHIP_REDRIVE_DELAY = TimeSpan.timeSpan(1).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
     /// third party, so partition ownership is polled; matching the reshuffle cadence keeps the
     /// handover window (during which the old and new owner may both deliver) at one tick.
@@ -797,6 +1214,14 @@ public interface AetherNode extends ManageableNode {
     /// Matched to the reshuffle cadence so an entity arc's owner converges in the same window a stream
     /// partition's does.
     TimeSpan ENTITY_OWNERSHIP_RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+
+    /// Where an EVENT-triggered entity reconcile runs (the retract of a keyspace on unload, a committed
+    /// registration removal): the shared scheduler, off the caller's thread, with no delay. This is a hand-off
+    /// to the same executor the periodic tick runs on, not a timer — the periodic tick stays as the
+    /// level-triggered backstop that heals a kick lost to a failed apply.
+    Executor ENTITY_RECONCILE_KICK = command -> SharedScheduler.schedule(command,
+                                                                         TimeSpan.timeSpan(0).millis());
+
     /// How often each entity partition folds to a durable checkpoint (#345 I3).
     ///
     /// This is a safety bound, not a tuning knob. A new owner recovers from the checkpoint plus whatever
@@ -867,7 +1292,7 @@ public interface AetherNode extends ManageableNode {
     ///
     /// An UNWRITABLE dir is a BOOT ERROR by default (#634 item 2). The old behaviour — one startup WARN,
     /// then every publish acks with no fsync — silently converted "durable entity" into "in-memory
-    /// entity": the ack path (`durablyLog`) degrades to `success(offset)` when the WAL is absent, and
+    /// entity": the ack path (`awaitDurable`) passes an already-resolved barrier when the WAL is absent, and
     /// nothing downstream can tell. A node that cannot honour the durability its streams declare must
     /// say so at the moment an operator is looking at it, not in a log line nobody reads back.
     ///
@@ -877,7 +1302,16 @@ public interface AetherNode extends ManageableNode {
     private static Option<Path> resolveStreamWalDir(AetherNodeConfig config) {
         var walDir = streamWalBaseDir(config);
 
-        return FileOps.createDirectories(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+        return createStreamDirectory(walDir).fold(cause -> walDisabled(walDir, cause), _ -> Option.some(walDir));
+    }
+
+    /// The stream partition logs open through the `streams` storage instance (#1567), under its log root —
+    /// the WAL dir [#resolveStreamWalDir] resolved when the instance was built; none when that dir was
+    /// unusable and streams degraded to no WAL.
+    private static Option<AppendLog.Opener> streamLogs(StorageInstance streamStorage) {
+        return streamStorage.logRoot()
+                            .<AppendLog.Opener> map(_ -> AppendLog.Opener.opener(streamStorage::openLog,
+                                                                                 streamStorage::inspectLog));
     }
 
     /// #634 item 2 — the boot gate, exposed for [org.pragmatica.aether.Main]'s verification chain (the
@@ -892,9 +1326,37 @@ public interface AetherNode extends ManageableNode {
     public static Result<Unit> verifyWalBootable(AetherNodeConfig config) {
         var walDir = streamWalBaseDir(config);
 
-        return decideWalAvailability(walDir,
-                                     FileOps.createDirectories(walDir).mapToUnit(),
-                                     nonDurableStreamsAllowed()).mapToUnit();
+        return decideWalAvailability(walDir, createStreamDirectory(walDir), nonDurableStreamsAllowed()).mapToUnit();
+    }
+
+    /// #1567 F12/N2 — the durable-block counterpart of [#verifyWalBootable], at the same production entry
+    /// point. The `streams` instance's local-disk tier lives in `<streamDataDir>/segments`; when it cannot be
+    /// created the instance is built from memory and the in-memory DHT tier alone, where every seal refuses
+    /// (`StorageError.NoDurableTier`) -- so nothing is ever "sealed" into RAM and the WAL is never truncated
+    /// past it, but sealing stops and the WAL grows without bound. A node must not boot silently into that
+    /// state: without the same explicit non-durable opt-in, boot is refused. Directly constructed nodes
+    /// (Forge, Ember, tests) never pass through Main and keep the loud degrade, exactly as the WAL gate does.
+    public static Result<Unit> verifyStreamSegmentsBootable(AetherNodeConfig config) {
+        var segmentsDir = streamDataDir(config).resolve("segments");
+
+        return decideSegmentsAvailability(segmentsDir, createStreamDirectory(segmentsDir), nonDurableStreamsAllowed());
+    }
+
+    /// Every stream directory a node creates -- the WAL base and `segments/` -- is created with its entry
+    /// forced in its parent (#1602 N1): the files made durable inside it later are only as durable as the
+    /// directory entry that names it. The gates run first, so they are the ones that create them.
+    static Result<Unit> createStreamDirectory(Path dir) {
+        return FileOps.createDirectoriesDurable(dir).mapToUnit();
+    }
+
+    /// The pure decision, package-visible for [#verifyStreamSegmentsBootable]'s test.
+    static Result<Unit> decideSegmentsAvailability(Path segmentsDir, Result<Unit> probe, boolean allowNonDurable) {
+        return probe.fold(cause -> allowNonDurable
+                                   ? Result.unitResult()
+                                   : StorageFactory.StreamDiskTierUnavailable.streamDiskTierUnavailable(segmentsDir,
+                                                                                                        cause.message())
+                                                                             .result(),
+                          _ -> Result.unitResult());
     }
 
     /// The #492-class killer (#634 structural follow-up): every ROUTED `Message.Wired` type must have
@@ -991,18 +1453,6 @@ public interface AetherNode extends ManageableNode {
         return Option.none();
     }
 
-    /// Fold the `streams` StorageSetup into the (immutable) map produced by `StorageFactory.createAll`
-    /// so that downstream consumers — storage-status routes today, the snapshot scheduler later —
-    /// treat stream storage uniformly with artifacts/content.
-    private static Map<String, StorageFactory.StorageSetup> withStreamSetup(Map<String, StorageFactory.StorageSetup> base,
-                                                                            StorageFactory.StorageSetup streamSetup) {
-        var merged = new HashMap<>(base);
-
-        merged.put(streamSetup.name(), streamSetup);
-
-        return Map.copyOf(merged);
-    }
-
     /// Build a named daemon thread for a single-thread executor's `ThreadFactory`. Extracted so the
     /// executor factories pass a method-reference-friendly single-expression lambda instead of a
     /// multi-statement block.
@@ -1036,7 +1486,8 @@ public interface AetherNode extends ManageableNode {
     /// and the ring is built here the moment the role resolves to OWNER/REPLICA. Materialize is idempotent
     /// (a ring built at hydrate time is a no-op) and runs before backfill so the recovered events have a
     /// ring to land in; a materialize failure is logged and backfill still attempts (the owner-append
-    /// safety valve is the backstop).
+    /// safety valve is the backstop). A PACED refusal is not lost with this log line: the manager queues it and
+    /// re-drives it on every reconcile tick until the ring exists (#1805).
     @Contract
     private static void materializeThenBackfill(StreamPartitionManager manager,
                                                 PartitionBackfill backfill,
@@ -1056,13 +1507,130 @@ public interface AetherNode extends ManageableNode {
     /// `observer().coreNodes()` read. This removes the live-vs-reconciled split that let a node the owner
     /// registers as a replica self-classify NONE — never materializing its ring, bouncing every apply
     /// `PARTITION_NOT_LOCAL`, leaving RF≥2 structurally unreachable. Before the controller is bound / its
-    /// first reconcile it falls back to the live topology observer, the SAME pre-reconcile fallback
-    /// `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
-    private static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
-                                                       ClusterTopologyManager topologyManager) {
+    /// first reconcile it falls back to the live placement projection ([#livePlacementMembers]), the SAME
+    /// pre-reconcile fallback `roleFor` uses, so cold-start owner-immediate self-promotion is unaffected.
+    /// #1730: the committed ISR of `(stream, partition)`; none for a record minted before #1730 (`isrVersion` 0),
+    /// which carries no committed ISR, and for a partition with no record.
+    static Option<List<NodeId>> committedIsr(KVStore<AetherKey, AetherValue> kvStore, String stream, int partition) {
+        return committedIsrRecord(kvStore, stream, partition).map(StreamPartitionOwnershipValue::isr);
+    }
+
+    static Option<StreamPartitionOwnershipValue> committedIsrRecord(KVStore<AetherKey, AetherValue> kvStore,
+                                                                    String stream,
+                                                                    int partition) {
+        return kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                StreamPartitionOwnershipValue.class)
+                      .filter(record -> record.isrVersion() > 0);
+    }
+
+    /// #1730: what the leader's ownership writer reads besides the committed record — the live placement members and
+    /// the placement a first record's ISR is minted from — both from the stream controller.
+    static StreamPartitionOwnershipWriter.IsrInputs streamIsrInputs(AtomicReference<ReplicaSetController> controllerRef) {
+        return new StreamPartitionOwnershipWriter.IsrInputs() {
+            @Override
+            public List<NodeId> liveMembers() {
+                return Option.option(controllerRef.get())
+                             .map(ReplicaSetController::reconciledMembers)
+                             .or(List.of());
+            }
+
+            @Override
+            public List<NodeId> initialIsr(String stream, int partition, NodeId owner) {
+                return Option.option(controllerRef.get())
+                             .map(controller -> controller.placementWithOwner(stream, partition, owner))
+                             .or(List.of(owner));
+            }
+        };
+    }
+
+    /// #1873 (KIP-320): how an owner commits where its epoch begins, before it is activated: a guarded write of the exact
+    /// committed record, witnessed by the committed leader, that records the start at `start` and, when its ring was
+    /// rebuilt, first takes the next ownership term. Refusal is not a failed promise (the applier answers it with a result),
+    /// so #1976: the write's own [KVCommand.TransactionResult] decides — accepted or the commit FAILS. Never a re-read of
+    /// the record: on a restart the old record already names a start, so a refused commit would read as landed.
+    static OwnerActivation.LineageCommit streamLineageCommit(Supplier<Option<LeaderValue>> committedLeader,
+                                                             java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                             HlcClock clock) {
+        return (stream, partition, current, start, restarted) -> committedLeader.get()
+                                                                                .fold(() -> OwnerActivation.ActivationError.NO_COMMITTED_LEADER.<Unit> promise(),
+                                                                                      leader -> lineageWrite(applier,
+                                                                                                             StreamPartitionOwnershipWriter.guardedOwnershipWrite(leader,
+                                                                                                                                                                  stream,
+                                                                                                                                                                  partition,
+                                                                                                                                                                  Option.some(current),
+                                                                                                                                                                  restarted
+                                                                                                                                                                  ? current.restarted(start,
+                                                                                                                                                                                      clock.now())
+                                                                                                                                                                  : current.withEpochStart(start))));
+    }
+
+    private static Promise<Unit> lineageWrite(java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                              KVCommand.LeaderTransaction<AetherKey, AetherValue> write) {
+        var transactionId = write.transactionId();
+
+        return applier.apply(List.of(write))
+                      .flatMap(results -> acceptedBy(results, transactionId)
+                                          ? Promise.success(Unit.unit())
+                                          : OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise());
+    }
+
+    static boolean acceptedBy(List<Object> results, String transactionId) {
+        return results.stream()
+                      .filter(KVCommand.TransactionResult.class::isInstance)
+                      .map(KVCommand.TransactionResult.class::cast)
+                      .anyMatch(result -> result.transactionId()
+                                                .equals(transactionId) && result.accepted());
+    }
+
+    /// #1730: the partitions this node owns AND serves (activated for the committed record), with their record and
+    /// appended head — the ISR monitor's input.
+    static List<IsrMonitor.Owned> ownedPartitions(StreamPartitionManager manager,
+                                                  KVStore<AetherKey, AetherValue> kvStore,
+                                                  OwnerActivation activation,
+                                                  NodeId self) {
+        return manager.materializedHeads()
+                      .stream()
+                      .flatMap(head -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(head.streamName(),
+                                                                                                                head.partition()),
+                                                        StreamPartitionOwnershipValue.class)
+                                              .filter(record -> record.owner()
+                                                                      .equals(self) && activation.isActivated(head.streamName(),
+                                                                                                              head.partition()))
+                                              .map(record -> new IsrMonitor.Owned(head.streamName(),
+                                                                                  head.partition(),
+                                                                                  record,
+                                                                                  head.head()))
+                                              .stream())
+                      .toList();
+    }
+
+    static List<NodeId> streamPlacementMembers(AtomicReference<ReplicaSetController> controllerRef,
+                                               Supplier<List<NodeId>> placementMembers) {
         return Option.option(controllerRef.get())
                      .map(ReplicaSetController::reconciledMembers)
-                     .or(() -> List.copyOf(topologyManager.observer().coreNodes()));
+                     .or(placementMembers::get);
+    }
+
+    /// #1550 SINGLE SOURCE of the stream placement member set. Built once per node and handed to the
+    /// stream `ReplicaSetController` and the backfill orchestrator; every other placement consumer
+    /// (ownership writer, entity-ownership reconciler, consumer-group ownership, cluster-events owner gate,
+    /// placement-role supplier) reads it through that controller. `LivePlacementMembersWiringTest` fails if
+    /// any consumer reads the voter set directly again.
+    static Supplier<List<NodeId>> livePlacementMembers(Supplier<Set<NodeId>> voters, MembershipFsm membershipFsm) {
+        return () -> livePlacementMembers(voters.get(), membershipFsm);
+    }
+
+    /// #1550: the HRW stream-placement member set — the installed voters narrowed to the FSM's counted
+    /// core projection (MEMBER + SUSPECT). Since #1390, `TopologyObserver.coreNodes()` returns the
+    /// installed voter configuration, which is consensus identity and deliberately health-independent: a
+    /// killed voter stays in it. Placing over that set kept a dead owner as the HRW winner forever, so no
+    /// survivor was ever promoted. Before #1390 the same read returned the live membership projection;
+    /// this restores liveness for placement without changing what consensus reads. Voters are kept as the
+    /// outer bound: a fresh-identity core enters placement once the membership add installs it as a voter.
+    static List<NodeId> livePlacementMembers(Set<NodeId> voters, MembershipFsm membershipFsm) {
+        return voters.stream()
+                     .filter(membershipFsm.coreCountedMembers()::contains)
+                     .toList();
     }
 
     /// #265 increment 5: the live replica catch-up view for the release gate + slot completion, read from the
@@ -1159,6 +1727,52 @@ public interface AetherNode extends ManageableNode {
                      .or(true);
     }
 
+    /// #1230: the committed `StreamPartitionOwnershipValue.owner` of `(stream, partition)` when it names a node
+    /// OTHER than self — the node an application append must go to instead. Empty when self is the committed
+    /// owner or no ownership is committed.
+    private static Option<NodeId> remoteCommittedOwner(CommittedStreamOwnerSource source,
+                                                       NodeId self,
+                                                       String stream,
+                                                       int partition) {
+        return source.committedOwner(stream, partition)
+                     .map(CommittedStreamOwnerSource.CommittedOwner::owner)
+                     .filter(owner -> !owner.equals(self));
+    }
+
+    /// The two views of committed stream-partition ownership, and which consumer gets which (#1230 ruling 3).
+    ///
+    /// `writeAuthority` is the RAW committed `StreamPartitionOwnershipValue`: it gates application appends
+    /// ([#writeAdmission]) and validates replication senders. `routing` is the #568 liveness-filtered view
+    /// ([#committedOwnerStillAlive]): it drives backfill self-election and the release guard, where treating a
+    /// dead holder as absent is what unwedges the partition. Liveness is a local verdict, not a fence — fed to
+    /// the write side, the filtered view would read an owner this node's SWIM view has marked DEPARTED (while
+    /// it is in fact alive, e.g. partitioned away) or has not yet seen (a join or restart) as "absent", which
+    /// admission admits, so a second writer would append while the first still writes. A merely SUSPECT owner
+    /// is not dropped by the filter (`countedMembers` is MEMBER + SUSPECT). A dead owner's partition is
+    /// unwedged for writes only when the leader commits a new ownership record; until then appends fail with
+    /// the retryable `NotOwnerAppend`.
+    record StreamOwnershipViews(CommittedStreamOwnerSource writeAuthority, CommittedStreamOwnerSource routing) {
+        static StreamOwnershipViews streamOwnershipViews(CommittedStreamOwnerSource committed,
+                                                         MembershipFsm membershipFsm) {
+            return new StreamOwnershipViews(committed, liveOnly(committed, membershipFsm));
+        }
+
+        /// Application-append admission over [#writeAuthority]: the committed owner when it is not `self`.
+        StreamPartitionManager.OwnerWriteAdmission writeAdmission(NodeId self) {
+            return (stream, partition) -> remoteCommittedOwner(writeAuthority, self, stream, partition);
+        }
+
+        private static CommittedStreamOwnerSource liveOnly(CommittedStreamOwnerSource committed,
+                                                           MembershipFsm membershipFsm) {
+            return (stream, partition) -> liveOwner(committed.committedOwner(stream, partition), membershipFsm);
+        }
+
+        private static Option<CommittedStreamOwnerSource.CommittedOwner> liveOwner(Option<CommittedStreamOwnerSource.CommittedOwner> committed,
+                                                                                   MembershipFsm membershipFsm) {
+            return committed.filter(owner -> committedOwnerStillAlive(membershipFsm, owner.owner()));
+        }
+    }
+
     /// Whether a committed stream-partition owner is still a live cluster member (#568).
     ///
     /// Committed stream ownership has no relinquish path other than the owner releasing it, so a record
@@ -1199,11 +1813,12 @@ public interface AetherNode extends ManageableNode {
     /// DHT bootstrap writer, whose apply runs in an async retry batch that can straddle a leader change):
     /// the decide-then-apply here is synchronous on the reconcile thread, the writer re-checks leadership
     /// immediately before deciding each pair, and consensus rejects a stale-leader apply. A failed apply
-    /// is logged, never thrown — the next membership-change reconcile re-drives.
+    /// is logged, never thrown, and re-arms the reconcile with backoff ([#STREAM_OWNERSHIP_RETRY_BASE]).
     @Contract
-    private static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
-                                             Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                             List<PartitionKey> reconciled) {
+    static void driveStreamOwnership(StreamPartitionOwnershipWriter writer,
+                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                     StreamOwnershipRetry retry,
+                                     List<PartitionKey> reconciled) {
         // Entity arcs are excluded HERE, not in the controller's reconcile: their LOG replicas are
         // placed by the same reconcile as any stream's (wanted), but their OWNERSHIP has exactly one
         // authority — EntityOwnershipReconciler, which places over the keyspace's hosting set. Left
@@ -1211,6 +1826,7 @@ public interface AetherNode extends ManageableNode {
         // catalog/membership edge and fight that reconcile record-for-record, parking arcs on
         // non-hosting nodes (which refuse every write) for up to one entity tick each time.
         applyStreamOwnershipBatch(applier,
+                                  retry,
                                   writer.writeOwnershipChanges(EntityOwnershipReconciler.withoutEntityArcs(reconciled)));
     }
 
@@ -1219,19 +1835,68 @@ public interface AetherNode extends ManageableNode {
     /// is skipped rather than sent (an empty command batch would be rejected by consensus).
     @Contract
     private static void applyStreamOwnershipBatch(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                  StreamOwnershipRetry retry,
                                                   List<KVCommand<AetherKey>> commands) {
         if (commands.isEmpty()) {
             return;
         }
 
         applier.apply(commands)
-               .onFailure(cause -> LOG.warn("Stream ownership batch write for {} moved partition(s) failed: {} — re-driven on next reconcile",
-                                            commands.size(),
-                                            cause.message()));
+               .onSuccess(results -> retry.settled(refusedCount(results)))
+               .onFailure(cause -> retry.failed(commands.size(),
+                                                cause));
+    }
+
+    /// The re-arm half of [#STREAM_OWNERSHIP_RETRY_BASE]: counts consecutive failed ownership batch writes and, on each
+    /// failure, hands the reconcile trigger to `schedule` with the backed-off delay. One instance per node.
+    record StreamOwnershipRetry(AtomicInteger consecutiveFailures,
+                                BiConsumer<Runnable, TimeSpan> schedule,
+                                Runnable reconcile) {
+        static StreamOwnershipRetry streamOwnershipRetry(BiConsumer<Runnable, TimeSpan> schedule, Runnable reconcile) {
+            return new StreamOwnershipRetry(new AtomicInteger(), schedule, reconcile);
+        }
+
+        /// Doubles from the base per consecutive failure, capped.
+        static TimeSpan delayAfter(int consecutiveFailures) {
+            var doubled = STREAM_OWNERSHIP_RETRY_BASE.millis() << Math.min(consecutiveFailures, 16);
+
+            return TimeSpan.timeSpan(Math.min(doubled, STREAM_OWNERSHIP_RETRY_CAP.millis())).millis();
+        }
+
+        /// #1730: a write that applied may still be a REFUSED guarded transaction (an owner committed an ISR change
+        /// first). That is not a failure to back off from: the decision is re-made against the record that won.
+        @Contract
+        void settled(long refused) {
+            consecutiveFailures.set(0);
+            if (refused > 0) {
+                LOG.debug("{} stream ownership write(s) refused on a moved record; re-deciding", refused);
+                schedule.accept(reconcile, OWNERSHIP_REDRIVE_DELAY);
+            }
+        }
+
+        @Contract
+        void failed(int moved, Cause cause) {
+            var delay = delayAfter(consecutiveFailures.getAndIncrement());
+
+            LOG.warn("Stream ownership batch write for {} moved partition(s) failed: {} — reconcile re-armed in {}",
+                     moved,
+                     cause.message(),
+                     delay);
+            schedule.accept(reconcile, delay);
+        }
+    }
+
+    /// #1730: the guarded ownership transactions of a batch the applier refused because their record moved.
+    static long refusedCount(List<Object> results) {
+        return results.stream()
+                      .filter(KVCommand.TransactionResult.class::isInstance)
+                      .map(KVCommand.TransactionResult.class::cast)
+                      .filter(result -> !result.accepted())
+                      .count();
     }
 
     /// #336 reachability-evidence: when an app/blueprint stream's committed `StreamConfig` lands via
-    /// consensus (e.g. `replicas=2 / min-sync=2` at slice activation), place its replica set NOW instead
+    /// consensus (e.g. `replication_factor=2 / confirmation_factor=2` at slice activation), place its replica set NOW instead
     /// of waiting for an unrelated membership/quorum edge that may never fire in a membership-stable
     /// cluster. Registered as the SECOND `StreamConfigKey` put-handler, so it runs AFTER
     /// [StreamPartitionManager#onStreamConfigPut] has hydrated the stream into `replicaCatalog()`
@@ -1244,7 +1909,77 @@ public interface AetherNode extends ManageableNode {
     /// initial reconcile fired once membership is available.
     @Contract
     private static void reconcileReplicaSetOnConfigPut(AtomicReference<ReplicaSetController> controllerRef) {
+        reconcileReplicaSet(controllerRef);
+    }
+
+    /// The one hook every stream-placement input trigger ends in. No-op until the controller is bound.
+    @Contract
+    static void reconcileReplicaSet(AtomicReference<ReplicaSetController> controllerRef) {
         Option.option(controllerRef.get()).onPresent(ReplicaSetController::reconcile);
+    }
+
+    /// The replica-set reconcile is a pure function of CURRENT state — placement members, cluster size, the
+    /// committed ownership records, the stream catalog and the leader gate on the ownership writer — and it
+    /// has no other way to learn that one of them changed. #1339 and #1732 were the same defect: an input
+    /// changed and nothing ran the pass. A replacement core's voter install changed the placement members
+    /// after the join decision had already reconciled (#1732: RF never restored); a leadership change
+    /// moved the only writer that can commit an owner after the removal decision had already reconciled with
+    /// no leader to write (#1339: the partition stayed write-refused until the next membership change). The
+    /// pre-existing triggers cover the membership decisions, the quorum edges and the stream-config put; these
+    /// are the inputs they missed.
+    ///
+    ///  - voter-configuration INSTALL (genesis, §4 command, sync adoption): the placement members are the
+    ///    installed voters narrowed to the FSM's counted core, and the RF clamp is the voter count. The source
+    ///    calls the listener at once when a configuration is already installed, so wiring after genesis
+    ///    misses nothing.
+    ///  - LEADER change: the ownership writer is leader-only, so a pass that ran while no live leader existed
+    ///    wrote nothing, and only a leadership edge can say the writer is now able to.
+    ///  - a committed OWNERSHIP RECORD: placement follows the committed owner, so every node's registry is
+    ///    re-derived when the leader's write lands (and when it is replayed on a restarted node).
+    ///
+    /// The fourth input — the FSM's counted set changing WITHOUT a membership decision — is wired where the
+    /// FSM's transition listener already is ([#reconcileReplicaSetOnCountedBoundary]). `ReplicaSetController`
+    /// coalesces triggers, so a reshuffle that commits many ownership records costs one pass.
+    @Contract
+    static void wireReplicaSetInputTriggers(List<MessageRouter.Entry<?>> allEntries,
+                                            Runnable reconcile,
+                                            Consumer<Consumer<VoterConfiguration>> voterInstallSource) {
+        voterInstallSource.accept(_ -> reconcile.run());
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, _ -> reconcile.run()));
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     _ -> reconcile.run())
+                                              .build()
+                                              .asRouteEntries());
+    }
+
+    /// True iff this transition moves a member across the placement boundary — counted (MEMBER or SUSPECT) to
+    /// not counted, or back. Most such edges are followed by a membership decision, but two are not: MEMBER →
+    /// DEPARTING (a graceful drain, which drops the member from placement with no removal until it terminalizes)
+    /// and DEPARTING → MEMBER (a withdrawn drain, which returns it). Without this edge a pass that ran during
+    /// the drain leaves the withdrawn member out of every replica set until some unrelated membership change.
+    static boolean crossesCountedBoundary(MembershipTransitionRecord record) {
+        return isCounted(record.fromState()) != isCounted(record.toState());
+    }
+
+    private static boolean isCounted(String state) {
+        return "Member".equals(state) || "Suspect".equals(state);
+    }
+
+    @Contract
+    private static void closeSliceFloorRefusalOnDeath(AtomicReference<Option<ManagementServer>> managementServerRef,
+                                                      MembershipTransitionRecord record) {
+        if ("Dead".equals(record.toState())) {
+            managementServerRef.get().onPresent(server -> server.onMemberDeparted(record.nodeId()));
+        }
+    }
+
+    @Contract
+    static void reconcileReplicaSetOnCountedBoundary(AtomicReference<ReplicaSetController> controllerRef,
+                                                     MembershipTransitionRecord record) {
+        if (crossesCountedBoundary(record)) {
+            reconcileReplicaSet(controllerRef);
+        }
     }
 
     /// Periodic activation level-heal tick (see [#NDM_ACTIVATION_RECONCILE_INTERVAL]). Gated on a
@@ -1263,48 +1998,165 @@ public interface AetherNode extends ManageableNode {
         nodeDeploymentManager.reconcileActivation();
     }
 
-    /// `-1` for empty) by paging its partition over the forward-read transport, or FAIL when the peer is
-    /// unreachable. The success/failure split is the data-safety signal the backfill deadlock-break needs:
-    /// a reachable peer's watermark is comparable; an unreachable peer's is unknown (and might be ahead),
-    /// so self must not self-promote past it.
+    /// A peer's watermark (its highest held offset; `-1` for empty) over the catch-up read class, or FAIL when
+    /// the peer is unreachable. The success/failure split is the data-safety signal the backfill deadlock-break
+    /// needs: a reachable peer's watermark is comparable; an unreachable peer's is unknown (and might be
+    /// ahead), so self must not self-promote past it. A peer that HOLDS the partition but has not materialized
+    /// it (paced, deferred) or is an owner not yet promoted is REACHABLE ([OwnerPeerReads#replicaWatermark]):
+    /// the catch-up class is not gated on the peer's own promotion, and a held-unmaterialized refusal carries
+    /// its durable watermark.
     private static Promise<Long> probePeerWatermark(StreamForwardClient forwardClient,
                                                     NodeId target,
                                                     String streamName,
                                                     int partition) {
-        return pagePeerWatermark(forwardClient, target, streamName, partition, 0L);
+        return OwnerPeerReads.replicaWatermark(forwardClient::readRemoteCatchup,
+                                               target,
+                                               streamName,
+                                               partition,
+                                               STREAM_CATCHUP_BATCH_SIZE);
     }
 
-    private static Promise<Long> pagePeerWatermark(StreamForwardClient forwardClient,
-                                                   NodeId target,
-                                                   String streamName,
-                                                   int partition,
-                                                   long cursor) {
-        return forwardClient.readRemote(target, streamName, partition, cursor, STREAM_CATCHUP_BATCH_SIZE)
-                            .flatMap(result -> continuePeerWatermark(forwardClient,
-                                                                     target,
-                                                                     streamName,
-                                                                     partition,
-                                                                     cursor,
-                                                                     result));
+    /// #1555: the owner promotion gate's probe, over the catch-up read class the gate's catch-up then pulls
+    /// with, starting at the peer's oldest available offset ([OwnerPeerReads#appendedWatermark]).
+    private static Promise<Long> probePeerAppendedWatermark(StreamForwardClient forwardClient,
+                                                            NodeId target,
+                                                            String streamName,
+                                                            int partition) {
+        return OwnerPeerReads.appendedWatermark(forwardClient::readRemoteCatchup,
+                                                target,
+                                                streamName,
+                                                partition,
+                                                STREAM_CATCHUP_BATCH_SIZE);
     }
 
-    private static Promise<Long> continuePeerWatermark(StreamForwardClient forwardClient,
-                                                       NodeId target,
-                                                       String streamName,
-                                                       int partition,
-                                                       long cursor,
-                                                       StreamForwardClient.ReadForwardResult result) {
-        var events = result.events();
+    /// #1555 item 8: how long a promotion may stay blocked on unreachable members before it is reported — two
+    /// SWIM suspect windows, so a member that is merely slow to be declared FAULTY does not raise it.
+    private static TimeSpan ownerPromotionAlarmWindow(TimeSpan suspectTimeout) {
+        return StreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);
+    }
 
-        if (events.isEmpty()) {
-            return Promise.success(cursor - 1);
-        }
+    /// #1555: a partition whose owner promotion waits for an operator (a divergent peer, or members unreachable
+    /// past the alarm window). The gate raises each distinct block once.
+    ///
+    /// #1431: a peer whose event exceeds its read cap is raised as its own CRITICAL operator warning (a log line plus
+    /// a cluster event), naming the partition, the peer and the offset — never as an unreachable member.
+    /// An owner-promotion block as an operator event, and its end as the recovery (#1937). The oversized-event refusal and the
+    /// members-unreachable wait each raise on a transition and recover on the opposite one (flood-guarded by the sink); the other
+    /// blocks stay a WARN and the partition status read until #1574 gives them a code.
+    static OwnerActivation.BlockAlarm ownerPromotionAlarm(OperatorWarningSink sink) {
+        return new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                return raiseOwnerPromotionBlock(sink, block);
+            }
 
-        var lastOffset = events.getLast().offset();
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                return resolveOwnerPromotionBlock(sink, block);
+            }
 
-        return events.size() >= STREAM_CATCHUP_BATCH_SIZE
-               ? pagePeerWatermark(forwardClient, target, streamName, partition, lastOffset + 1)
-               : Promise.success(lastOffset);
+            @Override
+            public Unit escaped(OwnerActivation.PromotionEscape escape) {
+                return raisePromotionEscape(sink, escape);
+            }
+        };
+    }
+
+    /// #2080: a promotion that went ahead without unreachable members is a CRITICAL operator event, one per escape, from both gates.
+    /// The subject carries the gate, the skipped members and the instant, so two escapes of one partition are two events for the event
+    /// layer's per-subject throttle (60 s): none is merged into an earlier one.
+    private static Unit raisePromotionEscape(OperatorWarningSink sink, OwnerActivation.PromotionEscape escape) {
+        return OperatorWarnings.raise(LOG,
+                                      sink,
+                                      OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS,
+                                      escape.streamName()
+                                     + "[" + escape.partition()
+                                     + "]/" + escape.gate()
+                                     + "/without=" + escape.skipped()
+                                                           .stream()
+                                                           .map(NodeId::id)
+                                                           .sorted()
+                                                           .toList()
+                                     + "@" + System.currentTimeMillis(),
+                                      "{}",
+                                      escape.message());
+    }
+
+    /// What the promoted owner's backfill and its cold-start contest need from the node (#1937, #2080): where its blocks and escapes
+    /// are reported, and where it reads whether a node is named in a partition's committed in-sync set. One place, so the production
+    /// wiring is the code the wiring test drives.
+    static Unit bindPromotionAlarm(PartitionBackfill backfill,
+                                   OperatorWarningSink sink,
+                                   KVStore<AetherKey, AetherValue> kvStore,
+                                   TimeSpan promotionEscapeAfter) {
+        var committedIsr = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+
+        backfill.blockAlarm(ownerPromotionAlarm(sink));
+        backfill.promotionEscapeAfter(promotionEscapeAfter);
+        backfill.committedIsr((stream, partition, node) -> committedIsr.committedIsr(stream, partition)
+                                                                       .contains(node));
+
+        return Unit.unit();
+    }
+
+    private static String partitionSubject(OwnerActivation.ActivationBlock block) {
+        return block.streamName() + "[" + block.partition() + "]";
+    }
+
+    private static Unit raiseOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
+        return switch (block) {
+            case OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized -> OperatorWarnings.raise(LOG,
+                                                                                                             sink,
+                                                                                                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                                                                                                             partitionSubject(oversized),
+                                                                                                             "{}",
+                                                                                                             oversized.message());
+            case OwnerActivation.ActivationBlock.HoldersUnreachable unreachable -> OperatorWarnings.raise(LOG,
+                                                                                                          sink,
+                                                                                                          OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                                                                                                          partitionSubject(unreachable),
+                                                                                                          "{}",
+                                                                                                          unreachable.message());
+            case OwnerActivation.ActivationBlock.LineageRefused refused -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
+                                                                                                  partitionSubject(refused),
+                                                                                                  "{}",
+                                                                                                  refused.message());
+            default -> raiseOwnerPromotionBlock(block);
+        };
+    }
+
+    private static Unit resolveOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
+        return switch (block) {
+            case OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized -> OperatorWarnings.raise(LOG,
+                                                                                                             sink,
+                                                                                                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
+                                                                                                             partitionSubject(oversized),
+                                                                                                             "Owner promotion of {} is no longer refused for a peer's oversized event.",
+                                                                                                             partitionSubject(oversized));
+            case OwnerActivation.ActivationBlock.HoldersUnreachable unreachable -> OperatorWarnings.raise(LOG,
+                                                                                                          sink,
+                                                                                                          OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
+                                                                                                          partitionSubject(unreachable),
+                                                                                                          "Owner promotion of {} no longer waits for unreachable members.",
+                                                                                                          partitionSubject(unreachable));
+            case OwnerActivation.ActivationBlock.LineageRefused refused -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
+                                                                                                  partitionSubject(refused),
+                                                                                                  "Owner promotion of {} is no longer refused at its epoch-start commit.",
+                                                                                                  partitionSubject(refused));
+            default -> Unit.unit();
+        };
+    }
+
+    private static Unit raiseOwnerPromotionBlock(OwnerActivation.ActivationBlock block) {
+        // TODO(#1574): raise as a CRITICAL OperatorWarning once #1574 merges. Until then the operator-visible
+        // surfaces are this WARN and the partition status read (`ownerActivationBlock` on STREAM_REPLICAS).
+        LOG.warn("CRITICAL: {}", block.message());
+
+        return Unit.unit();
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
@@ -1314,19 +2166,24 @@ public interface AetherNode extends ManageableNode {
                                                    DeferredSliceInvokerFacade deferredInvoker,
                                                    RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                    RabiaMetricsCollector rabiaMetricsCollector,
-                                                   NetworkMetricsHandler networkMetricsHandler,
                                                    Serializer serializer,
                                                    Deserializer deserializer,
                                                    SliceCodec nodeCodec,
                                                    DHTNode dhtNode,
                                                    OwnershipEpochHighWater ownershipEpochHighWater,
-                                                   AtomicLong leaderTerm,
+                                                   LeaderTerm leaderTerm,
+                                                   EpochSources epochSources,
                                                    HlcClock hlcClock,
                                                    GenerationSnapshotSource snapshotSource,
                                                    AtomicReference<MembershipFsm> membershipFsmRef,
                                                    AtomicReference<ClusterSyncCollector> metricsCollectorRef,
                                                    org.pragmatica.cluster.node.rabia.SyncHoldRegistry syncHoldRegistry,
-                                                   Runnable jvmExit) {
+                                                   Runnable jvmExit,
+                                                   Runnable identityRefusedExit,
+                                                   Runnable gossipKeyDivergedExit,
+                                                   Option<EncryptionKeyring> storageKeyring,
+                                                   long bootToken,
+                                                   ClusterEventsLimits clusterEventsLimits) {
         // #329: leader-pinned task-group ownership is gated on consensus catch-up. A freshly
         // elected replacement leader whose Rabia log is still draining (isPendingCatchUp) is
         // isActive but not caught up; granting it ownership funnels every leader-pinned op
@@ -1378,6 +2235,14 @@ public interface AetherNode extends ManageableNode {
                 // is always included (it handles local replicas directly). Before the FSM is published
                 // (early boot / non-cluster worker paths) this degrades to the prior transport view
                 // (connectedPeers + self), preserving back-compat.
+                if (configuredWorker(config)) {
+                    return dhtNode.ring()
+                                  .nodes()
+                                  .stream()
+                                  .filter(clusterNode.network().connectedPeers()::contains)
+                                  .collect(Collectors.toSet());
+                }
+
                 var live = Option.option(membershipFsmRef.get())
                                  .map(MembershipFsm::dhtRoutableMembers)
                                  .or(() -> new HashSet<>(clusterNode.network().connectedPeers()));
@@ -1395,33 +2260,111 @@ public interface AetherNode extends ManageableNode {
         // And a task armed at ASSEMBLY runs on a node that was never started (#642's evidence run:
         // two held-back Ember nodes, 274 snapshot ticks each) — see PeriodicTasks for the contract.
         var periodicTasks = PeriodicTasks.periodicTasks();
-        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
-                                                                  dhtNetwork,
-                                                                  config.artifactRepo(),
-                                                                  KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
-                                                                                                        BootstrapModule.CORE_PARTITION_ID));
-        var aetherMaps = AetherMaps.aetherMaps(dhtClient.scoped(DHTConfig.FULL));
-        var cacheDhtClient = dhtClient.scoped(config.cache());
+        var baseDhtClient = DistributedDHTClient.distributedDHTClient(dhtNode,
+                                                                      dhtNetwork,
+                                                                      KvOwnerEpochSource.kvOwnerEpochSource(kvStore,
+                                                                                                            BootstrapModule.CORE_PARTITION_ID));
+        // An all-miss resolve reads as a bare "absent" everywhere above the client; this observer writes the WARN that
+        // says whether the key is absent everywhere or unreachable, for artifact keys only (other keys' absence is normal
+        // traffic and logs at DEBUG). The cache client is scoped from the base client, not from this one:
+        // a cache miss is normal traffic and must not WARN.
+        var dhtClient = baseDhtClient.withResolveFallbackObserver(LoggingResolveFallbackObserver.loggingResolveFallbackObserver(ArtifactStore::isArtifactMetadataKeyHex,
+                                                                                                                                LOG::warn,
+                                                                                                                                LOG::debug,
+                                                                                                                                LOG::info));
+        // The cache namespace declares its own replication in the committed `[cache]` section (#1777 track 1),
+        // re-read on every operation; `config.cache()` supplies its timeout and retry policy, and its factors
+        // until the committed ones are resolved.
+        var cacheDhtConfig = new AtomicReference<>(config.cache());
+        var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);
         var dhtClientOption = Option.<DHTClient> some(dhtClient);
-        var baseStorageSetups = StorageFactory.createAll(config.storageConfig(),
-                                                         config.self().id(),
-                                                         dhtClientOption);
+        // #253 BLOCKING #1 (2026-09-04 ruling): a configured storage instance that fails to create
+        // is a boot failure -- `createAll` now returns `Result` and this aborts naming the instance
+        // and the cause, the same way `streamStorageResult`'s failure is propagated below, rather
+        // than silently dropping that one instance (the old behavior) and letting boot continue on
+        // whatever was left, e.g. a `wrapLocalDisk` refusal over plaintext artifacts.
         // Stream storage is a first-class, disk-backed snapshot-capable StorageSetup (memory -> disk
-        // -> DHT) keyed under "streams". It is built here (not via `createAll`, which is config-map
-        // driven) so it can be folded into `storageSetups` — a later snapshot scheduler iterates that
-        // map — while its `instance()` is reused as `streamStorage` at the stream wiring site below.
-        var streamStorageSetup = StorageFactory.defaultStreamStorage(dhtClientOption,
-                                                                     streamDataDir(config),
-                                                                     config.self().id());
-        var storageSetups = withStreamSetup(baseStorageSetups, streamStorageSetup);
-        var artifactStorage = Option.option(storageSetups.get("artifacts"))
-                                    .map(StorageFactory.StorageSetup::instance)
-                                    .or(StorageFactory.defaultArtifactStorage(dhtClientOption));
-        var artifactStore = ArtifactStore.artifactStore(dhtClient, artifactStorage);
+        // -> DHT) keyed under "streams". It has no `[storage.X]` section of its own -- `streams_encrypted`
+        // is a dedicated top-level `[storage.encryption]` flag -- so its parameters are resolved here
+        // and handed to `createAll` as a `StreamSetupRequest`; the returned map carries it under
+        // "streams" alongside the config-map instances, and its `instance()` is reused as
+        // `streamStorage` at the stream wiring site below.
+        //
+        // #852 round 2: it is part of the SAME `createAll` call, not a second one after it. As a second
+        // call its guard could refuse a boot whose earlier arms had already stamped their directories,
+        // leaving markers nothing owns -- see `StorageFactory.createAll`'s five-argument overload.
+        var streamsEncrypted = config.storageEncryption().map(StorageEncryptionConfig::streamsEncrypted).or(false);
+        var streamsKeyring = streamsEncrypted
+                             ? storageKeyring
+                             : Option.<EncryptionKeyring> empty();
+        var storageSetupsResult = StorageFactory.createAll(config.storageConfig(),
+                                                           config.self().id(),
+                                                           dhtClientOption,
+                                                           storageKeyring,
+                                                           new StorageFactory.StreamSetupRequest(dhtClientOption,
+                                                                                                 streamDataDir(config),
+                                                                                                 config.self().id(),
+                                                                                                 streamsKeyring,
+                                                                                                 config.streaming()
+                                                                                                       .segmentDiskMaxBytes(),
+                                                                                                 resolveStreamWalDir(config)));
+
+        if (storageSetupsResult.isFailure()) {
+            return storageSetupsResult.map(ignored -> null);
+        }
+
+        var storageSetups = storageSetupsResult.fold(_ -> null, setups -> setups);
+        // Same invariant as "artifacts" and "content" below: `createAll` builds "streams" itself now,
+        // so its absence here would mean the guard above should already have failed.
+        var streamStorageSetup = Objects.requireNonNull(storageSetups.get(StorageFactory.STREAMS_NAME),
+                                                        "storageSetups missing \"streams\" after createAll succeeded -- invariant violated");
+        // #253 BLOCKING #1 (2026-09-04 ruling): `createAll`'s postcondition on success is that
+        // "artifacts" is ALWAYS present in `baseStorageSetups` -- either the operator's
+        // `[storage.artifacts]` config or the synthesized default, and either one failing now
+        // aborts boot at the `baseStorageSetupsResult` guard above, before this line is ever
+        // reached. The old `.or(StorageFactory.defaultArtifactStorage(...))` fallback substituted a
+        // second, independently-built, always-unencrypted instance whenever "artifacts" happened to
+        // be missing from the map -- which is exactly how a `wrapLocalDisk` refusal over
+        // pre-existing plaintext used to boot successfully anyway (BLOCKING #1's root cause).
+        // `defaultArtifactStorage` is retired as dead code; there is no longer a legitimate reason
+        // for "artifacts" to be absent here.
+        //
+        // #253 review round 2 NOTE: `Objects.requireNonNull` turns a violated invariant into a named
+        // failure pointing at THIS comment's reasoning, instead of a bare NPE at `.instance()` that
+        // gives a future reader no hint the absence was ever supposed to be impossible.
+        var artifactStorage = Objects.requireNonNull(storageSetups.get("artifacts"),
+                                                     "storageSetups missing \"artifacts\" after createAll succeeded -- invariant violated")
+                                     .instance();
+        // #783: same invariant as "artifacts" above -- `createAll` synthesizes a "content" entry
+        // whenever `[storage.content]` wasn't explicit, so its absence here would mean
+        // `baseStorageSetupsResult` should already have failed at the guard above. Replaces the old
+        // keyring-less `StorageFactory.defaultContentStorage(dhtClientOption)` call at the
+        // `registerRuntimeExtensions` site below, which built ContentStore's StorageInstance entirely
+        // outside `storageSetups` -- no MetadataStore, no demotion/GC, never encrypted (#250/#803,
+        // #253's WARN at that site is retired along with it).
+        var contentStorage = Objects.requireNonNull(storageSetups.get("content"),
+                                                    "storageSetups missing \"content\" after createAll succeeded -- invariant violated")
+                                    .instance();
+        // #1778: the versions of each artifact are kept in consensus, where concurrent publishes are folded by the
+        // applier; the bytes and per-version metadata stay in the DHT.
+        var artifactStore = RepositoryFactory.artifactStore(dhtClient,
+                                                            artifactStorage,
+                                                            config.sliceConfig(),
+                                                            clusterNode,
+                                                            kvStore);
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         var sharedLibraryLoader = createSharedLibraryLoader(config);
-        var resourceProviderSetup = createResourceProviderFacade(config);
+        // #904: a configured resource provider whose secrets cannot be resolved is a boot failure
+        // naming the secret, propagated exactly like `baseStorageSetupsResult` above -- never a boot
+        // on the no-op facade with provisioning silently disabled.
+        var resourceProviderSetupResult = createResourceProviderFacade(config);
+
+        if (resourceProviderSetupResult.isFailure()) {
+            return resourceProviderSetupResult.map(ignored -> null);
+        }
+
+        var resourceProviderSetup = resourceProviderSetupResult.fold(_ -> null, setup -> setup);
         var sliceStore = SliceStore.sliceStore(sliceRegistry,
                                                repositories,
                                                sharedLibraryLoader,
@@ -1441,10 +2384,40 @@ public interface AetherNode extends ManageableNode {
                                                // silently — omitting it is a compile error, not a
                                                // slice that deploys and then fails at load.
                                               );
-        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork, config.artifactRepo());
-        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer);
-        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode, dhtNetwork, config.artifactRepo());
+        var dhtRebalancer = DHTRebalancer.dhtRebalancer(dhtNode, dhtNetwork);
+        // #1818 round 3: departure pushes are accepted only from departing senders. The predicate needs the
+        // ClusterSyncCollector, built further down, so it is resolved through this holder (strict until then).
+        var departingSendersRef = new AtomicReference<Predicate<NodeId>>(_ -> false);
+        var dhtAntiEntropy = DHTAntiEntropy.dhtAntiEntropy(dhtNode,
+                                                           dhtNetwork,
+                                                           sender -> departingSendersRef.get()
+                                                                                        .test(sender));
+        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode, dhtRebalancer, dhtAntiEntropy);
         var switchableCluster = SwitchableClusterNode.switchableClusterNode(clusterNode);
+        // #1777 CTO ruling R1b: a replication change switches the DHT to its new quorums cluster-wide, by a committed fact
+        var dhtSettlement = DhtReplicationSettlement.dhtReplicationSettlement(new DhtReplicationSettlement.Inputs(config.self(),
+                                                                                                                  !configuredWorker(config),
+                                                                                                                  kvStore,
+                                                                                                                  dhtNode,
+                                                                                                                  config.artifactRepo(),
+                                                                                                                  () -> clusterNode.leaderManager()
+                                                                                                                                   .isLeader(),
+                                                                                                                  switchableCluster::apply,
+                                                                                                                  () -> dhtWritingWorkers(Option.option(membershipFsmRef.get())),
+                                                                                                                  member -> committedDeparture(Option.option(membershipFsmRef.get()),
+                                                                                                                                               member),
+                                                                                                                  delegateRouter::route,
+                                                                                                                  System::currentTimeMillis,
+                                                                                                                  () -> !clusterNode.isPendingCatchUp()
+                                                                                                                  // v1882 r5: a replica accepts writes only once consensus has applied its log tail
+                                                                                                                 ));
+
+        dhtNode.onReplicationCaughtUp(_ -> dhtSettlement.report());
+        // #1777 (owner rule): this node announces its own writes being refused as stale beyond the bound
+        var dhtWriterStaleWatch = DhtWriterStaleWatch.dhtWriterStaleWatch(config.self(),
+                                                                          dhtNode,
+                                                                          delegateRouter::route,
+                                                                          System::currentTimeMillis);
         var corePeerIds = config.topology()
                                 .coreNodes()
                                 .stream()
@@ -1454,8 +2427,13 @@ public interface AetherNode extends ManageableNode {
         var forwardingClusterNode = ForwardingClusterNode.forwardingClusterNode(clusterNode,
                                                                                 clusterNode.network(),
                                                                                 corePeerIds);
+        // Worker role is immutable: even the first metadata cut's LOAD callbacks must forward.
+        if (configuredWorker(config)) {
+            switchableCluster.switchTo(forwardingClusterNode);
+        }
 
-        record aetherNode(AetherNodeConfig config,
+        record aetherNode(org.pragmatica.aether.worker.metadata.WorkerMetadataChannel workerMetadataChannel,
+                          AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
                           OwnershipEpochHighWater ownershipEpochHighWaterInstance,
@@ -1495,7 +2473,6 @@ public interface AetherNode extends ManageableNode {
                           ArtifactMetricsCollector artifactMetricsCollector,
                           DeploymentMap deploymentMap,
                           ClusterEventAggregator eventAggregator,
-                          BackupService backupService,
                           StreamPartitionManager streamPartitionManager,
                           SegmentIndex streamSegmentIndex,
                           StreamReadRouter streamReadRouter,
@@ -1503,6 +2480,7 @@ public interface AetherNode extends ManageableNode {
                           ConsumerGroupCoordinator consumerGroupCoordinator,
                           ConsumerGroupRegistry consumerGroupRegistry,
                           StreamConsumerManager streamConsumerManager,
+                          Option<ProjectionNodeSupport> projectionNodeSupport,
                           StreamNamespacesService streamNamespacesService,
                           Map<String, StorageFactory.StorageSetup> storageSetups,
                           ClusterTopologyManager clusterTopologyManagerInstance,
@@ -1514,7 +2492,7 @@ public interface AetherNode extends ManageableNode {
                           QuorumLossDetector quorumLossDetector,
                           CoreAbsenceDetector coreAbsenceDetector,
                           TransitionJournal transitionJournal,
-                          Runnable startSwimTrigger,
+                          Consumer<Promise<Unit>> startSwimTrigger,
                           Option<ManagementServer> managementServer,
                           Option<DiscoveryProvider> discoveryProvider,
                           Option<CertificateRenewalScheduler> certRenewalScheduler,
@@ -1537,7 +2515,19 @@ public interface AetherNode extends ManageableNode {
                           StreamConsumerRuntime streamConsumerRuntime,
                           long startTimeMs,
                           AtomicLong swimBootAt,
-                          PeriodicTasks periodicTasks) implements AetherNode {
+                          PeriodicTasks periodicTasks,
+                          Option<KvBackupService> kvBackupService,
+                          LeaderTerm leaderTerm,
+                          // #932: the stream replica-set controller and backfill executor own one
+                          // thread each per node; neither had a close on the stop path.
+                          Runnable streamReplicationShutdown,
+                          // #1968: ends a backup-less leader's open backup-config-missing alert before the event layer stops.
+                          Runnable backupCoordinatorStop,
+                          // #903: the provider whose shared (unattributed) scope only node shutdown
+                          // can close.
+                          Option<SpiResourceProvider> spiResourceProvider,
+                          NodeReplacementService nodeReplacementService,
+                          UpgradeRunService upgradeRunService) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -1583,9 +2573,9 @@ public interface AetherNode extends ManageableNode {
                                        // resolves, because clusterNode.start() resolves only on consensus
                                        // quorum, which itself needs the peers SWIM discovers (the deadlock
                                        // §5.4 exposed once the static dial-set seed was removed).
-                                       .onSuccess(_ -> clusterNode.network()
-                                                                  .whenReady(startSwimTrigger))
-                                       .flatMap(_ -> startClusterAsync())
+                                       // #1308: the SWIM start's outcome is joined into this start —
+                                       // see startClusterUnlessSwimFails.
+                                       .flatMap(_ -> startClusterUnlessSwimFails())
                                        // #644: arm the deferred periodic tasks only now, once cluster
                                        // formation has resolved — a created-but-unstarted node performs
                                        // no periodic work, and none of the deferred tasks participates
@@ -1599,8 +2589,58 @@ public interface AetherNode extends ManageableNode {
                                        // PeriodicTasks.arm() is a no-op after stop(), closing the
                                        // late-resolution race in the other direction.
                                        .map(this::armPeriodicTasks)
+                                       // #858: check/write each DHT-tier instance's encryption marker
+                                       // here — AFTER startClusterAsync() resolves (cluster formation
+                                       // complete, dhtClient can route). Was boot-time, inside the
+                                       // constructor path (createAll → createOne), where it always blocked
+                                       // the full 30 s DHT_MARKER_TIMEOUT because the DHTClient handed to
+                                       // the constructor cannot route yet (#858).
+                                       //
+                                       // #1052: AFTER armPeriodicTasks, not before. The check now retries
+                                       // for as long as the DHT cannot answer (a ring still converging),
+                                       // and LeaderManager picks the lowest id of the sorted topology, so
+                                       // a replacement still retrying can already be leader. Holding the
+                                       // periodic work behind the check would switch off that leader's
+                                       // generation bump, readiness sweep and activation heal. What must
+                                       // not precede the check is enforced elsewhere, not by this order:
+                                       // every DHT-tier get/put/delete/exists waits on the instance's
+                                       // readGate (#874), and the node reports not-ready until every gate
+                                       // admits (markSubsystemsReadyOnceDhtAdmitted). Only
+                                       // EncryptionError.EncryptedTierRequiresKeyring (a marker present
+                                       // with no keyring) fails start() — and Main#exitWithError still
+                                       // stops the node on it; a timeout or an unreachable quorum is
+                                       // retried and never exits.
+                                       .flatMap(_ -> verifyDhtMarkers())
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
+            }
+
+            /// #858: post-formation DHT encryption-marker check/write, run once from [#start] after
+            /// `startClusterAsync()` and `armPeriodicTasks`. Generic over `storageSetups`' CONTENTS —
+            /// iterates whatever [StorageFactory.StorageSetup#dhtMarkerCheck] entries are present, no
+            /// hardcoded instance list — so an instance that starts carrying a DHT tier later (#783:
+            /// `content` routed through `createAll`) is covered automatically without touching this
+            /// method. No `dhtClient` (no DHT-backed instance in this config) short-circuits to
+            /// `Promise.UNIT` — nothing to check.
+            ///
+            /// #1052: retries until each check completes or definitively refuses; `periodicTasks`'
+            /// cancellation is the loop's stop signal, so a stopped node stops retrying. In practice
+            /// that signal is `stop()` alone: the other canceller, the failed-boot guard
+            /// (`cancelArmedWork`, from `verifyRoutedTypesEncodable`), runs at construction, before
+            /// [#start] and therefore before this loop exists. Consequence: a refusal leaves periodic
+            /// work armed until whoever owns the node stops it (`Main#exitWithError`, Ember's
+            /// `abortStart`, a test's tear-down).
+            private Promise<Unit> verifyDhtMarkers() {
+                var checks = storageSetups.values()
+                                          .stream()
+                                          .map(StorageFactory.StorageSetup::dhtMarkerCheck)
+                                          .flatMap(Option::stream)
+                                          .toList();
+
+                return dhtClient.map(client -> StorageFactory.verifyDhtMarkers(client,
+                                                                               checks,
+                                                                               periodicTasks::isCancelled))
+                                .or(Promise.UNIT);
             }
 
             /// The #644 arming stage of [#start]'s chain — a named identity so the arm rides the
@@ -1622,6 +2662,9 @@ public interface AetherNode extends ManageableNode {
                 // still-unarmed thunks and refuses a late arm() (#644): a cluster-formation promise
                 // resolving after this line must not schedule work for a torn-down node.
                 periodicTasks.cancel();
+                // #1968: first, while the cluster-event layer can still carry the recovery of a backup-config-missing alert.
+                backupCoordinatorStop.run();
+                kvBackupService.onPresent(KvBackupService::stop);
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
                 controlLoop.stop();
@@ -1642,6 +2685,9 @@ public interface AetherNode extends ManageableNode {
                 // write races clusterNode.stop() at the tail of this method.
                 streamConsumerRuntime.close();
                 streamPartitionManager.close();
+                // #932: after the partition manager, whose close can still be answered by a backfill
+                // already in flight; before the cluster node, which the controller's reconcile reads.
+                streamReplicationShutdown.run();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
                 presenceSampler.stop();
@@ -1662,6 +2708,8 @@ public interface AetherNode extends ManageableNode {
                 spokesmanPingLoop.stop();
                 Option.option(governorAnnouncerHolder.get()).onPresent(GovernorAnnouncer::stop);
                 streamRetentionEnforcer.close();
+                // The webhook forwarder owns a JDK HttpClient (a selector thread) when webhooks are enabled.
+                alertManager.closeForwarder();
                 observabilityBaseline.sampler().onPresent(AdaptiveSampler::stop);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
                 // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
@@ -1673,14 +2721,68 @@ public interface AetherNode extends ManageableNode {
                 // it ever gain a failure path, every stop below — management server, app HTTP, slice
                 // invoker, cluster node — would be skipped by flatMap short-circuit. Recover here at
                 // that point rather than leaving the node half-stopped.
-                return clusterDeploymentManager.deactivate()
-                                               .flatMap(_ -> managementServer.map(ManagementServer::stop)
-                                                                             .or(Promise.unitPromise()))
-                                               .flatMap(_ -> appHttpServer.stop())
-                                               .flatMap(_ -> sliceInvoker.stop())
-                                               .flatMap(_ -> clusterNode.stop())
-                                               .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                        self()));
+                //
+                // #1612: the chain lives in NodeStopSequence, where a failed HTTP listener stop is logged and
+                // skipped past rather than ending the shutdown.
+                return NodeStopSequence.run(NodeStopSequence.Steps.steps(clusterDeploymentManager::deactivate,
+                                                                         () -> managementServer.map(ManagementServer::stop)
+                                                                                               .or(Promise.unitPromise()),
+                                                                         appHttpServer::stop,
+                                                                         sliceInvoker::stop,
+                                                                         this::closeSharedResources,
+                                                                         this::shutdownStorage,
+                                                                         clusterNode::stop)).onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                                                                     self()));
+            }
+
+            /// #903: the shared (unattributed) resource scope is released by no slice's unload, because a
+            /// caller with no slice identity has no "last consumer" (#268 R2). Node shutdown is the only
+            /// point at which every consumer is gone, so it is closed here, after the slice invoker stops.
+            private Promise<Unit> closeSharedResources() {
+                return spiResourceProvider.map(SpiResourceProvider::closeShared)
+                                          .or(Promise.unitPromise())
+                                          .timeout(SHARED_SCOPE_CLOSE_BOUND);
+            }
+
+            /// #1078: the three node-owned storage instances (`content`, `artifacts`, `streams`)
+            /// were never shut down — `StorageInstance.shutdown()` is the path that drains a
+            /// write-behind queue, and no stop reached it. Placed after the slice invoker (the
+            /// writers are stopped) and before the cluster node (a DHT tier can still be reached
+            /// while draining). Infallible by design: `shutdown()` is a void contract, and a
+            /// storage failure here must not skip `clusterNode.stop()` behind it.
+            @Contract
+            private Unit shutdownStorage() {
+                storageSetups.forEach((name, setup) -> shutdownStorage(name, setup));
+
+                return Unit.unit();
+            }
+
+            @Contract
+            @SuppressWarnings("JBCT-EX-01")
+            private static void shutdownStorage(String name, StorageFactory.StorageSetup setup) {
+                try {
+                    setup.instance().shutdown();
+                } catch (RuntimeException e) {
+                    log.warn("Storage instance '{}' failed to shut down cleanly: {}", name, e.getMessage());
+                }
+            }
+
+            /// #1308: register the SWIM start on transport-ready and JOIN its outcome into the node's
+            /// start. `startSwim` fails the node through `failNode` (production: `Runtime.halt(2)`),
+            /// but in a single-JVM host (Ember/Forge) `failNode` only stops this node, and a stopped
+            /// node's `clusterNode.start()` never resolves — so a start chain that only observed
+            /// formation hung forever on a SWIM bind failure (rev1343 BLOCKING-1: `EmberCluster.start()`
+            /// sat on a 90 s bound with node 1 stopped and the other two formed). The host's start
+            /// now settles with the SWIM failure itself, and takes its own abort path. The trigger fails
+            /// `outcome` INLINE, before `failNode` runs (rev1343 NIT-R2): in Ember `failNode` blocks for
+            /// the node's own stop, and peers' hellos can complete formation inside that window — a
+            /// formation success landing first would report a started node that is being stopped.
+            private Promise<Unit> startClusterUnlessSwimFails() {
+                var outcome = Promise.<Unit> promise();
+
+                clusterNode.network().whenReady(() -> startSwimTrigger.accept(outcome));
+
+                return formationUnlessSwimFails(startClusterAsync(), outcome);
             }
 
             private Promise<Unit> startClusterAsync() {
@@ -1866,9 +2968,20 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public Map<String, Long> metadataResourceMetrics() {
+                return workerMetadataChannel.resourceMetrics();
+            }
+
+            @Override
+            /// Transport counters (incl. `quic_boot_token_drops_total`, `boot_token_refusals_total`) plus
+            /// `membership_process_evidence_refusals_total` — governor/admission evidence the membership
+            /// FSM refused under terminal removal (#1528).
             public Map<String, Number> transportMetrics() {
-                return clusterNode.network()
-                                  .transportMetrics();
+                var metrics = new HashMap<String, Number>(clusterNode.network().transportMetrics());
+
+                metrics.put("membership_process_evidence_refusals_total", membershipFsm.refusedProcessEvidenceCount());
+
+                return Map.copyOf(metrics);
             }
 
             @Override
@@ -1895,6 +3008,11 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public Option<BackupGenesis> backupGenesis() {
+                return kvBackupService.map(BackupGenesis::backupGenesis);
+            }
+
+            @Override
             public Option<QuorumLossSnapshot> quorumLossSnapshot() {
                 return Option.option(quorumLossDetector).map(QuorumLossSnapshot::from);
             }
@@ -1902,6 +3020,11 @@ public interface AetherNode extends ManageableNode {
             @Override
             public Option<CoreAbsenceSnapshot> coreAbsenceSnapshot() {
                 return Option.option(coreAbsenceDetector).map(CoreAbsenceSnapshot::from);
+            }
+
+            @Override
+            public Option<Integer> communityLiveMembers(String communityId) {
+                return clusterDeploymentManager.communityLiveMembers(communityId);
             }
 
             @Override
@@ -1926,14 +3049,48 @@ public interface AetherNode extends ManageableNode {
             }
 
             @Override
+            public org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
+                return clusterNode.voterReconfigurationStatus();
+            }
+
+            @Override
+            public Set<NodeId> coreNodeIds() {
+                return configuredWorker(config)
+                       ? membershipFsm.memberDescriptors()
+                                      .keySet()
+                                      .stream()
+                                      .filter(node -> isCoreMember(membershipFsm, node))
+                                      .collect(Collectors.toUnmodifiableSet())
+                       : installedVoterIds(clusterNode);
+            }
+
+            @Override
+            public boolean hasCompleteClusterView() {
+                return config.workerConfig()
+                             .isEmpty()
+                       && config.topology()
+                                .coreNodes()
+                                .stream()
+                                .anyMatch(info -> info.id()
+                                                      .equals(self()) && "core".equalsIgnoreCase(info.labels()
+                                                                                                     .getOrDefault(NodeInfo.LABEL_ROLE,
+                                                                                                                   "core")));
+            }
+
+            @Override
             public boolean isReady() {
-                return clusterNode.isActive();
+                return runtimeReady(clusterNode);
             }
 
             @Override
             public Option<NodeId> leader() {
                 return clusterNode.leaderManager()
                                   .leader();
+            }
+
+            @Override
+            public SchemaOrchestratorService schemaOrchestrator() {
+                return clusterDeploymentManager.schemaOrchestrator();
             }
 
             @Override
@@ -1982,6 +3139,21 @@ public interface AetherNode extends ManageableNode {
                 swimHealthDetector.setSwimBlackholed(enabled);
             }
 
+            @Contract
+            @Override
+            public void partitionFrom(java.util.Set<NodeId> unreachable) {
+                var cut = java.util.Set.copyOf(unreachable);
+
+                clusterNode.network().setInboundFaultFilter((peer, _) -> !cut.contains(peer));
+                swimHealthDetector.setSwimPeerPartition(cut);
+            }
+
+            @Override
+            public Unit setInboundFaultFilter(java.util.function.BiPredicate<NodeId, Message.Wired> filter) {
+                return clusterNode.network()
+                                  .setInboundFaultFilter(filter);
+            }
+
             @Override
             public MembershipView membershipView() {
                 // H.2 (spec §H): SWIM does not observe self — the local detector returns
@@ -2012,10 +3184,16 @@ public interface AetherNode extends ManageableNode {
             }
         }
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(),
-                                                                       clusterNode,
+                                                                       switchableCluster,
                                                                        GenerationSnapshotSource.noop(),
                                                                        routeMountMode(config.appHttp()));
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
+        // #1573 B1: HTTP routes call the typed slice instance, not the bridge, so they record into the
+        // same execution counters here. recordExecution cannot fail (it returns unitResult()).
+        httpRoutePublisher.setRouteOutcomeRecorder((artifact, method, outcome) -> invocationMetrics.recordExecution(artifact,
+                                                                                                                    method,
+                                                                                                                    outcome)
+                                                                                                   .or(Unit.unit()));
         var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
         var traceStore = InvocationTraceStore.invocationTraceStore();
         // #277 increment 5a: the strategy-cell system is the ONE observability engine. Unconfigured
@@ -2062,13 +3240,26 @@ public interface AetherNode extends ManageableNode {
                                                                                      connectionProvider,
                                                                                      config.self(),
                                                                                      delegateRouter);
-        var computeProvider = config.environment().flatMap(EnvironmentIntegration::compute);
-        // #298 — fleet cap. Scoped by cluster name (stamped by Main from the boot-gated
-        // AETHER_CLUSTER_NAME) and bounded by autoHeal().maxNodes(). Both absent by default, in
-        // which case this is exactly the previous unbounded behavior.
-        var lifecycleManager = NodeLifecycleManager.nodeLifecycleManager(computeProvider,
-                                                                         config.clusterName(),
-                                                                         config.autoHeal().maxNodes());
+        var sourceLifecycle = sourceLifecycleManager(config.environment(),
+                                                     config.configProvider(),
+                                                     config.clusterName(),
+                                                     config.autoHeal().maxNodes(),
+                                                     () -> kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
+                                                                  .filter(value -> value instanceof AetherValue.ClusterConfigValue)
+                                                                  .map(value -> (AetherValue.ClusterConfigValue) value),
+                                                     node -> computeSource(node,
+                                                                           id -> kvStore.get(new AetherKey.NodePlacementKey(id))
+                                                                                        .filter(value -> value instanceof AetherValue.NodePlacementValue)
+                                                                                        .map(value -> (AetherValue.NodePlacementValue) value),
+                                                                           id -> Option.option(membershipFsmRef.get()).flatMap(fsm -> fsm.memberDescriptor(id))));
+        var lifecycleManager = org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.capacityControlledLifecycle(sourceLifecycle,
+                                                                                                                                config.self(),
+                                                                                                                                kvStore,
+                                                                                                                                commands -> clusterNode.apply(commands),
+                                                                                                                                clusterNode.leaderManager()::isLeader,
+                                                                                                                                () -> config.autoHeal()
+                                                                                                                                            .maxNodes()
+                                                                                                                                            .or(Integer.MAX_VALUE));
         var deploymentMap = DeploymentMap.deploymentMap();
         // #114 W2c + Wave 2 / W3+W6: CDM membership source is the per-node MembershipFsm's
         // CORE-SCOPED counting projection (lazy deref — the FSM holder is populated before the
@@ -2081,7 +3272,8 @@ public interface AetherNode extends ManageableNode {
         // empty set) so a stale-entry cleanup that races the wiring no-ops instead of
         // mass-classifying every KV-known member as departed.
         Supplier<Set<NodeId>> cdmCoreCountedMembersSupplier = () -> Option.option(membershipFsmRef.get())
-                                                                          .map(MembershipFsm::coreCountedMembers)
+                                                                          .map(fsm -> installedCorePlacementMembers(fsm.coreCountedMembers(),
+                                                                                                                    installedVoterIds(clusterNode)))
                                                                           .or(MembershipFsm.MEMBERSHIP_NOT_WIRED);
         // B4 (membership v2 §7.5): the CDM allocatable-gate reads the leader readiness view (READY
         // peers + self) instead of a KV lifecycle atom. Late-bound — the pong fan + self-state holder are
@@ -2092,9 +3284,39 @@ public interface AetherNode extends ManageableNode {
         // Membership-v2: CDM DRAINING set sourced from the real node-authoritative
         // NodeReportedState.DRAINING (metrics pong) — late-bound like the READY ref, since the
         // pong fan + self-state holder are constructed further below.
+        var communityRetirements = CommunityRetirementIndex.communityRetirementIndex();
+        var nodeReplacements = NodeReplacementIndex.nodeReplacementIndex();
+        var upgradeRuns = UpgradeRunIndex.upgradeRunIndex();
+        // Snapshot replay emits only changed KV entries. Leadership must also be refreshed when
+        // an unchanged committed LeaderValue survives a voter handoff that cleared local leadership.
+        clusterNode.onStateRestored(() -> refreshCommittedLeader(kvStore, clusterNode.leaderManager()));
+        clusterNode.onStateRestored(() -> restoreRetirementIndex(kvStore, communityRetirements));
+        restoreRetirementIndex(kvStore, communityRetirements);
+        clusterNode.onStateRestored(() -> nodeReplacements.restore(kvStore.snapshot()));
+        nodeReplacements.restore(kvStore.snapshot());
+        clusterNode.onStateRestored(() -> upgradeRuns.restore(kvStore.snapshot()));
+        upgradeRuns.restore(kvStore.snapshot());
+        // #1777 track 1: restored state is when the committed `[replication]` / `[cache]` factors become readable —
+        // or are known to be absent, which means the built-in ones. Later commits re-resolve through the
+        // ClusterConfigKey put below.
+        clusterNode.onStateRestored(() -> {
+            resolveDhtReplication(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                   AetherValue.ClusterConfigValue.class),
+                                  dhtNode,
+                                  config,
+                                  cacheDhtConfig,
+                                  dhtSettlement);
+            dhtSettlement.reapply();
+        });
         var cdmDrainingNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
-        Supplier<Set<NodeId>> stableCdmDrainingNodesSupplier = () -> cdmDrainingNodesRef.get()
-                                                                                        .get();
+        Supplier<Set<NodeId>> stableCdmDrainingNodesSupplier = () -> retirementCandidates(communityRetirements.including(cdmDrainingNodesRef.get()
+                                                                                                                                            .get()),
+                                                                                          clusterNode,
+                                                                                          membershipFsmRef::get,
+                                                                                          kvStore,
+                                                                                          nodeReplacements,
+                                                                                          readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                              membershipFsmRef::get));
         // #241 (worker-membership-spec §4.1 / D2): the CDM resolves a joining worker's membership
         // source at role-assignment time to mint/reuse its per-source community. Reads the last-wins
         // MemberDescriptor.source from the membership FSM (retained even across DEAD/rejoin), through
@@ -2175,7 +3397,9 @@ public interface AetherNode extends ManageableNode {
         // election wires as its `consensusReadySupplier` (RabiaNode.isActive -> consensus().isActive()).
         // Sampling the level each pong self-heals: the former edge-cached flag could stick SYNCING
         // when a PASSIVE edge was not followed by a fresh ACTIVE edge.
-        var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder(clusterNode::isActive);
+        var workerProjectionFreshRef = new AtomicReference<java.util.function.BooleanSupplier>(() -> !configuredWorker(config));
+        var nodeReportedStateHolder = NodeReportedStateHolder.nodeReportedStateHolder(() -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
+                                                                                                                                                 .getAsBoolean());
         var drainCommandRegistry = DrainCommandRegistry.drainCommandRegistry();
 
         metricsCollector.setNodeReportedStateSupplier(nodeReportedStateHolder::current);
@@ -2201,18 +3425,19 @@ public interface AetherNode extends ManageableNode {
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> pongSignalFan.sweepStale(readinessSweepMaxAgeNanos),
                                                                       config.timeouts().cluster().pingInterval(),
                                                                       config.timeouts().cluster().pingInterval()));
-        Supplier<Long> rabiaTermSupplier = leaderTerm::get;
+        Supplier<Long> rabiaTermSupplier = leaderTerm::current;
         // #114 W1: the cluster-sync ping carries a monotonic generation counter. Each node bumps its
         // OWN counter only while it is leader — ONCE PER pingInterval (1s default), so the counter is
         // a LEADERSHIP-TENURE TICK, not an event count: "1:4254" means rabiaTerm 1 with ~71 minutes of
         // uninterrupted leadership, which is ordinary (#634 follow-up — this exact value was once
         // investigated as an anomaly because the per-interval semantics were written down nowhere).
         // The supplier merely READS it (it is consumed in four contexts; incrementing inside would
-        // over-count). No reset is needed: Epoch ordering is term-dominant, so on a leader change
-        // leaderTerm increments and a new leader's lower local counter still orders strictly after
-        // the prior epoch via the term.
-        var generationCounter = new AtomicLong(0L);
-        Supplier<Epoch> leaderEpochSupplier = () -> Epoch.epoch(leaderTerm.get(), generationCounter.get());
+        // over-count). No reset is needed: Epoch ordering is term-dominant, and the term is the
+        // committed LeaderValue.viewSequence of this node's election (S28, see LeaderTerm) — strictly
+        // above every prior committed leadership cluster-wide — so a new leader's lower local counter
+        // still orders strictly after the prior leader's epoch via the term.
+        var generationCounter = epochSources.generationCounter();
+        Supplier<Epoch> leaderEpochSupplier = epochSources.leaderEpoch();
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> bumpGenerationIfLeader(isLeaderSupplier,
                                                                                                    generationCounter),
@@ -2272,6 +3497,10 @@ public interface AetherNode extends ManageableNode {
         // FSM-integrated DrainCoordinator wired into MembershipFsm/CTM is now a no-op stub.
         // The §8.2 unified drain procedure is owned by DrainProcedure (constructed below).
         var inFlightTrackerForDrain = InFlightRequestTracker.inFlightRequestTracker();
+
+        invocationHandler.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
+                                                                                                        () -> workerProjectionFreshRef.get()
+                                                                                                                                      .getAsBoolean()));
         // E2 Phase 2b (2026-05-28): DrainProcedure replaces SelfDrainCoordinator's execution
         // surface. It is a *pure procedure* — no triggers, no periodic ticks, no orphan
         // checker. The single caller in Phase 2b is the QuorumLossDetector quorum-loss
@@ -2299,14 +3528,40 @@ public interface AetherNode extends ManageableNode {
         // grace fork never does). The observer — resolved once the ClusterEventAggregator is bound
         // below — turns a budget overrun into a DeparturePushIncomplete event; it stays a no-op until
         // then, keeping aether-deployment free of any ClusterEvent / DHT-event dependency.
+        // #1818: the push excludes every node the leader commanded to drain alongside this one (the
+        // ping's global drain set), so it never lands on, or counts as a survivor, a co-drainer.
         var departurePushObserverRef = new java.util.concurrent.atomic.AtomicReference<>(DeparturePushObserver.noop());
-        Supplier<Promise<Unit>> departurePush = () -> dhtRebalancer.pushOnDeparture(departurePushObserverRef.get());
+        var movementDrain = new AtomicReference<Option<CommunityDrainCoordinator>>(Option.none());
+
+        departingSendersRef.set(DhtDeparturePush.departingSenders(metricsCollector, dhtTopologyListener));
+        var dhtDeparturePush = DhtDeparturePush.dhtDeparturePush(dhtRebalancer,
+                                                                 metricsCollector,
+                                                                 departurePushObserverRef::get);
+        Supplier<Promise<Unit>> departurePush = () -> dhtDeparturePush.get()
+                                                                      .flatMap(_ -> movementDrain.get()
+                                                                                                 .fold(Promise::unitPromise,
+                                                                                                       CommunityDrainCoordinator::onQuiesced));
+        // #273 item 1: forward-declared hook resolved once the ScheduledTaskManager is built below. The
+        // drain edge for scheduled tasks is THIS emitter, not a MembershipDecision — `NodeDraining` has
+        // no producer since the membership-v2 finale removed the per-node lifecycle projection.
+        var scheduledTaskDrainHookRef = new java.util.concurrent.atomic.AtomicReference<Runnable>(() -> {});
         var drainProcedure = DrainProcedure.drainProcedure(inFlightTrackerForDrain,
                                                            () -> {},
-                                                           reason -> clusterEventDrainEmitterRef.get()
-                                                                                                .accept(reason),
+                                                           drainInitiatedEmitter(scheduledTaskDrainHookRef,
+                                                                                 clusterEventDrainEmitterRef),
                                                            departurePush,
                                                            jvmExit);
+        var communityDrain = CommunityDrainCoordinator.communityDrainCoordinator(config.self(),
+                                                                                 () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                        LeaderValue.class)
+                                                                                              .map(LeaderValue::leader),
+                                                                                 () -> selfPlacementOperation(kvStore,
+                                                                                                              config.self()),
+                                                                                 clusterNode.network()::send,
+                                                                                 () -> commandedDrain(drainProcedure,
+                                                                                                      nodeReportedStateHolder));
+
+        movementDrain.set(Option.some(communityDrain));
         Supplier<Option<NodeId>> healthLeaderSupplier = () -> clusterNode.leaderManager()
                                                                          .leader();
         // P3 (membership unification): ClusterPhase derives from QUIC quorum + leader presence.
@@ -2324,6 +3579,23 @@ public interface AetherNode extends ManageableNode {
         // node boots with resolved credentials instead of crashing on placeholders. Returns none()
         // gracefully when no config path was published (forge/tests) or the file can't be parsed.
         var resolvedLocalConfig = Lazy.lazy(AetherNode::parseOwnResolvedConfig);
+        // #1050 / #1062 — the CTM consults membership and liveness evidence before every irreversible reap. The
+        // SWIM detector and the LeaderReconciler are built further below, so both are reached through holders
+        // declared HERE (read per call; empty until published, which every reap gate treats as fail-closed).
+        // The configured core count comes out of the same seam and is handed to the LeaderReconciler and the
+        // QuorumLossDetector below, so the drain decision and its reap read ONE count supplier.
+        var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
+        var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
+        var ctmLiveness = drainGraceLiveness(membershipFsmRef::get,
+                                             clusterConfigReader,
+                                             config.topology().coreNodes().size(),
+                                             swimHealthDetectorHolder::get,
+                                             peer -> clusterNode.network()
+                                                                .connectedPeers()
+                                                                .contains(peer),
+                                             leaderReconcilerRef::get,
+                                             metricsCollector::retainedDispatchedNodes);
+        IntSupplier configuredCoreCountSupplier = ctmLiveness.configuredCoreCount();
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -2336,21 +3608,92 @@ public interface AetherNode extends ManageableNode {
                                                                                                                     membershipFsmRef,
                                                                                                                     target),
                                                                                    drainCommandRegistry::clearDrain,
-                                                                                   resolvedLocalConfig::get);
+                                                                                   resolvedLocalConfig::get,
+                                                                                   () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
+                                                                                                          AutoHealStateValue.class),
+                                                                                   ctmLiveness);
+
+        clusterTopologyManager.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                                 LeaderValue.class)
+                                                                                                                                                       .filter(value -> value.leader()
+                                                                                                                                                                             .equals(config.self())
+                                                                                                                                                                        && clusterNode.leaderManager()
+                                                                                                                                                                                      .isLeader()
+                                                                                                                                                                        && clusterNode.isActive()),
+                                                                                                                                          kvStore::get,
+                                                                                                                                          clusterCommandApplier));
+        clusterTopologyManager.setGenesisVoters(() -> clusterNode.genesisVoters()
+                                                                 .map(VoterConfiguration::members)
+                                                                 .or(List.of()));
+        clusterTopologyManager.setNodeReplacements(nodeReplacements);
+        clusterTopologyManager.setRetirementRefusal(node -> retirementRefusal(clusterNode,
+                                                                              membershipFsmRef::get,
+                                                                              deploymentMap,
+                                                                              readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                  membershipFsmRef::get),
+                                                                              node));
+        // #1526: configured cores are bootstrap identities and keep core admission intent after a fresh
+        // genesis that did not include them (a cold restart forms genesis from the cores present), so a
+        // configured core that comes back late is admitted and voted in through a Rabia §4 add.
+        var configuredCoreIds = configuredVoters(config);
+        var verifiedVoterIdentities = new AtomicReference<>(bootstrapIdentities(configuredCoreIds,
+                                                                                clusterNode.verifiedVoterHistoryIds()));
+
+        clusterNode.onVoterConfiguration(_ -> verifiedVoterIdentities.set(bootstrapIdentities(configuredCoreIds,
+                                                                                              clusterNode.verifiedVoterHistoryIds())));
+        var coreAdmission = CoreAdmission.coreAdmission(membershipFsmRef::get,
+                                                        verifiedVoterIdentities::get,
+                                                        node -> kvStore.getTyped(new AetherKey.CapacityReservationKey(node),
+                                                                                 AetherValue.CapacityReservationValue.class),
+                                                        node -> config.environment()
+                                                                      .map(environment -> environment.isLocalCoreAdmissionAuthorized(node.id()))
+                                                                      .or(false));
+        var coreVoterReconciler = CoreVoterReconciler.coreVoterReconciler(config.self(),
+                                                                          isLeaderSupplier,
+                                                                          clusterNode::voterConfiguration,
+                                                                          clusterNode::retirementSafeVoters,
+                                                                          configuredCoreCountSupplier,
+                                                                          () -> readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                    membershipFsmRef::get).stream()
+                                                                                                   .filter(coreAdmission::isAllowed)
+                                                                                                   .collect(Collectors.toUnmodifiableSet()),
+                                                                          nodeReplacements::voterSwaps,
+                                                                          FailedVoterEvidence.forNode(metricsCollector,
+                                                                                                      membershipFsmRef::get),
+                                                                          clusterNode::reconfigure);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> coreVoterReconciler.reconcile()
+                                                                                               .flatMap(_ -> retireExcludedCores(clusterNode,
+                                                                                                                                 membershipFsmRef::get,
+                                                                                                                                 kvStore,
+                                                                                                                                 nodeReplacements,
+                                                                                                                                 deploymentMap,
+                                                                                                                                 clusterTopologyManager,
+                                                                                                                                 readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                                                                     membershipFsmRef::get)))
+                                                                                               .onFailure(cause -> LOG.warn("Core voter reconciliation: {}",
+                                                                                                                            cause.message())),
+                                                                      TimeSpan.timeSpan(1).seconds()));
         // E2 Phase 2b (2026-05-28): OrphanSelfDrainChecker deleted; NTT (§6) drives departure
         // detection and the §8 unified drain handles surplus dissolution. Membership v2 finale:
         // the leader-pinned `LifecycleReconciler` (and the FSM it wrote through) are gone — the
         // NTT-side `LeaderReconciler` (wired below) is the sole provisioning driver.
         periodicTasks.defer(phaseChangeWatcherArmer(effectivePhaseSupplier, clusterTopologyManager));
+        if (configuredWorker(config)) {
+            periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> retryGenesis(clusterNode::isGenesisPending,
+                                                                                             clusterNode::initializeVoters,
+                                                                                             () -> discoveredCores(membershipFsmRef),
+                                                                                             config.topology()
+                                                                                                   .clusterSize()),
+                                                                          GENESIS_RETRY_INTERVAL));
+        }
+
         var controller = DecisionTreeController.decisionTreeController(config.controllerConfig());
-        var blueprintService = BlueprintService.blueprintService(clusterNode,
-                                                                 kvStore,
-                                                                 repository,
-                                                                 artifactStore,
-                                                                 resourceProviderSetup.nodeComposite());
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         var deploymentManager = DeploymentManager.deploymentManager(clusterNode, kvStore);
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
+
+        alertManager.bindAlertConfig(resolveAlertConfig(config));
         var dynamicConfigManager = resourceProviderSetup.dynamicProvider()
                                                         .map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode,
                                                                                                              kvStore,
@@ -2364,7 +3707,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                   .millis());
         var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(gcMetricsCollector,
                                                                                               eventLoopMetricsCollector,
-                                                                                              networkMetricsHandler,
                                                                                               rabiaMetricsCollector,
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);
@@ -2415,7 +3757,134 @@ public interface AetherNode extends ManageableNode {
                                                                             clusterEventsHlcClock,
                                                                             clusterTopologyManager.observer()::clusterSize,
                                                                             kvStore::isReplaying,
-                                                                            clusterEventsLeaderCheck);
+                                                                            clusterEventsLeaderCheck,
+                                                                            () -> clusterEventsControllerRef.get() != null
+                                                                            // #957: ownership is RESOLVABLE once the controller ref is
+                                                                            // bound. Until then `clusterEventsOwnerCheck` returns false
+                                                                            // via its `.or(false)` fallback on EVERY node, so nobody
+                                                                            // publishes and the event is lost rather than merely
+                                                                            // suppressed. This supplier is what lets the aggregator tell
+                                                                            // that hole apart from ordinary non-ownership.
+                                                                           );
+        // #1574 / #1617: ONE operator-warning sink per node, bound to THIS node's aggregator (never another
+        // Ember node's). It hands each warning off to a bounded queue, so a raise from SWIM, replication or the
+        // core-absence fence never waits on the event log. Idle throttle keys are evicted once per minute.
+        var operatorWarningSink = OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);
+        // #2062: an instance whose termination the CTM cannot confirm after its bounded retries is an operator event.
+        clusterTopologyManager.setOperatorWarningSink(operatorWarningSink);
+        // #1109: the leader's committed-target gate reports a LOAD it has refused past the bound to THIS node's event log.
+        clusterDeploymentManager.setOperatorWarningSink(operatorWarningSink);
+        // #2062: the marks of retired nodes whose termination is unconfirmed live in the replicated store, so a new leader inherits them.
+        clusterTopologyManager.setUnconfirmedMarks(() -> {
+            var marks = new HashMap<NodeId, AetherValue.UnconfirmedTerminationValue>();
+
+            kvStore.forEach(AetherKey.UnconfirmedTerminationKey.class,
+                            AetherValue.UnconfirmedTerminationValue.class,
+                            (key, mark) -> marks.put(key.nodeId(), mark));
+
+            return Map.copyOf(marks);
+        });
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,
+                                                                      OPERATOR_WARNING_EVICTION_INTERVAL,
+                                                                      OPERATOR_WARNING_EVICTION_INTERVAL));
+        // #1564 / #1617 (R10): deploy warnings are raised through this node's operator-warning sink.
+        var blueprintService = BlueprintService.blueprintService(clusterNode,
+                                                                 kvStore,
+                                                                 repository,
+                                                                 artifactStore,
+                                                                 resourceProviderSetup.nodeComposite(),
+                                                                 operatorWarningSink,
+                                                                 config.appHttp()
+                                                                       .apiVersioningDetection()
+                                                                       .isHeaderMode());
+        // #1640: a cluster event whose publish did not land (the partition's owner died with it) waits in the
+        // aggregator and is re-sent once a second until it lands or its horizon passes.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,
+                                                                      CLUSTER_EVENT_REDELIVERY_INTERVAL,
+                                                                      CLUSTER_EVENT_REDELIVERY_INTERVAL));
+        var placementReconciler = org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler.communityPlacementReconciler(config.self(),
+                                                                                                                                     kvStore,
+                                                                                                                                     clusterCommandApplier,
+                                                                                                                                     isLeaderSupplier,
+                                                                                                                                     node -> stableCdmReadyNodesSupplier.get()
+                                                                                                                                                                        .contains(node) && !stableCdmDrainingNodesSupplier.get()
+                                                                                                                                                                                                                          .contains(node),
+                                                                                                                                     () -> Option.option(membershipFsmRef.get())
+                                                                                                                                                 .map(MembershipFsm::countedMembers)
+                                                                                                                                                 .or(Set.of()),
+                                                                                                                                     () -> config.autoHeal()
+                                                                                                                                                 .maxNodes()
+                                                                                                                                                 .or(Integer.MAX_VALUE),
+                                                                                                                                     new org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler.Actuator() {
+            @Override
+            public Result<String> sourceBinding(SourceName source) {
+                                                                                                                                         return lifecycleManager.sourceBinding(source);
+                                                                                                                                     }
+
+            @Override
+            public Promise<Unit> create(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                         return clusterTopologyManager.provisionPlacementNode(operation);
+                                                                                                                                     }
+
+            @Override
+            public Promise<Boolean> retirementSafe(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                         return Promise.success(operation.previousNode()
+                                                                                                                                                                         .map(node -> deploymentMap.byNode(node)
+                                                                                                                                                                                                   .isEmpty())
+                                                                                                                                                                         .or(true));
+                                                                                                                                     }
+
+            @Override
+            public Promise<Unit> drain(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                         operation.previousNode()
+                                                                                                                                                  .onPresent(node -> clusterNode.network()
+                                                                                                                                                                                .send(node,
+                                                                                                                                                                                      new CommunityPlacementMessage.DrainRequested(config.self(),
+                                                                                                                                                                                                                                   operation.operationId())));
+
+                                                                                                                                         return Promise.unitPromise();
+                                                                                                                                     }
+
+            @Override
+            public Promise<Unit> terminate(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                         return operation.previousNode()
+                                                                                                                                                         .fold(Promise::unitPromise,
+                                                                                                                                                               node -> lifecycleManager.terminateNode(node,
+                                                                                                                                                                                                      SourceName.sourceNameOrDefault(operation.previousSource())));
+                                                                                                                                     }
+
+            @Override
+            public Promise<Boolean> previousInstanceExists(AetherValue.CommunityPlacementOperationValue operation) {
+                                                                                                                                         return operation.previousNode()
+                                                                                                                                                         .fold(() -> Promise.success(false),
+                                                                                                                                                               node -> lifecycleManager.instancesForNode(node,
+                                                                                                                                                                                                         SourceName.sourceNameOrDefault(operation.previousSource()))
+                                                                                                                                                                                       .map(instances -> !instances.isEmpty()));
+                                                                                                                                     }
+        },
+                                                                                                                                     operation -> eventAggregator.emitAsLeader(new ClusterEvent.NodeLifecycleChanged(hlcClock.now(),
+                                                                                                                                                                                                                     ClusterEvent.Severity.WARNING,
+                                                                                                                                                                                                                     "Community placement requires operator attention: " + operation.detail(),
+                                                                                                                                                                                                                     Map.of("community",
+                                                                                                                                                                                                                            operation.communityId(),
+                                                                                                                                                                                                                            "operation",
+                                                                                                                                                                                                                            operation.operationId(),
+                                                                                                                                                                                                                            "phase",
+                                                                                                                                                                                                                            operation.phase()
+                                                                                                                                                                                                                                     .name(),
+                                                                                                                                                                                                                            "targetNode",
+                                                                                                                                                                                                                            operation.targetNode()
+                                                                                                                                                                                                                                     .id()))),
+                                                                                                                                     (node, cause) -> eventAggregator.emitAsLeader(new ClusterEvent.NodeLifecycleChanged(hlcClock.now(),
+                                                                                                                                                                                                                         ClusterEvent.Severity.WARNING,
+                                                                                                                                                                                                                         "Worker capacity reduction requires operator attention: " + cause.message(),
+                                                                                                                                                                                                                         Map.of("node",
+                                                                                                                                                                                                                                node.id(),
+                                                                                                                                                                                                                                "operation",
+                                                                                                                                                                                                                                "implicit-worker-retirement"))),
+                                                                                                                                     TimeSpan.timeSpan(45).seconds());
+
+        clusterTopologyManager.installCommunityPlacement(placementReconciler);
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only
@@ -2447,8 +3916,18 @@ public interface AetherNode extends ManageableNode {
         // injected items on cross-node reads. AlertManager emits AlertInjected; InvocationTraceStore
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
         // ClusterEvent dependency.
+        eventAggregator.bindSelfCommandedDrain(drainProcedure::isCommandedDrain);
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
+        // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
+        // process by any path. Construct it here, next to the other AlertManager bindings.
+        //
+        // The argument is load-bearing and the wrong one is SILENT: AlertConfig.alertConfig()
+        // compiles and yields a forwarder built from the DEFAULT config, whose webhooks are
+        // DISABLED with no URLs -- an operator who configured a webhook would still get nothing,
+        // with no error anywhere. resolveAlertConfig(config) carries the operator's own section.
+        // The rc4 merge produced NO conflict marker here; both sides compiled.
+        alertManager.withAlertForwarder(resolveAlertConfig(config));
         traceStore.bindTraceEventSink((operation, requestId, depth, durationMs, metadata) -> eventAggregator.emit(new ClusterEvent.TraceInjected(clusterEventsHlcClock.now(),
                                                                                                                                                  ClusterEvent.Severity.INFO,
                                                                                                                                                  "Injected trace: " + operation,
@@ -2470,22 +3949,42 @@ public interface AetherNode extends ManageableNode {
                                                   config.controllerConfig().scalingConfig().evaluationInterval(),
                                                   config.controllerConfig(),
                                                   delegateRouter::route);
+
+        metricsScheduler.setSourceMetricsSupplier(() -> List.copyOf(controlLoop.communitySnapshots().values()));
         var workerMetricsAggregator = WorkerMetricsAggregator.workerMetricsAggregator(config.self(),
                                                                                       () -> config.self()
                                                                                                   .id(),
                                                                                       invocationMetrics,
-                                                                                      snapshot -> delegateRouter.route(new NetworkServiceMessage.Broadcast(snapshot)),
+                                                                                      snapshot -> publishSourceMetrics(clusterNode,
+                                                                                                                       membershipFsmRef::get,
+                                                                                                                       controlLoop,
+                                                                                                                       snapshot),
                                                                                       config.controllerConfig()
                                                                                             .scalingConfig()
                                                                                             .evaluationInterval()
                                                                                             .millis());
-        var rollbackManager = config.rollback().enabled()
-                              ? RollbackManager.rollbackManager(config.self(),
-                                                                config.rollback(),
-                                                                clusterNode,
-                                                                kvStore,
-                                                                clusterNode.leaderManager())
-                              : RollbackManager.disabled();
+        // #1573: rollback policy is cluster-wide — the committed cluster TOML's [rollback] section, read at every
+        // decision, so committing `enabled = false` turns automatic rollback off without a restart.
+        var rollbackManager = RollbackManager.rollbackManager(config.self(),
+                                                              () -> committedRollbackPolicy(clusterConfigReader),
+                                                              clusterNode,
+                                                              kvStore,
+                                                              clusterNode.leaderManager(),
+                                                              delegateRouter::route);
+        // #1573: the one producer of AllInstancesFailed. Every node ships its slice execution outcomes on the
+        // cluster-sync pong; the leader alone judges "every ACTIVE instance of this version is broken" and
+        // routes the event to rollback, the cluster event and the alert. The tick forgets its state on a
+        // non-leader, so a new leader starts from fresh windows.
+        var allInstancesFailedDetector = AllInstancesFailedDetector.allInstancesFailedDetector(metricsCollector::allObservations,
+                                                                                               () -> activeInstancesByArtifact(deploymentMap,
+                                                                                                                               Option.option(membershipFsmRef.get())),
+                                                                                               isLeaderSupplier,
+                                                                                               delegateRouter::route,
+                                                                                               System::currentTimeMillis);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(allInstancesFailedDetector::tick,
+                                                                      config.timeouts().cluster().pingInterval(),
+                                                                      config.timeouts().cluster().pingInterval()));
         var abTestManager = AbTestManager.abTestManager(clusterNode, kvStore, invocationMetrics);
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
                                                      clusterNode.network(),
@@ -2501,21 +4000,30 @@ public interface AetherNode extends ManageableNode {
         var scheduledTaskManager = ScheduledTaskManager.scheduledTaskManager(scheduledTaskRegistry,
                                                                              sliceInvoker,
                                                                              config.self(),
-                                                                             command -> clusterNode.apply(List.of(command)),
-                                                                             clusterNode.leaderManager());
-
+                                                                             command -> switchableCluster.apply(List.of(command)),
+                                                                             scheduledTaskStateRegistry::stateFor,
+                                                                             clusterNode.leaderManager(),
+                                                                             ScheduledTaskManager.DEFAULT_COMPLETION_BOUND,
+                                                                             ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),
+                                                                                                                           delegateRouter::route));
+        // #273 item 1: resolve the drain hook now the manager exists. `DrainProcedure.initiate` runs this
+        // once at the INACTIVE->DRAINING CAS, for every trigger (QUORUM_LOSS, CORE_ABSENCE, COMMANDED).
+        scheduledTaskDrainHookRef.set(scheduledTaskManager::onDrainInitiated);
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> registerRuntimeExtensions(spi,
                                                                          topicSubscriptionRegistry,
                                                                          sliceInvoker,
+                                                                         baseDhtClient,
                                                                          cacheDhtClient,
-                                                                         StorageFactory.defaultContentStorage(dhtClientOption)));
+                                                                         contentStorage,
+                                                                         kvStore,
+                                                                         operatorWarningSink));
         var selfAddress = findSelfAddress(config);
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManagerFromSnapshot(config.self(),
                                                                                             selfAddress,
                                                                                             delegateRouter,
                                                                                             sliceStore,
-                                                                                            clusterNode,
+                                                                                            switchableCluster,
                                                                                             kvStore,
                                                                                             invocationHandler,
                                                                                             config.sliceAction(),
@@ -2529,6 +4037,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   .deployment()
                                                                                                   .transitionRetryDelay(),
                                                                                             currentGenerationEpochSupplier);
+        // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
+        nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         var serverBossGroup = clusterNode.network().server().map(Server::bossGroup);
         var serverWorkerGroup = clusterNode.network().server().map(Server::workerGroup);
         // #231 Step 3: every control-plane TaskGroup is leader-pinned, so the owner of any group is
@@ -2543,9 +4053,19 @@ public interface AetherNode extends ManageableNode {
         // MEMBER + SUSPECT) rather than NTT.keepOnlyAccessible. The FSM is constructed later (membership
         // v2 wiring below), so the filter derefs the shared membershipFsmRef at request time; before the
         // FSM exists it degrades to identity (forward falls back to the connectedPeers-only behavior).
+        var workerEndpointDirectory = org.pragmatica.aether.node.health.WorkerEndpointDirectory.workerEndpointDirectory();
         AccessibilityFilter accessibilityFilter = candidates -> Option.option(membershipFsmRef.get())
-                                                                      .map(fsm -> fsm.reachableMembers(candidates))
+                                                                      .map(fsm -> configuredWorker(config)
+                                                                                  ? workerEndpointDirectory.accessible(candidates,
+                                                                                                                       fsm,
+                                                                                                                       clusterNode.network()
+                                                                                                                                  .connectedPeers())
+                                                                                  : fsm.reachableMembers(candidates))
                                                                       .or(candidates);
+        // #275: the same narrowing for slice-to-slice invocation — a co-confirmed-DEAD node's endpoints
+        // stay registered until the CDM's removal cleanup lands, and without this a new invocation
+        // was round-robined onto it and hung for the invoker timeout.
+        sliceInvoker.setAccessibilityFilter(accessibilityFilter);
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         config.timeouts().forwarding(),
                                                         config.self(),
@@ -2562,6 +4082,11 @@ public interface AetherNode extends ManageableNode {
                                                         Option.empty(),
                                                         Option.some(taskGroupOwnerResolver),
                                                         accessibilityFilter);
+
+        appHttpServer.setOperatorWarningSink(operatorWarningSink);
+        appHttpServer.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
+                                                                                                    () -> workerProjectionFreshRef.get()
+                                                                                                                                  .getAsBoolean()));
         // #231 Step 1: ClusterSyncScheduler (metricsScheduler) is quorum-driven via its
         // onQuorumStateChange route below; task-assignment registration was redundant AND harmful
         // (deactivate() drove the FSM to Dormant on METRICS-group reassignment even while quorum
@@ -2570,7 +4095,29 @@ public interface AetherNode extends ManageableNode {
         // #231 Step 2: the remaining control-plane components (CDM, LoadBalancer, ControlLoop,
         // TTMManager, RollbackManager, AbTestManager, DeploymentManager, StorageAdapter, StreamingCoordinator)
         // are leader-pinned via their toggle*OnLeaderChange routes in collectRouteEntries / allEntries below.
-        var delegatedStorageAdapter = DelegatedStorageAdapter.noOp();
+        // #250: real demotion + GC, fanned out across every storage setup this node holds via
+        // StorageFactory.composite* -- `artifacts`, `content` and `streams` (`storageSetups`, built
+        // above). #783: `content` used to be built by a separate keyring-less
+        // `defaultContentStorage` call entirely outside `storageSetups`, so it never reached
+        // compositeDemotionManager/compositeGarbageCollector and got no demotion or GC from this
+        // driver; it is now synthesized through the same `createAll` path as `artifacts` (see the
+        // `contentStorage` invariant comment above) and is covered like every other entry. Leader-
+        // pinned activation below (toggleStorageOnLeaderChange) is unchanged — only the no-op
+        // stand-in is replaced. Both
+        // DefaultDemotionManager and DefaultStorageGarbageCollector self-gate on their internal
+        // `active` flag, so the periodic driver below can call demote()/collectGarbage()
+        // unconditionally on every node (leader or not) and it safely no-ops until this node's
+        // adapter is activated.
+        var compositeDemotionManager = StorageFactory.compositeDemotionManager(storageSetups);
+        var compositeGarbageCollector = StorageFactory.compositeGarbageCollector(storageSetups);
+        var delegatedStorageAdapter = DelegatedStorageAdapter.delegatedStorageAdapter(compositeDemotionManager,
+                                                                                      compositeGarbageCollector);
+        var storageMaintenanceDriver = StorageMaintenanceDriver.storageMaintenanceDriver(compositeDemotionManager,
+                                                                                         compositeGarbageCollector);
+
+        LOG.info("Storage maintenance enabled: demotion+GC cadence={}, storage setups={}",
+                 config.timeouts().storageMaintenance().interval(),
+                 storageSetups.keySet());
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode);
         var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
@@ -2619,22 +4166,30 @@ public interface AetherNode extends ManageableNode {
                                                 managementServerRef,
                                                 config.self());
 
+        aetherEntries.add(MessageRouter.Entry.route(CommunityPlacementMessage.DrainCompleted.class,
+                                                    response -> placementReconciler.onDrainCompleted(response.sender(),
+                                                                                                     response.operationId())
+                                                                                   .onSuccess(accepted -> clusterNode.network()
+                                                                                                                     .send(response.sender(),
+                                                                                                                           new CommunityPlacementMessage.DrainAccepted(config.self(),
+                                                                                                                                                                       response.operationId(),
+                                                                                                                                                                       accepted)))));
+        aetherEntries.add(MessageRouter.Entry.route(CommunityPlacementMessage.DrainRequested.class,
+                                                    communityDrain::onRequest));
+        aetherEntries.add(MessageRouter.Entry.route(CommunityPlacementMessage.DrainAccepted.class,
+                                                    communityDrain::onAccepted));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                     request -> dhtNode.handleGetRequest(request,
                                                                                         response -> dhtNetwork.send(request.sender(),
                                                                                                                     response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutRequest.class,
                                                     request -> dhtNode.handlePutRequest(request,
-                                                                                        response -> handleRemotePutResponse(dhtNetwork,
-                                                                                                                            aetherMaps,
-                                                                                                                            request,
-                                                                                                                            response))));
+                                                                                        response -> dhtNetwork.send(request.sender(),
+                                                                                                                    response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveRequest.class,
                                                     request -> dhtNode.handleRemoveRequest(request,
-                                                                                           response -> handleRemoteRemoveResponse(dhtNetwork,
-                                                                                                                                  aetherMaps,
-                                                                                                                                  request,
-                                                                                                                                  response))));
+                                                                                           response -> dhtNetwork.send(request.sender(),
+                                                                                                                       response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsRequest.class,
                                                     request -> dhtNode.handleExistsRequest(request,
                                                                                            response -> dhtNetwork.send(request.sender(),
@@ -2658,11 +4213,23 @@ public interface AetherNode extends ManageableNode {
         // drain can confirm the chunk reached a surviving replica before halting.
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataAck.class, dhtRebalancer::onMigrationDataAck));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
-                                                    dhtTopologyListener::onNodeJoined));
+                                                    event -> {
+                                                        if (!configuredWorker(config)) {
+                                                        dhtTopologyListener.onNodeJoined(event);
+                                                    }
+                                                    }));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,
-                                                    dhtTopologyListener::onNodeRemoved));
+                                                    event -> {
+                                                        if (!configuredWorker(config)) {
+                                                        dhtTopologyListener.onNodeRemoved(event);
+                                                    }
+                                                    }));
         aetherEntries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
-                                                    dhtTopologyListener::onNodeDecommissioned));
+                                                    event -> {
+                                                        if (!configuredWorker(config)) {
+                                                        dhtTopologyListener.onNodeDecommissioned(event);
+                                                    }
+                                                    }));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         aetherEntries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                                     dhtTopologyListener::onSelfShutdown));
@@ -2701,11 +4268,21 @@ public interface AetherNode extends ManageableNode {
         // ValuePut handler only fires long after seeding, so the holder is always populated by
         // read time. A holder (not a reorder) keeps the router-build / replay-burst ordering
         // documented below intact.
-        var swimHealthDetectorHolder = new AtomicReference<CoreSwimHealthDetector>();
+        // (`swimHealthDetectorHolder` is declared earlier, beside the CTM wiring that also reads it.)
         // #642: worker-mode subsystems are created lazily, when a WORKER activation directive arrives —
         // long after assembly — so the announcer cannot be a plain local. The holder is how stop()
         // reaches it to cancel the re-announce tick; empty on a node that never became a worker.
         var governorAnnouncerHolder = new AtomicReference<GovernorAnnouncer>();
+        var communityDirectory = org.pragmatica.aether.worker.health.CommunityMemberDirectory.communityMemberDirectory();
+        var governorAuthorityClient = GovernorAuthorityClient.governorAuthorityClient(() -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                             LeaderValue.class)
+                                                                                                   .map(LeaderValue::leader),
+                                                                                      (target, message) -> clusterNode.network()
+                                                                                                                      .send(target,
+                                                                                                                            message));
+
+        aetherEntries.add(MessageRouter.Entry.route(GovernorAuthorityMessage.Response.class,
+                                                    governorAuthorityClient::onResponse));
         var activationKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                      .onPut(AetherKey.ActivationDirectiveKey.class,
                                                             (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> handleActivationDirective(put,
@@ -2719,20 +4296,66 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                 sliceStore,
                                                                                                                                                                                 sliceInvoker,
                                                                                                                                                                                 swimHealthDetectorHolder::get,
+                                                                                                                                                                                communityDirectory,
                                                                                                                                                                                 governorAnnouncerHolder,
+                                                                                                                                                                                governorAuthorityClient,
+                                                                                                                                                                                () -> runtimeReady(clusterNode) && workerProjectionFreshRef.get()
+                                                                                                                                                                                                                                           .getAsBoolean(),
                                                                                                                                                                                 growthLog))
+                                                     .onPut(AetherKey.CommunityPlacementOperationKey.class,
+                                                            (ValuePut<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> put) -> communityRetirements.put(put.cause()
+                                                                                                                                                                                                  .value()))
+                                                     .onRemove(AetherKey.CommunityPlacementOperationKey.class,
+                                                               (ValueRemove<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> remove) -> communityRetirements.remove(remove.cause()
+                                                                                                                                                                                                                 .key()
+                                                                                                                                                                                                                 .communityId()))
+                                                     .onPut(AetherKey.NodeReplacementKey.class,
+                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> nodeReplacements.put(put.cause()
+                                                                                                                                                                      .key(),
+                                                                                                                                                                   put.cause()
+                                                                                                                                                                      .value()))
+                                                     .onRemove(AetherKey.NodeReplacementKey.class,
+                                                               (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
+                                                                                                                                                                                     .key()))
+                                                     .onPut(AetherKey.UpgradeRunKey.class,
+                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> upgradeRuns.put(put.cause()
+                                                                                                                                                       .value()))
+                                                     .onRemove(AetherKey.UpgradeRunKey.class,
+                                                               (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
+                                                     .onPut(AetherKey.NodePlacementKey.class,
+                                                            (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
+                                                                                                                                                            membershipFsmRef::get,
+                                                                                                                                                            clusterDeploymentManager))
                                                      .onPut(AetherKey.GossipKeyRotationKey.class,
                                                             gossipKeyRotationHandler::onGossipKeyRotationPut)
                                                      .build();
         // Gossip-key delivery (§5.8 AMENDED): the GossipKeyRotationKey subscription above is the
         // SOLE delivery path. A late joiner that synced AFTER the rotation PUT receives the
         // current rotation as a replayed ValuePut on this normal subscription once the engine
-        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. The replay
-        // burst structurally precedes any live apply, so the joiner adopts the cluster key before
-        // it sends its first SWIM datagram. applyRotation is idempotent, so a later live rotation
-        // re-PUT is harmless.
+        // activates (sync → activate → replay) — no ad-hoc replayFromStore needed. applyRotation
+        // is idempotent, so a later live rotation re-PUT is harmless.
+        //
+        // #683 round 2 — WHAT THIS ORDERING DOES **NOT** GUARANTEE. An earlier version of this
+        // comment said the replay burst "structurally precedes any live apply, so the joiner
+        // adopts the cluster key before it sends its first SWIM datagram". The first half is true
+        // of KV notification ordering; the second is false of SWIM datagram ordering, and it was
+        // the safety argument for late joiners. SWIM starts on QUIC transport-ready
+        // (`clusterNode.network().whenReady(startSwimTrigger)`), deliberately BEFORE
+        // startClusterAsync() resolves — so the joiner's first SWIM datagram is sent strictly
+        // EARLIER in boot than the replay, which is reached only via restore → activate → replay
+        // inside the consensus engine.
+        //
+        // The consequence is a cycle, not merely a window: a node booting into a cluster that has
+        // already rotated encrypts SWIM under its cluster_secret-derived key, which the rotated
+        // accept set no longer contains, so peers drop its datagrams and it drops theirs. SWIM
+        // discovers nothing; the QUIC dial set is self-only and SWIM is its sole writer besides
+        // self (TopologyObserverTest.SwimOnlyDialSet); without peers there is no quorum, and
+        // without quorum there is no sync/activate/replay — so the record that would install the
+        // cluster key never arrives. GossipKeyRotationBootDivergenceTest pins both directions of
+        // the key divergence this rests on.
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
 
+        allEntries.addAll(epochSources.incarnation().routeEntries());
         allEntries.addAll(aetherEntries);
         allEntries.addAll(activationKvRouter.asRouteEntries());
         var swimTimeouts = config.timeouts().swim();
@@ -2809,13 +4432,23 @@ public interface AetherNode extends ManageableNode {
                                                                                swimTransportConnected);
 
         swimHealthDetectorHolder.set(swimHealthDetector);
-        // Single `(NodeId, incarnation)` authority: the metrics readiness epoch is sourced from
-        // the SWIM self-incarnation, floored at a captured boot value so it never reports below
-        // boot-millis during the pre-announce window (before `announceJoin` seeds the SWIM counter).
-        // The SAME `bootIncarnation` seeds `announceJoin` below, so SWIM's seed == the metrics floor.
+        // ONE boot-token registry per process, shared by SWIM and the QUIC transport: a process
+        // either layer refuses can never be admitted by the other (terminal removal, #1528).
+        var bootTokens = BootTokens.bootTokens(bootToken);
+
+        swimHealthDetector.setBootTokens(bootTokens);
+        // #1574: SWIM's operator warnings reach THIS node's event log, never another Ember node's.
+        swimHealthDetector.setOperatorWarningSink(operatorWarningSink);
+        clusterNode.network().setBootTokens(bootTokens);
+        clusterNode.network().setOfflineBufferCap(config.timeouts().cluster().offlineBufferCap());
+        bootTokens.onSelfRefused(reason -> exitRefusedIdentity(config.self(), reason, identityRefusedExit));
+        // Process evidence carries the per-process random boot token (equality only); SWIM keeps its
+        // independent refutation counter, seeded from wall-clock time, and also carries the token.
         var bootIncarnation = System.currentTimeMillis();
 
-        metricsCollector.setIncarnationSupplier(() -> Math.max(bootIncarnation, swimHealthDetector.selfIncarnation()));
+        metricsCollector.setIncarnationSupplier(() -> bootToken);
+        metricsCollector.setMembershipIncarnationSupplier(() -> bootToken);
+        workerMetricsAggregator.setIncarnationSupplier(() -> bootToken);
         // RC1 (S01 fix) — wire the SWIM-backed liveness check for owner-broadcast eviction
         // hints. Followers REFUSE to act on the owner's `ClusterSyncPing.evictionHints` for
         // peers SWIM observes as HEALTHY; the owner's hint is a SUGGESTION, not authority.
@@ -2823,13 +4456,14 @@ public interface AetherNode extends ManageableNode {
         // robust against owner partial-network errors. See `ClusterSyncCollector.processEvictionHints`.
         metricsCollector.setPeerLocallyAlive(nodeId -> swimHealthDetector.healthOf(nodeId) == SwimHealth.HEALTHY);
         // Option 1 (S01) — feed cluster-sync missed-pong into SWIM as a transport-unreachable HINT
-        // instead of a destructive disconnect. SWIM drives the SUSPECT → 3s-floored-FAULTY →
-        // DepartedObserved → synchronous-DEAD pipeline (the same path the QUIC `onPeerLeft` listener
-        // feeds) and refutes the hint when pongs resume, so a transient flap no longer false-evicts a
-        // healthy peer. The owner-side SWIM-HEALTHY early-skip in `emitPingTimeoutIfExceeded` still
-        // suppresses the hint for a peer SWIM already trusts (avoids conflicting evidence).
-        metricsCollector.setUnreachableReporter(nodeId -> swimHealthDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
-                                                                                                                                          QuicTransportCause.PING_TIMEOUT)));
+        // instead of a destructive disconnect. The owner-side SWIM-HEALTHY early-skip in
+        // `emitPingTimeoutIfExceeded` still suppresses the hint for a peer SWIM already trusts. The hint
+        // is PEER_UNRESPONSIVE (#1061): it floors and vetoes with the QUIC link CONNECTED, so its count
+        // covers only the current link since the last pong (R-a, reset by the QUIC listener attached
+        // below and by every pong), and a pong from the peer retracts it (R-b). Neither reports life:
+        // only a SWIM probe-ack ends the suspicion.
+        metricsCollector.setUnreachableReporter(pingTimeoutReporter(swimHealthDetector::recordTransportHint));
+        metricsCollector.addPongListener(pongResponsiveReporter(selfId, swimHealthDetector::recordTransportHint));
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> swimHealthDetector.onLeaderChanged(change.leaderId())));
         var announceTopology = config.topology();
@@ -2852,30 +4486,26 @@ public interface AetherNode extends ManageableNode {
                                        : () -> swimHealthDetector.announceJoin(selfNodeInfo,
                                                                                swimConfig.clusterName(),
                                                                                bootIncarnation,
+                                                                               bootToken,
                                                                                swimSeeds);
-        // SWIM start is deferred to transport-ready (invoked from the boot chain after
+        // SWIM start is deferred to transport-ready (invoked from the boot chain alongside
         // `startClusterAsync()`), NOT gated on quorum — see `startSwim` doc. This trigger
-        // closes over the encryptor + announce trigger that are only in scope here.
-        Runnable startSwimTrigger = () -> startSwim(swimHealthDetector,
-                                                    clusterNode.network(),
-                                                    rotatingEncryptor,
-                                                    announceJoinTrigger);
+        // closes over the encryptor + announce trigger that are only in scope here. It fails the
+        // node's start outcome it is handed when SWIM cannot start (#1308).
+        Consumer<Promise<Unit>> startSwimTrigger = startOutcome -> startSwim(swimHealthDetector,
+                                                                             clusterNode.network(),
+                                                                             rotatingEncryptor,
+                                                                             announceJoinTrigger,
+                                                                             jvmExit,
+                                                                             gossipKeyDivergedExit,
+                                                                             startOutcome);
         // ---------------------------------------------------------------------
         // Membership v2 — NTT wiring (spec §6, §7.4). E2 Phase 2a (2026-05-28) made the
         // observation unconditional: NTT + QuorumLossDetector + LeaderReconciler are
         // constructed and listeners registered on every node. The migration-ramp
         // observation-flag and DivergenceLogger are gone.
         var membershipConfig = config.membership().or(MembershipConfig::membershipConfig);
-        IntSupplier configuredCoreCountSupplier = () -> clusterConfigReader.get()
-                                                                           .map(AetherValue.ClusterConfigValue::coreCount)
-                                                                           .or(() -> config.topology()
-                                                                                           .coreNodes()
-                                                                                           .size());
-        var leaderReconcilerRef = new AtomicReference<LeaderReconciler>();
-        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef,
-                                                            membershipFsmRef,
-                                                            leaderReconcilerRef,
-                                                            config.self());
+        Runnable nttReconcileTrigger = () -> onNttReconcile(quorumLossDetectorRef, leaderReconcilerRef);
         Supplier<HealthSnapshot> nttHealthSupplier = () -> swimHealthDetector.currentHealth()
                                                                              .or(() -> HealthSnapshot.healthSnapshot(Map.of()));
         var presenceSampler = PresenceSampler.presenceSampler(membershipConfig,
@@ -2889,12 +4519,17 @@ public interface AetherNode extends ManageableNode {
         // arm-after-first-quorum guard live in QuorumLossDetector (ported from the deleted
         // LocalQuorumWatcher, whose drain firing was dormant). The drain chain is registered
         // below once drainProcedure/leaderReconciler exist.
-        var quorumLossDetector = QuorumLossDetector.quorumLossDetector(membershipConfig, configuredCoreCountSupplier);
+        var quorumLossDetector = QuorumLossDetector.quorumLossDetector(membershipConfig,
+                                                                       () -> installedVoterIds(clusterNode).size(),
+                                                                       () -> derivedMemberCount(Option.option(membershipFsmRef.get()),
+                                                                                                config.self(),
+                                                                                                clusterNode.voterConfiguration()));
 
         quorumLossDetectorRef.set(quorumLossDetector);
         Supplier<Option<ClusterName>> clusterNameSupplier = () -> clusterConfigReader.get()
                                                                                      .map(AetherValue.ClusterConfigValue::clusterName)
-                                                                                     .flatMap(ClusterName::maybeClusterName);
+                                                                                     .flatMap(ClusterName::maybeClusterName)
+                                                                                     .orElse(config::clusterName);
         // Membership v2 Phase 2 LIVE — the per-member MembershipFsm is the authoritative membership-
         // death decision-maker. It is ALWAYS-ON per node (no leader gate): every node drives its own
         // per-member FSMs from its tapped SWIM/liveness edges. Wave 7 (cluster-topology-overhaul):
@@ -2920,6 +4555,329 @@ public interface AetherNode extends ManageableNode {
         // Publish the FSM into the deferred holder so the membership consumers wired earlier (DHT
         // livePeers, accessibility filter, quorum-count propagation) read the authoritative FSM set.
         membershipFsmRef.set(membershipFsm);
+        metricsCollector.setMetricsProducerEligibility(membershipFsm::isTrackedAndNotDead);
+        controlLoop.setMetricsProducerEligibility(membershipFsm::isTrackedAndNotDead);
+        allEntries.add(MessageRouter.Entry.route(CommunityMetricsSnapshot.class,
+                                                 snapshot -> receiveSourceMetrics(clusterNode,
+                                                                                  membershipFsm,
+                                                                                  controlLoop,
+                                                                                  snapshot)));
+        allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metrics.SourceMetricsBatch.class,
+                                                 batch -> receiveSourceMetricsBatch(clusterNode,
+                                                                                    membershipFsm,
+                                                                                    controlLoop,
+                                                                                    batch)));
+        var metadataPeerScope = configuredWorker(config)
+                                ? Option.some(org.pragmatica.aether.node.health.WorkerPeerScope.workerPeerScope(config.self(),
+                                                                                                                () -> workerBootstrapCores(config.self(),
+                                                                                                                                           config.topology()
+                                                                                                                                                 .coreNodes()),
+                                                                                                                membershipFsm,
+                                                                                                                swimHealthDetector))
+                                : Option.<org.pragmatica.aether.node.health.WorkerPeerScope> none();
+        Supplier<Set<NodeId>> routingCoreIds = () -> metadataPeerScope.map(org.pragmatica.aether.node.health.WorkerPeerScope::routingCoreIds)
+                                                                      .or(() -> installedVoterIds(clusterNode));
+        var metadataFailureReporter = org.pragmatica.aether.worker.metadata.WorkerMetadataFailureReporter.workerMetadataFailureReporter(org.pragmatica.lang.utils.TimeSource.system(),
+                                                                                                                                        TimeSpan.timeSpan(30).seconds(),
+                                                                                                                                        rejection -> {
+                                                                                                                                            LOG.warn("Worker metadata rejected for {}: {} ({} additional failures suppressed)",
+                                                                                                                                                     rejection.worker(),
+                                                                                                                                                     rejection.reason(),
+                                                                                                                                                     rejection.suppressed());
+                                                                                                                                            eventAggregator.emitLocal(new ClusterEvent.NodeLifecycleChanged(hlcClock.now(),
+                                                                                                                                                                                                            ClusterEvent.Severity.WARNING,
+                                                                                                                                                                                                            "Worker metadata unavailable",
+                                                                                                                                                                                                            Map.of("reporter",
+                                                                                                                                                                                                                   config.self()
+                                                                                                                                                                                                                         .id(),
+                                                                                                                                                                                                                   "worker",
+                                                                                                                                                                                                                   rejection.worker()
+                                                                                                                                                                                                                            .id(),
+                                                                                                                                                                                                                   "reason",
+                                                                                                                                                                                                                   rejection.reason(),
+                                                                                                                                                                                                                   "suppressed",
+                                                                                                                                                                                                                   Long.toString(rejection.suppressed()))));
+                                                                                                                                        });
+        var workerMetadataChannel = org.pragmatica.aether.worker.metadata.WorkerMetadataChannel.workerMetadataChannel(config.self(),
+                                                                                                                      configuredWorker(config),
+                                                                                                                      kvStore,
+                                                                                                                      nodeCodec,
+                                                                                                                      clusterNode.network()::send,
+                                                                                                                      () -> metadataServingReady(configuredWorker(config),
+                                                                                                                                                 clusterNode),
+                                                                                                                      node -> membershipFsm.isTrackedAndNotDead(node) && membershipFsm.memberDescriptor(node)
+                                                                                                                                                                                      .map(descriptor -> "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
+                                                                                                                                                                                      .or(false),
+                                                                                                                      node -> isCoreMember(membershipFsm,
+                                                                                                                                           node) && clusterNode.network()
+                                                                                                                                                               .connectedPeers()
+                                                                                                                                                               .contains(node),
+                                                                                                                      routingCoreIds,
+                                                                                                                      peers -> metadataDirectory(membershipFsm,
+                                                                                                                                                 peers),
+                                                                                                                      peers -> metadataPeerScope.map(scope -> clusterNode.installPassiveCoreDirectory(peers.stream()
+                                                                                                                                                                                                           .filter(peer -> "core".equalsIgnoreCase(peer.labels()
+                                                                                                                                                                                                                                                       .getOrDefault("role",
+                                                                                                                                                                                                                                                                     "")))
+                                                                                                                                                                                                           .map(NodeInfo::id)
+                                                                                                                                                                                                           .distinct()
+                                                                                                                                                                                                           .sorted()
+                                                                                                                                                                                                           .toList())
+                                                                                                                                                                         .onSuccess(_ -> {
+                                                                                                                                                                                        scope.installDirectory(peers);
+                                                                                                                                                                                        forwardingClusterNode.updateCorePeers(scope.routingCoreIds());
+                                                                                                                                                                                        installWorkerDhtRing(dhtNode,
+                                                                                                                                                                                                             scope.routingCoreIds());
+                                                                                                                                                                                    }))
+                                                                                                                                                .or(Result.success(Unit.unit())),
+                                                                                                                      workerEndpointDirectory::install,
+                                                                                                                      () -> {
+                                                                                                                          clusterNode.authorizePassiveClient();
+                                                                                                                          switchableCluster.switchTo(forwardingClusterNode);
+                                                                                                                          reconcileNodeActivation(() -> runtimeReady(clusterNode),
+                                                                                                                                                  nodeDeploymentManager);
+                                                                                                                      },
+                                                                                                                      message -> metadataFailureReporter.report(config.self(),
+                                                                                                                                                                message),
+                                                                                                                      metadataFailureReporter::report,
+                                                                                                                      org.pragmatica.aether.worker.metadata.WorkerMetadataLimits.DEFAULT,
+                                                                                                                      epochSources.incarnation()::current,
+                                                                                                                      () -> workerDhtReplication(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                                                                                                  AetherValue.ClusterConfigValue.class),
+                                                                                                                                                 kvStore.getTyped(AetherKey.DhtReplicationChangeKey.dhtReplicationChangeKey(),
+                                                                                                                                                                  AetherValue.DhtReplicationChangeValue.class)),
+                                                                                                                      replication -> applyWorkerDhtReplication(replication,
+                                                                                                                                                               dhtNode,
+                                                                                                                                                               config.artifactRepo(),
+                                                                                                                                                               config.cache(),
+                                                                                                                                                               cacheDhtConfig,
+                                                                                                                                                               dhtSettlement)
+                                                                                                                      // #1777 track 1 (CTO ruling B): a worker never
+                                                                                                                      // restores consensus state and is never served the
+                                                                                                                      // cluster TOML, so the core derives the DHT
+                                                                                                                      // replication into every projection, and the worker
+                                                                                                                      // applies it on every install — live changes included
+                                                                                                                     );
+
+        workerProjectionFreshRef.set(workerMetadataChannel::hasFreshProjection);
+        allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ManifestRequest.class,
+                                                 workerMetadataChannel::onManifestRequest));
+        allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.Manifest.class,
+                                                 workerMetadataChannel::onManifest));
+        allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.ChunkRequest.class,
+                                                 workerMetadataChannel::onChunkRequest));
+        allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.Chunk.class,
+                                                 workerMetadataChannel::onChunk));
+        allEntries.add(MessageRouter.Entry.route(ValuePut.class, workerMetadataChannel::onValuePut));
+        allEntries.add(MessageRouter.Entry.route(ValueRemove.class, workerMetadataChannel::onValueRemove));
+        clusterNode.onStateRestored(workerMetadataChannel::onStateRestored);
+        // #1777 R1b: the same tick retries this node's DHT replication report until it is filed (a no-op once it is)
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> {
+                                                                          workerMetadataChannel.tick();
+                                                                          dhtSettlement.report();
+                                                                          dhtWriterStaleWatch.tick();
+                                                                      },
+                                                                      TimeSpan.timeSpan(100).millis()));
+        communityDirectory.restore(kvStore.snapshot());
+        // #1717: one-plane worker eviction only where an evidence source exists to veto it (a core)
+        membershipFsm.setOnePlaneWorkerEviction(!configuredWorker(config));
+        membershipFsm.setJoinGraceReapEligibility(node -> configuredWorker(config) || (communityDirectory.assignment(node)
+                                                                                                         .isEmpty() && !workerAdmissionAllowed(node,
+                                                                                                                                               membershipFsm,
+                                                                                                                                               kvStore,
+                                                                                                                                               config)));
+        // The candidate index replaces a per-edge KV scan (#1840), so a committed directive change must refresh
+        // the nomination view itself: SWIM edges alone would leave it stale until the next edge.
+        Runnable refreshCommunityMembership = () -> Option.option(governorAnnouncerHolder.get()).onPresent(announcer -> announceCommunityMembership(announcer,
+                                                                                                                                                    swimHealthDetector,
+                                                                                                                                                    communityDirectory,
+                                                                                                                                                    announcer.communityId()));
+        var communityDirectoryRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                           .onPut(AetherKey.ActivationDirectiveKey.class,
+                                                                  (ValuePut<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> put) -> {
+                                                                      communityDirectory.put(put.cause().key().nodeId(),
+                                                                                             put.cause().value());
+                                                                      refreshCommunityMembership.run();
+                                                                  })
+                                                           .onRemove(AetherKey.ActivationDirectiveKey.class,
+                                                                     (ValueRemove<AetherKey.ActivationDirectiveKey, AetherValue.ActivationDirectiveValue> remove) -> {
+                                                                         communityDirectory.remove(remove.cause()
+                                                                                                         .key()
+                                                                                                         .nodeId());
+                                                                         refreshCommunityMembership.run();
+                                                                     })
+                                                           .build();
+
+        allEntries.addAll(communityDirectoryRouter.asRouteEntries());
+        clusterNode.onStateRestored(() -> {
+            communityDirectory.restore(kvStore.snapshot());
+            refreshCommunityMembership.run();
+        });
+        Function<String, Option<AetherValue.GovernorAnnouncementValue>> governorLookup = community -> kvStore.getTyped(AetherKey.GovernorAnnouncementKey.forCommunity(community),
+                                                                                                                       AetherValue.GovernorAnnouncementValue.class);
+        var communityHealth = org.pragmatica.aether.worker.health.CommunityHealthIndex.communityHealthIndex(config.self(),
+                                                                                                            governorLookup,
+                                                                                                            communityDirectory::assignment,
+                                                                                                            System::nanoTime,
+                                                                                                            config.timeouts()
+                                                                                                                  .cluster()
+                                                                                                                  .communityAbsence(),
+                                                                                                            10_000);
+        var candidateHealth = org.pragmatica.aether.worker.health.GovernorCandidateHealth.governorCandidateHealth(communityDirectory::assignment,
+                                                                                                                  System::nanoTime,
+                                                                                                                  config.timeouts()
+                                                                                                                        .cluster()
+                                                                                                                        .communityAbsence(),
+                                                                                                                  128);
+        var workerAdmission = org.pragmatica.aether.worker.health.WorkerAdmission.workerAdmission(peer -> clusterNode.leaderManager()
+                                                                                                                     .isLeader()
+                                                                                                          && clusterNode.isActive()
+                                                                                                          && communityDirectory.assignment(peer)
+                                                                                                                               .isEmpty()
+                                                                                                          && workerAdmissionAllowed(peer,
+                                                                                                                                    membershipFsm,
+                                                                                                                                    kvStore,
+                                                                                                                                    config),
+                                                                                                  peer -> sendObservationProbe(clusterNode,
+                                                                                                                               peer),
+                                                                                                  (peer, incarnation) -> membershipFsm.memberDescriptor(peer)
+                                                                                                                                      .onPresent(descriptor -> {
+                                                                                                                                                     membershipFsm.onWorkerAdmissionHealthy(peer,
+                                                                                                                                                                                            incarnation,
+                                                                                                                                                                                            descriptor);
+                                                                                                                                                     if (membershipFsm.countedMembers()
+                                                                                                                                                                      .contains(peer)) {
+                                                                                                                                                     clusterDeploymentManager.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(peer,
+                                                                                                                                                                                                                                 descriptor.role(),
+                                                                                                                                                                                                                                 hlcClock.now()));
+                                                                                                                                                 }
+                                                                                                                                                 }),
+                                                                                                  System::nanoTime,
+                                                                                                  config.timeouts()
+                                                                                                        .cluster()
+                                                                                                        .communityAbsence(),
+                                                                                                  128);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> workerAdmission.poll(membershipFsm.memberStates()
+                                                                                                              .keySet()
+                                                                                                              .stream()
+                                                                                                              .sorted()
+                                                                                                              .toList()),
+                                                                      config.timeouts().cluster().pingInterval()));
+        var communityHealthReporter = org.pragmatica.aether.worker.health.CommunityHealthReporter.communityHealthReporter(config.self(),
+                                                                                                                          governorLookup,
+                                                                                                                          communityDirectory::assignment,
+                                                                                                                          peer -> routingCoreIds.get()
+                                                                                                                                                .contains(peer),
+                                                                                                                          System::nanoTime,
+                                                                                                                          config.timeouts()
+                                                                                                                                .cluster()
+                                                                                                                                .communityAbsence());
+
+        metricsCollector.addPongListener(pong -> {
+            workerAdmission.recordPong(pong.sender(), pong.lifecycleState(), pong.incarnation(), pong.observation());
+            candidateHealth.recordPong(pong.sender(), pong.lifecycleState(), pong.observation());
+            communityHealthReporter.recordPong(pong.sender(),
+                                               pong.lifecycleState(),
+                                               pong.incarnation(),
+                                               pong.observation());
+        });
+        var governorAuthority = GovernorAuthority.governorAuthority(config.self(),
+                                                                    clusterNode,
+                                                                    kvStore,
+                                                                    () -> clusterNode.leaderManager()
+                                                                                     .isLeader() && clusterNode.isActive(),
+                                                                    communityDirectory::members,
+                                                                    peer -> candidateHealth.isEligible(peer) || communityHealth.isReady(peer),
+                                                                    leaderEpochSupplier,
+                                                                    hlcClock);
+
+        allEntries.add(MessageRouter.Entry.route(GovernorAuthorityMessage.Request.class,
+                                                 request -> {
+                                                     if (clusterNode.leaderManager()
+                                                                    .isLeader() && candidateHealth.request(request.sender(),
+                                                                                                           request.communityId())) {
+                                                     sendObservationProbe(clusterNode, request.sender());
+                                                 }
+
+                                                     governorAuthority.handle(request)
+                                                                      .onSuccess(response -> clusterNode.network()
+                                                                                                        .send(request.sender(),
+                                                                                                              response))
+                                                                      .onFailure(cause -> {
+                                                                                     LOG.debug("Governor authority request refused: {}",
+                                                                                               cause.message());
+                                                                                     clusterNode.network()
+                                                                                                .send(request.sender(),
+                                                                                                      new GovernorAuthorityMessage.Response(config.self(),
+                                                                                                                                            request.communityId(),
+                                                                                                                                            request.requestId(),
+                                                                                                                                            Option.none()));
+                                                                                 });
+                                                 }));
+        swimHealthDetector.addObservationListener(observation -> Option.option(governorAnnouncerHolder.get()).onPresent(announcer -> announceCommunityMembership(announcer,
+                                                                                                                                                                 swimHealthDetector,
+                                                                                                                                                                 communityDirectory,
+                                                                                                                                                                 announcer.communityId())));
+        var communityHealthRuntime = new org.pragmatica.aether.worker.health.CommunityHealthRuntime(config.self(),
+                                                                                                    communityDirectory,
+                                                                                                    communityHealth,
+                                                                                                    communityHealthReporter,
+                                                                                                    governorLookup,
+                                                                                                    () -> installedVoterIds(clusterNode).contains(config.self()),
+                                                                                                    () -> nodeReportedStateHolder.current()
+                                                                                                                                 .name(),
+                                                                                                    () -> bootToken,
+                                                                                                    (peer, message) -> clusterNode.network()
+                                                                                                                                  .send(peer,
+                                                                                                                                        message),
+                                                                                                    evidence -> recordGovernorEvidence(membershipFsm,
+                                                                                                                                       kvStore,
+                                                                                                                                       evidence));
+
+        allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.health.CommunityHealthMessage.Request.class,
+                                                 communityHealthRuntime::onRequest));
+        allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.health.CommunityHealthMessage.Report.class,
+                                                 communityHealthRuntime::onReport));
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(communityHealthRuntime::poll,
+                                                                      config.timeouts().cluster().pingInterval(),
+                                                                      config.timeouts().cluster().pingInterval()));
+        metricsCollector.setCommunityReadinessSupplier(() -> communityHealth.readyMembers()
+                                                                            .stream()
+                                                                            .collect(java.util.stream.Collectors.toUnmodifiableMap(node -> node,
+                                                                                                                                   _ -> NodeReportedState.READY)));
+        cdmReadyNodesRef.set(() -> nodesReporting(metricsCollector.reportedStates(),
+                                                  nodeReportedStateHolder,
+                                                  config.self(),
+                                                  NodeReportedState.READY));
+        var governorRecovery = org.pragmatica.aether.worker.health.GovernorRecovery.governorRecovery(communityDirectory,
+                                                                                                     communityHealth,
+                                                                                                     candidateHealth,
+                                                                                                     governorLookup,
+                                                                                                     governorAuthority,
+                                                                                                     () -> clusterNode.leaderManager()
+                                                                                                                      .isLeader() && clusterNode.isActive(),
+                                                                                                     peer -> membershipFsm.memberDescriptor(peer)
+                                                                                                                          .flatMap(MemberDescriptor::address)
+                                                                                                                          .map(address -> address.asString()),
+                                                                                                     peer -> sendObservationProbe(clusterNode,
+                                                                                                                                  peer),
+                                                                                                     System::nanoTime,
+                                                                                                     config.timeouts()
+                                                                                                           .cluster()
+                                                                                                           .communityAbsence(),
+                                                                                                     config.timeouts()
+                                                                                                           .cluster()
+                                                                                                           .pingInterval());
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(governorRecovery::poll,
+                                                                      config.timeouts().cluster().pingInterval()));
+        // End hierarchical health assembly. Missing reports affect placement, never membership death.
+        // #1054: every DRAINING pong the leader records is a drain acknowledgement, latched by the FSM for the
+        // member's drain episode. It is latched as the pong lands because the readiness sweep forgets a halted
+        // drainee within three pings, long before the DEPARTING timeout. An acknowledged drain terminalizes at
+        // expiry; an undelivered DRAIN to a live target is withdrawn to MEMBER instead of reaped.
+        pongSignalFan.onDrainingReported(drainReportListener(membershipFsm, clusterDeploymentManager));
         // Wave-1 Enrichment A (cluster-topology-overhaul spec): per-node TRANSITION JOURNAL —
         // bounded per-layer ring buffer recording EVERY MembershipFsm transition and EVERY
         // PeerState transition, dumpable via GET /api/cluster/journal. Diagnostic-only and
@@ -2929,11 +4887,20 @@ public interface AetherNode extends ManageableNode {
         // is in scope.
         var transitionJournal = TransitionJournal.transitionJournal();
 
-        membershipFsm.onTransition(record -> onFsmTransition(transitionJournal,
-                                                             quorumLossDetectorRef,
-                                                             membershipFsm,
-                                                             record,
-                                                             config.self()));
+        membershipFsm.onTransition(record -> {
+            // #926 round 2: feed the alert manager the transition CAUSE so it can tell an announced
+            // departure (graceful shutdown — i.e. every rolling restart — or an operator drain) from a
+            // crash. The DEAD edge alone cannot: graceful and abrupt departures both arrive there
+            // through the same `Stopped` transition. Folded into the EXISTING listener because
+            // `onTransition` is a single-listener setter — registering a second one would silently
+            // replace the transition journal.
+            alertManager.noteMembershipTransition(record.nodeId(), record.cause());
+            onFsmTransition(transitionJournal, quorumLossDetectorRef, record);
+            reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef, record);
+            // #1720: a floor-refused operator drain target that has now reached DEAD closes its refusal on this edge.
+            // Here and not on the DEAD-edge listener, which a wiring pin keeps to the unconditional callback.
+            closeSliceFloorRefusalOnDeath(managementServerRef, record);
+        });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
         // installed BEFORE the boot seed below so the seeded members' OBSERVED→MEMBER
@@ -2952,6 +4919,7 @@ public interface AetherNode extends ManageableNode {
                                                                                          hlcClock::now,
                                                                                          delegateRouter::route,
                                                                                          delegateRouter::route,
+                                                                                         delegateRouter::route,
                                                                                          topologyObserver::pruneDeparted);
 
         membershipFsm.onMembershipDelta(membershipDeltaProjector::onDelta);
@@ -2966,7 +4934,31 @@ public interface AetherNode extends ManageableNode {
         // boot. Without this the descriptor map is empty until SWIM supplies NodeInfo observations, the
         // desired-connection set would have no address-known members, and formation would stall waiting
         // for the first gossip round. Last-wins: SWIM-resolved addresses overwrite these as they arrive.
-        config.topology().coreNodes().forEach(membershipFsm::onMemberDescriptor);
+        config.topology()
+              .coreNodes()
+              .stream()
+              .map(info -> configuredMember(info,
+                                            config.self(),
+                                            config.workerConfig().isPresent()))
+              .forEach(membershipFsm::onMemberDescriptor);
+        metricsCollector.setPingAuthority(node -> isCoreMember(membershipFsm, node),
+                                          node -> clusterNode.leaderManager()
+                                                             .leader()
+                                                             .map(node::equals)
+                                                             .or(false));
+        metricsScheduler.setMetricsRecipient(node -> isCoreMember(membershipFsm, node));
+        topologyObserver.setConsensusMembership(coreAdmission::isAllowed);
+        var configuredTransferPeers = configuredVoters(config);
+        var transferPeer = transferPeers(configuredTransferPeers, () -> installedVoterIds(clusterNode));
+        var dialingSinceNanos = new AtomicLong();
+
+        topologyObserver.setStateTransferMembership(peer -> !peer.equals(config.self()) && (coreAdmission.isAllowed(peer) || configuredTransferPeers.contains(peer)));
+        clusterNode.network()
+                   .setInboundMessagePolicy((peer, message) -> AetherNetworkInboundPolicy.isAllowed(peer,
+                                                                                                    message,
+                                                                                                    !configuredWorker(config),
+                                                                                                    coreAdmission::isAllowed,
+                                                                                                    topologyObserver::isStateTransferPeer));
         membershipFsm.seed(config.topology().coreNodes().stream().map(NodeInfo::id).collect(Collectors.toSet()));
         // Route NTT's down-hysteresis crossing edge into the FSM (post-construction installer — the FSM
         // exists only now, AFTER presenceSampler). A sustained-absence SUSPECT member is then bounded by the FSM
@@ -2977,7 +4969,7 @@ public interface AetherNode extends ManageableNode {
                                                                  presenceSampler,
                                                                  membershipFsm,
                                                                  configuredCoreCountSupplier,
-                                                                 leaderTerm::get,
+                                                                 leaderTerm::committedTerm,
                                                                  clusterTopologyManager,
                                                                  clusterNameSupplier,
                                                                  TimeSource.system(),
@@ -2991,12 +4983,87 @@ public interface AetherNode extends ManageableNode {
         // not re-dispatch replacements the prior leader already provisioned (the over-provisioning bug).
         metricsScheduler.setDispatchedNodesSupplier(leaderReconciler::inFlightProvisioningKeys);
         leaderReconciler.setRetainedDispatchedSupplier(metricsCollector::retainedDispatchedNodes);
-        // Drain-victim slice-owner exclusion (Approach 3): wire the authoritative KV-Store-backed
-        // active-slice-ownership predicate so the reconciler never drains a node currently serving /
-        // hosting slices as scale-down or over-provision surplus. KV-derived (leader-agnostic,
-        // reconstructible from cluster state) and consulted through a narrow Predicate<NodeId> so
-        // the membership-layer reconciler keeps no hard dependency on the deployment FSM.
+        leaderReconciler.setInstalledVotersSupplier(() -> installedVoterIds(clusterNode));
+        // Drain-victim slice-owner demotion (Approach 3, #1488): wire the authoritative KV-Store-backed
+        // active-slice-ownership predicate so the reconciler drains a node currently serving / hosting
+        // slices only after every eligible non-owner, and the minAvailable guard so it never drains an
+        // owner whose removal would drop a hosted slice below minAvailable. KV-derived (leader-agnostic,
+        // reconstructible from cluster state) and consulted through narrow JDK functional seams so the
+        // membership-layer reconciler keeps no hard dependency on the deployment FSM.
         leaderReconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
+        leaderReconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
+        // #1543: the pairings are capacity on purpose for the two reconcilers that would otherwise read them as excess or deficit.
+        NodeReplacementWiring.connectReconcilers(nodeReplacements,
+                                                 leaderReconciler::setSurgeReplacements,
+                                                 placementReconciler::protectReplacements);
+        // #1543 E (design section 4): a replacement's operator events are derived from the COMMITTED transition on every node and
+        // raised only by the owner of the cluster-events partition. The leader that raises "started" is not the leader that
+        // commits "completed" when the leader is the node being replaced; the owner is the same node for both, which is what
+        // lets the aggregator pair the recovery with the event it closes.
+        nodeReplacements.onTransition(NodeReplacementWiring.announcer(clusterEventsOwnerCheck, operatorWarningSink));
+        // #1543 E: the replacement reconciler (leader-driven, resumes from the committed records) and its service.
+        var replacementWiring = NodeReplacementWiring.wire(new NodeReplacementWiring.Inputs(config.self(),
+                                                                                            isLeaderSupplier,
+                                                                                            kvStore,
+                                                                                            commands -> clusterNode.apply(commands),
+                                                                                            nodeReplacements,
+                                                                                            membershipFsmRef::get,
+                                                                                            clusterNode::voterConfiguration,
+                                                                                            clusterNode::retirementSafeVoters,
+                                                                                            () -> readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                                      membershipFsmRef::get).stream()
+                                                                                                                     .filter(coreAdmission::isAllowed)
+                                                                                                                     .collect(Collectors.toUnmodifiableSet()),
+                                                                                            stableCdmReadyNodesSupplier,
+                                                                                            id -> AdvertisedVersion.of(id,
+                                                                                                                       clusterNode.topologyManager(),
+                                                                                                                       Option.option(membershipFsmRef.get())),
+                                                                                            clusterTopologyManager,
+                                                                                            id -> managementServerRef.get()
+                                                                                                                     .fold(() -> Promise.success(NodeReplacementWiring.DrainOutcome.pending("management server not ready")),
+                                                                                                                           server -> NodeReplacementWiring.drainOutcomeOf(server.admitReplacementDrain(id))),
+                                                                                            id -> managementServerRef.get()
+                                                                                                                     .map(server -> server.replacementDrainUnderWay(id))
+                                                                                                                     .or(false),
+                                                                                            () -> ProvisionContext.coreNodeNamePrefix(clusterNameSupplier.get()),
+                                                                                            id -> dhtNode.ring()
+                                                                                                         .nodes()
+                                                                                                         .contains(id),
+                                                                                            () -> clusterNode.genesisVoters()
+                                                                                                             .map(voters -> Set.copyOf(voters.members()))
+                                                                                                             .or(Set.of()),
+                                                                                            () -> config.autoHeal()
+                                                                                                        .maxNodes()
+                                                                                                        .or(Integer.MAX_VALUE),
+                                                                                            operatorWarningSink,
+                                                                                            System::currentTimeMillis,
+                                                                                            NodeReplacementPlanner.Timings.defaults()));
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> replacementWiring.reconciler()
+                                                                                             .reconcile()
+                                                                                             .onFailure(cause -> LOG.warn("Node replacement reconciliation: {}",
+                                                                                                                          cause.message())),
+                                                                      TimeSpan.timeSpan(1).seconds()));
+        // #1543 F: the rolling-upgrade run rides the replacement service (one replacement at a time, never around it); its events are
+        // raised by the cluster-events owner for the same reason the replacement's are.
+        upgradeRuns.onTransition(UpgradeRunWiring.announcer(clusterEventsOwnerCheck, operatorWarningSink));
+        var upgradeWiring = UpgradeRunWiring.wire(new UpgradeRunWiring.Inputs(config.self(),
+                                                                              isLeaderSupplier,
+                                                                              kvStore,
+                                                                              commands -> clusterNode.apply(commands),
+                                                                              upgradeRuns,
+                                                                              membershipFsmRef::get,
+                                                                              id -> AdvertisedVersion.of(id,
+                                                                                                         clusterNode.topologyManager(),
+                                                                                                         Option.option(membershipFsmRef.get())),
+                                                                              replacementWiring.service(),
+                                                                              System::currentTimeMillis));
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> upgradeWiring.reconciler()
+                                                                                         .reconcile()
+                                                                                         .onFailure(cause -> LOG.warn("Upgrade run reconciliation: {}",
+                                                                                                                      cause.message())),
+                                                                      TimeSpan.timeSpan(1).seconds()));
         swimHealthDetector.addObservationListener(presenceSampler::onSwimObservation);
         // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
         // signals a peer became reachable; if the leader is in surplus the reconcile
@@ -3011,6 +5078,9 @@ public interface AetherNode extends ManageableNode {
         // SUSPECT / FAULTY / DEPARTED / UNKNOWN map to the matching onSwim* ingress; the FSM drives the
         // per-member lifecycle and evicts on the DEAD edge. Leader-gating happens inside the FSM.
         swimHealthDetector.addObservationListener(obs -> routeSwimEdgeToMembershipFsm(obs, membershipFsm));
+        // #1050 (verify-1057-r2 S1): the FAULTY edge is the death evidence that re-arms a departed-node reap the CTM
+        // abandoned while SWIM still reported the node SUSPECTED. Pinned by `SwimFaultyToCtmRoutingTest`.
+        swimHealthDetector.addObservationListener(obs -> routeSwimFaultyToCtm(obs, clusterTopologyManager));
         // P3 (membership unification): quorum-loss is detected by QuorumLossDetector from the
         // unified tracker's stable membership (armed after first quorum; grace =
         // quorumLossDrainThreshold) and drives the §8.2 unified `DrainProcedure` directly.
@@ -3020,6 +5090,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                         .andThen(intent -> nodeReportedStateHolder.onDrainStarted());
 
         quorumLossDetector.setQuorumLossListener(quorumLossChain);
+        wireQuorumCountTriggers(quorumLossDetector, membershipFsm, clusterNode::onVoterConfiguration);
         // Fix C (split-brain self-fence co-confirmation): before the QUORUM_LOSS drain commits, the
         // detector consults this snapshot of the FSM's counted (MEMBER+SUSPECT) set vs raw-SWIM
         // liveness of the members missing from the STRICT (MEMBER-only) count. The strict count is
@@ -3028,7 +5099,9 @@ public interface AetherNode extends ManageableNode {
         // requires counted-still-quorate AND every stuck member SWIM-alive — a genuine partition
         // fails both (unreachable members are NOT SWIM-alive and age out of SUSPECT), so the real
         // self-fence is never masked.
-        quorumLossDetector.setCoConfirmationSupplier(() -> buildQuorumCoConfirmation(membershipFsm, swimHealthDetector));
+        quorumLossDetector.setCoConfirmationSupplier(() -> buildQuorumCoConfirmation(membershipFsm,
+                                                                                     swimHealthDetector::healthOf,
+                                                                                     installedVoterIds(clusterNode)));
         // A6: gate the quorum-loss self-drain with the SAME cold-boot window the SWIM FAULTY-suppression
         // uses. On a simultaneous full-cluster restart SWIM's first probe-acks lag the QUIC attach, so the
         // detector's SWIM-alive count momentarily decays below threshold and healthy nodes would self-fence
@@ -3036,40 +5109,49 @@ public interface AetherNode extends ManageableNode {
         // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
         quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
-        // #590 community tier: the core spokesman pings on `pingInterval`, so the SILENCE of that ping
-        // is this node's core-liveness signal — the only one that does not depend on the node being
-        // able to write to the core, which under isolation it cannot. Observed per node rather than
-        // per governor, mirroring quorumLossDetector: no intra-community coordination, and a
-        // partitioned subset fences exactly itself. The core independently stops placing work here on
-        // the strictly longer `community_absence` window, which is the no-double-active ordering.
+        // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
+        // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
+        // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
+        var nodeReadyAgain = nodeReadyAgain(metricsCollector::reportedStates);
+
+        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), nodeReadyAgain));
+        // The leader never processes its own ping, so it re-derives its mark from its own registry each interval. Only
+        // the LEADER: an operator drain never leaves the registry, so a node that was leader once and is not now would
+        // keep re-marking a node that restarted under the new leader, silencing that node's next real crash (v-2043 N1).
+        var ownDrainRecord = leaderOnlyDrainRecordTick(isLeaderSupplier,
+                                                       drainCommandRegistry::drainTargets,
+                                                       drainSetObserver(alertManager, config.self(), nodeReadyAgain));
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(ownDrainRecord,
+                                                                      config.timeouts().cluster().pingInterval()));
+        // Workers renew core contact from identified core ping OR pong responses. This is
+        // reachability evidence only; all mutations still require committed core authority.
         var coreAbsenceDetector = CoreAbsenceDetector.coreAbsenceDetector(config.timeouts().cluster().coreAbsence(),
                                                                           config.timeouts().cluster().pingInterval());
 
-        coreAbsenceDetector.setCoreAbsenceListener(_ -> drainProcedure.initiate(DrainReason.CORE_ABSENCE));
-        // FAIL-SAFE GATE. The ping is leader-broadcast and leader-only, and a broadcast never reaches
-        // its own sender — so on the CORE tier the signal is structurally absent twice over: the leader
-        // never receives its own pings, and during an election nobody receives any. Ungated this drained
-        // the new leader ten seconds after every election. Core liveness is quorumLossDetector's job;
-        // this fence is the COMMUNITY tier's, so only a node positively known NOT to be core may fire it.
-        // An empty/unresolved core view reads as SUPPRESS — fencing on an unknown view is the dangerous
-        // direction, and the view is empty during boot.
-        coreAbsenceDetector.setFenceSuppressor(() -> {
-            var cores = topologyObserver.coreNodes();
-
-            return cores.isEmpty() || cores.contains(config.self());
-        });
+        coreAbsenceDetector.setCoreAbsenceListener(_ -> initiateDrain(drainProcedure,
+                                                                      nodeReportedStateHolder,
+                                                                      DrainReason.CORE_ABSENCE));
+        coreAbsenceDetector.setFenceSuppressor(() -> !configuredWorker(config));
+        coreAbsenceDetector.setOperatorWarningSink(operatorWarningSink);
         metricsCollector.setCorePingObserver(coreAbsenceDetector::recordCorePing);
         coreAbsenceDetector.start();
-        // #590 core half, same exchange in the other direction: every live node answers the leader's
-        // broadcast ping, so pong silence is the leader's OWN observation that a community member has
-        // gone. It replaces `GovernorAnnouncementValue.memberCount` as the FSM's liveness input —
-        // that field is the community's self-report and FREEZES under partition instead of expiring,
-        // which is why an unreachable community stayed ACTIVE and kept being given work.
-        var communityAbsenceNanos = config.timeouts().cluster().communityAbsence().nanos();
+        // Assigned workers use challenge-bound governor evidence. Report expiry blocks new
+        // placement; it never synthesizes individual member death or provider termination.
+        var communityReachability = org.pragmatica.aether.deployment.cluster.fsm.CommunityReachability.communityReachability(config.timeouts()
+                                                                                                                                   .cluster()
+                                                                                                                                   .communityAbsence(),
+                                                                                                                             metricsCollector::sinceLastPong,
+                                                                                                                             System::nanoTime);
 
-        clusterDeploymentManager.setCommunityLiveness(node -> metricsCollector.sinceLastPongNanos(node)
-                                                                              .map(since -> since >= communityAbsenceNanos)
-                                                                              .or(false));
+        clusterDeploymentManager.setCommunityLiveness(node -> communityDirectory.assignment(node)
+                                                                                .fold(() -> communityReachability.isAbsent(node),
+                                                                                      _ -> !communityHealth.isReachable(node)));
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> beginCommunityObservation(change, communityReachability)));
+        // Core/local membership and fresh governor evidence remain distinct inputs. A stale
+        // worker FSM entry cannot override expiry of the community report.
+        clusterDeploymentManager.setLocalAliveMembersSupplier(() -> communityHealthRuntime.aliveNodes(membershipFsm.dhtRoutableMembers()));
         // QUIC reconnect feeds NTT's soft up-bias (unchanged) AND the FSM's peer-connected tap.
         Consumer<NodeId> nttConnectTap = ((Consumer<NodeId>) presenceSampler::onQuicReconnect).andThen(membershipFsm::onPeerConnected);
         // QUIC disconnect feeds BOTH NTT's soft down-bias (unchanged) AND the liveness half of the
@@ -3185,21 +5267,39 @@ public interface AetherNode extends ManageableNode {
         // this same death edge — behaviour parity, sampler out of the loop. Without it the nudge
         // would wait for the sampler's natural ~nttDepartureTimeout down-hysteresis crossing.
         Consumer<NodeId> dropDeadPeerLink = clusterNetworkRef::departurePermanent;
+        var departureNotifier = NodeDepartureNotifier.nodeDepartureNotifier(eventAggregator,
+                                                                            alertManager,
+                                                                            config.self(),
+                                                                            operatorWarningSink);
 
         membershipFsm.onConfirmedDeparture(departed -> {
-            onMembershipDeath(departed,
-                              dropDeadPeerLink,
-                              quorumLossDetectorRef,
-                              membershipFsmRef,
-                              leaderReconcilerRef,
-                              config.self());
-            // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
-            // death signal that drives auto-heal above — instead of the quorum-gated
-            // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
-            // post-kill re-election window so the event never reached /api/events on cloud. Leader-gated
-            // inside the aggregator (fires on every node's FSM; only the leader publishes).
-            eventAggregator.onConfirmedDeparture(departed);
+            onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, leaderReconcilerRef);
         });
+        // #1777 R1b: the pong cadence the leader already receives is what notices that time passed (the overdue bound)
+        // and that a member's departure is now committed (it is no longer waited for, and its report is dropped); no timer
+        // of its own, and no second consumer on the single-slot DEAD edge above
+        metricsCollector.addPongListener(_ -> dhtSettlement.evaluate());
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 change -> onDhtLeaderChange(change, kvStore, dhtSettlement)));
+        // #210: emit the user-facing NODE_FAILED from this ungated DEAD edge — the SAME confirmed-
+        // death signal that drives auto-heal above — instead of the quorum-gated
+        // MembershipDecision.NodeRemoved, which the MembershipDeltaProjector drops during the
+        // post-kill re-election window so the event never reached /api/events on cloud.
+        // #926: NO LONGER leader-gated inside the aggregator. It was, and a cluster that cannot
+        // elect a leader therefore could not emit the events saying it was broken — measured at
+        // 8 SWIM-confirmed deaths and 0 NodeFailed events over ten days. Now emitted on every
+        // node that confirms the death (see ClusterEventAggregator.onConfirmedDeparture for the
+        // at-least-once-per-observer contract and why a dedup token is the wrong fix).
+        // #926 round 2: both surfaces go through ONE named unit. Written as two statements here,
+        // a probe deleted the alert call and all 1217 tests stayed green — the call site was
+        // deletable with no signal. NodeDepartureNotifier makes the pair testable as a pair.
+        // #1835: the pair rides ONLY the reachable-death edge — the FSM's `everReachable` latch, read at
+        // the DEAD edge. A configured core this node never observed reachable (slow-booting JVM seed,
+        // phantom seed) never joined, so it did not fail: it gets the WARNING-level `node-never-joined`
+        // operator warning instead. `onMembershipDeath` above stays UNCONDITIONAL (auto-heal, link drop,
+        // quorum nudge) — only the user-facing verdict is identity-gated.
+        membershipFsm.onReachableDeath(departureNotifier::onConfirmedDeparture);
+        membershipFsm.onNeverReachableDeath(departureNotifier::onNeverJoined);
         // Join-grace leak fix: a CTM-provisioned replacement that boots but NEVER reaches
         // SWIM-healthy within the M10 join-grace window is reaped OBSERVED→DEAD by the FSM, but
         // nothing terminated its container/JVM — it ran on as a non-member zombie (Docker count
@@ -3210,6 +5310,20 @@ public interface AetherNode extends ManageableNode {
         // via the reconciler's isLeader gate (same idiom as the other leader-only actuations).
         // ADDITIVE — onConfirmedDeparture above still fires for ALL DEAD paths.
         membershipFsm.onJoinGraceReap(leaderReconciler::onJoinGraceReap);
+        // #588: the two rosters the cluster-status routes read admit a peer BEFORE the FSM promotes
+        // it — `topologyObserver` on the SWIM discovery edge, `metricsCollector` on the first ping or
+        // pong carrying it — so a member that dies without ever reaching MEMBER (the join-grace reap
+        // above, or any other OBSERVED→DEAD path) emits no REMOVED delta and stayed in both forever
+        // as an UNKNOWN ghost. Prune on the never-joined death edge exactly as the projector's
+        // REMOVED arm prunes on the joined one — same two calls, both idempotent on an absent node.
+        // This does NOT touch the join-grace window itself: the window exists to protect a booted-
+        // but-not-yet-healthy joiner from being reaped mid-join (`joinGraceReapDeferred` re-arms
+        // while the transport link is live), and shortening or bypassing it would trade this ghost
+        // for killed legitimate joiners. The reap's TIMING is unchanged; only its fan-out grows.
+        membershipFsm.onNeverJoinedDeath(departed -> {
+            topologyObserver.pruneDeparted(departed);
+            metricsCollector.removeNode(departed);
+        });
         // seed-500 part 2: prune the DHT ring at the DEPARTING edge. A scale-down drain reaches the
         // FSM as DrainRequested → DEPARTING ~1s after the leader ping; without this the drained
         // node lingers in the consistent-hash ring until the SWIM-driven NodeRemoved DEAD-edge
@@ -3223,7 +5337,11 @@ public interface AetherNode extends ManageableNode {
         // deliberate-departure transitions (DrainRequested / graceful SwimDeparted /
         // DownHysteresisMet) — the transient PeerDisconnected/LivenessGone flaps stop at SUSPECT
         // and never enter DEPARTING — so this fires once per deliberate drain, never per QUIC flap.
-        membershipFsm.onEnteredDeparting(dhtTopologyListener::onNodeDeparting);
+        membershipFsm.onEnteredDeparting(node -> {
+            if (!configuredWorker(config)) {
+                dhtTopologyListener.onNodeDeparting(node);
+            }
+        });
         // seed-500 part 2 (symmetry): re-add to the DHT ring on the DEPARTING→MEMBER recovery edge.
         // A drainer that refutes its drain via a strictly-newer incarnation (recoverFromDepartingIfNewer)
         // recovers DEPARTING→MEMBER, but because it was already JOINED the FSM suppresses the Wave-4
@@ -3231,8 +5349,48 @@ public interface AetherNode extends ManageableNode {
         // re-adds it → it stays pruned (the onNodeDeparting prune above) → under-replication. Wire the
         // recovery edge to the symmetric ring RE-ADD, idempotent with onNodeJoined (ConsistentHashRing.addNode
         // no-ops a node already present), so a concurrent NodeJoined is harmless.
-        membershipFsm.onDepartingRecovery(dhtTopologyListener::onNodeRecovered);
-        clusterNetworkRef.setDesiredConnections(() -> desiredDialTargets(membershipFsm));
+        membershipFsm.onDepartingRecovery(node -> {
+            if (!configuredWorker(config)) {
+                dhtTopologyListener.onNodeRecovered(node);
+            }
+        });
+        var hierarchyPeerPolicy = org.pragmatica.aether.node.health.HierarchyPeerPolicy.hierarchyPeerPolicy(config.self(),
+                                                                                                            configuredWorker(config));
+        Runnable refreshHierarchy = () -> refreshHierarchyPeerPolicy(hierarchyPeerPolicy,
+                                                                     routingCoreIds,
+                                                                     communityDirectory,
+                                                                     governorLookup,
+                                                                     clusterNode,
+                                                                     membershipFsm,
+                                                                     swimHealthDetector);
+
+        refreshHierarchy.run();
+        metricsScheduler.setPingTargetEligibility(peer -> hierarchyPeerPolicy.shouldPing(peer) || drainCommandRegistry.isDrainRequested(peer) || (!configuredWorker(config) && (workerAdmission.isPending(peer) || candidateHealth.isPending(peer))));
+        metricsScheduler.setPeerMetricsForwarding(hierarchyPeerPolicy::forwardsPeerMetrics);
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> {
+                                                                          refreshHierarchy.run();
+                                                                          metricsScheduler.publishObservationsNow();
+                                                                      },
+                                                                      config.timeouts().cluster().pingInterval()));
+        clusterNetworkRef.setConnectionInitiator((_, peer) -> hierarchyPeerPolicy.initiatesCoreBootstrap(bootstrapInitiator(clusterNode,
+                                                                                                                            config.self(),
+                                                                                                                            configuredTransferPeers,
+                                                                                                                            dialingSinceNanos),
+                                                                                                         transferPeer.test(peer)) || hierarchyPeerPolicy.isConnectionInitiator(peer,
+                                                                                                                                                                               transferPeer.test(peer) || routingCoreIds.get()
+                                                                                                                                                                                                                        .contains(peer) || membershipFsm.memberDescriptor(peer)
+                                                                                                                                                                                                                                                        .map(MemberDescriptor::isCore)
+                                                                                                                                                                                                                                                        .or(false),
+                                                                                                                                                                               membershipFsm.memberDescriptor(peer)
+                                                                                                                                                                                            .map(AetherNode::isWorkerDescriptor)
+                                                                                                                                                                                            .or(false),
+                                                                                                                                                                               workerEndpointDirectory.entries()
+                                                                                                                                                                                                      .get()
+                                                                                                                                                                                                      .containsKey(peer)));
+        clusterNetworkRef.setDesiredConnections(() -> desiredDialTargets(membershipFsm,
+                                                                         workerEndpointDirectory,
+                                                                         peer -> hierarchyPeerPolicy.shouldConnect(peer) || (configuredWorker(config) && routingCoreIds.get()
+                                                                                                                                                                       .contains(peer)) || drainCommandRegistry.isDrainRequested(peer) || (!configuredWorker(config) && (workerAdmission.isPending(peer) || candidateHealth.isPending(peer)))));
         // Wave-1 Enrichment A: PEER-layer transition journal feed — every PeerState phase
         // mutation (plus the §6.1 dialer expected-vs-actual Hello diagnostic) lands in the
         // per-node journal. Diagnostic-only; the listener default is a no-op until wired here.
@@ -3259,20 +5417,20 @@ public interface AetherNode extends ManageableNode {
         // absent from `topologyForSwim`, so the legacy NodeId-only path produced a SWIM
         // `PeerConnected(id, none())` that the FSM's `resolveSwimAddress` could not
         // resolve — leaving the peer permanently UNKNOWN and rejected by the gate.
-        // Wave 2 role-reach (cluster-topology-overhaul): the QUIC transport now supplies the
-        // Hello NodeInfo for ALL peers (known + unknown), so feed it to the membership FSM's
-        // descriptor FIRST — every node a worker dials (workers dial all cores, always
-        // including the leader) learns the worker's self-asserted role/source on the first
-        // handshake, independent of SWIM seed lists or label-less gossip MembershipUpdate.
+        // Wave 2 role-reach (cluster-topology-overhaul): the QUIC transport supplies the
+        // Hello NodeInfo for every peer that is topology-unknown OR presented labels, so feed it to
+        // the membership FSM's descriptor FIRST — every node a worker dials (workers dial all
+        // cores, always including the leader) learns the worker's self-asserted role/source on the
+        // first handshake, independent of SWIM seed lists or the labels carried by gossip.
         // The descriptor upsert is blank-downgrade-guarded, so a label-less Hello never
         // erases a known role. Runs on the router dispatch thread like the SWIM feed below;
         // `onMemberDescriptor` is thread-safe (concurrent map + per-member monitor).
         allEntries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
-                                                 connection -> connection.nodeInfo()
-                                                                         .onPresent(membershipFsm::onMemberDescriptor)
-                                                                         .orElse(() -> topologyForSwim.get(connection.nodeId()))
-                                                                         .onPresent(swimHealthDetector::onNodeConnected)
-                                                                         .onEmpty(() -> swimHealthDetector.onNodeConnected(connection.nodeId()))));
+                                                 connection -> routeConnectionEstablished(connection,
+                                                                                          topologyForSwim::get,
+                                                                                          membershipFsm::onMemberDescriptor,
+                                                                                          swimHealthDetector::onNodeConnected,
+                                                                                          swimHealthDetector::onNodeConnected)));
         Supplier<BootstrapModule.ClusterConfigBaseline> configBaselineSupplier = () -> clusterConfigBaseline(config.topology());
         // Membership-FSM unification (Wave D, consumer #4): the cluster-quiescence gate's health
         // source is the authoritative MembershipFsm (healthHints()). The SwimHintsRegistry tap stays
@@ -3289,9 +5447,9 @@ public interface AetherNode extends ManageableNode {
         // role-blind countedMembers() previously wired here could seed a worker as a DHT core
         // partition member).
         var bootstrapModule = BootstrapModule.bootstrapModule(isLeaderSupplier,
-                                                              rabiaTermSupplier,
+                                                              epochSources.generationEpoch(),
                                                               () -> isLeaderSupplier.getAsBoolean()
-                                                                    ? Option.some(leaderTerm.get())
+                                                                    ? Option.some(leaderTerm.current())
                                                                     : Option.<Long> none(),
                                                               hlcClock,
                                                               membershipFsm::coreCountedMembers,
@@ -3301,17 +5459,19 @@ public interface AetherNode extends ManageableNode {
                                                               clusterNode);
 
         attachQuicConnectivityReporter(clusterNode.network(),
-                                       isLeaderSupplier,
-                                       peerObservationStore,
-                                       leaderEpochSupplier,
-                                       nttConnectTap,
-                                       nttDisconnectTap);
-        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector);
+                                       connectivityWiring(peerObservationStore,
+                                                          epochSources.incarnation(),
+                                                          leaderEpochSupplier,
+                                                          nttConnectTap,
+                                                          nttDisconnectTap));
+        attachQuicPeerStateListener(clusterNode.network(), swimHealthDetector, metricsScheduler::onLinkEstablished);
         attachBroadcastMembershipView(clusterNode.network(), membershipFsm);
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  change -> onLeaderChangeForPublisher(change,
                                                                                       leaderTerm,
                                                                                       bootstrapModule)));
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                 notification -> onLeaderKeyCommit(notification, leaderTerm)));
         // RC1 Step 2: snapshot-then-tail wiring. BootstrapModule consumes the current KV snapshot
         // via its `kvSnapshotSupplier` at the time of `projectFromCommittedAtoms`. The route attached
         // below provides the "tail" — every MembershipDecision variant routed by the
@@ -3322,10 +5482,34 @@ public interface AetherNode extends ManageableNode {
         var healthKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                  .onPut(AetherKey.SpokesmanKey.class,
                                                         _ -> bootstrapModule.retryIfNeeded())
+                                                 // #1533: the ONE restore-commit hook — see onRestoreDecision.
+                                                 .onPut(AetherKey.BackupRestoreKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put) -> onRestoreDecision(put,
+                                                                                                                                                                            bootstrapModule,
+                                                                                                                                                                            deploymentManager,
+                                                                                                                                                                            abTestManager))
                                                  .onPut(AetherKey.ClusterConfigKey.class,
                                                         (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> onClusterConfigPut(put,
                                                                                                                                                                              clusterTopologyManager,
                                                                                                                                                                              leaderReconciler))
+                                                 // #1777 track 1: a committed `[replication]` change re-places the DHT live; R1b: the
+                                                 // leader commits the change record it carries
+                                                 .onPut(AetherKey.ClusterConfigKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put) -> {
+                                                            resolveDhtReplication(Option.some(put.cause().value()),
+                                                                                  dhtNode,
+                                                                                  config,
+                                                                                  cacheDhtConfig,
+                                                                                  dhtSettlement);
+                                                            dhtSettlement.onConfigCommitted(put.cause().value());
+                                                        })
+                                                 // #1777 R1b: every node follows the committed change; the leader advances it on reports
+                                                 .onPut(AetherKey.DhtReplicationChangeKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey.DhtReplicationChangeKey, AetherValue.DhtReplicationChangeValue> put) -> dhtSettlement.onChangeCommitted(put.oldValue(),
+                                                                                                                                                                                                        put.cause()
+                                                                                                                                                                                                           .value()))
+                                                 .onPut(AetherKey.DhtReplicationReportKey.class,
+                                                        _ -> dhtSettlement.evaluate())
                                                  .build();
 
         allEntries.addAll(healthKvRouter.asRouteEntries());
@@ -3333,7 +5517,7 @@ public interface AetherNode extends ManageableNode {
                                                                     clusterNode.network(),
                                                                     config.timeouts().cluster().pingInterval(),
                                                                     rabiaTermSupplier,
-                                                                    metricsCollector::allMetrics,
+                                                                    metricsCollector::allObservations,
                                                                     communityId -> lookupGovernor(kvStore, communityId),
                                                                     SpokesmanPingLoop.SpokesmanStatusWriter.fromCluster(clusterNode));
 
@@ -3356,7 +5540,22 @@ public interface AetherNode extends ManageableNode {
         // registered replica set; the receive/apply side (streamReplicationReceiveHandler, wired below)
         // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
         var streamReplicaRegistry = ReplicaRegistry.replicaRegistry(config.streaming().caughtUpMaxLagOffsets());
-        org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = clusterNode.network()::send;
+        var replicationNetwork = clusterNode.network();
+        org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = new org.pragmatica.aether.stream.replication.ReplicationTransport() {
+            @Contract
+            @Override
+            public void send(NodeId target, org.pragmatica.aether.stream.replication.ReplicationMessage message) {
+                replicationNetwork.send(target, message);
+            }
+
+            @Contract
+            @Override
+            public void send(NodeId target,
+                             org.pragmatica.aether.stream.replication.ReplicationMessage message,
+                             TimeSpan callerWait) {
+                replicationNetwork.send(target, message, callerWait);
+            }
+        };
         // #261: the live-ack path promotes a replica to CAUGHT_UP only when its confirmed offset
         // reaches back to the owner's earliest retained offset. The partition manager is constructed
         // just below (it needs this manager), so the earliest-retained seam reads through a holder set
@@ -3383,22 +5582,50 @@ public interface AetherNode extends ManageableNode {
         var streamCursorStore = CursorStore.cursorStore(streamStorage);
         var streamTieredReader = TieredStreamReader.tieredStreamReader(streamSegmentIndex, streamStorage);
         // #336 epoch-adoption: the committed owner-epoch source is SHARED between the live-append stamp
-        // (StreamPartitionManager, below) and the backfill/recovery seam (streamPartitionRecovery, below), so
+        // (StreamPartitionManager, below) and the backfill/recovery seam (streamAlignedRecovery, below), so
         // a recovered/backfilled event carries the SAME committed fencing token a live append would. Both
         // read the identical committed StreamPartitionOwnershipValue.ownerEpoch the fence high-water derives
         // from — otherwise the recovery seam's Epoch.ZERO (0:0) is rejected by an advanced high-water (1:N).
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
+        // #1730 phase 2 (B11): the owner counts a replica's confirmation only under the committed epoch now in force.
+        streamReplicationManager.ownerEpochs(streamOwnerEpochSource);
+        // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
+        // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
+        // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
+        // the `rebuildFromRefs` above would compute at the next boot — never by the live index, which runs
+        // ahead of disk by every seal since that snapshot (STREAM_SNAPSHOT_* in StorageFactory bound the lag).
+        // #1240: the entity log substrate asks the same sealer which evicted offsets are still in flight.
+        // #1441: a partition WITHOUT a WAL has nothing above that snapshot but the refs, so its seals force a
+        // snapshot before they resolve; boot's rebuilt floor then covers every completed seal on both paths.
+        var streamSegmentSealer = SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
+                                                                                                    streamSegmentIndex,
+                                                                                                    RefDurability.snapshotted(streamStorageSetup.snapshotManager())),
+                                                              streamMaxMemoryBytes);
         var streamPartitionManager = StreamPartitionManager.streamPartitionManager(streamMaxMemoryBytes,
-                                                                                   SegmentSealer.segmentSealer(StorageSegmentSink.storageSegmentSink(streamStorage,
-                                                                                                                                                     streamSegmentIndex)),
+                                                                                   streamSegmentSealer,
                                                                                    streamReplicationManager,
                                                                                    clusterNode,
                                                                                    ownershipEpochHighWater,
                                                                                    streamOwnerEpochSource,
-                                                                                   resolveStreamWalDir(config),
-                                                                                   streamSegmentIndex::lastSealedOffset);
+                                                                                   streamLogs(streamStorage),
+                                                                                   streamSegmentIndex::lastSealedOffset,
+                                                                                   DurableSealedOffsetSource.fromLatestSnapshot(streamStorageSetup.snapshotManager(),
+                                                                                                                                streamSegmentIndex::adoptions));
 
         streamPartitionManagerRef.set(streamPartitionManager);
+        // #1278 review: each stream's durable refs (sealed segments, reclaimed-through floors) and WAL are keyed by its
+        // incarnation; the manager adopts the committed life before a stream materializes, so another life of the
+        // name is never read, and reclaims the other lives' refs best-effort.
+        streamPartitionManager.streamFootprint(StreamFootprint.streamFootprint(streamStorage,
+                                                                               streamStorageSetup.metadataStore(),
+                                                                               streamSegmentIndex));
+        // #1596: provenance failures this node detects (an N13 mismatch at catch-up, a log holding records with no
+        // owner-epoch history) are raised on the durable, backed-up partition flag -- the same flag the promotion
+        // gate and cold-restart detection raise and read.
+        streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
+        streamPartitionManager.operatorWarnings(operatorWarningSink);
+        // #1730 phase 2: a durable cut whose repair is not settled within twelve backfill redrive ticks is reported anyway.
+        streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis() * 12L).millis());
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
         // pool wholesale. Until 2026-08-16 this bound was a compile-time constant while the paced-materialize
         // error message named it as a config key, so an operator whose backfills were starving had nothing to
@@ -3414,7 +5641,20 @@ public interface AetherNode extends ManageableNode {
         // config into replicaCatalog() FIRST (onStreamConfigPut), then place its replica set
         // (reconcileReplicaSetOnConfigPut). clusterEventsControllerRef is the late-bound holder for the
         // stream ReplicaSetController (set below, after the controller is built).
+        // #1883: the in-sync set falling below / returning to the confirmation factor, derived from the committed ownership
+        // Put AND from a committed config Put that moves the factor. The config handler runs FIRST: it reads the factor
+        // the manager enforces before the Put and the one it will enforce after it, which the manager's own handler
+        // (next) then installs.
+        var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
+                                                                       streamPartitionManager::confirmationFactorAfter,
+                                                                       streamPartitionManager::enforcedConfig,
+                                                                       (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                                       partition),
+                                                                                                               StreamPartitionOwnershipValue.class),
+                                                                       delegateRouter::route);
         var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                       .onPut(AetherKey.StreamConfigKey.class,
+                                                              streamIsrAnnouncer::onConfigPut)
                                                        .onPut(AetherKey.StreamConfigKey.class,
                                                               streamPartitionManager::onStreamConfigPut)
                                                        .onPut(AetherKey.StreamConfigKey.class,
@@ -3438,32 +5678,20 @@ public interface AetherNode extends ManageableNode {
         // the same codec app streams are wired with.
         //
         // Retention is production-grade and config-overridable (item 4 / OOM guard): bounded on count,
-        // bytes (off-heap hard cap), and age, mode ANY. The publisher/consumer refs the aggregator was
+        // bytes (off-heap hard cap), and age, mode ANY — see ClusterEventsLimits, checked at boot (#1549). The publisher/consumer refs the aggregator was
         // constructed with are bound here; until then emits fall back to log-only (bootstrap window).
-        var clusterEventsRetention = org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy(resolveClusterEventsMaxCount(),
-                                                                                                 resolveClusterEventsMaxBytes(),
-                                                                                                 resolveClusterEventsMaxAgeMs(),
-                                                                                                 org.pragmatica.aether.slice.RetentionMode.ANY);
-        var clusterEventsStreamConfig = org.pragmatica.aether.slice.StreamConfig.streamConfig(clusterEventsStreamName,
-                                                                                              1,
-                                                                                              clusterEventsRetention,
-                                                                                              "earliest",
-                                                                                              resolveClusterEventsMaxEventSizeBytes(),
-                                                                                              org.pragmatica.aether.slice.ConsistencyMode.EVENTUAL,
-                                                                                              1);
-
-        org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent> systemStreamPublisher(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
-                                                                                                streamPartitionManager,
-                                                                                                serializer,
-                                                                                                clusterEventsStreamConfig)
-                                                          .onSuccess(clusterEventsPublisherRef::set)
-                                                          .onFailure(cause -> LOG.warn("cluster-events stream publisher wiring failed: {} — events fall back to log-only",
-                                                                                       cause.message()));
-        // Fix #3: the forward-capable cluster-events CONSUMER is wired further below, after
-        // streamForwardClient + streamReadForwardMetrics are constructed, so a non-replica node
-        // read-forwards observability reads to a caught-up replica instead of reading its own empty
-        // local partition. The aggregator reads the consumer lazily via clusterEventsConsumerRef::get,
-        // so deferring the wiring does not affect construction order.
+        // #1564 (N2): the local partition the publisher/consumer wiring below creates at construction carries the
+        // SAME factors the SystemStreamRegistrar commits — the committed `[replication.cluster_events]` as this node
+        // sees it now, never a separate hardcoded CF (ClusterEventsLimits.streamConfig).
+        var clusterEventsStreamConfig = clusterEventsLimits.streamConfig(clusterEventsStreamName,
+                                                                         kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                          AetherValue.ClusterConfigValue.class));
+        // Fix #3 / #1230: the forward-capable cluster-events CONSUMER and PUBLISHER are wired further below,
+        // after streamForwardClient + streamReadForwardMetrics are constructed, so a non-replica node
+        // read-forwards observability reads to a caught-up replica instead of reading its own empty local
+        // partition, and a non-owner emit write-forwards to the owner instead of appending to its own replica
+        // ring. The aggregator reads both lazily via clusterEventsConsumerRef::get /
+        // clusterEventsPublisherRef::get, so deferring the wiring does not affect construction order.
         // Stage 5: stream-namespaces registry + service.
         //
         // Stage 4 deferred the StreamRegistry registration to here, where the namespace-listing
@@ -3485,18 +5713,28 @@ public interface AetherNode extends ManageableNode {
         // deleted alongside the audit publisher and RecentCommandsBuffer.
         var streamWatermarkTracker = WatermarkTracker.watermarkTracker();
         var streamSegmentReader = SegmentReader.segmentReader(streamStorage, streamSegmentIndex);
+        // #1604: the durable segment tier's pressure -- retention warns at 85%, owner publishes are refused at 95%.
+        var streamSegmentTierPressure = SegmentTierPressure.localDiskOf(streamStorage);
+
+        streamPartitionManager.segmentTierPressure(streamSegmentTierPressure);
         var streamRetentionEnforcer = RetentionEnforcer.retentionEnforcer(streamStorage,
                                                                           streamSegmentIndex,
                                                                           DEFAULT_STREAM_RETENTION_MS,
                                                                           (stream, partition) -> entityRetentionFloor(kvStore,
                                                                                                                       stream,
-                                                                                                                      partition));
+                                                                                                                      partition),
+                                                                          streamStorageSetup.snapshotManager(),
+                                                                          streamStorageSetup.garbageCollector(),
+                                                                          streamSegmentReader,
+                                                                          streamSegmentTierPressure);
         // A6: streamReplicaRegistry is created earlier (above StreamPartitionManager) so it can be
         // shared with the now-active DefaultReplicationManager. The same registry instance is the one
         // the A2 ReplicaSetController populates from HRW placement.
-        // A4: lands backfilled/recovered events into the local ring offset-preserving WITHOUT
-        // re-replicating (the receiver is not an owner), replacing the StreamPartitionRecovery NOOP
-        // for both governor-failover recovery and the A4 backfill path below.
+        // A4 / #1505: every replica-side recovery apply — governor-failover segment replay and the A4 backfill
+        // below — lands each event at its OWN owner offset WITHOUT re-replicating (the receiver is not an owner),
+        // through the same ordered section as the live receive handler (whose `streamPartitionManager::appendRecovered`
+        // binds the offset-addressed overload). A live batch or a lagging replay floor therefore cannot shift an
+        // event: an offset already held is verified, never re-appended at the tail (#1505 F1).
         // #336 epoch adoption (NOT invention): stamp the recovery/backfill append with the SAME committed
         // owner epoch a live publish stamps (streamOwnerEpochSource reads the committed
         // StreamPartitionOwnershipValue.ownerEpoch — the identical source the fence high-water is seeded
@@ -3504,14 +5742,14 @@ public interface AetherNode extends ManageableNode {
         // instead of being rejected at the Epoch.ZERO floor (0:0 < 1:N). Cold-start/unowned arcs read
         // Epoch.ZERO == the fence's ZERO default (equal → passes), so fresh-stream recovery is not regressed.
         // The fence itself is untouched — this is a truthful stamp, not a wholesale exemption.
-        StreamPartitionRecovery streamPartitionRecovery = (s, p, payload, ts) -> streamPartitionManager.appendRecovered(s,
-                                                                                                                        p,
-                                                                                                                        payload,
-                                                                                                                        ts,
-                                                                                                                        streamOwnerEpochSource.currentOwnerEpoch(s,
-                                                                                                                                                                 p));
+        // #1596: that stamp FENCES the append and never attributes it — a caught-up record may predate the
+        // current epoch. Its provenance is the source's owner-epoch slice, which the same seam checks (N13)
+        // and records before the page is applied (StreamPartitionManager.alignedRecovery, the fence epoch read
+        // from this same streamOwnerEpochSource).
+        AlignedRecovery streamAlignedRecovery = streamPartitionManager.alignedRecovery();
         var streamFailoverHandler = GovernorFailoverHandler.governorFailoverHandler(streamReplicaRegistry,
-                                                                                    streamPartitionRecovery);
+                                                                                    streamAlignedRecovery,
+                                                                                    streamPartitionManager::syncReplicated);
         // A4: production catch-up wiring. The forward transport/client are constructed here (ahead of
         // the A6 read-forwarding wiring further below, which reuses the same instances) so the
         // ReplicaSetController can be given a real onBecameReplica backfill callback instead of the
@@ -3533,7 +5771,7 @@ public interface AetherNode extends ManageableNode {
         // the StreamForwardClient instead of reading its own empty partition (returning 200 []); a node
         // that IS a caught-up replica reads locally; during the bootstrap window (no caught-up replica
         // visible yet) it fails soft to the local partition. NODE_FAILED/NODE_LEFT are still emitted
-        // leader-gated to the leader's local partition-0 buffer, then replicated to the replica set.
+        // leader-gated, then write-forwarded to the partition-0 owner (#1230), which replicates them.
         //
         // HISTORY (#94/B5): forward-capable reads were previously reverted to LOCAL because a fresh
         // replica did not actually hold the partition's history (no real backfill) and offsets were
@@ -3544,6 +5782,22 @@ public interface AetherNode extends ManageableNode {
         // tail returns the full window. Staleness: a forwarded read reflects the replica's CAUGHT_UP
         // watermark, which may trail the owner by the in-flight replication window (sub-second under
         // steady load) — acceptable for observability and far preferable to a 503.
+        // #1230: cluster-events PUBLISHER, forward-capable. SYSTEM RF is the whole cluster, so every node holds
+        // a replica ring; without a forward client, emitAsLeader (NODE_FAILED/NODE_LEFT on the leader) and
+        // emitLocal (per-node StreamMemoryExceeded) appended on non-owners as undeclared second writers. Now a
+        // non-owner emit write-forwards to the partition's HRW owner — the SAME ownerFor the consumer and the
+        // B5b owner-gate use — and the owner appends and replicates.
+        org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent> systemStreamPublisher(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
+                                                                                                streamPartitionManager,
+                                                                                                serializer,
+                                                                                                clusterEventsStreamConfig,
+                                                                                                Option.some(streamForwardClient),
+                                                                                                config.self(),
+                                                                                                Option.some(partition -> Option.option(clusterEventsControllerRef.get()).flatMap(clusterEventsController -> clusterEventsController.ownerFor(clusterEventsStreamName,
+                                                                                                                                                                                                                                             partition))))
+                                                          .onSuccess(clusterEventsPublisherRef::set)
+                                                          .onFailure(cause -> LOG.warn("cluster-events stream publisher wiring failed: {} — events fall back to log-only",
+                                                                                       cause.message()));
         org.pragmatica.aether.stream.SystemStreamFactories.<ClusterEvent> systemStreamConsumer(org.pragmatica.aether.slice.stream.SystemStreams.CLUSTER_EVENTS,
                                                                                                streamPartitionManager,
                                                                                                serializer,
@@ -3559,11 +5813,14 @@ public interface AetherNode extends ManageableNode {
                                                           .onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
                                                                                        cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
-                                                                                     STREAM_CATCHUP_BATCH_SIZE);
+                                                                                     STREAM_CATCHUP_BATCH_SIZE,
+                                                                                     operatorWarningSink,
+                                                                                     System::currentTimeMillis);
         // Cold-start deadlock-break: a watermark+reachability probe over the same forward-read transport.
-        // A REACHABLE peer answers with the highest local offset it holds (its watermark; -1 when empty);
-        // an UNREACHABLE peer's readRemote fails (timeout) and the probe propagates that failure, which
-        // the orchestrator treats as "do not self-promote past a node that might hold newer state".
+        // A REACHABLE peer answers with the highest local offset it holds (its watermark; -1 when empty), or,
+        // for a partition it holds but has not materialized, its durable watermark; an UNREACHABLE peer's
+        // read fails (timeout) and the probe propagates that failure, which the orchestrator treats as "do not
+        // self-promote past a node that might hold newer state".
         ReplicaWatermarkProbe streamWatermarkProbe = (target, streamName, partition) -> probePeerWatermark(streamForwardClient,
                                                                                                            target,
                                                                                                            streamName,
@@ -3575,10 +5832,7 @@ public interface AetherNode extends ManageableNode {
         // NOTE: this is `headOffset` (highest), NOT `tailOffset` (earliest retained) — using the tail
         // understated self's position, breaking both the cold-start contest symmetry and the owner-source
         // contiguous fromOffset.
-        SelfWatermark streamSelfWatermark = (streamName, partition) -> streamPartitionManager.partitionInfo(streamName,
-                                                                                                            partition)
-                                                                                             .map(StreamPartitionManager.PartitionInfo::headOffset)
-                                                                                             .or(-1L);
+        SelfWatermark streamSelfWatermark = streamPartitionManager::appendedHead;
         // #491 F4: the committed StreamPartitionOwnershipValue.owner source, hoisted here so the backfill
         // orchestrator can gate HRW self-election on it (a diverged/empty-ring node must not self-promote
         // while a DIFFERENT node is the committed owner). Reused by the #265 owner-release guard below.
@@ -3602,13 +5856,16 @@ public interface AetherNode extends ManageableNode {
         // The empty-set guard is load-bearing: before the FSM has any members (boot window) an unguarded
         // filter would reject EVERY committed owner and reintroduce the #491 F4 self-promote this gate
         // exists to prevent. Empty membership means "cannot judge liveness", not "nobody is alive".
-        var rawStreamCommittedOwnerSource = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
-        CommittedStreamOwnerSource streamCommittedOwnerSource = (stream, partition) -> rawStreamCommittedOwnerSource.committedOwner(stream,
-                                                                                                                                    partition)
-                                                                                                                    .filter(committed -> committedOwnerStillAlive(membershipFsm,
-                                                                                                                                                                  committed.owner()));
+        //
+        // #1230 ruling 3: the write-authority half (admission + replication sender check) is the RAW record;
+        // only the routing half (backfill self-election, release guard) is liveness-filtered. Both come from
+        // StreamOwnershipViews so the split is decided — and pinned by StreamOwnershipViewsTest — in one place.
+        var streamOwnershipViews = StreamOwnershipViews.streamOwnershipViews(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore),
+                                                                             membershipFsm);
+        var streamCommittedOwnerSource = streamOwnershipViews.routing();
+        var placementMembers = livePlacementMembers(clusterTopologyManager.observer()::coreNodes, membershipFsm);
         var streamPartitionBackfill = PartitionBackfill.partitionBackfill(streamReplicaRegistry,
-                                                                          streamPartitionRecovery,
+                                                                          streamAlignedRecovery,
                                                                           streamCatchupTransport,
                                                                           streamReplicationTransport,
                                                                           streamWatermarkProbe,
@@ -3616,14 +5873,20 @@ public interface AetherNode extends ManageableNode {
                                                                           config.self(),
                                                                           streamingConfig.backfillSourceWaitBound(),
                                                                           () -> streamPlacementMembers(clusterEventsControllerRef,
-                                                                                                       clusterTopologyManager),
-                                                                          streamCommittedOwnerSource);
+                                                                                                       placementMembers),
+                                                                          streamCommittedOwnerSource,
+                                                                          streamPartitionManager::syncReplicated,
+                                                                          streamPartitionManager.quarantineView(),
+                                                                          Option.some(streamingConfig.backfillFlightIdleBound()))
+                                                       // #2077: the RAW committed ISR, never the liveness-filtered routing view above.
+                                                       .withCommittedIsr(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore));
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry
-        // against the HRW-derived desired replica set on every membership change. Members + cluster
-        // size come from the consensus topology observer; the stream catalog (name/partitions/
-        // minSyncReplicas + partition-has-data) is adapted from the partition manager. The A4
+        // against the HRW-derived desired replica set on every membership change. Members are the single
+        // live placement source (#1550, placementMembers); cluster size comes from the consensus topology
+        // observer; the stream catalog (name/partitions/
+        // confirmationFactor + partition-has-data) is adapted from the partition manager. The A4
         // catch-up seam now runs backfill off the reconcile thread on a dedicated executor.
         //
         // 1d-iii / #265: the leader-only StreamPartitionOwnershipWriter, fired by the controller's
@@ -3631,8 +5894,9 @@ public interface AetherNode extends ManageableNode {
         //   - isLeaderSupplier / rabiaTermSupplier / hlcClock are the same suppliers the DHT writer uses,
         //   - CommittedOwnership reads the committed StreamPartitionOwnershipValue exactly as
         //     KvStreamOwnerEpochSource does (getTyped on the StreamPartitionOwnershipKey),
-        //   - HrwOwner late-binds to streamReplicaSetController::ownerFor through clusterEventsControllerRef
-        //     (set to the same controller below, before the first reconcile fires the driver).
+        //   - HrwOwner late-binds to streamReplicaSetController::desiredOwner through clusterEventsControllerRef
+        //     (set to the same controller below, before the first reconcile fires the driver) — #1555 sticky
+        //     ownership: keep the committed owner while it is in the leader's live set, else HRW rank-0.
         // The writer self-limits: writeOwnershipChange returns none() on a follower (its isLeaderSupplier
         // gate short-circuits BEFORE any KV read) and none() for an unchanged owner, so the driver only
         // emits a consensus Put on the leader and only for genuinely-moved partitions. #265 increment 6:
@@ -3641,17 +5905,22 @@ public interface AetherNode extends ManageableNode {
         // a SINGLE consensus batch, so a mass reshuffle commits one batch per pass, not one apply per moved
         // partition. This keeps the reshuffle fan-out bound the promise #265 makes.
         var streamOwnershipWriter = StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
-                                                                                                  rabiaTermSupplier,
+                                                                                                  epochSources.generationEpoch(),
                                                                                                   hlcClock,
                                                                                                   (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                   partition),
                                                                                                                                           StreamPartitionOwnershipValue.class),
-                                                                                                  (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.ownerFor(stream,
-                                                                                                                                                                                                                                     partition)));
+                                                                                                  (stream, partition) -> Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController -> ownershipController.desiredOwner(stream,
+                                                                                                                                                                                                                                         partition)),
+                                                                                                  streamIsrInputs(clusterEventsControllerRef),
+                                                                                                  () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                         LeaderValue.class));
+        // #1339 residual: a failed ownership write re-arms the reconcile through the same coalescing entry, backed off.
+        var streamOwnershipRetry = StreamOwnershipRetry.streamOwnershipRetry(SharedScheduler::schedule,
+                                                                             () -> reconcileReplicaSet(clusterEventsControllerRef));
         var streamReplicaSetController = ReplicaSetController.replicaSetController(streamReplicaRegistry,
                                                                                    config.self(),
-                                                                                   () -> List.copyOf(clusterTopologyManager.observer()
-                                                                                                                           .coreNodes()),
+                                                                                   placementMembers,
                                                                                    clusterTopologyManager.observer()::clusterSize,
                                                                                    streamPartitionManager.replicaCatalog(),
                                                                                    (streamName, partition) -> streamBackfillExecutor.execute(() -> materializeThenBackfill(streamPartitionManager,
@@ -3660,12 +5929,57 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                            partition)),
                                                                                    (List<PartitionKey> reconciled) -> driveStreamOwnership(streamOwnershipWriter,
                                                                                                                                            clusterCommandApplier,
+                                                                                                                                           streamOwnershipRetry,
                                                                                                                                            reconciled));
         // B5b: bind the owner-gate ref so ClusterEventAggregator.emit can consult isOwner(...) for
         // (system:cluster-events:1.0.0, partition 0). isOwner is computed from the live HRW placement
         // against the current topology, independent of reconcile, so it is correct as soon as members
         // are visible (and true for a steady-state single-node cluster).
         clusterEventsControllerRef.set(streamReplicaSetController);
+        // #1730 owner ruling: every node derives the failover refusal/resolution event from the committed ownership Put;
+        // the cluster-events aggregator publishes only on its partition owner, so it reaches the stream exactly once.
+        var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
+                                                                                      delegateRouter::route);
+        // #1873: and for an owner beginning a new epoch of its own (its ring was rebuilt).
+        var streamLineageAnnouncer = StreamLineageAnnouncer.streamLineageAnnouncer(delegateRouter::route);
+
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamFailoverAnnouncer::onOwnershipPut)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamIsrAnnouncer::onOwnershipPut)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamLineageAnnouncer::onOwnershipPut)
+                                              .build()
+                                              .asRouteEntries());
+        // #1723: a scheduled task's unknown fire outcome, and its late resolution, derived by every node from the committed
+        // task state; the aggregator publishes on the cluster-events owner only, throttled per task.
+        var scheduledTaskOutcomeAnnouncer = ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(delegateRouter::route);
+        // #1206: two artifacts serving one route, derived by every node from the committed route table.
+        var routeCollisionAnnouncer = RouteCollisionAnnouncer.routeCollisionAnnouncer(delegateRouter::route);
+
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.NodeRoutesKey.class, routeCollisionAnnouncer::onRoutesPut)
+                                              .onRemove(AetherKey.NodeRoutesKey.class,
+                                                        routeCollisionAnnouncer::onRoutesRemove)
+                                              .build()
+                                              .asRouteEntries());
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.ScheduledTaskStateKey.class,
+                                                     scheduledTaskOutcomeAnnouncer::onStatePut)
+                                              .build()
+                                              .asRouteEntries());
+        // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
+        // exists); the leader's writer alone judges liveness (ReplicaSetController#desiredOwner). Backfill sources
+        // from, and self-elects against, the same owner.
+        streamReplicaSetController.committedOwnerSource((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                        partition),
+                                                                                                StreamPartitionOwnershipValue.class)
+                                                                                      .map(StreamPartitionOwnershipValue::owner));
+        // #1730: the committed ISR keeps its members placed (so they keep receiving the partition), and a CF >= 2
+        // confirmation needs every one of them. A record minted before #1730 (isrVersion 0) carries no committed ISR.
+        streamReplicaSetController.committedIsrSource((stream, partition) -> committedIsr(kvStore, stream, partition).or(List.of()));
+        streamPartitionBackfill.ownerResolver(streamReplicaSetController::ownerFor);
         // #265 increment 1/2: late-bind the placement-role supplier now that the controller exists. The
         // controller is constructed AFTER StreamPartitionManager (it consumes replicaCatalog()), so this
         // is the same construction-order inversion the streamPartitionManagerRef seam resolves above —
@@ -3701,14 +6015,127 @@ public interface AetherNode extends ManageableNode {
                                                                                                 config.self(),
                                                                                                 stream,
                                                                                                 partition));
+        // #1230: application appends are admitted only on the committed owner. Ring possession authorizes
+        // reads and replication receipt, never a write: the epoch fence cannot tell a live replica from the
+        // owner, because both stamp the same committed epoch. Reads the RAW committed record, deliberately NOT
+        // the #568 liveness-filtered view: liveness is a local verdict, not a fence — filtering would read an
+        // owner this node has marked DEPARTED (alive but partitioned away) or has not yet seen as "absent", and
+        // admit a second writer while the first still writes. A SUSPECT owner is never dropped by the filter.
+        // A dead owner's partition is unwedged only by the leader committing a new ownership record; until
+        // then writes fail retryable NotOwnerAppend (CTO ruling on #1230). No record admits (the cold-start
+        // window, where the fence is inert and HRW routing alone picks the writer).
+        streamPartitionManager.ownerWriteAdmission(streamOwnershipViews.writeAdmission(config.self()));
+        // #1555 owner promotion gate: this node acts as a partition's owner (appends, servedByOwner, owner reads)
+        // only after a no-op consensus round has refreshed its committed ownership view, the record still names
+        // it, and it has caught up to every live placement member's watermark. The round is ALWAYS ordered here,
+        // independent of the read-linearization knob, because the gate's correctness depends on it. The probe
+        // uses the catch-up read class, so a peer's own promotion state never blocks it.
+        var ownerActivation = OwnerActivation.ownerActivation(config.self(),
+                                                              (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                              partition),
+                                                                                                      StreamPartitionOwnershipValue.class),
+                                                              (stream, partition) -> streamReplicaSetController.roleFor(stream,
+                                                                                                                        partition) == ReplicaSetController.Role.OWNER,
+                                                              Option.some(LinearizableBarrier.noOpRound(clusterCommandApplier,
+                                                                                                        streamingConfig.readForwardTimeout())),
+                                                              placementMembers,
+                                                              (target, stream, partition) -> probePeerAppendedWatermark(streamForwardClient,
+                                                                                                                        target,
+                                                                                                                        stream,
+                                                                                                                        partition),
+                                                              streamSelfWatermark,
+                                                              streamPartitionBackfill::catchUpOwnerFrom,
+                                                              clusterNode::isActive,
+                                                              OwnerPeerReads.ownerRange(config.self(),
+                                                                                        streamPartitionManager,
+                                                                                        streamTieredReader,
+                                                                                        streamForwardClient::readRemoteCatchup,
+                                                                                        STREAM_CATCHUP_BATCH_SIZE),
+                                                              ownerPromotionAlarm(operatorWarningSink),
+                                                              ownerPromotionAlarmWindow(config.timeouts()
+                                                                                              .swim()
+                                                                                              .suspectTimeout()),
+                                                              (stream, partition) -> streamPartitionManager.ringIncarnation(stream,
+                                                                                                                            partition)
+                                                                                                           .or(-1L),
+                                                              streamLineageCommit(() -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                         LeaderValue.class),
+                                                                                  clusterCommandApplier,
+                                                                                  hlcClock));
+        // #1873 (KIP-320): every consumer read is checked, on the node that serves it, against the partition's COMMITTED epoch
+        // starts; this is where that node reads them.
+        streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                partition),
+                                                                                        StreamPartitionOwnershipValue.class));
+        ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());
+        // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does.
+        // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
+        // reports that escape the way the gate does.
+        bindPromotionAlarm(streamPartitionBackfill, operatorWarningSink, kvStore, streamingConfig.promotionEscapeAfter());
+        streamPartitionManager.ownerServeGate(ownerActivation::admit);
+        // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
+        // leaves out loses the row this registry kept for it from an earlier tenure.
+        ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
+        ownerActivation.peerRingTail((node, stream, partition) -> node.equals(config.self())
+                                                                  ? Promise.success(streamPartitionManager.visibleBounds(stream,
+                                                                                                                         partition)
+                                                                                                          .filter(bounds -> bounds.earliestRetained() >= 0L)
+                                                                                                          .map(VisibleBounds::earliestRetained))
+                                                                  : streamForwardClient.ringTailRemote(node,
+                                                                                                       stream,
+                                                                                                       partition)
+                                                                                       .recover(_ -> Option.<Long> none()));
+        ownerActivation.peerRows((stream, partition, peer) -> streamReplicaRegistry.updateWatermark(stream,
+                                                                                                    partition,
+                                                                                                    peer,
+                                                                                                    - 1L,
+                                                                                                    ReplicationState.SYNCING));
+        // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
+        streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
+                                                                                      .orElse(() -> streamReplicaSetController.noInSyncReplica(stream,
+                                                                                                                                               partition)));
+        // #1730: the owner keeps its partitions' ISR current — a member lagging longer than [streaming] isr_lag_max
+        // leaves, a caught-up replica joins — through guarded consensus writes only (liveness; never safety).
+        var isrMonitor = IsrMonitor.isrMonitor(config.self(),
+                                               () -> ownedPartitions(streamPartitionManager,
+                                                                     kvStore,
+                                                                     ownerActivation,
+                                                                     config.self()),
+                                               streamReplicaRegistry,
+                                               () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
+                                               clusterCommandApplier,
+                                               streamingConfig.isrLagMax(),
+                                               System::nanoTime);
+        // #1730: a CF >= 2 confirmation needs every member of the committed ISR plus every member this owner has
+        // proposed to add to it (the maximal ISR). A record minted before #1730 (isrVersion 0) carries no ISR.
+        streamReplicationManager.inSyncReplicaSource((stream, partition) -> committedIsrRecord(kvStore,
+                                                                                               stream,
+                                                                                               partition).map(record -> isrMonitor.maximalIsr(stream,
+                                                                                                                                              partition,
+                                                                                                                                              record)));
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(isrMonitor::tick, ISR_MONITOR_INTERVAL));
+        // #2087: the owner repeats its visible position, so one lost announcement delays a replica by one tick, never longer.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::repeatVisible,
+                                                                      ISR_MONITOR_INTERVAL));
+        allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
         wireMembershipDecisionTail(allEntries, streamReplicaSetController::onMembershipDecision);
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
                                                  streamReplicaSetController::onQuorumStateChange));
+        // #1339/#1732: the placement inputs the two triggers above do not announce — voter install, leadership,
+        // committed ownership records. See wireReplicaSetInputTriggers.
+        wireReplicaSetInputTriggers(allEntries, streamReplicaSetController::reconcile, clusterNode::onVoterConfiguration);
         // Initial reconcile once membership is available; serialized on the controller executor, so
         // this is a safe no-op until the topology observer reports core members.
         streamReplicaSetController.reconcile();
+        // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
+        // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
+        // executor is this method's own. Controller first: its reconcile is what submits to the backfill.
+        Runnable streamReplicationShutdown = () -> {
+            streamReplicaSetController.close();
+            streamBackfillExecutor.shutdownNow();
+        };
         // A4 periodic backfill re-drive: reconcilePartition fires backfill ONCE per reconcile edge, so a
         // cold-start replica that saw NO_SOURCE on its first attempt would never re-attempt and stay
         // SYNCING forever (the system:cluster-events GET /api/events -> 200 [] deadlock). Re-drive every
@@ -3723,12 +6150,31 @@ public interface AetherNode extends ManageableNode {
         // self-gates on its mutation-count / interval trigger, so a 10s tick is cheap when not due.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> snapshotAllSetups(storageSetups),
                                                                       METADATA_SNAPSHOT_INTERVAL));
+        // #250 storage maintenance driver: demote()/collectGarbage() have no other caller — without this
+        // tick, tiered storage never shrinks in production regardless of the leader-pinned adapter's
+        // activation state. Cadence is operator-configurable ([timeouts.storage_maintenance] interval,
+        // default 5m); both operations self-gate internally, so this tick is cheap when inactive or idle.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(storageMaintenanceDriver::tick,
+                                                                      config.timeouts().storageMaintenance().interval()));
+        // #420/#1136: the DHT anti-entropy cycle. `DHTAntiEntropy.start()` had no caller, so the
+        // "periodic 30 s repair" never ran in production and `[timeouts.dht] anti_entropy_interval`
+        // was parsed by nothing. Armed here, with the node's other periodic work (#644: after
+        // formation, cancelled first on stop, never a zombie), on the configured interval; the
+        // join-time round in DHTTopologyListener is the fast path, this cycle is its retry.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::synchronizeNow,
+                                                                      config.timeouts().dht().antiEntropyInterval()));
+        // #1777 track 2: fills the partitions this node is a replica of but not yet authoritative for —
+        // at boot, and after every ring change — within about a tick of their sources answering.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(dhtAntiEntropy::catchUpNow,
+                                                                      DHTAntiEntropy.CATCH_UP_INTERVAL));
         // W5 WAL disk-reclamation driver: truncate every partition's write-ahead log up to its DURABLE
-        // last-sealed offset so the WAL does not grow unbounded. Records <= lastSealedOffset are already in
-        // durable cold segments (served post-restart by the tiered reader), so dropping them from the WAL
-        // loses nothing; the un-sealed tail stays in the WAL. truncate is threshold-lazy, so this tick is
-        // cheap when nothing new has sealed. Driven off the durable sealed bound (not the void
-        // eviction->seal listener) to avoid any truncated-before-durable window.
+        // last-sealed offset so the WAL does not grow unbounded. Records <= that offset are already in
+        // cold segments whose refs are in the metadata snapshot on disk (served post-restart by the tiered
+        // reader), so dropping them from the WAL loses nothing; the un-sealed tail stays in the WAL.
+        // truncate is threshold-lazy, so this tick is cheap when nothing new has sealed. Driven off the
+        // CONTIGUOUS sealed bound (#1234: it never passes a segment that failed to seal) as REBUILT from
+        // the latest snapshot file (#1345: never the live index, which runs ahead of disk until the next
+        // snapshot — a crash in that window used to lose the refs and renumber the survivors).
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::truncateWalsToSealed,
                                                                       WAL_TRUNCATE_INTERVAL));
         // #265 increment 5 reshuffle-lifecycle driver: each tick frees reshuffle-concurrency slots for
@@ -3763,17 +6209,18 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 Option.some(committedStreamOwnerSource),
                                                                                                                 Option.some(ownershipEpochHighWater),
                                                                                                                 linearizableBarrier,
-                                                                                                                (stream, partition, fromOffset, maxEvents) -> streamPartitionManager.readLocal(stream,
-                                                                                                                                                                                               partition,
-                                                                                                                                                                                               fromOffset,
-                                                                                                                                                                                               maxEvents)
+                                                                                                                (stream, partition, fromOffset, maxEvents) -> streamPartitionManager.readServing(stream,
+                                                                                                                                                                                                 partition,
+                                                                                                                                                                                                 fromOffset,
+                                                                                                                                                                                                 maxEvents)
                                                                                                                                                                                     .async());
         var streamForwardHandler = StreamForwardHandler.streamForwardHandler(config.self(),
                                                                              streamPartitionManager,
                                                                              streamForwardTransport,
                                                                              streamingConfig.maxReadResponseBytes(),
                                                                              streamReadForwardMetrics,
-                                                                             Option.some(linearizableOwnerServe));
+                                                                             Option.some(linearizableOwnerServe),
+                                                                             Option.some(streamTieredReader));
         var streamReadRouter = StreamReadRouter.streamReadRouter(streamPartitionManager,
                                                                  Option.some(streamReplicaRegistry),
                                                                  Option.some(streamForwardClient),
@@ -3800,14 +6247,35 @@ public interface AetherNode extends ManageableNode {
         //
         // No role-change callback is available (onBecameReplica / onReconcilePassComplete are
         // single-consumer seams already bound above), hence the poll.
-        var streamClusterCursorStore = ClusterCursorStore.clusterCursorStore(streamCursorStore,
-                                                                             cursorKey -> kvStore.getTyped(cursorKey,
-                                                                                                           AetherValue.StreamCursorCheckpointValue.class)
-                                                                                                 .map(AetherValue.StreamCursorCheckpointValue::committedOffset),
-                                                                             command -> clusterNode.apply(List.of(command))
-                                                                                                   .mapToUnit());
+        // #1271: checkpoints carry this node's consumer-assignment token and are refused by the applier
+        // once the assignment moves; a forwarding (worker) node sends a Noop barrier before re-reading the
+        // verdict, since its publish resolves on the core's reply rather than its own apply.
+        // #1271: the committed consumer assignment is the one authority for which node delivers a
+        // (group, partition). The leader writes it from the same computation every node used to act on
+        // alone; every node attaches only where the committed record names it — and the cursor store's
+        // verdict re-reads it before calling a refused checkpoint Fenced (#1335 B1).
+        ConsumerAssignmentWriter.CommittedAssignments committedConsumerAssignments = (stream, partition, group) -> kvStore.getTyped(ConsumerAssignmentKey.consumerAssignmentKey(stream,
+                                                                                                                                                                                partition,
+                                                                                                                                                                                group),
+                                                                                                                                    ConsumerAssignmentValue.class);
+        // #1333: the cluster cursor store is decorated with the projection commit hook — after every
+        // resolved commit the group's projection (if this node hosts one) learns the committed cursor,
+        // stamped with the committing consumer's rewind epoch. The registry is keyed on the runtime's own
+        // group identity (artifactBase#method) and resolves lazily against the topic subscriptions.
+        var projectionRegistry = ProjectionRegistry.projectionRegistry(topicSubscriptionRegistry::allSubscriptions);
+        Fn1<Option<AetherValue.StreamCursorCheckpointValue>, AetherKey.StreamCursorCheckpointKey> committedCursorReader = cursorKey -> kvStore.getTyped(cursorKey,
+                                                                                                                                                        AetherValue.StreamCursorCheckpointValue.class);
+        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = commands -> switchableCluster.apply(commands)
+                                                                                                          .mapToUnit();
+        var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
+                                                                                                                                   config.self(),
+                                                                                                                                   committedCursorReader,
+                                                                                                                                   committedConsumerAssignments,
+                                                                                                                                   cursorCommandWriter,
+                                                                                                                                   () -> switchableCluster.current() instanceof ForwardingClusterNode),
+                                                                                             projectionRegistry);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
-        // group-attributed and appended to the topic's `.dlq` stream through the same min-sync
+        // group-attributed and appended to the topic's `.dlq` stream through the same confirmation
         // barrier as the source (publisher memoized per DLQ stream, full owner-forward routing so a
         // dispatch node that does not own the DLQ partition forwards instead of stalling). All
         // other streams keep the in-memory default; its durability question is a separate ticket's
@@ -3823,7 +6291,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                               Option.none(),
                                                                                                                                                                               ConsistencyMode.EVENTUAL,
                                                                                                                                                                               Option.none(),
-                                                                                                                                                                              streamPartitionManager.minSyncReplicasFor(name),
                                                                                                                                                                               Option.some(streamForwardClient),
                                                                                                                                                                               Option.some(() -> taskGroupOwnerResolver.apply(TaskGroup.STREAMING)
                                                                                                                                                                                                                       .option()),
@@ -3834,12 +6301,22 @@ public interface AetherNode extends ManageableNode {
         var streamConsumerRuntime = StreamConsumerRuntime.streamConsumerRuntime(streamPartitionManager,
                                                                                 streamDeadLetterSink,
                                                                                 streamClusterCursorStore,
-                                                                                (stream, partition, fromOffset, maxEvents) -> streamReadRouter.read(stream,
-                                                                                                                                                    partition,
-                                                                                                                                                    fromOffset,
-                                                                                                                                                    maxEvents,
-                                                                                                                                                    ReadPreference.GOVERNOR));
+                                                                                StreamConsumerRuntime.validatingReader((stream, partition, fromOffset, maxEvents) -> streamReadRouter.read(stream,
+                                                                                                                                                                                           partition,
+                                                                                                                                                                                           fromOffset,
+                                                                                                                                                                                           maxEvents,
+                                                                                                                                                                                           ReadPreference.GOVERNOR),
+                                                                                                                       streamReadRouter::readValidated));
+
+        streamConsumerRuntime.operatorWarnings(operatorWarningSink);
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
+        var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
+                                                                                                        ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,
+                                                                                                                                                          epochSources.generationEpoch(),
+                                                                                                                                                          hlcClock,
+                                                                                                                                                          committedConsumerAssignments),
+                                                                                                        commands -> switchableCluster.apply(commands)
+                                                                                                                                     .mapToUnit());
         var streamConsumerManager = StreamConsumerManager.streamConsumerManager(streamConsumerRegistry,
                                                                                 streamConsumerRuntime,
                                                                                 sliceInvoker,
@@ -3851,11 +6328,49 @@ public interface AetherNode extends ManageableNode {
                                                                                 config.self(),
                                                                                 TopicGroupDeclarationSource.topicGroupDeclarationSource(topicSubscriptionRegistry,
                                                                                                                                         streamName -> streamConsumerOwnership.partitionCount(streamName)
-                                                                                                                                                                             .isPresent()));
+                                                                                                                                                                             .isPresent()),
+                                                                                consumerAssignmentAuthority,
+                                                                                (streamName, partition, group) -> committedCursorReader.apply(AetherKey.StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName,
+                                                                                                                                                                                                            partition,
+                                                                                                                                                                                                            group))
+                                                                                                                                       .map(AetherValue.StreamCursorCheckpointValue::rewindEpoch));
+
+        streamConsumerManager.setOperatorWarningSink(operatorWarningSink);
+        // #1271: a node that loses quorum stops delivering at the self-fence's DETECTION, not at the drain's
+        // halt — the majority is free to reassign its partitions from that moment. Re-set here because the
+        // manager exists only now; the detector was armed with the same chain earlier and this replaces it
+        // with the chain plus the consumer abandon.
+        quorumLossDetector.setQuorumLossListener(StreamConsumerManager.abandoningOnQuorumLoss(quorumLossChain,
+                                                                                              streamConsumerManager));
         // #499: the handle is retained in `periodicTasks`, which stop() cancels wholesale. A declarative
         // consumer that outlived its node would deliver into a torn-down slice.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamConsumerManager::reconcile,
                                                                       STREAM_CONSUMER_RECONCILE_INTERVAL));
+        // #1333: a committed checkpoint carrying a newer rewind epoch than the held consumer's restarts
+        // that consumer on the next pass, now rather than on the 5s tick. The manager filters the key type.
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                 streamConsumerManager::onCheckpointPut));
+        // A rebuild's rewind record counts as committed once its accepted-put notification is seen here; a
+        // read-back alone is overtaken by the restarted consumer's first checkpoint at the same epoch.
+        var rewindWitness = CommitWitness.commitWitness();
+
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, rewindWitness::onPut));
+        // #1333: what a slice's ProjectionRuntime resource needs from the node — the registry above and
+        // the replay cursor's collaborators (partition bounds from the local ring or forwarded to the owner
+        // through the read router, the fenced checkpoint put, the committed read-back). Registered beside
+        // the entity drivers, as one extension.
+        var projectionNodeSupport = ProjectionNodeSupport.projectionNodeSupport(projectionRegistry,
+                                                                                streamClusterCursorStore::reportFailureCount,
+                                                                                streamConsumerOwnership::partitionCount,
+                                                                                PartitionBounds.routed(streamReadRouter),
+                                                                                cursorCommandWriter,
+                                                                                committedCursorReader,
+                                                                                committedConsumerAssignments,
+                                                                                epochSources.incarnation()::current,
+                                                                                rewindWitness);
+
+        resourceProviderSetup.spiProvider()
+                             .onPresent(spi -> spi.registerExtension(ProjectionNodeSupport.class, projectionNodeSupport));
         var streamingCoordinator = StreamingCoordinator.streamingCoordinator(streamFailoverHandler,
                                                                              streamRetentionEnforcer,
                                                                              streamPartitionManager,
@@ -3877,21 +6392,62 @@ public interface AetherNode extends ManageableNode {
         // backoff until both legs commit (or hit a terminal config error), latches each leg DONE, and
         // disarms on leadership loss. Both legs are idempotent + consensus-committed, so re-arming on
         // each leader-gain is safe and self-heals across re-elections.
-        var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> streamPartitionManager.createStream(clusterEventsStreamConfig),
-                                                                                streamNamespacesService::bootstrap);
+        // #1564: the stream is committed with the factors of the committed cluster config's
+        // `[replication.cluster_events]` (CF default 1 until the owner decides the acked-but-lost question; RF the
+        // desired core count), read when the leader commits it.
+        var systemStreamRegistrar = SystemStreamRegistrar.systemStreamRegistrar(() -> ClusterReplication.clusterEventsFactors(kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                                                                                               AetherValue.ClusterConfigValue.class)).flatMap(factors -> streamPartitionManager.createStream(clusterEventsStreamConfig.withReplication(factors))),
+                                                                                streamNamespacesService::bootstrap,
+                                                                                cause -> raiseClusterEventsRefusal(operatorWarningSink,
+                                                                                                                   alertManager,
+                                                                                                                   cause),
+                                                                                () -> alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code()));
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  systemStreamRegistrar::onLeaderChange));
+        // #1564 B1: a committed cluster config re-arms a registration the replication policy refused.
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.ClusterConfigKey.class,
+                                                     _ -> systemStreamRegistrar.onClusterConfigChanged())
+                                              .build()
+                                              .asRouteEntries());
         // #290: cluster-formation bootstrap admin API key. On first leadership, if no admin key is yet
-        // present in the KV store, generate one cluster-wide and print the plaintext once. Self-healing
+        // present in the KV store, register one cluster-wide and print the plaintext once. Self-healing
         // and idempotent (mirrors SystemStreamRegistrar); the leg uses the same clusterNode.apply
         // consensus path as the API-key routes and the same KV store the validator reads.
+        // #980: the key is DERIVED from the cluster secret rather than randomised, so the bootstrap
+        // CLI — which minted that secret six phases earlier — can authenticate its own quorum poll.
+        // Registration is unchanged, which is what keeps the key enumerable, revocable and audited.
         var bootstrapAdminKeyRegistrar = BootstrapAdminKeyRegistrar.bootstrapAdminKeyRegistrar(BootstrapAdminKeyLeg.bootstrapAdminKeyLeg(() -> kvStore,
                                                                                                                                          isLeaderSupplier::getAsBoolean,
-                                                                                                                                         clusterCommandApplier));
+                                                                                                                                         clusterCommandApplier,
+                                                                                                                                         config.clusterSecret()));
 
         allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                                  bootstrapAdminKeyRegistrar::onLeaderChange));
+        // #1529 part 1: the leader mints the cluster lineage/incarnation at genesis if absent. Same
+        // self-healing, leader-armed shape as the bootstrap admin key; a restored value is left alone.
+        var clusterIncarnationRegistrar = ClusterIncarnationRegistrar.clusterIncarnationRegistrar(ClusterIncarnationRegistrar.genesisLeg(() -> kvStore,
+                                                                                                                                         clusterCommandApplier));
+
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 clusterIncarnationRegistrar::onLeaderChange));
+        // #1532: change-triggered, leader-only KV backup — only when [backup] is enabled with a path.
+        // #1533 × #1617: the restore-blocked, dropped-checkpoints and forked conditions are also cluster events.
+        var backupWarnings = BackupWarning.Sink.operatorWarnings(operatorWarningSink);
+        var kvBackupService = createKvBackupService(config, kvStore, nodeCodec, backupWarnings);
+
+        kvBackupService.onPresent(service -> routeKvBackup(allEntries, service));
+        // #1533: the restore decision precedes every cluster-state seeder — on EVERY node, so a leader
+        // without [backup] still commits DISABLED and opens the gate its backup-enabled peers hold closed.
+        var backupRestoreCoordinator = BackupRestoreCoordinator.backupRestoreCoordinator(kvStore,
+                                                                                         clusterCommandApplier,
+                                                                                         restoreSource(config,
+                                                                                                       kvBackupService),
+                                                                                         backupWarnings);
+
+        allEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                 backupRestoreCoordinator::onLeaderChange));
         // Publish-side mirror: same forward client + HRW owner resolver the read router uses, so a
         // management publish landing on a metadata-only node write-forwards to the owner (#265) instead
         // of failing PARTITION_NOT_LOCAL on a local append.
@@ -3903,7 +6459,9 @@ public interface AetherNode extends ManageableNode {
         // command reaches the committed owner over the ordinary FORWARD lane rather than a new transport.
         var entityForwardService = EntityForwardService.entityForwardService(config.self(),
                                                                              clusterNode.network()::sendOutcome,
-                                                                             ENTITY_FORWARD_TIMEOUT);
+                                                                             ENTITY_FORWARD_TIMEOUT,
+                                                                             CommittedEntityStake.committedEntityStake(kvStore,
+                                                                                                                       config.self()));
 
         allEntries.add(MessageRouter.Entry.route(EntityForwardMessage.EntityUpdateForward.class,
                                                  entityForwardService::onEntityUpdateForward));
@@ -3935,7 +6493,9 @@ public interface AetherNode extends ManageableNode {
         // A6: replica-side receive/apply. ReplicateEvents from an owner are landed into the local
         // partition ring offset-preserving via appendRecovered (NON-replicating — a replicated event is
         // never re-emitted, so there is no replicate→apply→replicate loop), then the highest applied
-        // offset is acked back. ReplicateAck flows into the active DefaultReplicationManager so it can
+        // offset is acked back. #1230: a batch whose sender cannot be the committed owner at the batch's
+        // epoch is neither applied nor acked (the same RAW committed record as the admission — not the #568
+        // liveness-filtered view, which is for routing/backfill only). ReplicateAck flows into the active DefaultReplicationManager so it can
         // advance the watermark and resolve any awaitReplication(minAcks) promise. Routed on the same
         // partition message transport as the forward handler.
         var streamReplicationReceiveHandler = ReplicationReceiveHandler.replicationReceiveHandler(config.self(),
@@ -3944,8 +6504,15 @@ public interface AetherNode extends ManageableNode {
                                                                                                   streamReplicationTransport,
                                                                                                   (streamName, partition) -> streamBackfillExecutor.execute(() -> streamPartitionBackfill.backfill(streamName,
                                                                                                                                                                                                    partition)),
-                                                                                                  streamPartitionManager::syncReplicated);
-
+                                                                                                  streamPartitionManager::syncReplicated,
+                                                                                                  streamOwnershipViews.writeAuthority(),
+                                                                                                  operatorWarningSink);
+        // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
+        streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
+        // #2087: a replica serves a consumer read only up to the owner's reported visible position.
+        streamReplicationReceiveHandler.commitSink(streamPartitionManager::commitAdvanced);
+        allEntries.add(MessageRouter.Entry.route(ReplicationMessage.CommitAdvance.class,
+                                                 streamReplicationReceiveHandler::onCommitAdvance));
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateAck.class,
@@ -3984,14 +6551,33 @@ public interface AetherNode extends ManageableNode {
                                                                                             streamReplicaSetController::reconciledMembers,
                                                                                             clusterNode::isActive,
                                                                                             entityArcOwner -> StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(isLeaderSupplier,
-                                                                                                                                                                            rabiaTermSupplier,
+                                                                                                                                                                            epochSources.generationEpoch(),
                                                                                                                                                                             hlcClock,
                                                                                                                                                                             (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                                                                                                                             partition),
                                                                                                                                                                                                                     StreamPartitionOwnershipValue.class),
-                                                                                                                                                                            entityArcOwner),
-                                                                                            clusterCommandApplier);
-        var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver();
+                                                                                                                                                                            entityArcOwner,
+                                                                                                                                                                            streamIsrInputs(clusterEventsControllerRef),
+                                                                                                                                                                            () -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                                                                                                                   LeaderValue.class)),
+                                                                                            clusterCommandApplier,
+                                                                                            ENTITY_RECONCILE_KICK,
+                                                                                            EntityOwnershipReconciler.SETTLE_TICKS,
+                                                                                            EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,
+                                                                                            ENTITY_OWNERSHIP_RECONCILE_INTERVAL,
+                                                                                            System::nanoTime,
+                                                                                            operatorWarningSink);
+        // A committed registration REMOVAL is a hosting-set shrink, which is the one edge the leader's mint
+        // must not wait a tick for: until it re-mints, the retracting node is still the committed owner of
+        // arcs it can no longer serve. Every node sees the notification; the writer's own leader gate
+        // decides who acts, so a follower's pass emits nothing.
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                                 entityOwnershipReconciler::onRegistrationRemoved));
+        // #1302/#1330: every checkpoint tick reports this node's largest checkpoint lag — over partitions it
+        // OWNS, measured from the committed checkpoint in KV — into the node metrics map, where the alert
+        // threshold path (DashboardMetricsPublisher -> AlertManager.checkThreshold) evaluates it.
+        var entityCheckpointDriver = EntityCheckpointDriver.entityCheckpointDriver(EntityCheckpointLagMetric.sinkFor(metricsCollector),
+                                                                                   EntityCheckpointLagMetric.committedCheckpoints(kvStore));
         var entityTimerDriver = EntityTimerDriver.entityTimerDriver();
         // #345 I3: entity state lives on a fenced, fsync-durable, replicated stream partition, and its
         // checkpoints are blocks in stream storage pointed at from consensus KV. The catch-up source is
@@ -4002,6 +6588,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                             config.self(),
                                                                                                                             stream,
                                                                                                                             partition),
+                                                                                   streamTieredReader,
+                                                                                   streamSegmentIndex,
+                                                                                   streamSegmentSealer,
                                                                                    streamStorage,
                                                                                    kvStore,
                                                                                    clusterCommandApplier);
@@ -4047,10 +6636,12 @@ public interface AetherNode extends ManageableNode {
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
-                                                              managementServerRef::get);
+                                                              managementServerRef::get,
+                                                              operatorWarningSink);
         var startTimeMs = System.currentTimeMillis();
         var nodeLifecycle = NodeLifecycle.nodeLifecycle();
-        var node = new aetherNode(config,
+        var node = new aetherNode(workerMetadataChannel,
+                                  config,
                                   delegateRouter,
                                   kvStore,
                                   ownershipEpochHighWater,
@@ -4090,7 +6681,6 @@ public interface AetherNode extends ManageableNode {
                                   artifactMetricsCollector,
                                   deploymentMap,
                                   eventAggregator,
-                                  BackupService.disabled(),
                                   streamPartitionManager,
                                   streamSegmentIndex,
                                   streamReadRouter,
@@ -4098,6 +6688,7 @@ public interface AetherNode extends ManageableNode {
                                   consumerGroupCoordinator,
                                   consumerGroupRegistry,
                                   streamConsumerManager,
+                                  Option.some(projectionNodeSupport),
                                   streamNamespacesService,
                                   storageSetups,
                                   clusterTopologyManager,
@@ -4127,7 +6718,14 @@ public interface AetherNode extends ManageableNode {
                                   streamConsumerRuntime,
                                   startTimeMs,
                                   swimBootAtMs,
-                                  periodicTasks);
+                                  periodicTasks,
+                                  kvBackupService,
+                                  leaderTerm,
+                                  streamReplicationShutdown,
+                                  backupRestoreCoordinator::onNodeStopping,
+                                  resourceProviderSetup.spiProvider(),
+                                  replacementWiring.service(),
+                                  upgradeWiring.service());
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -4148,14 +6746,21 @@ public interface AetherNode extends ManageableNode {
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(retentionInvariantWatch::tick,
                                                                       RETENTION_INVARIANT_CHECK_INTERVAL));
-        nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReady(nodeLifecycle::signalReady,
-                                                                           nodeReportedStateHolder));
+        // #1052: self-ready (lifecycle ACTIVE, reported READY) waits for every DHT-backed storage
+        // instance to be admitted by its post-formation encryption-marker check, which now retries while
+        // the DHT cannot answer. Without this the node would report ready while its DHT tiers still refuse
+        // every operation.
+        var dhtAdmission = StorageFactory.dhtAdmission(storageSetups);
+
+        nodeDeploymentManager.setSelfReadySignal(() -> markSubsystemsReadyOnceDhtAdmitted(dhtAdmission,
+                                                                                          nodeLifecycle::signalReady,
+                                                                                          nodeReportedStateHolder));
         // Activation level-heal: a cold-start `restart_all_nodes` can drop the single CAS-latched
         // ClusterStateNotification.ACTIVE edge while the router delegate is being rebuilt, leaving NDM
         // stuck in Dormant (self-ready/subsystemsReady never fire) so the node reports SYNCING forever.
         // This tick re-dispatches QuorumEstablished only while still Dormant AND consensus is live —
         // a dropped edge self-heals within one interval; a no-op on every healthy node thereafter.
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> reconcileNodeActivation(clusterNode::isActive,
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> reconcileNodeActivation(() -> runtimeReady(clusterNode),
                                                                                                     nodeDeploymentManager),
                                                                       NDM_ACTIVATION_RECONCILE_INTERVAL));
         nodeLifecycle.subsystemsReady();
@@ -4195,6 +6800,28 @@ public interface AetherNode extends ManageableNode {
                                                           + " = true with [app-http.api-keys.<key>] to authenticate operators (#573).",
                                                            config.managementPort());
                                               }
+                                                  // The OTHER credential-less shape, and until now it had no voice at all. Above is
+                                                  // `security_mode = "none"`. This is security ON with an EMPTY key set — which is what
+                                                  // the published image now boots with, since `docker/aether-node/aether.toml` no longer
+                                                  // bakes a key. The node is fail-closed and that is intended, so this is not a
+                                                  // misconfiguration warning; it states WHICH credential is the only way in, because the
+                                                  // alternative is an operator reading 401s with nothing in the log explaining them.
+                                                  //
+                                                  // Deliberately not silent-because-intended: a default applied when nothing was
+                                                  // configured has to be loud, or it becomes the fail-open nobody notices. The precedent
+                                                  // is this repo's own log-and-drop-plus-caller-default, which turned a fail-closed
+                                                  // encryption refusal into a green boot with plaintext.
+                                                  if (mgmtSecurityEnabled && config.appHttp()
+                                                                                   .apiKeys()
+                                                                                   .isEmpty()) {
+                                                  LOG.warn("Management API on port {} has NO key declared in configuration. This is the"
+                                                          + " FAIL-CLOSED default: every non-public route is REFUSED until a credential exists."
+                                                          + " The cluster bootstrap admin key (printed once at formation, derived from the"
+                                                          + " cluster secret) is the only credential this node will accept; it is enumerable and"
+                                                          + " revocable via /api/v1/cluster/keys. To pre-provision one instead, set"
+                                                          + " AETHER_API_KEYS=<key>:<name>:<roles>:<ROLE> or an [app-http.api-keys.<key>] table.",
+                                                           config.managementPort());
+                                              }
 
                                                   var mgmtSecurityValidator = SecurityValidator.kvStoreAwareValidator(configValidator,
                                                                                                                       () -> node.kvStore());
@@ -4213,6 +6840,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                            config.tls(),
                                                                                                            mgmtSecurityValidator,
                                                                                                            mgmtSecurityEnabled,
+                                                                                                           () -> config.appHttp()
+                                                                                                                       .apiKeys(),
                                                                                                            serverBossGroup,
                                                                                                            serverWorkerGroup,
                                                                                                            config.managementHttpProtocol(),
@@ -4224,8 +6853,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                            target -> requestDrainThroughFsm(drainCommandRegistry,
                                                                                                                                             membershipFsmRef,
                                                                                                                                             target),
-                                                                                                           drainCommandRegistry::drainTargets);
+                                                                                                           drainCommandRegistry::drainTargets,
 
+                                                  // #1720: operator drain and shutdown honour the slice minAvailable floor,
+                                                  // as the automatic drain does (same KV-backed guard, same counting rules).
+                                                  NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+                                                                                            operatorWarningSink));
+
+                                                  managementServer.setOperatorWarningSink(operatorWarningSink);
                                                   managementServerRef.set(Option.some(managementServer));
                                                   // #278: expose the node's real MeterRegistry to slice-facing resource
                                                   // provisioning so MetricsInterceptorFactory records into the SAME
@@ -4235,7 +6870,8 @@ public interface AetherNode extends ManageableNode {
                                                                        .onPresent(spi -> spi.registerExtension(MeterRegistry.class,
                                                                                                                managementServer.meterRegistry()));
 
-                                                  return new aetherNode(config,
+                                                  return new aetherNode(workerMetadataChannel,
+                                                                        config,
                                                                         delegateRouter,
                                                                         kvStore,
                                                                         ownershipEpochHighWater,
@@ -4275,7 +6911,6 @@ public interface AetherNode extends ManageableNode {
                                                                         artifactMetricsCollector,
                                                                         deploymentMap,
                                                                         eventAggregator,
-                                                                        BackupService.disabled(),
                                                                         streamPartitionManager,
                                                                         streamSegmentIndex,
                                                                         streamReadRouter,
@@ -4283,6 +6918,7 @@ public interface AetherNode extends ManageableNode {
                                                                         consumerGroupCoordinator,
                                                                         consumerGroupRegistry,
                                                                         streamConsumerManager,
+                                                                        Option.some(projectionNodeSupport),
                                                                         streamNamespacesService,
                                                                         storageSetups,
                                                                         clusterTopologyManager,
@@ -4312,7 +6948,14 @@ public interface AetherNode extends ManageableNode {
                                                                         streamConsumerRuntime,
                                                                         startTimeMs,
                                                                         swimBootAtMs,
-                                                                        periodicTasks);
+                                                                        periodicTasks,
+                                                                        kvBackupService,
+                                                                        leaderTerm,
+                                                                        streamReplicationShutdown,
+                                                                        backupRestoreCoordinator::onNodeStopping,
+                                                                        resourceProviderSetup.spiProvider(),
+                                                                        replacementWiring.service(),
+                                                                        upgradeWiring.service());
                                               }
 
                                                   return node;
@@ -4324,23 +6967,30 @@ public interface AetherNode extends ManageableNode {
     TimeSpan MEMBERSHIP_BASELINE_TRACE_INTERVAL = TimeSpan.timeSpan(30).seconds();
 
     /// Single FSM-transition fan-out installed at the central transition chokepoint
-    /// ([`MembershipFsm#onTransition`], fired once per ACTUAL per-member state change under the FSM's
-    /// synchronized per-member dispatch monitor). Records the transition into the per-node journal
+    /// ([`MembershipFsm#onTransition`], fired once per ACTUAL per-member state change at the FSM's
+    /// central dispatch chokepoint). Records the transition into the per-node journal
     /// (Wave-1 Enrichment A) AND — when the transition crosses the exact-`Member` boundary — re-feeds
     /// the strict-core count to the quorum-loss detector. This prompt re-feed (NOT only the 15s
     /// presence down-hysteresis `onNttReconcile` / DEAD `onMembershipDeath` paths) is what arms the
     /// self-drain window when several cores enter SUSPECT at once, and CANCELS it on a SUSPECT→MEMBER
-    /// refutation. Safe-by-precedent: `onMembershipDeath` already drives the same
-    /// `propagateMemberCount`→`strictCoreMemberCount` chain from inside this same dispatch monitor.
+    /// refutation.
+    ///
+    /// #929: the detector's count derivation (`derivedMemberCount`) walks EVERY member calling the `synchronized`
+    /// `MemberTracking.isStrictCoreMember`. Until #929 this listener ran while the FSM held the
+    /// DISPATCHING member's monitor, so this method held one member's monitor and requested all the
+    /// others' — in `ConcurrentHashMap` iteration order. Two of this node's event loops (SWIM
+    /// `onSwimSuspect`, QUIC `onLivenessGone`) dispatching on two different members deadlocked AB/BA,
+    /// wedging both loops. The FSM now publishes with the per-member monitor RELEASED (serialised by
+    /// `MemberTracking.transitionGuard`), which is what makes this member walk safe. The old
+    /// "safe-by-precedent" note here cited `onMembershipDeath` driving the same chain from inside
+    /// that monitor — that was the same defect, not a precedent for it.
     @Contract
-    private static void onFsmTransition(TransitionJournal journal,
-                                        AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
-                                        MembershipFsm membershipFsm,
-                                        MembershipTransitionRecord record,
-                                        NodeId self) {
+    static void onFsmTransition(TransitionJournal journal,
+                                AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
+                                MembershipTransitionRecord record) {
         appendFsmTransition(journal, record);
         if (crossesMemberBoundary(record)) {
-            propagateMemberCount(quorumLossDetectorRef, membershipFsm, self);
+            Option.option(quorumLossDetectorRef.get()).onPresent(QuorumLossDetector::reevaluate);
         }
     }
 
@@ -4399,6 +7049,203 @@ public interface AetherNode extends ManageableNode {
                   presenceSampler.currentMembers());
     }
 
+    /// #1564 B1: the operator-visible half of a refused `system:cluster-events` registration, a CRITICAL
+    /// `cluster-events-registration-refused` operator warning (#1617, R10): an ERROR log, plus a cluster event. The
+    /// event is offered to the very stream whose registration was refused, so it lands only once cluster-events
+    /// exists. So the refusal is ALSO a CRITICAL alert on the leader's `/api/alerts/active` (v1680 N-r3-1), which does
+    /// not depend on the stream. It is LOCAL-only (`injectLocal`, v1735 B1): a replicated copy would outlive the
+    /// registrar's recovery sink, which resolves the alert once a corrected config commits the stream.
+    @Contract
+    private static void raiseClusterEventsRefusal(OperatorWarningSink sink, AlertManager alertManager, Cause cause) {
+        OperatorWarnings.raise(LOG,
+                               sink,
+                               OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED,
+                               "system:cluster-events",
+                               "system:cluster-events was not registered: {} — correct [replication.cluster_events] and re-apply the cluster config",
+                               cause.message());
+        alertManager.injectLocal(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),
+                                 "CRITICAL",
+                                 "system:cluster-events was not registered: " + cause.message()
+                                + " — correct [replication.cluster_events] and re-apply the cluster config")
+                    .onFailure(failure -> LOG.warn("Cluster-events refusal alert injection failed: {}",
+                                                   failure.message()));
+    }
+
+    /// #1777 track 1: apply the cluster's committed DHT replication — `[replication]` for the DHT itself (W = CF,
+    /// R = RF − CF + 1, re-placed through the catch-up gate when it changes) and `[cache]` for the cache namespace.
+    /// No committed config means the built-in factors. A committed config that does not parse was refused at
+    /// apply, so failing here is a defect: it is logged at ERROR and the node keeps what it had — still refusing,
+    /// if nothing was resolved yet, rather than guessing a factor. FULL replication is a harness declaration and is
+    /// kept as declared.
+    ///
+    /// `committed` is the configuration being applied — the one a commit notification carries, so its version is the
+    /// version this node reports as applied (#1777 R1b), never a later one read back from the store.
+    @Contract
+    private static void resolveDhtReplication(Option<AetherValue.ClusterConfigValue> committed,
+                                              DHTNode dhtNode,
+                                              AetherNodeConfig config,
+                                              AtomicReference<DHTConfig> cacheDhtConfig,
+                                              DhtReplicationSettlement settlement) {
+        var version = committed.map(AetherValue.ClusterConfigValue::configVersion).or(DHTNode.NO_CHANGE);
+
+        ClusterReplication.defaults(committed)
+                          .onSuccess(defaults -> applyDhtReplication(defaults,
+                                                                     version,
+                                                                     dhtNode,
+                                                                     config.artifactRepo(),
+                                                                     config.cache(),
+                                                                     cacheDhtConfig))
+                          .onSuccess(_ -> settlement.applied(version))
+                          .onFailure(cause -> LOG.error("DHT replication not resolved from the committed cluster configuration: {}",
+                                                        cause.message()));
+    }
+
+    /// `declared` and `declaredCache` supply the timeout and retry policy; their factors are replaced by the
+    /// committed ones, except a declared FULL replication (the Ember harness), which has no placement to resolve.
+    /// `version` is the committed configuration version that carries the factors (#1777 R1b).
+    @Contract
+    static void applyDhtReplication(ReplicationDefaultsConfig defaults,
+                                    long version,
+                                    DHTNode dhtNode,
+                                    DHTConfig declared,
+                                    DHTConfig declaredCache,
+                                    AtomicReference<DHTConfig> cacheDhtConfig) {
+        var resolved = declared.isFullReplication()
+                       ? Result.success(declared)
+                       : declared.withFactors(defaults.replicationFactor(), defaults.confirmationFactor());
+        // #1777 track 3: the tombstone retention is cluster-wide, like the factors — every replica must agree
+        // which tombstones have expired, since the anti-entropy digest leaves expired ones out
+        dhtNode.resolveTombstoneRetention(defaults.tombstoneRetention());
+        resolved.onSuccess(dht -> logIfReplicationChanged(dhtNode, dht))
+                .onSuccess(dht -> dhtNode.resolveReplication(dht, version))
+                .onFailure(cause -> LOG.error("DHT replication factors refused: {}",
+                                              cause.message()));
+        declaredCache.withFactors(defaults.cacheReplicationFactor(),
+                                  defaults.cacheConfirmationFactor())
+                     .onSuccess(cacheDhtConfig::set)
+                     .onFailure(cause -> LOG.error("DHT cache replication factors refused: {}",
+                                                   cause.message()));
+    }
+
+    /// #1777 track 1 (CTO ruling B), core side: the DHT replication a worker's projection carries, derived from this
+    /// core's committed `[replication]` and `[cache]` sections — the narrow subset, never the TOML itself (#1390) — and,
+    /// for CTO ruling R1b, the committed configuration version and the latest replication change: its floor while it is
+    /// unsettled, so a worker keeps the transitional quorums exactly as long as the cores do.
+    static Result<WorkerMetadataMessage.DhtReplication> workerDhtReplication(Option<AetherValue.ClusterConfigValue> committed,
+                                                                             Option<AetherValue.DhtReplicationChangeValue> change) {
+        var configVersion = committed.map(AetherValue.ClusterConfigValue::configVersion).or(DHTNode.NO_CHANGE);
+
+        return ClusterReplication.defaults(committed).map(defaults -> new WorkerMetadataMessage.DhtReplication(defaults.replicationFactor(),
+                                                                                                               defaults.confirmationFactor(),
+                                                                                                               defaults.cacheReplicationFactor(),
+                                                                                                               defaults.cacheConfirmationFactor(),
+                                                                                                               configVersion,
+                                                                                                               change.map(AetherValue.DhtReplicationChangeValue::version)
+                                                                                                                     .or(DHTNode.NO_CHANGE),
+                                                                                                               change.map(AetherValue.DhtReplicationChangeValue::floorWriteQuorum)
+                                                                                                                     .or(0),
+                                                                                                               change.map(AetherValue.DhtReplicationChangeValue::floorReadQuorum)
+                                                                                                                     .or(0),
+                                                                                                               change.map(AetherValue.DhtReplicationChangeValue::settled)
+                                                                                                                     .or(true)));
+    }
+
+    /// #1777 track 1 (CTO ruling B), worker side: apply a projection's DHT replication exactly as a core applies its
+    /// committed configuration — the same resolution and, on a change, the same catch-up diff — then the committed
+    /// replication change it carries (CTO ruling R1b), and report the applied version through the settlement.
+    @Contract
+    static void applyWorkerDhtReplication(WorkerMetadataMessage.DhtReplication replication,
+                                          DHTNode dhtNode,
+                                          DHTConfig declared,
+                                          DHTConfig declaredCache,
+                                          AtomicReference<DHTConfig> cacheDhtConfig,
+                                          DhtReplicationSettlement settlement) {
+        applyDhtReplication(new ReplicationDefaultsConfig(replication.replicationFactor(),
+                                                          replication.confirmationFactor(),
+                                                          ReplicationDefaultsConfig.BUILT_IN.clusterEventsConfirmationFactor(),
+                                                          replication.cacheReplicationFactor(),
+                                                          replication.cacheConfirmationFactor(),
+
+        // a worker is never a ring member and holds no DHT data, so it
+        // keeps no tombstones and the retention is inert there (#1777)
+        ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION),
+                            replication.configVersion(),
+                            dhtNode,
+                            declared,
+                            declaredCache,
+                            cacheDhtConfig);
+        if (replication.changeVersion() != DHTNode.NO_CHANGE) {
+            DhtReplicationSettlement.applyCommitted(dhtNode, declared, workerChange(replication));
+        }
+        // a worker holds no partitions and receives no DHT writes; its fence is what its projection says
+        dhtNode.confirmReplicationFence();
+        settlement.applied(replication.configVersion());
+    }
+
+    /// The committed change a worker projection carries, as the record a core reads. A worker holds no partitions, so
+    /// the writers-switched stage means nothing to it: unsettled is all it needs.
+    private static AetherValue.DhtReplicationChangeValue workerChange(WorkerMetadataMessage.DhtReplication replication) {
+        return new AetherValue.DhtReplicationChangeValue(replication.changeVersion(),
+                                                         replication.replicationFactor(),
+                                                         replication.confirmationFactor(),
+                                                         replication.floorWriteQuorum(),
+                                                         replication.floorReadQuorum(),
+                                                         replication.replicationFactor(),
+                                                         replication.changeSettled()
+                                                         ? AetherValue.DhtReplicationStage.SETTLED
+                                                         : AetherValue.DhtReplicationStage.APPLYING,
+                                                         0L,
+                                                         false);
+    }
+
+    @Contract
+    private static void logIfReplicationChanged(DHTNode dhtNode, DHTConfig resolved) {
+        var current = dhtNode.config();
+
+        if (!dhtNode.replicationResolved() || current.replicationFactor() != resolved.replicationFactor() || current.writeQuorum() != resolved.writeQuorum()) {
+            LOG.info("DHT replication: replication factor {}, write quorum {}, read quorum {}",
+                     resolved.replicationFactor(),
+                     resolved.writeQuorum(),
+                     resolved.readQuorum());
+        }
+    }
+
+    /// #1777 R1b: a new leader takes over the replication change where the last one left it — it commits the change the
+    /// current configuration carries if its predecessor had not, and advances what the reports already allow.
+    @Contract
+    private static void onDhtLeaderChange(LeaderNotification.LeaderChange change,
+                                          KVStore<AetherKey, AetherValue> kvStore,
+                                          DhtReplicationSettlement settlement) {
+        if (!change.localNodeIsLeader()) {
+            return;
+        }
+
+        kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+               .onPresent(settlement::onConfigCommitted);
+        settlement.evaluate();
+    }
+
+    /// #1777 R1b: the workers a replication change waits for — every worker the membership tracks that has not been
+    /// marked Dead in the leader's membership view. Any of them may write to the DHT. The view decides only WHEN a change
+    /// settles; the replication-change fence on every put keeps a writer it misses safe (#1777 R1c).
+    static Set<NodeId> dhtWritingWorkers(Option<MembershipFsm> membershipFsm) {
+        return membershipFsm.map(fsm -> fsm.memberDescriptors()
+                                           .entrySet()
+                                           .stream()
+                                           .filter(entry -> "worker".equalsIgnoreCase(entry.getValue().role()))
+                                           .map(Map.Entry::getKey)
+                                           .filter(fsm::isTrackedAndNotDead)
+                                           .collect(Collectors.toSet()))
+                            .or(Set.of());
+    }
+
+    /// #1777 R1b: whether the leader's membership view holds `member` `Dead`. Not a committed fact: a wrong verdict only
+    /// hastens or delays a settle (#1777 R1c).
+    static boolean committedDeparture(Option<MembershipFsm> membershipFsm, NodeId member) {
+        return membershipFsm.map(fsm -> "Dead".equals(fsm.memberStates().get(member)))
+                            .or(false);
+    }
+
     /// `ClusterConfigKey` KV-commit fan-out. CTM keeps its config-changed notification, AND —
     /// H1 / #257 (cluster-topology-overhaul Wave 8 item 1, pulled forward) — the leader's
     /// reconciler is triggered with `trigger=CONFIG_CHANGE`: a committed config-driven target
@@ -4407,26 +7254,12 @@ public interface AetherNode extends ManageableNode {
     /// sat 10 minutes unhealed because no reconcile ever fired). `onConfigChange` is
     /// leader-gated and rides the reconciler's standard CAS-debounce machinery.
     ///
-    /// **One quorum denominator (cluster-topology-overhaul Wave 9 item 1).** `ClusterConfigKey`
-    /// is the single SOURCE of the cluster's core-count denominator. The consensus-side
-    /// `TopologyObserver.effectiveClusterSize` atomic is a DERIVED cell: this aether-side
-    /// `ClusterConfigKey` subscription pushes the committed `coreCount` into it via the
-    /// observer's pre-existing `handleSetClusterSize` trigger (§3.1: that trigger is preserved,
-    /// only its denominator-write origin changes — it is now driven by the KV commit, not a
-    /// separately-routed operator `SetClusterSize`). The observer cannot read aether KV
-    /// directly (module boundary), so this is the single bridge from KV → the atomic.
-    /// Boot ordering: the atomic is initialized from `TopologyConfig.clusterSize()` at
-    /// construction and stays at that seed until the FIRST `ClusterConfigKey` value arrives
-    /// (bootstrap seeds it on leader gain); both sources agree on the configured core count, so
-    /// the seed is correct until the KV value supersedes it.
+    /// Desired core capacity does not change voting authority. The installed voter configuration
+    /// changes only after a consensus handoff has established its successor electorate.
     @Contract
     private static void onClusterConfigPut(ValuePut<AetherKey.ClusterConfigKey, AetherValue.ClusterConfigValue> put,
                                            ClusterTopologyManager clusterTopologyManager,
                                            LeaderReconciler leaderReconciler) {
-        clusterTopologyManager.observer()
-                              .handleSetClusterSize(new TopologyManagementMessage.SetClusterSize(put.cause()
-                                                                                                    .value()
-                                                                                                    .coreCount()));
         clusterTopologyManager.onClusterConfigChanged();
         // RFC-0017 stage 5 — every committed config change (scale, apply, restore) converges worker
         // topology through ONE trigger source. Leader-gated and serialized inside the CTM.
@@ -4471,6 +7304,18 @@ public interface AetherNode extends ManageableNode {
         holder.onSubsystemsReady();
     }
 
+    /// #1052: the NDM self-ready signal, deferred until `dhtAdmission` succeeds -- every DHT-backed
+    /// storage instance admitted by its post-formation encryption-marker check. Already admitted (or no
+    /// DHT tier at all: an empty set resolves at once), it runs synchronously, exactly as before. Still
+    /// pending, it runs when the last gate admits. A refusal never runs it: the node stays `JOINING`
+    /// while `start()` fails on the same cause.
+    @Contract
+    private static void markSubsystemsReadyOnceDhtAdmitted(Promise<Unit> dhtAdmission,
+                                                           Runnable signalReady,
+                                                           NodeReportedStateHolder holder) {
+        dhtAdmission.onSuccess(_ -> markSubsystemsReady(signalReady, holder));
+    }
+
     /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from
     /// the readiness view PLUS self when the local holder reports that state (the leader does not pong
     /// itself, so it is absent from the aggregated pong view; its own state is authoritative locally).
@@ -4478,9 +7323,16 @@ public interface AetherNode extends ManageableNode {
                                               NodeReportedStateHolder selfHolder,
                                               NodeId self,
                                               NodeReportedState target) {
+        return nodesReporting(fan.readinessSnapshot(), selfHolder, self, target);
+    }
+
+    private static Set<NodeId> nodesReporting(Map<NodeId, NodeReportedState> states,
+                                              NodeReportedStateHolder selfHolder,
+                                              NodeId self,
+                                              NodeReportedState target) {
         var matching = new HashSet<NodeId>();
 
-        fan.readinessSnapshot().forEach((nodeId, state) -> addIfMatching(matching, nodeId, state, target));
+        states.forEach((nodeId, state) -> addIfMatching(matching, nodeId, state, target));
         if (selfHolder.current() == target) {
             matching.add(self);
         }
@@ -4517,6 +7369,327 @@ public interface AetherNode extends ManageableNode {
                   .collect(Collectors.toUnmodifiableSet());
     }
 
+    /// The committed generation epoch at local counter 0 (#1529): the cluster incarnation (dominant) and the
+    /// leader term — the base every ownership writer mints its owner epochs from. A named seam so
+    /// `ClusterIncarnationTest.GenerationEpochSeam` pins it (forcing the incarnation to 0 here left every
+    /// module green). An epoch minted before the registrar commits the genesis incarnation carries 0, which
+    /// ranks below every later mint.
+    static Supplier<Epoch> generationEpoch(ObservedIncarnation incarnation, Supplier<Long> rabiaTermSupplier) {
+        return () -> Epoch.epoch(incarnation.current(), rabiaTermSupplier.get(), 0L);
+    }
+
+    /// The node's incarnation-bearing epoch sources (#1529), built ONCE per node and shared by every consumer:
+    /// the SWIM health detector, cluster sync, the governor authority, the QUIC connectivity reporter (all
+    /// [#leaderEpoch]); the ownership writers and the bootstrap module ([#generationEpoch]); presence, worker
+    /// metadata and stream cursors ([#incarnation]).
+    ///
+    /// None of them may read the incarnation through [ClusterIncarnation#current]: that goes through the
+    /// synchronized `KVStore.getTyped`, whose monitor a snapshot restore holds for the whole install, and
+    /// several of these suppliers are read inline on network threads — a SWIM hint on the SWIM UDP loop, a
+    /// reconnect or an inbound attach on the QUIC loop, a routed request on its channel's loop (v1640 B1). They
+    /// read the [ObservedIncarnation] mirror, which the committed key's notifications keep current.
+    ///
+    /// The mirror can only LAG the committed incarnation (until a commit's notification is dispatched, or a
+    /// snapshot install's replay), never lead it, and a lagging incarnation mints a LOWER epoch. Every fence
+    /// orders incarnation-first and refuses an older epoch, so a stale read is refused, never accepted in the
+    /// newer incarnation's place: the cost of the lag is a retried write, not a wrong one.
+    record EpochSources(ObservedIncarnation incarnation,
+                        AtomicLong generationCounter,
+                        Supplier<Epoch> leaderEpoch,
+                        Supplier<Epoch> generationEpoch) {}
+
+    /// Seeds the mirror from the store on the assembly thread, before consensus starts; its routes go live
+    /// with the node's router (`routeEntries`), and no commit can land before that.
+    static EpochSources epochSources(KVStore<AetherKey, AetherValue> kvStore, LeaderTerm leaderTerm) {
+        var incarnation = ObservedIncarnation.observedIncarnation(ClusterIncarnation.current(kvStore));
+        var generationCounter = new AtomicLong(0L);
+
+        return new EpochSources(incarnation,
+                                generationCounter,
+                                () -> Epoch.epoch(incarnation.current(), leaderTerm.current(), generationCounter.get()),
+                                generationEpoch(incarnation, leaderTerm::current));
+    }
+
+    /// #1573: the committed cluster-wide automatic-rollback policy. An absent config, or the bootstrap seed (which
+    /// carries no source TOML), is the built-in default (ON). The section was validated at apply, so a failure here means a document committed
+    /// before validation existed; automatic rollback is then OFF — never take a destructive action on a policy
+    /// that cannot be read — and the failure is logged.
+    private static RollbackConfig committedRollbackPolicy(Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader) {
+        return clusterConfigReader.get()
+                                  .map(AetherValue.ClusterConfigValue::tomlContent)
+                                  .map(RollbackPolicyParser::fromClusterToml)
+                                  .or(() -> Result.success(RollbackConfig.rollbackConfig()))
+                                  .onFailure(cause -> LOG.error("Committed [rollback] policy unreadable, automatic rollback OFF: {}",
+                                                                cause.message()))
+                                  .or(RollbackConfig.rollbackConfig(false));
+    }
+
+    /// #1573: the ACTIVE instances of every deployed artifact version on nodes the membership FSM still counts,
+    /// as the all-instances-failed detector needs them. An instance left in KV on a node membership has declared
+    /// DEAD serves nothing and is not a host; a counted node that stopped reporting still is — and its stale
+    /// metrics make the version undecidable. An unparsable artifact or node id is skipped, never guessed.
+    private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap,
+                                                                        Option<MembershipFsm> membershipFsm) {
+        return membershipFsm.map(fsm -> activeInstancesByArtifact(deploymentMap, fsm))
+                            .or(Map.of());
+    }
+
+    private static Map<Artifact, Set<NodeId>> activeInstancesByArtifact(DeploymentMap deploymentMap,
+                                                                        MembershipFsm membershipFsm) {
+        var result = new HashMap<Artifact, Set<NodeId>>();
+
+        deploymentMap.allDeployments()
+                     .forEach(info -> Artifact.artifact(info.artifact()).onSuccess(artifact -> result.put(artifact,
+                                                                                                          activeNodes(info,
+                                                                                                                      membershipFsm))));
+
+        return Map.copyOf(result);
+    }
+
+    private static Set<NodeId> activeNodes(DeploymentMap.SliceDeploymentInfo info, MembershipFsm membershipFsm) {
+        return info.instances()
+                   .stream()
+                   .filter(instance -> instance.state() == SliceState.ACTIVE)
+                   .map(instance -> new NodeId(instance.nodeId()))
+                   .filter(membershipFsm::isCountedMember)
+                   .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static Set<NodeId> installedVoterIds(RabiaNode<KVCommand<AetherKey>> node) {
+        return node.voterConfiguration()
+                   .map(configuration -> Set.copyOf(configuration.members()))
+                   .or(Set.of());
+    }
+
+    /// Whether this core must dial its configured transfer peers regardless of the single-dialer order.
+    ///
+    /// Staged (#1390): an installed configuration that does not include this node. Formed cores keep
+    /// an unadmitted core outside their SWIM scope and never dial it — core SWIM membership is bounded
+    /// to known cores plus governors, and a claimed CORE role alone must not widen it — so the staged
+    /// core has to initiate.
+    ///
+    /// Genesis pending (no configuration yet, #1554): a cold-start candidate and a core joining a formed
+    /// cluster look the same locally. Cold-start candidates reach each other through designated dials
+    /// within a fraction of a second; if they also bypassed the order, every pair dialed both ways and
+    /// the superseded duplicate could lose its FORWARD lane (#1578). So a pending core initiates only
+    /// once it is isolated: no connection to any configured core after the grace window. That is the
+    /// joiner the formed seeds cannot see. The window starts at the transport's first dial decision,
+    /// not at construction: a node built long before it starts would otherwise start out "isolated".
+    private static boolean bootstrapInitiator(RabiaNode<KVCommand<AetherKey>> node,
+                                              NodeId self,
+                                              Set<NodeId> configuredPeers,
+                                              AtomicLong dialingSinceNanos) {
+        return node.voterConfiguration()
+                   .map(configuration -> !configuration.contains(self))
+                   .or(() -> isolatedPendingCore(node,
+                                                 configuredPeers,
+                                                 dialingSince(dialingSinceNanos)));
+    }
+
+    /// The peers a bootstrapping core initiates toward regardless of the single-dialer order: the cores it was
+    /// configured with at mint time AND the committed electorate it learns after joining (#1803). Mint-time
+    /// peers alone are frozen at mint — a replacement minted before the current leader existed would otherwise
+    /// wait for a leader that does not know it to dial first.
+    static Predicate<NodeId> transferPeers(Set<NodeId> configured, Supplier<Set<NodeId>> electorate) {
+        return peer -> configured.contains(peer) || electorate.get()
+                                                              .contains(peer);
+    }
+
+    private static long dialingSince(AtomicLong dialingSinceNanos) {
+        var _ = dialingSinceNanos.compareAndSet(0L, System.nanoTime());
+
+        return dialingSinceNanos.get();
+    }
+
+    private static boolean isolatedPendingCore(RabiaNode<KVCommand<AetherKey>> node,
+                                               Set<NodeId> configuredPeers,
+                                               long dialingSinceNanos) {
+        return System.nanoTime() - dialingSinceNanos >= PENDING_CORE_ISOLATION_GRACE.nanos() && node.network()
+                                                                                                    .connectedPeers()
+                                                                                                    .stream()
+                                                                                                    .noneMatch(configuredPeers::contains);
+    }
+
+    private static Set<NodeId> configuredVoters(AetherNodeConfig config) {
+        return config.topology()
+                     .coreNodes()
+                     .stream()
+                     .map(info -> configuredMember(info,
+                                                   config.self(),
+                                                   config.workerConfig().isPresent()))
+                     .filter(info -> "core".equalsIgnoreCase(info.labels().getOrDefault(NodeInfo.LABEL_ROLE, "")))
+                     .map(NodeInfo::id)
+                     .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// Genesis (#1526). A malformed `cluster.genesis_voters` fails boot loudly. A core (other than a
+    /// single-node cluster) never installs a roster on its own: it defers genesis and its engine runs
+    /// genesis view agreement over the discovered core membership, or over `cluster.genesis_voters`, until
+    /// the agreement rules hold or an already formed electorate answers. A worker does not vote and keeps
+    /// the plain wait-and-retry ([#retryGenesis]). No backup's voter configuration is consulted: a cold
+    /// restart forms a fresh genesis and restores the data under it.
+    private static Result<RabiaNode<KVCommand<AetherKey>>> initializeVoterConfiguration(RabiaNode<KVCommand<AetherKey>> node,
+                                                                                        AetherNodeConfig config,
+                                                                                        AtomicReference<Set<NodeId>> installedVoters,
+                                                                                        AtomicReference<MembershipFsm> membershipFsmRef) {
+        node.onVoterConfiguration(configuration -> installVoterConfiguration(node, installedVoters, configuration));
+
+        return configuredGenesis(config).flatMap(configured -> initializeRoleVoters(node,
+                                                                                    config,
+                                                                                    configured,
+                                                                                    membershipFsmRef))
+                                .map(ignored -> node);
+    }
+
+    private static Result<Unit> initializeRoleVoters(RabiaNode<KVCommand<AetherKey>> node,
+                                                     AetherNodeConfig config,
+                                                     Option<VoterConfiguration> configured,
+                                                     AtomicReference<MembershipFsm> membershipFsmRef) {
+        if (configuredWorker(config)) {
+            return initializeWorkerVoters(node, config, configured);
+        }
+
+        return initializeCoreVoters(node, config, configured, membershipFsmRef);
+    }
+
+    /// A roster of this node alone needs no agreement — there is no other member to report — so it is
+    /// installed at assembly. Every other core runs genesis view agreement in its engine over the
+    /// discovered core membership, or over `cluster.genesis_voters` when set.
+    private static Result<Unit> initializeCoreVoters(RabiaNode<KVCommand<AetherKey>> node,
+                                                     AetherNodeConfig config,
+                                                     Option<VoterConfiguration> configured,
+                                                     AtomicReference<MembershipFsm> membershipFsmRef) {
+        var count = config.topology().clusterSize();
+
+        return singleNodeGenesis(config, configured, count).map(node::initializeVoters)
+                                .or(() -> node.deferGenesis(() -> discoveredCores(membershipFsmRef),
+                                                            count,
+                                                            configured.map(VoterConfiguration::roster),
+                                                            expectedCores(config, configured)));
+    }
+
+    private static Set<NodeId> expectedCores(AetherNodeConfig config, Option<VoterConfiguration> configured) {
+        return configured.map(roster -> Set.copyOf(roster.members()))
+                         .or(() -> configuredVoters(config));
+    }
+
+    private static Option<VoterConfiguration> singleNodeGenesis(AetherNodeConfig config,
+                                                                Option<VoterConfiguration> configured,
+                                                                int count) {
+        return configured.orElse(() -> completeRoster(List.copyOf(configuredVoters(config)),
+                                                      count))
+                         .filter(roster -> roster.members()
+                                                 .equals(List.of(config.self())));
+    }
+
+    static Set<NodeId> bootstrapIdentities(Set<NodeId> configuredCores, Set<NodeId> voterHistory) {
+        return Stream.concat(configuredCores.stream(),
+                             voterHistory.stream())
+                     .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static Result<Option<VoterConfiguration>> configuredGenesis(AetherNodeConfig config) {
+        return config.configProvider()
+                     .flatMap(provider -> provider.getString("cluster.genesis_voters"))
+                     .map(AetherNode::parsedGenesis)
+                     .or(Result.success(Option.none()));
+    }
+
+    private static Result<Option<VoterConfiguration>> parsedGenesis(String value) {
+        return parseGenesisVoters(value).map(Option::some);
+    }
+
+    private static Result<Unit> initializeWorkerVoters(RabiaNode<KVCommand<AetherKey>> node,
+                                                       AetherNodeConfig config,
+                                                       Option<VoterConfiguration> configured) {
+        return configured.orElse(() -> completeRoster(List.copyOf(configuredVoters(config)),
+                                                      config.topology().clusterSize()))
+                         .fold(node::deferGenesis, node::initializeVoters);
+    }
+
+    private static Set<NodeId> discoveredCores(AtomicReference<MembershipFsm> membershipFsmRef) {
+        return Option.option(membershipFsmRef.get())
+                     .map(MembershipFsm::coreCountedMembers)
+                     .or(Set.of());
+    }
+
+    /// Genesis wait-and-retry period for workers (#1526).
+    static final TimeSpan GENESIS_RETRY_INTERVAL = TimeSpan.timeSpan(2).seconds();
+
+    static Option<VoterConfiguration> completeRoster(List<NodeId> knownCores, int configuredCount) {
+        return Option.some(knownCores)
+                     .filter(cores -> cores.size() == configuredCount)
+                     .flatMap(cores -> VoterConfiguration.voterConfiguration(0,
+                                                                             List.copyOf(cores))
+                                                         .option());
+    }
+
+    /// One worker genesis wait-and-retry tick. A no-op once genesis is resolved. While it is pending, the
+    /// discovered core membership completes it as soon as it names exactly the configured core count.
+    ///
+    /// FER (degrade forward): a failed tick is absorbed — the worker stays genesis-pending, and the next
+    /// tick retries. The logged line is the operator surface for the wait.
+    static Unit retryGenesis(BooleanSupplier genesisPending,
+                             Function<VoterConfiguration, Result<Unit>> initializeVoters,
+                             Supplier<Set<NodeId>> discoveredCores,
+                             int configuredCount) {
+        if (!genesisPending.getAsBoolean()) {
+            return Unit.unit();
+        }
+
+        var discovered = discoveredCores.get();
+
+        return completeRoster(List.copyOf(discovered),
+                              configuredCount).toResult(VoterBootstrapError.GENESIS_ROSTER_INCOMPLETE)
+                             .flatMap(initializeVoters::apply)
+                             .onFailure(cause -> LOG.info("Genesis voter roster pending ({} of {} cores discovered: {}): {}",
+                                                          discovered.size(),
+                                                          configuredCount,
+                                                          discovered,
+                                                          cause.message()))
+                             .or(Unit.unit());
+    }
+
+    static Result<VoterConfiguration> parseGenesisVoters(String value) {
+        var ids = java.util.Arrays.stream(value.split(",", -1)).map(String::strip).toList();
+
+        if (ids.stream().anyMatch(String::isBlank)) {
+            return VoterBootstrapError.MALFORMED_GENESIS_VOTERS.result();
+        }
+
+        return VoterConfiguration.voterConfiguration(0,
+                                                     ids.stream().map(NodeId::new).toList());
+    }
+
+    private static void installVoterConfiguration(RabiaNode<KVCommand<AetherKey>> node,
+                                                  AtomicReference<Set<NodeId>> installedVoters,
+                                                  VoterConfiguration configuration) {
+        installedVoters.set(Set.copyOf(configuration.members()));
+        ((TopologyObserver) node.topologyManager()).installVoterConfiguration(configuration);
+    }
+
+    enum VoterBootstrapError implements Cause {
+        MALFORMED_GENESIS_VOTERS("cluster.genesis_voters must list non-blank core node ids separated by commas"),
+        GENESIS_ROSTER_INCOMPLETE("the discovered core membership does not yet name exactly the configured core count");
+        private final String message;
+        VoterBootstrapError(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
+    static Supplier<Set<NodeId>> presenceMemberSupplier(Supplier<MembershipFsm> membershipFsm,
+                                                        NodeId self,
+                                                        Supplier<Set<NodeId>> installedVoters) {
+        return () -> presenceMemberSupplier(membershipFsm, self).get()
+                                           .stream()
+                                           .filter(installedVoters.get()::contains)
+                                           .collect(Collectors.toUnmodifiableSet());
+    }
+
     /// #557's boot-quorum projection as a NAMED seam (extracted under #644's assembly pass, per the
     /// composition note on that ticket). The quorum numerator MUST read the OBSERVED-reachability
     /// projection: swapping `coreObservedMembers` for `coreCountedMembers` here silently restores
@@ -4531,10 +7704,238 @@ public interface AetherNode extends ManageableNode {
                            .or(Set.of());
     }
 
+    /// #1050 / #1062 — the CTM's membership and liveness evidence as ONE named seam, the sibling of
+    /// [#presenceMemberSupplier]. Every projection is read live, per call:
+    /// - counted — the FSM's role-scoped MEMBER + SUSPECT set, the `LeaderReconciler`'s own drain denominator;
+    /// - tracked — the FSM's not-DEAD set (OBSERVED + MEMBER + SUSPECT + DEPARTING);
+    /// - swimAlive — raw SWIM HEALTHY/SUSPECTED;
+    /// - transportConnected — the leader's own cluster-transport view;
+    /// - in-flight — this leader's reconciler in-flight keys plus the set retained from the previous leader's
+    ///   pings;
+    /// - configured — the committed `ClusterConfigValue.coreCount`, else the bootstrap topology size;
+    /// - advertisedRole (#689) — the FSM's `memberDescriptor(id).role()`, the self-asserted role the projector
+    ///   classified the node's join by; `none()` for an untracked id or before the FSM is published.
+    ///
+    /// Before the FSM, detector or reconciler is published, its projection reads empty or false, which every
+    /// reap gate treats as not quorum-safe (fail-closed). `DrainGraceLivenessSeamTest` pins this method.
+    static MembershipLiveness drainGraceLiveness(Supplier<MembershipFsm> membershipFsm,
+                                                 Supplier<Option<AetherValue.ClusterConfigValue>> clusterConfigReader,
+                                                 int topologyCoreNodes,
+                                                 Supplier<CoreSwimHealthDetector> swimHealthDetector,
+                                                 Predicate<NodeId> transportConnected,
+                                                 Supplier<LeaderReconciler> leaderReconciler,
+                                                 Supplier<Set<NodeId>> retainedDispatched) {
+        return MembershipLiveness.membershipLiveness(() -> fsmProjection(membershipFsm.get(),
+                                                                         MembershipFsm::coreCountedMembers),
+                                                     () -> fsmProjection(membershipFsm.get(),
+                                                                         MembershipFsm::broadcastEligibleMembers),
+                                                     nodeId -> swimAliveIfPublished(swimHealthDetector.get(), nodeId),
+                                                     transportConnected,
+                                                     () -> inFlightProvisioning(leaderReconciler.get(),
+                                                                                retainedDispatched.get()),
+                                                     () -> configuredCoreCount(clusterConfigReader.get(),
+                                                                               topologyCoreNodes),
+                                                     nodeId -> advertisedRole(membershipFsm.get(), nodeId));
+    }
+
+    /// Configured seeds have a declared role even when the single-tier configuration omits labels.
+    /// Discovered peers do not receive this default: unknown observations remain ineligible.
+    static NodeInfo configuredMember(NodeInfo info, NodeId self, boolean worker) {
+        var labels = new HashMap<>(info.labels());
+
+        labels.putIfAbsent(NodeInfo.LABEL_ROLE,
+                           info.id().equals(self) && worker
+                           ? "worker"
+                           : "core");
+
+        return NodeInfo.nodeInfo(info.id(), info.address(), labels, info.resolvedAddress());
+    }
+
+    private static void beginCommunityObservation(LeaderNotification.LeaderChange change,
+                                                  org.pragmatica.aether.deployment.cluster.fsm.CommunityReachability reachability) {
+        if (change.localNodeIsLeader()) {
+            reachability.beginLeadership();
+        }
+    }
+
+    private static void publishSourceMetrics(RabiaNode<KVCommand<AetherKey>> cluster,
+                                             Supplier<MembershipFsm> membership,
+                                             ControlLoop control,
+                                             CommunityMetricsSnapshot snapshot) {
+        control.onCommunityMetricsSnapshot(snapshot);
+        if (cluster.leaderManager().isLeader()) {
+            return;
+        }
+
+        Option.option(membership.get()).onPresent(fsm -> sourceMetricsUplink(cluster, fsm).onPresent(target -> cluster.network()
+                                                                                                                      .handleSend(new NetworkServiceMessage.Send(target,
+                                                                                                                                                                 snapshot))));
+    }
+
+    private static Option<NodeId> sourceMetricsUplink(RabiaNode<KVCommand<AetherKey>> cluster,
+                                                      MembershipFsm membership) {
+        var peers = cluster.network().connectedPeers();
+
+        return cluster.leaderManager()
+                      .leader()
+                      .filter(peers::contains)
+                      .filter(node -> isCoreMember(membership, node))
+                      .orElse(() -> Option.from(peers.stream()
+                                                     .filter(node -> isCoreMember(membership, node))
+                                                     .sorted()
+                                                     .findFirst()));
+    }
+
+    private static void receiveSourceMetrics(RabiaNode<KVCommand<AetherKey>> cluster,
+                                             MembershipFsm membership,
+                                             ControlLoop control,
+                                             CommunityMetricsSnapshot snapshot) {
+        control.onCommunityMetricsSnapshot(snapshot);
+        if (cluster.leaderManager().isLeader()) {
+            return;
+        }
+
+        cluster.leaderManager()
+               .leader()
+               .filter(node -> isCoreMember(membership, node))
+               .onPresent(leader -> cluster.network()
+                                           .send(leader,
+                                                 new org.pragmatica.aether.worker.metrics.SourceMetricsBatch(cluster.self(),
+                                                                                                             List.of(snapshot))));
+    }
+
+    private static void receiveSourceMetricsBatch(RabiaNode<KVCommand<AetherKey>> cluster,
+                                                  MembershipFsm membership,
+                                                  ControlLoop control,
+                                                  org.pragmatica.aether.worker.metrics.SourceMetricsBatch batch) {
+        if (isCoreMember(membership, batch.sender())) {
+            batch.snapshots().forEach(control::onCommunityMetricsSnapshot);
+        }
+    }
+
+    /// Provisioned CORE observers may report provider readiness before consensus handoff.
+    /// Workload allocation requires both membership readiness and installed voting authority.
+    static Set<NodeId> installedCorePlacementMembers(Set<NodeId> counted, Set<NodeId> installed) {
+        if (counted == MembershipFsm.MEMBERSHIP_NOT_WIRED) {
+            return MembershipFsm.MEMBERSHIP_NOT_WIRED;
+        }
+
+        return counted.stream()
+                      .filter(installed::contains)
+                      .collect(Collectors.toSet());
+    }
+
+    static boolean isCoreMember(MembershipFsm membershipFsm, NodeId nodeId) {
+        return membershipFsm.isTrackedAndNotDead(nodeId) && membershipFsm.memberDescriptor(nodeId)
+                                                                         .map(MemberDescriptor::isCore)
+                                                                         .or(false);
+    }
+
+    private static Option<String> advertisedRole(MembershipFsm membershipFsm, NodeId nodeId) {
+        return Option.option(membershipFsm)
+                     .flatMap(fsm -> fsm.memberDescriptor(nodeId))
+                     .map(MemberDescriptor::role);
+    }
+
+    private static Set<NodeId> fsmProjection(MembershipFsm membershipFsm,
+                                             Function<MembershipFsm, Set<NodeId>> projection) {
+        return Option.option(membershipFsm)
+                     .map(projection::apply)
+                     .or(Set.of());
+    }
+
+    private static boolean swimAliveIfPublished(CoreSwimHealthDetector swimHealthDetector, NodeId nodeId) {
+        return Option.option(swimHealthDetector)
+                     .map(detector -> swimAliveForCoConfirmation(detector::healthOf, nodeId))
+                     .or(false);
+    }
+
+    private static Set<NodeId> inFlightProvisioning(LeaderReconciler leaderReconciler, Set<NodeId> retainedDispatched) {
+        return Stream.concat(retainedDispatched.stream(),
+                             Option.option(leaderReconciler)
+                                   .map(LeaderReconciler::inFlightProvisioningKeys)
+                                   .or(Set.of())
+                                   .stream())
+                     .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static int configuredCoreCount(Option<AetherValue.ClusterConfigValue> clusterConfig,
+                                           int topologyCoreNodes) {
+        return clusterConfig.map(AetherValue.ClusterConfigValue::coreCount)
+                            .or(topologyCoreNodes);
+    }
+
     @Contract
     private static void commandedDrain(DrainProcedure drainProcedure, NodeReportedStateHolder holder) {
-        drainProcedure.initiate(DrainReason.COMMANDED);
+        initiateDrain(drainProcedure, holder, DrainReason.COMMANDED);
+    }
+
+    private static void initiateDrain(DrainProcedure drainProcedure,
+                                      NodeReportedStateHolder holder,
+                                      DrainReason reason) {
         holder.onDrainStarted();
+        drainProcedure.initiate(reason);
+    }
+
+    /// `DrainProcedure`'s single-shot `drainInitiatedEmitter`, invoked once inside the INACTIVE->DRAINING
+    /// CAS and therefore the node's one drain edge, shared by all three triggers (QUORUM_LOSS,
+    /// CORE_ABSENCE, COMMANDED). Two consumers, in falling order of consequence:
+    ///
+    ///   1. #273 item 1 — stop this node's ALL-mode scheduled fires. A correctness action.
+    ///   2. #565 — emit `SelfDrainInitiated`, the one event that explains why a node left.
+    ///
+    /// The scheduled-task hook runs FIRST but inside its own no-throw guard, so it can neither delay nor
+    /// suppress (2). `DrainProcedure.emitDrainInitiatedSafely` already wraps the whole consumer, but that
+    /// outer guard would let a throw from (1) swallow (2) — the exact loss #565 was filed for.
+    ///
+    /// Package-private and named rather than an inline lambda so the composition itself is testable:
+    /// `ScheduledTaskDrainWiringBootTest` drives a real drain through it. Both arguments are
+    /// forward-declared refs — the manager and the event aggregator are both constructed after
+    /// `DrainProcedure`.
+    static Consumer<DrainReason> drainInitiatedEmitter(AtomicReference<Runnable> scheduledTaskDrainHookRef,
+                                                       AtomicReference<Consumer<DrainReason>> clusterEventDrainEmitterRef) {
+        return reason -> {
+            runScheduledTaskDrainHookSafely(scheduledTaskDrainHookRef.get());
+            clusterEventDrainEmitterRef.get()
+                                       .accept(reason);
+        };
+    }
+
+    private static void runScheduledTaskDrainHookSafely(Runnable hook) {
+        try {
+            hook.run();
+        } catch (Throwable t) {
+            LOG.warn("Scheduled-task drain hook failed: {} — drain proceeds", t.getMessage());
+        }
+    }
+
+    /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this
+    /// node is the leader. Package-private so the gate and the feed are pinned without booting a node.
+    static Runnable leaderOnlyDrainRecordTick(BooleanSupplier isLeader,
+                                              Supplier<Set<NodeId>> registryTargets,
+                                              Consumer<Set<NodeId>> record) {
+        return () -> {
+            if (isLeader.getAsBoolean()) {
+                record.accept(registryTargets.get());
+            }
+        };
+    }
+
+    /// #2014: the drain record (the leader's broadcast set, or the leader's own registry) marks each commanded node
+    /// (never self) as an announced departure on this observer. `nodeReadyAgain` is the only thing that ends a mark
+    /// early. Package-private so the composition is pinned without booting a node.
+    static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager,
+                                                  NodeId self,
+                                                  java.util.function.Predicate<NodeId> nodeReadyAgain) {
+        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), nodeReadyAgain);
+    }
+
+    /// The node reports itself READY in the readiness view this observer holds (the leader's pong fan, or a
+    /// follower's cache of it): alive, responsive and not draining. The only evidence that ends a planned-departure
+    /// mark short of the DEAD edge (#2014). Absence from the view is NOT evidence. Package-private for the pin.
+    static java.util.function.Predicate<NodeId> nodeReadyAgain(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates) {
+        return id -> reportedStates.get()
+                                   .get(id) == NodeReportedState.READY;
     }
 
     /// E2 Phase 2b (2026-05-28): bridge the consensus-derived `ClusterStateNotification`
@@ -4549,21 +7950,37 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
+    /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement
+    /// (#1054) and the leader-side eviction loop. The CDM's `MembershipDecision.NodeDraining` arm is
+    /// never emitted (membership-v2 finale), so this listener is the ONLY production entry to
+    /// `startDrainEviction`. Package-private so the composition is pinned without booting a node.
+    static Consumer<NodeId> drainReportListener(MembershipFsm membershipFsm,
+                                                ClusterDeploymentManager clusterDeploymentManager) {
+        return drainingNode -> {
+            membershipFsm.onDrainAcknowledged(drainingNode);
+            clusterDeploymentManager.onNodeDraining(drainingNode);
+        };
+    }
+
     @Contract
     private static void routeQuorumDisappearedToDrain(ClusterStateNotification notification,
                                                       AtomicReference<QuorumLossDetector> quorumLossDetectorRef) {
         Option.option(quorumLossDetectorRef.get()).onPresent(detector -> detector.onQuorumPresence(notification.state() != ClusterStateNotification.State.PASSIVE));
     }
 
+    /// #517: self is in its own topology by the time assembly runs — `TopologyObserver.topologyObserver`
+    /// (via `RabiaNode.rabiaNode`, before `assembleNode`) refuses the config otherwise, pinned by
+    /// `AetherNodeSelfAbsentFromTopologyBootTest`. The old `.orElse(new NodeAddress("", 0))` was a
+    /// dead branch that would have advertised a placeholder silently if that ordering ever changed.
     private static NodeAddress findSelfAddress(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(info -> info.id()
-                                         .equals(config.self()))
-                     .map(NodeInfo::address)
-                     .findFirst()
-                     .orElse(new NodeAddress("", 0));
+        return Option.from(config.topology()
+                                 .coreNodes()
+                                 .stream()
+                                 .filter(info -> info.id()
+                                                     .equals(config.self()))
+                                 .map(NodeInfo::address)
+                                 .findFirst()).expect("self " + config.self()
+                                                     + " absent from its own topology — refused by TopologyObserver.topologyObserver before assembly (#517)");
     }
 
     private static AetherValue.ProvisioningSource detectProvisioningSource() {
@@ -4607,7 +8024,8 @@ public interface AetherNode extends ManageableNode {
         return switch (raw) {
             case "ctm" -> AetherValue.ProvisioningSource.CTM;
             case "manual" -> AetherValue.ProvisioningSource.MANUAL;
-            default -> AetherValue.ProvisioningSource.UNKNOWN;
+            // #964 S2: an unparseable config string is UNRECOGNISED, never the wire sentinel.
+            default -> AetherValue.ProvisioningSource.UNRECOGNISED;
         };
     }
 
@@ -4641,7 +8059,9 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    private static void attachQuicPeerStateListener(ClusterNetwork network, CoreSwimHealthDetector swimDetector) {
+    private static void attachQuicPeerStateListener(ClusterNetwork network,
+                                                    CoreSwimHealthDetector swimDetector,
+                                                    Consumer<NodeId> linkEstablished) {
         LOG.debug("attachQuicPeerStateListener: network class={}",
                   Option.option(network).map(n -> n.getClass()
                                                    .getName()).or("null"));
@@ -4651,37 +8071,84 @@ public interface AetherNode extends ManageableNode {
             return;
         }
 
-        var listener = new QuicPeerStateListener() {
-            @Override
-            @Contract
-            public void onPeerJoined(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerJoined({}) — recordTransportHint(reachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-            }
-
-            @Override
-            @Contract
-            public void onPeerReconnected(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerReconnected({}) — recordTransportHint(reachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerReachable(nodeId));
-            }
-
-            @Override
-            @Contract
-            public void onPeerLeft(NodeId nodeId) {
-                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
-                swimDetector.recordTransportHint(new TransportObservation.PeerUnreachable(nodeId,
-                                                                                          QuicTransportCause.PEER_LEFT));
-            }
-        };
-
-        quicNetwork.setPeerStateListener(listener);
+        quicNetwork.setPeerStateListener(quicPeerStateListener(swimDetector::recordTransportHint, linkEstablished));
         quicNetwork.connectedPeers()
                    .forEach(peer -> {
                                 LOG.debug("QuicPeerState: catch-up recordTransportHint(reachable) for already-connected peer {}",
                                           peer);
                                 swimDetector.recordTransportHint(new TransportObservation.PeerReachable(peer));
                             });
+    }
+
+    /// The QUIC peer-state listener feeding SWIM transport hints and ClusterSync link epochs (#1061).
+    /// Package-private so a test pins the observation each callback produces, not only the
+    /// cause→origin mapping. A join or reconnect first starts a new ClusterSync missed-pong epoch
+    /// for the peer (R-a: misses counted against the previous link are discarded) and then sends
+    /// `PeerReachable`; a departure sends a `PEER_LEFT` hint, which is `LINK_LOST`; a dial answered by
+    /// another identity sends `IdentityRefuted` for the dialed identity only (#1830).
+    static QuicPeerStateListener quicPeerStateListener(Consumer<TransportObservation> swimHints,
+                                                       Consumer<NodeId> linkEstablished) {
+        return new QuicPeerStateListener() {
+            @Override
+            @Contract
+            public void onPeerJoined(NodeId nodeId) {
+                reportLinkEstablished("onPeerJoined", nodeId, swimHints, linkEstablished);
+            }
+
+            @Override
+            @Contract
+            public void onPeerReconnected(NodeId nodeId) {
+                reportLinkEstablished("onPeerReconnected", nodeId, swimHints, linkEstablished);
+            }
+
+            @Override
+            @Contract
+            public void onPeerLeft(NodeId nodeId) {
+                LOG.debug("QuicPeerState: onPeerLeft({}) — recordTransportHint(unreachable)", nodeId);
+                swimHints.accept(unreachableHint(QuicTransportCause.PEER_LEFT, nodeId));
+            }
+
+            @Override
+            @Contract
+            public void onPeerIdentityRefuted(NodeId dialed, NodeId claimant) {
+                LOG.debug("QuicPeerState: onPeerIdentityRefuted({}, answered by {}) — recordTransportHint(refuted)",
+                          dialed,
+                          claimant);
+                swimHints.accept(new TransportObservation.IdentityRefuted(dialed, claimant));
+            }
+        };
+    }
+
+    /// A QUIC link to `nodeId` was (re)established: start a new ClusterSync missed-pong epoch, then
+    /// send SWIM `PeerReachable`.
+    private static void reportLinkEstablished(String callback,
+                                              NodeId nodeId,
+                                              Consumer<TransportObservation> swimHints,
+                                              Consumer<NodeId> linkEstablished) {
+        LOG.debug("QuicPeerState: {}({}) — link epoch + recordTransportHint(reachable)", callback, nodeId);
+        linkEstablished.accept(nodeId);
+        swimHints.accept(new TransportObservation.PeerReachable(nodeId));
+    }
+
+    /// ClusterSync missed-pong reporter: each report is a `PING_TIMEOUT` (`PEER_UNRESPONSIVE`) SWIM
+    /// hint (#1061). Package-private so a test pins the cause this call site reports.
+    static Consumer<NodeId> pingTimeoutReporter(Consumer<TransportObservation> swimHints) {
+        return nodeId -> swimHints.accept(unreachableHint(QuicTransportCause.PING_TIMEOUT, nodeId));
+    }
+
+    /// ClusterSync pong listener (#1061 R-b): a pong retracts that peer's `PEER_UNRESPONSIVE` hint via
+    /// `PeerResponsive` — ClusterSync withdrawing its own stale evidence on contrary evidence of the
+    /// same kind. SWIM state is untouched; SWIM probe-ack remains the sole ALIVE authority. The
+    /// A pong from `self` reports nothing — a defensive guard, not a producer: no production path
+    /// delivers one (`QuicClusterNetwork.broadcastPayload` iterates peers, which excludes self, and a
+    /// pong is sent to the leader only), and there would be no hint about `self` to retract anyway.
+    static Consumer<ClusterSyncMessage.ClusterSyncPong> pongResponsiveReporter(NodeId self,
+                                                                               Consumer<TransportObservation> swimHints) {
+        return pong -> {
+            if (!self.equals(pong.sender())) {
+                swimHints.accept(new TransportObservation.PeerResponsive(pong.sender()));
+            }
+        };
     }
 
     enum QuicTransportCause implements Cause {
@@ -4697,6 +8164,20 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
+    /// The SWIM death hint a QUIC-side cause reports, tagged with the origin that decides how long
+    /// SWIM believes it (#1061): `PEER_LEFT` describes one lost link, so a reconnect or a live link
+    /// overrides it; `PING_TIMEOUT` describes a connected-but-silent peer, so a live link does not.
+    static TransportObservation.PeerUnreachable unreachableHint(QuicTransportCause cause, NodeId peer) {
+        return new TransportObservation.PeerUnreachable(peer, cause, hintOrigin(cause));
+    }
+
+    private static TransportObservation.HintOrigin hintOrigin(QuicTransportCause cause) {
+        return switch (cause) {
+            case PEER_LEFT -> TransportObservation.HintOrigin.LINK_LOST;
+            case PING_TIMEOUT -> TransportObservation.HintOrigin.PEER_UNRESPONSIVE;
+        };
+    }
+
     /// Installs a single `PeerConnectivityReporter` on EVERY node (leader + followers).
     /// On EVERY transition observation, push into the local `PeerObservationBuffer` so the
     /// next outbound `ClusterSyncPong` carries the observation (follower→leader relay path;
@@ -4706,16 +8187,35 @@ public interface AetherNode extends ManageableNode {
     /// P3 (membership unification): the former leader-side `ReachabilityAggregator`
     /// `ingestSelfTransition` fast-path is removed — SWIM (fed by these QUIC hints) is now the
     /// single liveness signal, so the separate reachability fold is gone.
-    private static void attachQuicConnectivityReporter(ClusterNetwork network,
-                                                       BooleanSupplier isLeaderSupplier,
-                                                       PeerObservationBuffer buffer,
-                                                       Supplier<Epoch> epochSupplier,
-                                                       Consumer<NodeId> onNttConnect,
-                                                       Consumer<NodeId> onNttDisconnect) {
+    private static void attachQuicConnectivityReporter(ClusterNetwork network, ConnectivityWiring wiring) {
         if (! (network instanceof QuicClusterNetwork quicNetwork)) {
             return;
         }
 
+        quicNetwork.setFollowerObservationWiring(wiring.reporter(), wiring.epoch());
+    }
+
+    /// The connectivity reporter and its `ObservedEpochSupplier` adapter, which the transport calls when it
+    /// reports a peer connecting or leaving (#1529).
+    record ConnectivityWiring(PeerConnectivityReporter reporter, QuicClusterNetwork.ObservedEpochSupplier epoch) {}
+
+    /// Builds [ConnectivityWiring]. An inbound attach calls the reporter and the adapter synchronously on the
+    /// QUIC event loop (`QuicClusterServer` Hello handler -> `QuicClusterNetwork.onPeerConnected` ->
+    /// `processViewChange(ADD)` -> `reportPeerConnection`), and a channel-driven removal calls them on the loop
+    /// too, so neither may take the `KVStore` monitor. `ClusterIncarnation.current` reads through the
+    /// synchronized `getTyped`, which waits out a whole snapshot restore. The incarnation therefore comes from
+    /// an [ObservedIncarnation] that the committed key's notifications keep current — every commit that
+    /// changes it (genesis, restore, declare-genesis) and every replay after a snapshot install.
+    ///
+    /// #1529 (v1635 N3), known tear, metrics only: the transport hands over `term`/`counter` from the epoch
+    /// it captured, while `incarnation` is read at report time. An observation straddling an incarnation
+    /// change can therefore mix two epochs. Nothing fences on these observations (they feed connectivity
+    /// telemetry), so it is recorded rather than fixed.
+    static ConnectivityWiring connectivityWiring(PeerObservationBuffer buffer,
+                                                 ObservedIncarnation incarnation,
+                                                 Supplier<Epoch> epochSupplier,
+                                                 Consumer<NodeId> onNttConnect,
+                                                 Consumer<NodeId> onNttDisconnect) {
         PeerConnectivityReporter reporter = new PeerConnectivityReporter() {
             @Contract
             @Override
@@ -4724,6 +8224,7 @@ public interface AetherNode extends ManageableNode {
 
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.DISCONNECTED,
+                                                                        incarnation.current(),
                                                                         term,
                                                                         counter,
                                                                         now));
@@ -4744,6 +8245,7 @@ public interface AetherNode extends ManageableNode {
 
                 buffer.pushConnectivity(new PeerConnectivityObservation(peerId,
                                                                         ConnectivityState.CONNECTED,
+                                                                        incarnation.current(),
                                                                         term,
                                                                         counter,
                                                                         now));
@@ -4764,15 +8266,46 @@ public interface AetherNode extends ManageableNode {
             }
         };
 
-        quicNetwork.setFollowerObservationWiring(isLeaderSupplier, reporter, epochAdapter);
+        return new ConnectivityWiring(reporter, epochAdapter);
+    }
+
+    /// #1050 — only the FAULTY edge reaches [`ClusterTopologyManager#onSwimFaulty`]; every other observation
+    /// (including `DepartedObserved`, which SWIM emits as the second half of the same FAULTY-edge pair) is
+    /// dropped here. The CTM acts on it only for a reap it has abandoned.
+    @Contract
+    static void routeSwimFaultyToCtm(SwimObservation observation, ClusterTopologyManager clusterTopologyManager) {
+        if (observation instanceof SwimObservation.FaultyObserved faulty) {
+            clusterTopologyManager.onSwimFaulty(faulty.peer());
+        }
+    }
+
+    /// Feed a QUIC `ConnectionEstablished` to the membership FSM and the SWIM health detector. The transport
+    /// attaches the Hello `NodeInfo` for a topology-unknown peer AND for a known peer that supplied labels, so
+    /// the FSM descriptor upsert sees the role either way. The SWIM feed keeps its established source order:
+    /// the topology's own `NodeInfo` first, the Hello's only when topology does not know the peer, the bare id
+    /// when neither exists. Package-private with the sinks as parameters so the routing is testable.
+    @Contract
+    static void routeConnectionEstablished(NetworkServiceMessage.ConnectionEstablished connection,
+                                           Function<NodeId, Option<NodeInfo>> topologyLookup,
+                                           Consumer<NodeInfo> membershipDescriptor,
+                                           Consumer<NodeInfo> swimConnectedInfo,
+                                           Consumer<NodeId> swimConnectedId) {
+        connection.nodeInfo().onPresent(membershipDescriptor);
+        topologyLookup.apply(connection.nodeId())
+                      .orElse(connection::nodeInfo)
+                      .onPresent(swimConnectedInfo)
+                      .onEmpty(() -> swimConnectedId.accept(connection.nodeId()));
     }
 
     /// Route a SWIM observation edge into the authoritative [`MembershipFsm`]. HEALTHY / SUSPECT /
     /// FAULTY / DEPARTED / UNKNOWN map to the matching `onSwim*` ingress; JoinAnnounced /
-    /// MemberDiscovered are ignored (the FSM tracks liveness transitions, not discovery). The FSM
+    /// MemberDiscovered upsert the member descriptor (address, role, source — the role a gossiped
+    /// `MembershipUpdate` carries reaches the FSM here). The FSM
     /// drives the per-member lifecycle and, on the DEAD edge, hard-evicts from NTT — the membership-
-    /// death authority. Leader-gating happens inside the FSM.
-    private static void routeSwimEdgeToMembershipFsm(SwimObservation observation, MembershipFsm membershipFsm) {
+    /// death authority. Leader-gating happens inside the FSM. Package-private so the node tests drive
+    /// the real routing; `@Contract` because it is the sink of a `Consumer<SwimObservation>` listener.
+    @Contract
+    static void routeSwimEdgeToMembershipFsm(SwimObservation observation, MembershipFsm membershipFsm) {
         switch (observation) {
             case SwimObservation.HealthyObserved healthy -> membershipFsm.onSwimHealthy(healthy.peer(),
                                                                                         healthy.incarnation());
@@ -4787,6 +8320,46 @@ public interface AetherNode extends ManageableNode {
             case SwimObservation.MemberDiscovered discovered -> membershipFsm.onMemberDescriptor(discovered.nodeInfo());
             default -> {}
         }
+    }
+
+    private static void recordGovernorEvidence(MembershipFsm membership,
+                                               KVStore<AetherKey, AetherValue> store,
+                                               org.pragmatica.aether.worker.health.CommunityHealthIndex.GovernorEvidence evidence) {
+        var member = evidence.member();
+
+        store.getTyped(new AetherKey.ActivationDirectiveKey(member.node()),
+                       AetherValue.ActivationDirectiveValue.class)
+             .filter(value -> value.communityId()
+                                   .equals(evidence.community()))
+             .onPresent(value -> membership.onGovernorHealthy(member.node(),
+                                                              evidence.community(),
+                                                              evidence.governor(),
+                                                              evidence.governorTerm(),
+                                                              member.incarnation(),
+                                                              new org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor(Option.none(),
+                                                                                                                                   value.role(),
+                                                                                                                                   store.getTyped(new AetherKey.NodePlacementKey(member.node()),
+                                                                                                                                                  AetherValue.NodePlacementValue.class)
+                                                                                                                                        .map(AetherValue.NodePlacementValue::sourceName)
+                                                                                                                                        .or("")),
+                                                              java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(evidence.observedAgoNanos())));
+    }
+
+    private static void sendObservationProbe(RabiaNode<KVCommand<AetherKey>> clusterNode, NodeId peer) {
+        clusterNode.network()
+                   .send(peer,
+                         new org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing(clusterNode.self(),
+                                                                                               Map.of(),
+                                                                                               0,
+                                                                                               0,
+                                                                                               0,
+                                                                                               0,
+                                                                                               Set.of(),
+                                                                                               Set.of(),
+                                                                                               Map.of(),
+                                                                                               Set.of(),
+                                                                                               false,
+                                                                                               false));
     }
 
     private static Option<NodeId> lookupGovernor(KVStore<AetherKey, AetherValue> kvStore, String communityId) {
@@ -4804,11 +8377,37 @@ public interface AetherNode extends ManageableNode {
         return new BootstrapModule.ClusterConfigBaseline(topology.clusterSize(), topology.coreMin(), topology.coreMax());
     }
 
+    /// #1533 — the ONE restore-commit hook. On a fresh cluster a component that loads cluster state once —
+    /// at leader gain or on its task-group activation — does so BEFORE the restore lands, and sees an empty
+    /// KV. A terminal restore decision re-drives each such component that has no put listener of its own
+    /// for the keys it loaded: the bootstrap config seed (refused by the restore gate), the rollout manager
+    /// (`DeploymentKey`) and the A/B test manager (`AbTestKey`). Components that listen for puts of their
+    /// restored keys are covered by those listeners, because the restore's writes publish ordinary puts.
+    @Contract
+    static void onRestoreDecision(KVStoreNotification.ValuePut<AetherKey.BackupRestoreKey, AetherValue.BackupRestoreValue> put,
+                                  BootstrapModule bootstrapModule,
+                                  DeploymentManager deploymentManager,
+                                  AbTestManager abTestManager) {
+        if (put.cause().value().outcome().isTerminal()) {
+            bootstrapModule.retryIfNeeded();
+            deploymentManager.reloadRestoredState();
+            abTestManager.reloadRestoredState();
+        }
+    }
+
+    /// #1797: a committed `LeaderKey` naming this node raises the held term even without a leader-gain edge.
+    @Contract
+    static void onLeaderKeyCommit(KVStoreNotification.ValuePut<?, ?> notification, LeaderTerm leaderTerm) {
+        if (notification.cause().key() instanceof LeaderKey) {
+            leaderTerm.onLeaderKeyCommitted();
+        }
+    }
+
     private static void onLeaderChangeForPublisher(LeaderNotification.LeaderChange change,
-                                                   AtomicLong leaderTerm,
+                                                   LeaderTerm leaderTerm,
                                                    BootstrapModule bootstrap) {
         if (change.localNodeIsLeader()) {
-            leaderTerm.incrementAndGet();
+            leaderTerm.onLeaderGained();
             bootstrap.onLeaderGained();
         } else {
             bootstrap.onLeaderLost();
@@ -4955,14 +8554,97 @@ public interface AetherNode extends ManageableNode {
     // plane, so gating it behind the replacement's own quorum deadlocked sub-quorum
     // auto-heal. The gossip encryptor is ready at boot (createGossipEncryptor), and the
     // COLD_BOOT/`isBooting` FAULTY-suppression keeps pre-quorum SWIM safe.
-    private static void startSwim(CoreSwimHealthDetector swimHealthDetector,
-                                  ClusterNetwork network,
-                                  RotatingGossipEncryptor encryptor,
-                                  Runnable announceJoinTrigger) {
-        var workerGroup = network.server().map(Server::workerGroup);
+    /// #683: the transport sees the encryptor through [GossipKeyDivergenceGuard], which refuses the
+    /// boot if gossip arrives under a key epoch this node does not hold and none has ever decrypted
+    /// — the signature of a cluster that rotated its gossip key after this node's derived key was
+    /// issued. The guard decorates for the TRANSPORT only; `encryptor` itself stays the rotation
+    /// target, so an applied rotation is picked up through the delegate and disarms the guard.
+    /// The guard exits through the node's `gossipKeyDivergedExit` (#1312): production passes
+    /// `System.exit(EXIT_GOSSIP_KEY_DIVERGED)`, which mirrors `Main`'s other boot gates and runs the node's
+    /// shutdown hooks — the guard is armed for minutes after boot, long enough for this node to have
+    /// joined consensus over QUIC, and `System.exit` was measured to terminate cleanly from this thread
+    /// ([GossipKeyDivergenceGuard]). A single-JVM host (Ember/Forge) passes a per-node stop, because a
+    /// `System.exit` there would take every co-hosted node down.
+    ///
+    /// #1308: the join is announced only once SWIM has STARTED, and a failed start (typically the
+    /// SWIM UDP port already bound) fails the node through `failNode`. A node without its SWIM
+    /// listener neither answers peers' probes nor probes them, so it must not keep running as a
+    /// cluster member. The caller passes the node's `jvmExit`: `Runtime.halt(2)` in production, a
+    /// graceful per-node stop in single-JVM hosts (Ember/Forge), where `System.exit` would take every
+    /// co-hosted node down. Skipping shutdown hooks is judged acceptable here because SWIM starts at
+    /// transport-ready, before this node has joined or consensus has formed, so it has acknowledged
+    /// no cluster write a hook would need to flush (design intent, not measured).
+    ///
+    /// `startOutcome` is the node's start outcome ([#formationUnlessSwimFails]): a failed start fails it
+    /// FIRST, inline on the resolved start promise, and only then runs `failNode`. Ordered so because
+    /// `failNode` may block (Ember awaits the node's stop) while formation can still resolve, and
+    /// the outcome is first-settlement-wins.
+    static Promise<Unit> startSwim(CoreSwimHealthDetector swimHealthDetector,
+                                   ClusterNetwork network,
+                                   RotatingGossipEncryptor encryptor,
+                                   Runnable announceJoinTrigger,
+                                   Runnable failNode,
+                                   Runnable gossipKeyDivergedExit,
+                                   Promise<Unit> startOutcome) {
+        return startSwim(swimHealthDetector,
+                         network,
+                         encryptor,
+                         announceJoinTrigger,
+                         failNode,
+                         gossipKeyDivergedExit,
+                         System::nanoTime,
+                         startOutcome);
+    }
 
-        swimHealthDetector.start(workerGroup, encryptor);
-        announceJoinTrigger.run();
+    /// The same, on the divergence gate's arming clock (`gateClock`), so a test can arm the gate without
+    /// waiting out its delay.
+    static Promise<Unit> startSwim(CoreSwimHealthDetector swimHealthDetector,
+                                   ClusterNetwork network,
+                                   RotatingGossipEncryptor encryptor,
+                                   Runnable announceJoinTrigger,
+                                   Runnable failNode,
+                                   Runnable gossipKeyDivergedExit,
+                                   LongSupplier gateClock,
+                                   Promise<Unit> startOutcome) {
+        var workerGroup = network.server().map(Server::workerGroup);
+        var guarded = GossipKeyDivergenceGuard.gossipKeyDivergenceGuard(encryptor, gossipKeyDivergedExit, gateClock);
+
+        return swimHealthDetector.start(workerGroup, guarded)
+                                 .onFailure(startOutcome::fail)
+                                 .onSuccessRun(() -> announceUnlessClosed(swimHealthDetector, announceJoinTrigger))
+                                 .onFailure(cause -> refuseToRunWithoutSwim(swimHealthDetector.swimPort(),
+                                                                            cause,
+                                                                            failNode));
+    }
+
+    /// A start refused because `stop()` already closed the detector resolves as a no-op success (it must
+    /// not run `failNode`: in a single-JVM host a stale one could stop a same-id relaunch). There is no
+    /// protocol to announce for, so the announcement is skipped.
+    private static void announceUnlessClosed(CoreSwimHealthDetector swimHealthDetector, Runnable announceJoinTrigger) {
+        if (!swimHealthDetector.isClosed()) {
+            announceJoinTrigger.run();
+        }
+    }
+
+    /// #1308: the node's start outcome, given consensus formation and the outcome promise that
+    /// [#startSwim] fails inline when SWIM cannot start. Formation settles it either way — first
+    /// settlement wins (`resolve` is compare-and-set), so a SWIM failure that has already landed is
+    /// never overridden by a later formation success. A SWIM start SUCCESS settles nothing: the
+    /// node has started only once formation resolves. A SWIM failure that lands after formation is
+    /// moot for the outcome — in production `failNode` has already halted the JVM, in a single-JVM
+    /// host it has already stopped this node.
+    static Promise<Unit> formationUnlessSwimFails(Promise<Unit> formation, Promise<Unit> outcome) {
+        formation.onResult(outcome::resolve);
+
+        return outcome;
+    }
+
+    private static void refuseToRunWithoutSwim(int swimPort, Cause cause, Runnable failNode) {
+        LOG.error("SWIM failed to start on UDP port {}: {} — this node cannot answer or send failure-detection "
+                 + "probes, so it will not announce its join and is exiting instead of running without SWIM",
+                  swimPort,
+                  cause.message());
+        failNode.run();
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
@@ -4977,7 +8659,10 @@ public interface AetherNode extends ManageableNode {
                                                   SliceStore sliceStore,
                                                   SliceInvoker sliceInvoker,
                                                   Supplier<CoreSwimHealthDetector> swimHealthDetectorSupplier,
+                                                  org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
                                                   AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
+                                                  GovernorAuthorityClient governorAuthorityClient,
+                                                  java.util.function.BooleanSupplier ready,
                                                   Logger growthLog) {
         if (!put.cause().key().nodeId().equals(selfId)) {
             return;
@@ -4985,6 +8670,12 @@ public interface AetherNode extends ManageableNode {
 
         var role = put.cause().value().role();
         var communityId = put.cause().value().communityId();
+
+        if (!activationRoleMatches(configuredWorker(config), role)) {
+            growthLog.warn("Rejected activation role {} for immutable configured node type", role);
+
+            return;
+        }
 
         if (AetherValue.ActivationDirectiveValue.CORE.equals(role)) {
             growthLog.info("Received core activation directive from CDM");
@@ -5002,7 +8693,10 @@ public interface AetherNode extends ManageableNode {
                                sliceInvoker,
                                communityId,
                                swimHealthDetectorSupplier.get(),
+                               communityDirectory,
                                governorAnnouncerHolder,
+                               governorAuthorityClient,
+                               ready,
                                growthLog);
         }
     }
@@ -5019,68 +8713,274 @@ public interface AetherNode extends ManageableNode {
                                            SliceInvoker sliceInvoker,
                                            String communityId,
                                            CoreSwimHealthDetector swimHealthDetector,
+                                           org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
                                            AtomicReference<GovernorAnnouncer> governorAnnouncerHolder,
+                                           GovernorAuthorityClient governorAuthorityClient,
+                                           java.util.function.BooleanSupplier ready,
                                            Logger log) {
-        clusterNode.authorizeObservation();
-        switchableCluster.switchTo(forwardingClusterNode);
-        log.info("Worker {} switched to forwarding mode", selfId.id());
-        var decisionRelay = DecisionRelay.decisionRelay(selfId, delegateRouter);
-        var mutationForwarder = MutationForwarder.mutationForwarder(selfId, delegateRouter);
-        var workerBootstrap = WorkerBootstrap.workerBootstrap(selfId, delegateRouter, kvStore);
-        var governorMesh = GovernorMesh.governorMesh(delegateRouter);
-        var groupMembershipTracker = GroupMembershipTracker.groupMembershipTracker(selfId,
-                                                                                   config.workerConfig()
-                                                                                         .map(WorkerConfig::groupName)
-                                                                                         .or(WorkerConfig.DEFAULT_GROUP_NAME),
-                                                                                   config.workerConfig()
-                                                                                         .map(WorkerConfig::maxGroupSize)
-                                                                                         .or(WorkerConfig.DEFAULT_MAX_GROUP_SIZE));
-        var workerDeploymentManager = WorkerDeploymentManager.workerDeploymentManager(selfId,
-                                                                                      sliceStore,
-                                                                                      mutationForwarder,
-                                                                                      List.of(),
-                                                                                      () -> communityId);
-        var workerHlc = HlcClock.hlcClock(selfId);
-        var workerTcpAddress = resolveSelfTcpAddress(config);
-        // GAP 1.5 (announce → consensus): the announcer must apply through the forwarding
-        // cluster node, NOT the raw RabiaNode. A worker is observation-only and cannot drive
-        // consensus locally; forwardingClusterNode relays cluster.apply to a core peer (the
-        // leader), so the GovernorAnnouncementKey Put reaches consensus instead of being a
-        // dropped local apply.
-        var governorAnnouncer = GovernorAnnouncer.governorAnnouncer(selfId,
-                                                                    forwardingClusterNode,
-                                                                    workerHlc,
-                                                                    () -> communityId,
-                                                                    () -> workerTcpAddress,
-                                                                    () -> Epoch.ZERO);
+        synchronized (governorAnnouncerHolder) {
+            var previous = Option.option(governorAnnouncerHolder.get());
 
-        governorAnnouncer.start();
-        // #642: publish the handle so AetherNode.stop() can cancel the re-announce tick. Without it a
-        // stopped worker kept writing GovernorAnnouncementKey through consensus on its own behalf.
-        governorAnnouncerHolder.set(governorAnnouncer);
-        // GAP 2 (SWIM → governor): SWIM observations are edge-triggered, so on every edge we
-        // re-read the full ALIVE set and hand the community-filtered slice to the announcer.
-        // CommunityMembershipFilter scopes by the committed ActivationDirectiveValue.communityId
-        // (kvStore), NOT SwimMember source-labels: labels are absent for gossip-learned members
-        // and would silently drop community peers, whereas the committed directive is
-        // authoritative consensus state. Source-scoping (one community per source) is the
-        // single-community-per-source form; communityId-scoping is the refinement once the
-        // growth comparator splits a source into multiple communities.
-        swimHealthDetector.addObservationListener(observation -> announceCommunityMembership(governorAnnouncer,
-                                                                                             swimHealthDetector,
-                                                                                             kvStore,
-                                                                                             communityId));
-        log.info("Worker {} subsystems created, ready for SWIM-based community formation", selfId.id());
+            if (previous.filter(announcer -> announcer.communityId()
+                                                      .equals(communityId)).isPresent()) {
+                return;
+            }
+
+            previous.onPresent(GovernorAnnouncer::stop);
+            clusterNode.authorizePassiveClient();
+            switchableCluster.switchTo(forwardingClusterNode);
+            log.info("Worker {} switched to forwarding mode", selfId.id());
+            var workerTcpAddress = resolveSelfTcpAddress(config);
+            // Workers nominate through the core authority service. Only a committed grant
+            // activates governor responsibilities; workers never write authority directly.
+            var governorAnnouncer = GovernorAnnouncer.governorAnnouncer(selfId,
+                                                                        () -> communityId,
+                                                                        () -> workerTcpAddress,
+                                                                        () -> kvStore.getTyped(AetherKey.GovernorAnnouncementKey.forCommunity(communityId),
+                                                                                               AetherValue.GovernorAnnouncementValue.class),
+                                                                        () -> ready.getAsBoolean() && eligibleGovernor(kvStore,
+                                                                                                                       selfId,
+                                                                                                                       communityId),
+                                                                        governorAuthorityClient::request);
+
+            governorAnnouncer.start();
+            // #642: publish the handle so AetherNode.stop() can cancel the re-announce tick. Without it a
+            // stopped worker kept writing GovernorAnnouncementKey through consensus on its own behalf.
+            governorAnnouncerHolder.set(governorAnnouncer);
+            // Each SWIM edge refreshes the nomination view using committed community
+            // assignments. Provider source labels do not define community membership.
+            announceCommunityMembership(governorAnnouncer, swimHealthDetector, communityDirectory, communityId);
+            log.info("Worker {} subsystems created, ready for SWIM-based community formation", selfId.id());
+        }
     }
 
     @SuppressWarnings({"JBCT-RET-01"})
     private static void announceCommunityMembership(GovernorAnnouncer governorAnnouncer,
                                                     CoreSwimHealthDetector swimHealthDetector,
-                                                    KVStore<AetherKey, AetherValue> kvStore,
+                                                    org.pragmatica.aether.worker.health.CommunityMemberDirectory communityDirectory,
                                                     String communityId) {
         governorAnnouncer.onMembershipChange(CommunityMembershipFilter.communityAliveMembers(swimHealthDetector.aliveMembers(),
-                                                                                             kvStore,
+                                                                                             communityDirectory,
                                                                                              communityId));
+    }
+
+    private static void retryPlacedWorker(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put,
+                                          Supplier<MembershipFsm> membership,
+                                          ClusterDeploymentManager deployment) {
+        var node = put.cause().key().nodeId();
+
+        Option.option(membership.get())
+              .filter(fsm -> fsm.isTrackedAndNotDead(node))
+              .flatMap(fsm -> fsm.memberDescriptor(node))
+              .filter(descriptor -> "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
+              .onPresent(_ -> deployment.onNodePlacementPut(put));
+    }
+
+    private static Set<NodeId> retirementCandidates(Set<NodeId> planned,
+                                                    RabiaNode<KVCommand<AetherKey>> cluster,
+                                                    Supplier<MembershipFsm> membership,
+                                                    KVStore<AetherKey, AetherValue> store,
+                                                    NodeReplacementIndex replacements,
+                                                    Set<NodeId> ready) {
+        var combined = new HashSet<>(planned);
+
+        combined.addAll(excludedCoreNodes(cluster, membership, store, replacements, ready));
+
+        return Set.copyOf(combined);
+    }
+
+    private static Set<NodeId> excludedCoreNodes(RabiaNode<KVCommand<AetherKey>> cluster,
+                                                 Supplier<MembershipFsm> membership,
+                                                 KVStore<AetherKey, AetherValue> store,
+                                                 NodeReplacementIndex replacements,
+                                                 Set<NodeId> ready) {
+        var desired = store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+                           .map(AetherValue.ClusterConfigValue::coreCount)
+                           .or(0);
+
+        return cluster.retirementSafeVoters()
+                      .filter(voters -> voters.members()
+                                              .size() == desired)
+                      .flatMap(voters -> Option.option(membership.get()).map(fsm -> excludedCores(fsm.coreCountedMembers(),
+                                                                                                  Set.copyOf(voters.members()),
+                                                                                                  cluster.verifiedVoterHistoryIds(),
+                                                                                                  ready,
+                                                                                                  replacements.retirementProtected())))
+                      .or(Set.of());
+    }
+
+    /// The counted cores outside the installed roster that may be retired — minus every node a live #1543
+    /// replacement pairing protects, so a fresh +1 replacement is not reaped as surplus before it is voted in.
+    static Set<NodeId> excludedCores(Collection<NodeId> coreCounted,
+                                     Set<NodeId> installed,
+                                     Set<NodeId> history,
+                                     Set<NodeId> ready,
+                                     Set<NodeId> replacementProtected) {
+        return coreCounted.stream()
+                          .filter(node -> !replacementProtected.contains(node))
+                          .filter(node -> retirementEligibleCore(node, installed, history, ready))
+                          .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
+                                                     Supplier<MembershipFsm> membership,
+                                                     KVStore<AetherKey, AetherValue> store,
+                                                     NodeReplacementIndex replacements,
+                                                     DeploymentMap deployments,
+                                                     ClusterTopologyManager topology,
+                                                     Set<NodeId> ready) {
+        if (!cluster.leaderManager().isLeader()) {
+            return Promise.unitPromise();
+        }
+
+        var work = Promise.unitPromise();
+
+        for (var node : excludedCoreNodes(cluster, membership, store, replacements, ready)) {
+            if (deployments.byNode(node).isEmpty()) {
+                work = work.flatMap(_ -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN));
+            }
+        }
+
+        return work;
+    }
+
+    private static void restoreRetirementIndex(KVStore<AetherKey, AetherValue> store, CommunityRetirementIndex index) {
+        restoreRetirementIndex(store.snapshot(), index);
+    }
+
+    static Unit restoreRetirementIndex(Map<?, ?> snapshot, CommunityRetirementIndex index) {
+        return index.restore(snapshot.values()
+                                     .stream()
+                                     .filter(AetherValue.CommunityPlacementOperationValue.class::isInstance)
+                                     .map(AetherValue.CommunityPlacementOperationValue.class::cast)
+                                     .toList());
+    }
+
+    private static Set<NodeId> readyCoreCandidates(Set<NodeId> ready, Supplier<MembershipFsm> membership) {
+        return Option.option(membership.get())
+                     .map(fsm -> ready.stream()
+                                      .filter(node -> isCoreMember(fsm, node))
+                                      .collect(Collectors.toUnmodifiableSet()))
+                     .or(Set.of());
+    }
+
+    /// A certified electorate excludes both retired voters and candidates that never voted.
+    /// Candidate exclusion is surplus evidence only while the complete installed roster is ready.
+    static boolean retirementEligibleCore(NodeId node, Set<NodeId> installed, Set<NodeId> history, Set<NodeId> ready) {
+        return ! installed.isEmpty()
+               && !installed.contains(node)
+               && (history.contains(node) || ready.containsAll(installed));
+    }
+
+    /// #1804: `none()` when `node` may be retired now, else the reason it may not — the reaper logs that reason.
+    private static Option<String> retirementRefusal(RabiaNode<KVCommand<AetherKey>> cluster,
+                                                    Supplier<MembershipFsm> membership,
+                                                    DeploymentMap deploymentMap,
+                                                    Set<NodeId> ready,
+                                                    NodeId node) {
+        return Option.option(membership.get()).fold(() -> Option.some("membership view not available"),
+                                                    fsm -> retirementRefusal(fsm.memberDescriptor(node),
+                                                                             cluster.retirementSafeVoters()
+                                                                                    .map(voters -> Set.copyOf(voters.members())),
+                                                                             cluster.verifiedVoterHistoryIds(),
+                                                                             ready,
+                                                                             deploymentMap.byNode(node).isEmpty(),
+                                                                             node));
+    }
+
+    /// A tracked worker or spot is retirable. Everything else is judged by the core rule: a tracked core, and a node
+    /// the membership does not track at all — a dead boot a new leader never saw join, which its activation replay
+    /// selects precisely BECAUSE it is untracked, so requiring a descriptor made that sweep unable to terminate
+    /// anything it selected. An absent descriptor is not a refusal; being a current voter is.
+    static Option<String> retirementRefusal(Option<MemberDescriptor> descriptor,
+                                            Option<Set<NodeId>> installedVoters,
+                                            Set<NodeId> history,
+                                            Set<NodeId> ready,
+                                            boolean deploymentsEmpty,
+                                            NodeId node) {
+        return descriptor.filter(known -> !known.isCore())
+                         .fold(() -> coreRetirementRefusal(installedVoters, history, ready, deploymentsEmpty, node),
+                               known -> workerRetirementRefusal(known.role()));
+    }
+
+    private static Option<String> workerRetirementRefusal(String role) {
+        return "worker".equalsIgnoreCase(role) || "spot".equalsIgnoreCase(role)
+               ? Option.none()
+               : Option.some("role '" + role + "' is not retirable");
+    }
+
+    private static Option<String> coreRetirementRefusal(Option<Set<NodeId>> installedVoters,
+                                                        Set<NodeId> history,
+                                                        Set<NodeId> ready,
+                                                        boolean deploymentsEmpty,
+                                                        NodeId node) {
+        return installedVoters.fold(() -> Option.some("no certified voter electorate"),
+                                    installed -> coreRetirementRefusal(installed, history, ready, deploymentsEmpty, node));
+    }
+
+    private static Option<String> coreRetirementRefusal(Set<NodeId> installed,
+                                                        Set<NodeId> history,
+                                                        Set<NodeId> ready,
+                                                        boolean deploymentsEmpty,
+                                                        NodeId node) {
+        if (!retirementEligibleCore(node, installed, history, ready)) {
+            return Option.some(ineligibleCoreReason(installed, ready, node));
+        }
+
+        return deploymentsEmpty
+               ? Option.none()
+               : Option.some("still hosts deployments");
+    }
+
+    private static String ineligibleCoreReason(Set<NodeId> installed, Set<NodeId> ready, NodeId node) {
+        if (installed.isEmpty()) {
+            return "installed voter set is empty";
+        }
+
+        return installed.contains(node)
+               ? "still an installed voter"
+               : "never a verified voter and the installed voter roster is not fully ready";
+    }
+
+    private static Option<AetherValue.CommunityPlacementOperationValue> selfPlacementOperation(KVStore<AetherKey, AetherValue> store,
+                                                                                               NodeId self) {
+        return store.getTyped(AetherKey.ActivationDirectiveKey.activationDirectiveKey(self),
+                              AetherValue.ActivationDirectiveValue.class)
+                    .flatMap(directive -> store.getTyped(new AetherKey.CommunityPlacementOperationKey(directive.communityId()),
+                                                         AetherValue.CommunityPlacementOperationValue.class));
+    }
+
+    private static boolean eligibleGovernor(KVStore<AetherKey, AetherValue> store, NodeId self, String community) {
+        return store.getTyped(AetherKey.ActivationDirectiveKey.activationDirectiveKey(self),
+                              AetherValue.ActivationDirectiveValue.class)
+                    .filter(value -> AetherValue.ActivationDirectiveValue.WORKER.equals(value.role()) && community.equals(value.communityId()))
+                    .isPresent()
+               && store.getTyped(AetherKey.CommunityKey.communityKey(community),
+                                 AetherValue.CommunityValue.class)
+                       .filter(value -> value.state() != org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVING && value.state() != org.pragmatica.aether.slice.kvstore.CommunityState.DISSOLVED)
+                       .isPresent();
+    }
+
+    static boolean activationRoleMatches(boolean worker, String role) {
+        return worker
+               ? AetherValue.ActivationDirectiveValue.WORKER.equals(role)
+               : AetherValue.ActivationDirectiveValue.CORE.equals(role);
+    }
+
+    static boolean workerAdmissionAllowed(NodeId peer,
+                                          MembershipFsm membership,
+                                          KVStore<AetherKey, AetherValue> store,
+                                          AetherNodeConfig config) {
+        return membership.memberDescriptor(peer)
+                         .filter(descriptor -> "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()))
+                         .filter(descriptor -> config.environment()
+                                                     .map(environment -> environment.isLocalWorkerAdmissionAuthorized(peer.id()))
+                                                     .or(false) || store.getTyped(new AetherKey.CapacityReservationKey(peer),
+                                                                                  AetherValue.CapacityReservationValue.class)
+                                                                        .filter(value -> value.intendedRole()
+                                                                                              .equalsIgnoreCase(descriptor.role()) && (value.phase() == AetherValue.CapacityReservationPhase.DISPATCHED || value.phase() == AetherValue.CapacityReservationPhase.OBSERVED))
+                                                                        .isPresent())
+                         .isPresent();
     }
 
     private static String resolveSelfTcpAddress(AetherNodeConfig config) {
@@ -5142,13 +9042,15 @@ public interface AetherNode extends ManageableNode {
     private static Option<CertificateRenewalScheduler> createCertRenewalScheduler(AetherNodeConfig config,
                                                                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                                   AppHttpServer appHttpServer,
-                                                                                  Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                                  Supplier<Option<ManagementServer>> managementServerSupplier,
+                                                                                  OperatorWarningSink warningSink) {
         return config.certificateProvider()
                      .flatMap(provider -> buildCertRenewalScheduler(config,
                                                                     provider,
                                                                     clusterNode,
                                                                     appHttpServer,
-                                                                    managementServerSupplier));
+                                                                    managementServerSupplier,
+                                                                    warningSink));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -5156,7 +9058,8 @@ public interface AetherNode extends ManageableNode {
                                                                                  org.pragmatica.net.tcp.security.CertificateProvider provider,
                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                                  AppHttpServer appHttpServer,
-                                                                                 Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                                 Supplier<Option<ManagementServer>> managementServerSupplier,
+                                                                                 OperatorWarningSink warningSink) {
         var nodeId = config.self().id();
         var hostname = resolveHostname(config);
 
@@ -5167,7 +9070,8 @@ public interface AetherNode extends ManageableNode {
                                                                 bundle,
                                                                 clusterNode,
                                                                 appHttpServer,
-                                                                managementServerSupplier))
+                                                                managementServerSupplier,
+                                                                warningSink))
                        .option();
     }
 
@@ -5177,22 +9081,29 @@ public interface AetherNode extends ManageableNode {
                                                                          CertificateBundle bundle,
                                                                          RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                          AppHttpServer appHttpServer,
-                                                                         Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                         Supplier<Option<ManagementServer>> managementServerSupplier,
+                                                                         OperatorWarningSink warningSink) {
+        var renewalAlarm = TlsRotation.clusterRenewal();
+
+        renewalAlarm.useSink(warningSink);
+
         return CertificateRenewalScheduler.certificateRenewalScheduler(provider,
                                                                        nodeId,
                                                                        hostname,
                                                                        newBundle -> onCertificateRenewed(newBundle,
                                                                                                          clusterNode,
                                                                                                          appHttpServer,
-                                                                                                         managementServerSupplier),
+                                                                                                         managementServerSupplier,
+                                                                                                         renewalAlarm),
                                                                        bundle.notAfter());
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void onCertificateRenewed(CertificateBundle newBundle,
-                                             RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                             AppHttpServer appHttpServer,
-                                             Supplier<Option<ManagementServer>> managementServerSupplier) {
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"})
+    static void onCertificateRenewed(CertificateBundle newBundle,
+                                     RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                     AppHttpServer appHttpServer,
+                                     Supplier<Option<ManagementServer>> managementServerSupplier,
+                                     TlsRotation renewalAlarm) {
         var log = LoggerFactory.getLogger(AetherNode.class);
 
         log.info("Certificate renewed, valid until {}", newBundle.notAfter());
@@ -5201,14 +9112,20 @@ public interface AetherNode extends ManageableNode {
                                                                 QuicTlsProvider.CLUSTER_PROTOCOL),
                    QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL))
               .id()
-              .onSuccess(tuple -> triggerCertRotation(clusterNode,
-                                                      tuple.first(),
-                                                      tuple.last(),
-                                                      newBundle,
-                                                      appHttpServer,
-                                                      managementServerSupplier))
-              .onFailure(cause -> log.error("Failed to build SSL contexts from renewed certificate: {}",
-                                            cause.message()));
+              .onSuccess(tuple -> {
+                             renewalAlarm.applied();
+                             triggerCertRotation(clusterNode,
+                                                 tuple.first(),
+                                                 tuple.last(),
+                                                 newBundle,
+                                                 appHttpServer,
+                                                 managementServerSupplier);
+                         })
+              .onFailure(cause -> {
+                             log.error("Failed to build SSL contexts from renewed certificate: {}",
+                                       cause.message());
+                             renewalAlarm.renewalRefused(cause);
+                         });
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -5225,16 +9142,103 @@ public interface AetherNode extends ManageableNode {
         rotateAppHttpServer(appHttpServer, newBundle, log);
     }
 
+    private static boolean isWorkerDescriptor(MemberDescriptor descriptor) {
+        return "worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role());
+    }
+
     /// Item 4 (activation): map the authoritative MembershipFsm desired-connection set into the transport's
     /// `Collection<NodeInfo>` dial contract. Each `PeerTarget` already carries the FSM-resolved dial address
     /// (`MemberDescriptor.fromNodeInfo` stored `NodeInfo.resolvedAddress()`), so `target.address()` is the
     /// exact address the transport must dial. The per-target descriptor supplies the role/source labels.
-    private static Collection<NodeInfo> desiredDialTargets(MembershipFsm membershipFsm) {
-        return membershipFsm.desiredConnections()
-                            .stream()
-                            .map(target -> dialNodeInfo(target,
-                                                        membershipFsm.memberDescriptor(target.id())))
-                            .toList();
+    static Set<NodeId> workerBootstrapCores(NodeId self, List<NodeInfo> configuredSeeds) {
+        return configuredSeeds.stream()
+                              .filter(peer -> !peer.id()
+                                                   .equals(self))
+                              .filter(peer -> "core".equalsIgnoreCase(peer.labels()
+                                                                          .getOrDefault(NodeInfo.LABEL_ROLE, "core")))
+                              .map(NodeInfo::id)
+                              .collect(Collectors.toUnmodifiableSet());
+    }
+
+    static Collection<NodeInfo> desiredDialTargets(MembershipFsm membershipFsm,
+                                                   org.pragmatica.aether.node.health.WorkerEndpointDirectory endpoints,
+                                                   Predicate<NodeId> connectionEligibility) {
+        var members = membershipFsm.memberStates()
+                                   .keySet()
+                                   .stream()
+                                   .filter(membershipFsm::isTrackedAndNotDead)
+                                   .filter(connectionEligibility)
+                                   .collect(Collectors.toSet());
+
+        return Stream.concat(metadataDirectory(membershipFsm, members).stream(),
+                             endpoints.desiredConnections().stream())
+                     .collect(Collectors.toMap(NodeInfo::id,
+                                               info -> info,
+                                               (membership, _) -> membership))
+                     .values();
+    }
+
+    private static void refreshHierarchyPeerPolicy(org.pragmatica.aether.node.health.HierarchyPeerPolicy policy,
+                                                   Supplier<Set<NodeId>> routingCores,
+                                                   org.pragmatica.aether.worker.health.CommunityMemberDirectory communities,
+                                                   Function<String, Option<AetherValue.GovernorAnnouncementValue>> governors,
+                                                   RabiaNode<KVCommand<AetherKey>> cluster,
+                                                   MembershipFsm membership,
+                                                   CoreSwimHealthDetector swim) {
+        var cores = new HashSet<>(routingCores.get());
+
+        if (!policy.worker()) {
+            membership.memberStates()
+                      .keySet()
+                      .stream()
+                      .filter(node -> isCoreMember(membership, node))
+                      .forEach(cores::add);
+        }
+
+        var governorIds = communities.communities()
+                                     .stream()
+                                     .flatMap(community -> governors.apply(community)
+                                                                    .filter(value -> !value.dissolved())
+                                                                    .stream())
+                                     .map(AetherValue.GovernorAnnouncementValue::governorId)
+                                     .collect(Collectors.toSet());
+        var ownCommunity = communities.assignment(cluster.self());
+        var members = ownCommunity.map(community -> Set.copyOf(communities.members(community))).or(Set.of());
+        var ownGovernor = ownCommunity.flatMap(governors::apply)
+                                      .filter(value -> !value.dissolved())
+                                      .map(AetherValue.GovernorAnnouncementValue::governorId);
+
+        policy.refresh(cores,
+                       governorIds,
+                       members,
+                       ownGovernor,
+                       cluster.leaderManager().leader(),
+                       Set.copyOf(membership.reachableMembers(List.copyOf(cores))));
+        if (!policy.worker()) {
+            swim.setMembershipEligibility(policy::shouldObserve);
+            swim.observePeerDirectory(membership.desiredConnections()
+                                                .stream()
+                                                .filter(target -> policy.shouldObserve(target.id()))
+                                                .map(target -> dialNodeInfo(target,
+                                                                            membership.memberDescriptor(target.id())))
+                                                .toList());
+            // #1803: the scope above now covers the committed electorate; ask for the voters this node's SWIM
+            // view still lacks (a replacement minted before the current leader existed was never told of it).
+            swim.requestMembershipView(installedVoterIds(cluster));
+        }
+    }
+
+    private static boolean configuredWorker(AetherNodeConfig config) {
+        return config.workerConfig()
+                     .isPresent() || config.topology()
+                                           .coreNodes()
+                                           .stream()
+                                           .filter(info -> info.id()
+                                                               .equals(config.self()))
+                                           .anyMatch(info -> Set.of("worker", "spot").contains(info.labels()
+                                                                                                   .getOrDefault(NodeInfo.LABEL_ROLE,
+                                                                                                                 "")
+                                                                                                   .toLowerCase(java.util.Locale.ROOT)));
     }
 
     /// Build the dial `NodeInfo` for a desired target. The 4-arg `NodeInfo.nodeInfo` factory defaults
@@ -5286,77 +9290,9 @@ public interface AetherNode extends ManageableNode {
                      .or(128 * 1024 * 1024L);
     }
 
-    /// Resolve a long-valued config knob from an environment variable, falling back to `defaultValue`
-    /// when unset, blank, or unparseable. Mirrors the [#resolveStreamMaxMemoryBytes] env-var pattern —
-    /// the established node-boot config surface for stream/system operational settings.
-    private static long resolveLongEnv(String name, long defaultValue) {
-        return Option.option(System.getenv(name))
-                     .filter(s -> !s.isBlank())
-                     .flatMap(s -> Result.lift(() -> Long.parseLong(s.trim())).option())
-                     .or(defaultValue);
-    }
-
-    /// `system:cluster-events:1.0.0` retention `maxCount` (OOM guard, count dimension).
-    /// Default 10_000 — matches [#CLUSTER_EVENTS_MAX_RETAINED], the aggregator read window.
-    /// Override: `CLUSTER_EVENTS_MAX_COUNT`.
-    private static long resolveClusterEventsMaxCount() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_COUNT", CLUSTER_EVENTS_MAX_RETAINED);
-    }
-
-    /// `system:cluster-events:1.0.0` retention `maxBytes` — the byte hard-cap OOM guard for the
-    /// off-heap partition store. Default 16MB. Cluster events are small JSON records, so 16MB retains
-    /// many thousands of them while leaving the bulk of the per-node stream budget
-    /// (`DEFAULT_MAX_TOTAL_BYTES`, 128MB) for app streams — the prior 64MB default reserved HALF the
-    /// budget for one system stream and starved app-stream creation (STREAM_MEMORY_EXCEEDED).
-    /// Override: `CLUSTER_EVENTS_MAX_BYTES`.
-    private static long resolveClusterEventsMaxBytes() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_BYTES", 16L * 1024 * 1024);
-    }
-
-    /// `system:cluster-events:1.0.0` retention `maxAgeMs`. Default ~24h.
-    /// Override: `CLUSTER_EVENTS_MAX_AGE_MS`.
-    private static long resolveClusterEventsMaxAgeMs() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_AGE_MS", 24L * 60 * 60 * 1000);
-    }
-
-    /// `system:cluster-events:1.0.0` per-event size cap. Default ~64KB.
-    /// Override: `CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES`.
-    private static long resolveClusterEventsMaxEventSizeBytes() {
-        return resolveLongEnv("CLUSTER_EVENTS_MAX_EVENT_SIZE_BYTES", 64L * 1024);
-    }
-
+    /// #517: same invariant as [#findSelfAddress]; `localhost` was a dead placeholder, never a default.
     private static String resolveHostname(AetherNodeConfig config) {
-        return config.topology()
-                     .coreNodes()
-                     .stream()
-                     .filter(n -> n.id()
-                                   .equals(config.self()))
-                     .findFirst()
-                     .map(n -> n.address()
-                                .host())
-                     .orElse("localhost");
-    }
-
-    @SuppressWarnings("JBCT-RET-01")
-    private static void handleRemotePutResponse(DHTNetwork dhtNetwork,
-                                                AetherMaps aetherMaps,
-                                                DHTMessage.PutRequest request,
-                                                DHTMessage.PutResponse response) {
-        dhtNetwork.send(request.sender(), response);
-        if (response.success() && !response.superseded()) {
-            aetherMaps.dispatchRemotePut(request.key(), request.value());
-        }
-    }
-
-    @SuppressWarnings("JBCT-RET-01")
-    private static void handleRemoteRemoveResponse(DHTNetwork dhtNetwork,
-                                                   AetherMaps aetherMaps,
-                                                   DHTMessage.RemoveRequest request,
-                                                   DHTMessage.RemoveResponse response) {
-        dhtNetwork.send(request.sender(), response);
-        if (response.found()) {
-            aetherMaps.dispatchRemoteRemove(request.key());
-        }
+        return findSelfAddress(config).host();
     }
 
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
@@ -5400,9 +9336,19 @@ public interface AetherNode extends ManageableNode {
                                                                     AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     NodeId self) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
+        // #887 E2/E3: every node derives its security overrides from the replicated blueprint. The
+        // data was already here (AppBlueprintValue carries ExpandedBlueprint.securityOverrides() to
+        // every node, durably); what was missing was a reader, so overrides reached only the node
+        // that served POST /api/v1/blueprints and no other node enforced them.
+        var securityOverrideSynchronizer = SecurityOverrideSynchronizer.securityOverrideSynchronizer(kvStore,
+                                                                                                     appHttpServer::httpRoutePublisher);
         var kvRouterBuilder = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                                   .onPut(AetherKey.AppBlueprintKey.class,
                                                          clusterDeploymentManager::onAppBlueprintPut)
+                                                  .onPut(AetherKey.AppBlueprintKey.class,
+                                                         securityOverrideSynchronizer::onAppBlueprintPut)
+                                                  .onRemove(AetherKey.AppBlueprintKey.class,
+                                                            securityOverrideSynchronizer::onAppBlueprintRemove)
                                                   .onPut(AetherKey.SliceTargetKey.class,
                                                          clusterDeploymentManager::onSliceTargetPut)
                                                   .onPut(AetherKey.VersionRoutingKey.class,
@@ -5414,6 +9360,10 @@ public interface AetherNode extends ManageableNode {
                                                   .onRemove(AetherKey.VersionRoutingKey.class,
                                                             clusterDeploymentManager::onVersionRoutingRemove)
                                                   .onPut(AetherKey.SliceTargetKey.class, controlLoop::onSliceTargetPut)
+                                                  .onPut(AetherKey.SliceTargetKey.class,
+                                                         nodeDeploymentManager::onSliceTargetPut)
+                                                  .onPut(AetherKey.VersionRoutingKey.class,
+                                                         nodeDeploymentManager::onVersionRoutingPut)
                                                   .onRemove(AetherKey.SliceTargetKey.class,
                                                             controlLoop::onSliceTargetRemove)
                                                   .onPut(AetherKey.AlertThresholdKey.class,
@@ -5445,6 +9395,10 @@ public interface AetherNode extends ManageableNode {
                                                          scheduledTaskRegistry::onScheduledTaskPut)
                                                   .onRemove(AetherKey.ScheduledTaskKey.class,
                                                             scheduledTaskRegistry::onScheduledTaskRemove)
+                                                  .onPut(AetherKey.ScheduledTaskPauseKey.class,
+                                                         scheduledTaskRegistry::onScheduledTaskPausePut)
+                                                  .onRemove(AetherKey.ScheduledTaskPauseKey.class,
+                                                            scheduledTaskRegistry::onScheduledTaskPauseRemove)
                                                   .onPut(AetherKey.ScheduledTaskStateKey.class,
                                                          scheduledTaskStateRegistry::onStatePut)
                                                   .onRemove(AetherKey.ScheduledTaskStateKey.class,
@@ -5471,6 +9425,9 @@ public interface AetherNode extends ManageableNode {
                                                   .onPut(AetherKey.NodeArtifactKey.class, controlLoop::onNodeArtifactPut)
                                                   .onPut(AetherKey.NodeArtifactKey.class,
                                                          eventAggregator::onNodeArtifactPut)
+                                                  .onPut(AetherKey.CommunityKey.class, eventAggregator::onCommunityPut)
+                                                  .onPut(AetherKey.GovernorAnnouncementKey.class,
+                                                         eventAggregator::onGovernorAnnouncementPut)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
                                                             nodeDeploymentManager::onNodeArtifactRemove)
                                                   .onRemove(AetherKey.NodeArtifactKey.class,
@@ -5499,15 +9456,24 @@ public interface AetherNode extends ManageableNode {
                                                                       lbm::onNodeRoutesRemove));
         dynamicConfigManager.onPresent(dcm -> kvRouterBuilder.onPut(AetherKey.ConfigKey.class, dcm::onConfigPut)
                                                              .onRemove(AetherKey.ConfigKey.class, dcm::onConfigRemove));
+        // #381: push each applied config change to the registered slices' notifyConfigUpdate.
+        dynamicConfigManager.onPresent(dcm -> dcm.onApplied(nodeDeploymentManager::onConfigChanged));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
         // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
         // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
         kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
                               ownershipEpochHighWater::onGovernorAnnouncementPut);
+        // #731 round 3: re-run the dead-worker sweep on every committed reannouncement, not only on
+        // the one-shot 2s deferredTopologyRecheck timer (ClusterDeploymentState onEntry).
+        kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,
+                              clusterDeploymentManager::onGovernorAnnouncementPut);
         kvRouterBuilder.onPut(AetherKey.DhtPartitionOwnershipKey.class, ownershipEpochHighWater::onDhtOwnershipPut);
         kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
                               ownershipEpochHighWater::onStreamPartitionOwnershipPut);
+        // #1640: a new cluster-events owner re-sends every event waiting for redelivery at once.
+        kvRouterBuilder.onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                              eventAggregator::onStreamPartitionOwnershipPut);
         entries.addAll(kvRouterBuilder.build().asRouteEntries());
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, controlLoop::onQuorumStateChange));
@@ -5516,6 +9482,9 @@ public interface AetherNode extends ManageableNode {
                                               deploymentMetricsScheduler::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, scheduledTaskManager::onQuorumStateChange));
         entries.add(MessageRouter.Entry.route(ClusterStateNotification.class, appHttpServer::onQuorumStateChange));
+        // #887 E3: a node that just became ACTIVE restored state it never observed arriving.
+        entries.add(MessageRouter.Entry.route(ClusterStateNotification.class,
+                                              securityOverrideSynchronizer::onQuorumStateChange));
         // E2 Phase 2b (2026-05-28): the consensus-derived `ClusterStateNotification.DISAPPEARED`
         // signal is bridged directly into the §8.2 `DrainProcedure`. Rabia's `Paused` state
         // fires on the same DISAPPEARED signal — both legacy `onQuorumDisappeared` /
@@ -5557,6 +9526,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                .map(NodeId::id))));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               scheduledTaskManager::onLeaderChange));
+        // #1723: a per-node scheduled row whose node left for good while its newest fire was unknown is closed by the leader.
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class, scheduledTaskManager::onNodeRemoved));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              scheduledTaskManager::onNodeDecommissioned));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeJoined.class,
@@ -5569,6 +9542,25 @@ public interface AetherNode extends ManageableNode {
         // topology stream), so without this route assignNodeRole is unreachable for exactly the
         // nodes that need a community — they reach FSM Member and are never assigned a role.
         entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterDeploymentManager::onWorkerJoin));
+        // #731: the non-core leave channel, symmetric to the join route above — a departed
+        // worker's REMOVED edge never reaches MembershipDecision either, so without this route
+        // handleNodeRemoval is unreachable for a dead worker and its allocation-pool slot and KV
+        // footprint (SliceNodeKey/NodeArtifactKey/NodeRoutesKey) linger forever.
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class, clusterDeploymentManager::onWorkerLeave));
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
+                                              decision -> {
+                                                  var node = decision.nodeId();
+
+                                                  sliceInvoker.onNodeDeparture(node);
+                                                  appHttpServer.onNodeDeparture(node);
+                                                  httpRouteRegistry.evictNode(node);
+                                                  deploymentMetricsCollector.onNodeDeparture(node);
+                                                  controlLoop.onWorkerDeparture(node);
+                                                  loadBalancerManager.onPresent(manager -> manager.onNodeDeparture(node));
+                                              }));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class, sliceInvoker::onNodeRemoved));
+        entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
+                                              sliceInvoker::onNodeDecommissioned));
         // RC1 Step 2: route the new lifecycle-projection variants into CDM so the
         // dropped `onNodeLifecyclePut` listener's work (drain eviction, etc.) is
         // covered through the single canonical MembershipDecision channel.
@@ -5593,6 +9585,9 @@ public interface AetherNode extends ManageableNode {
                                               clusterTopologyManager::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               clusterTopologyManager::onMembershipDecision));
+        // #689: the worker join channel reaches the CTM too, so a provisioned node's advertised role
+        // is compared against its provisioning intent on whichever channel it joins.
+        entries.add(MessageRouter.Entry.route(WorkerJoinDecision.class, clusterTopologyManager::onWorkerJoin));
         // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown.class,
                                               clusterTopologyManager::onSelfShutdown));
@@ -5610,6 +9605,11 @@ public interface AetherNode extends ManageableNode {
                                               metricsCollector::onMembershipDecision));
         entries.add(MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,
                                               metricsCollector::onMembershipDecision));
+        // #588: the pong roster (`allMetrics()`, the node list `/api/v1/cluster/status` serves) forgets a
+        // core node on NodeRemoved above; a worker's death travels on WorkerLeaveDecision instead, and
+        // without this route its last pong stayed in the roster forever as an UNKNOWN ghost.
+        entries.add(MessageRouter.Entry.route(WorkerLeaveDecision.class,
+                                              decision -> metricsCollector.removeNode(decision.nodeId())));
         entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPing.class,
                                               metricsCollector::onClusterSyncPing));
         entries.add(MessageRouter.Entry.route(ClusterSyncMessage.ClusterSyncPong.class,
@@ -5654,6 +9654,12 @@ public interface AetherNode extends ManageableNode {
         // fires for those, but the fresh QUIC handshake produces a TransportObservation.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
+        // #926: resolve the node-health alert raised on the DEAD edge when the node comes back. Bound
+        // to the SAME ungated handshake that sources NODE_JOINED, so recovery is exactly as reachable
+        // as the failure it clears — a failure signal whose matching recovery signal is less reachable
+        // leaves a permanently red surface, which trains an operator to ignore it.
+        entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
+                                              msg -> alertManager.clearNodeHealthAlert(msg.nodeId())));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
         // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture
@@ -5668,28 +9674,59 @@ public interface AetherNode extends ManageableNode {
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, abTestManager::onDeploymentFailed));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               eventAggregator::onSliceFailure));
+        entries.add(MessageRouter.Entry.route(RollbackEvent.AutoRollbackExecuted.class, eventAggregator::onAutoRollback));
+        entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
+                                              alertManager::onAllInstancesFailed));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledUp.class, eventAggregator::onScaledUp));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaledDown.class, eventAggregator::onScaledDown));
         entries.add(MessageRouter.Entry.route(ScalingEvent.ScaleCapped.class, eventAggregator::onScaleCapped));
         entries.add(MessageRouter.Entry.route(ClusterDeploymentManager.ReconciliationAdjustment.class,
                                               eventAggregator::onReconciliationAdjustment));
-        entries.add(MessageRouter.Entry.route(CommunityMetricsSnapshot.class, controlLoop::onCommunityMetricsSnapshot));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
                                               eventAggregator::onConnectionFailed));
+        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.OfflineFramesExpired.class,
+                                              eventAggregator::onOfflineFramesExpired));
         entries.add(MessageRouter.Entry.route(OperationalEvent.AccessDenied.class, eventAggregator::onAccessDenied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
                                               eventAggregator::onNodeLifecycleChanged));
         entries.add(MessageRouter.Entry.route(OperationalEvent.ConfigChanged.class, eventAggregator::onConfigChanged));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupCreated.class, eventAggregator::onBackupCreated));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.BackupRestored.class, eventAggregator::onBackupRestored));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeployed.class,
                                               eventAggregator::onBlueprintDeployed));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamFailoverRefused.class,
+                                              eventAggregator::onStreamFailoverRefused));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,
+                                              eventAggregator::onStreamFailoverResolved));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,
+                                              eventAggregator::onStreamIsrBelowMinimum));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,
+                                              eventAggregator::onStreamIsrRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,
+                                              eventAggregator::onStreamLineageRestarted));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,
+                                              eventAggregator::onStreamConfigChangeNotApplied));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeUnknown.class,
+                                              eventAggregator::onScheduledTaskOutcomeUnknown));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeRestored.class,
+                                              eventAggregator::onScheduledTaskOutcomeRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollision.class,
+                                              eventAggregator::onRoutePrefixCollision));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollisionCleared.class,
+                                              eventAggregator::onRoutePrefixCollisionCleared));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireHeld.class,
+                                              eventAggregator::onScheduledTaskFireHeld));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireReleased.class,
+                                              eventAggregator::onScheduledTaskFireReleased));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
-        entries.add(MessageRouter.Entry.route(OperationalEvent.GenerationChanged.class,
-                                              eventAggregator::onGenerationChanged));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationUnsettled.class,
+                                              eventAggregator::onDhtReplicationUnsettled));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationSettled.class,
+                                              eventAggregator::onDhtReplicationSettled));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtWriterStale.class, eventAggregator::onDhtWriterStale));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.DhtWriterStaleResolved.class,
+                                              eventAggregator::onDhtWriterStaleResolved));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         entries.add(MessageRouter.Entry.route(HttpForwardMessage.HttpForwardRequest.class,
@@ -5719,10 +9756,17 @@ public interface AetherNode extends ManageableNode {
     private static void demuxHttpForwardRequest(HttpForwardMessage.HttpForwardRequest request,
                                                 AppHttpServer appHttpServer,
                                                 Option<ManagementServer> managementServer) {
-        if (request.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {
-            managementServer.onPresent(ms -> ms.onHttpForwardRequest(request));
-        } else {
-            appHttpServer.onHttpForwardRequest(request);
+        // #964: switch rather than `== MANAGEMENT ? management : app`. Every pipeline test in this
+        // codebase asked "is it MANAGEMENT?", so an UNKNOWN decoded from a peer running a newer
+        // Pipeline would have landed on the APP pipeline by default — a forwarded request routed into
+        // a server it was not addressed to. UNKNOWN goes to NEITHER, and the next Pipeline constant is
+        // now a compile error here instead of another silent fall-through onto app.
+        switch (request.pipeline()) {
+            case MANAGEMENT -> managementServer.onPresent(ms -> ms.onHttpForwardRequest(request));
+            case APP -> appHttpServer.onHttpForwardRequest(request);
+            case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP request {} from {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
+                                                                           request.requestId(),
+                                                                           request.sender());
         }
     }
 
@@ -5730,11 +9774,21 @@ public interface AetherNode extends ManageableNode {
     private static void demuxHttpForwardResponse(HttpForwardMessage.HttpForwardResponse response,
                                                  AppHttpServer appHttpServer,
                                                  Option<ManagementServer> managementServer) {
-        if (response.pipeline() == HttpForwardMessage.Pipeline.MANAGEMENT) {
-            managementServer.onPresent(ms -> ms.onHttpForwardResponse(response));
-        } else {
-            appHttpServer.onHttpForwardResponse(response);
+        // #964: see demuxHttpForwardRequest — UNKNOWN must not default onto the app pipeline.
+        switch (response.pipeline()) {
+            case MANAGEMENT -> managementServer.onPresent(ms -> ms.onHttpForwardResponse(response));
+            case APP -> appHttpServer.onHttpForwardResponse(response);
+            case UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forwarded HTTP response for {}: its target pipeline was" + " written by a node running a newer Pipeline and cannot be read" + " here (#964). It is NOT routed to the app pipeline.",
+                                                                           response.correlationId());
         }
+    }
+
+    static Unit refreshCommittedLeader(KVStore<?, ?> kvStore, LeaderManager leaderManager) {
+        kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
+               .onPresent(value -> leaderManager.onLeaderCommitted(value.leader(),
+                                                                   value.viewSequence()));
+
+        return Unit.unit();
     }
 
     private static void handleLeaderCommit(KVStoreNotification.ValuePut<?, ?> notification,
@@ -5786,18 +9840,18 @@ public interface AetherNode extends ManageableNode {
                                  Option<SpiResourceProvider> spiProvider,
                                  Option<Fn1<Promise<String>, String>> secretResolver) {}
 
-    private static ResourceProviderSetup createResourceProviderFacade(AetherNodeConfig config) {
+    private static Result<ResourceProviderSetup> createResourceProviderFacade(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
 
         return config.configProvider()
                      .fold(() -> {
                                log.debug("No configuration provider configured, resource provisioning disabled");
 
-                               return new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                Option.empty(),
-                                                                Option.empty(),
-                                                                Option.empty(),
-                                                                Option.empty());
+                               return Result.success(new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                               Option.empty(),
+                                                                               Option.empty(),
+                                                                               Option.empty(),
+                                                                               Option.empty()));
                            },
                            configProvider -> {
                                log.info("Creating ConfigService and ResourceProvider from configuration provider");
@@ -5810,20 +9864,21 @@ public interface AetherNode extends ManageableNode {
                                var secretsProvider = config.environment()
                                                            .flatMap(EnvironmentIntegration::secrets);
                                var secretResolver = secretsProvider.map(sp -> (Fn1<Promise<String>, String>) sp::resolveSecret);
-                               var resolvedProvider = secretsProvider.fold(() -> Result.success(configProvider),
+                               // No SecretsProvider (no `[cloud]` block, or `Main.resolveEnvironment`
+                               // dropped a failed one): a `${secrets:...}` placeholder in node.toml
+                               // can never resolve, so it refuses here too rather than being served
+                               // as the literal value -- the `NoSecretsProviderForStorageEncryption`
+                               // rule applied to the config map. A placeholder-free provider (Ember,
+                               // Forge) is returned as-is.
+                               var resolvedProvider = secretsProvider.fold(() -> ConfigurationProvider.withoutSecretResolution(configProvider),
                                                                            sp -> ConfigurationProvider.withSecretResolution(configProvider,
                                                                                                                             sp::resolveSecret));
-
-                               return resolvedProvider.fold(cause -> {
-                                                                log.error("Failed to resolve secrets in configuration: {}",
-                                                                          cause.message());
-
-                                                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
-                                                                                                 Option.empty(),
-                                                                                                 Option.empty(),
-                                                                                                 Option.empty(),
-                                                                                                 secretResolver);
-                                                            },
+                               // #904: the operator DID configure a provider; the failure is in
+                               // resolving its secrets, and the refusal says so. Booting on the
+                               // no-op facade instead left `nodeComposite` empty, so every
+                               // `ConfigurationSection` slice failed later with a cause that blamed
+                               // the node for having no provider configured.
+                               return resolvedProvider.fold(cause -> secretResolutionRefused(cause),
                                                             provider -> {
                                                                 // KV-overlay layer: holds operator config puts only.
                                                                 // Base is empty — the merged view is composed below via
@@ -5847,27 +9902,28 @@ public interface AetherNode extends ManageableNode {
 
                                                                 ResourceProvider.setInstance(resourceProvider);
                                                                 log.info("ConfigService and ResourceProvider initialized with hierarchical composite (KV-overlay + node.toml)");
-
-                                                                return new ResourceProviderSetup(new ResourceProviderFacade() {
-            @Override
-            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                                                                                                     return resourceProvider.provide(resourceType,
-                                                                                                                                     configSection);
-                                                                                                 }
-
-            @Override
-            public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
-                                                                                                     return resourceProvider.provide(resourceType,
-                                                                                                                                     configSection,
-                                                                                                                                     context);
-                                                                                                 }
-        },
-                                                                                                 Option.some(dynamicProvider),
-                                                                                                 Option.some(nodeComposite),
-                                                                                                 Option.some(resourceProvider),
-                                                                                                 secretResolver);
+                                                                // The provider's OWN complete facade, never a hand-rolled one.
+                                                                // This was an anonymous class implementing the two `provide`
+                                                                // overloads only, so `releaseAll` inherited the interface's
+                                                                // `Promise.unitPromise()` default and every slice unload
+                                                                // reported a successful release without one reaching
+                                                                // `SpiResourceProvider` (#892).
+                                                                return Result.success(new ResourceProviderSetup(resourceProvider.facade(),
+                                                                                                                Option.some(dynamicProvider),
+                                                                                                                Option.some(nodeComposite),
+                                                                                                                Option.some(resourceProvider),
+                                                                                                                secretResolver));
                                                             });
                            });
+    }
+
+    private static Result<ResourceProviderSetup> secretResolutionRefused(Cause cause) {
+        return Causes.cause("configured resource provider cannot be built: " + cause.message()
+                           + " — refusing to boot: the node would otherwise start with that configuration"
+                           + " unusable, either with resource provisioning silently disabled or with the"
+                           + " placeholder text served as the value (#904)",
+                            Option.some(cause))
+                     .result();
     }
 
     private static ResourceProviderFacade noOpResourceProviderFacade() {
@@ -5883,28 +9939,74 @@ public interface AetherNode extends ManageableNode {
             public <T> Promise<T> provide(Class<T> resourceType, String configSection, ProvisioningContext context) {
                 return NOT_CONFIGURED.promise();
             }
+
+            /// Deliberate no-op, not an inherited one (#892): resource provisioning is disabled on
+            /// this path, so there is provably nothing for a release to close.
+            @Override
+            public Promise<Unit> releaseAll(String sliceId) {
+                return Promise.unitPromise();
+            }
         };
     }
 
-    private static Repository compositeRepository(List<Repository> repositories) {
-        if (repositories.isEmpty()) {
-            return artifact -> Causes.cause("No repositories configured").promise();
-        }
+    /// #1777 (CTO ruling R2 / Q4): the bare `DHTClient` extension is the cluster's REPLICATED DHT at the committed
+    /// `[replication]` factors — what idempotency and every other namespace resolve. The cache namespace's lower `[cache]`
+    /// replication is a separate extension type ([CacheDhtClient]) that only the cache asks for. Registering the cache
+    /// client as `DHTClient`, as before, put idempotency's dedup records at RF 1.
+    @Contract
+    static void registerDhtExtensions(SpiResourceProvider spi,
+                                      DHTClient replicatedDhtClient,
+                                      DHTClient cacheDhtClient) {
+        spi.registerExtension(DHTClient.class, replicatedDhtClient);
+        spi.registerExtension(CacheDhtClient.class, new CacheDhtClient(cacheDhtClient));
+    }
 
-        return repositories.getFirst();
+    /// A real composite (#1927): every configured repository is consulted in order, falling through only when one answered "absent".
+    private static Repository compositeRepository(List<Repository> repositories) {
+        return CompositeRepository.compositeRepository(repositories);
     }
 
     private static void registerRuntimeExtensions(SpiResourceProvider spi,
                                                   TopicSubscriptionRegistry topicSubscriptionRegistry,
                                                   SliceInvoker sliceInvoker,
+                                                  DHTClient replicatedDhtClient,
                                                   DHTClient cacheDhtClient,
-                                                  StorageInstance contentStorage) {
+                                                  StorageInstance contentStorage,
+                                                  KVStore<AetherKey, AetherValue> kvStore,
+                                                  OperatorWarningSink operatorWarningSink) {
         spi.registerExtension(TopicSubscriptionRegistry.class, topicSubscriptionRegistry);
         spi.registerExtension(SliceInvoker.class, sliceInvoker);
-        spi.registerExtension(DHTClient.class, cacheDhtClient);
+        registerDhtExtensions(spi, replicatedDhtClient, cacheDhtClient);
         // #251 (#99 regression): ContentStoreFactory.provision() requires a StorageInstance extension.
         // Register a tiered content store so slice-facing ContentStore resources can provision.
         spi.registerExtension(StorageInstance.class, contentStorage);
+        // #1040: the stream resource factories materialize a declared stream under its ENGINE KEY
+        // rather than the bare `resources.toml` section name, which needs the deploy-time
+        // alias->ResourceAddress bindings. Those live in the cluster KV-Store, which aether-stream
+        // cannot reach, so the lookup is supplied here as an extension. Registered unconditionally:
+        // absence is what a test/Forge runtime looks like, and on a real node the resolver must
+        // always be present or a declared stream silently falls back to the bare spelling again.
+        spi.registerExtension(StreamAddressResolver.class,
+                              (sliceId, alias) -> Artifact.artifact(sliceId).flatMap(artifact -> BlueprintStreamAddresses.engineKeyFor(kvStore,
+                                                                                                                                       artifact,
+                                                                                                                                       alias)));
+        // #1216: a bare pub/sub topic name is scoped to the owning BLUEPRINT, exactly as a stream
+        // alias is. PublisherFactory holds only the publishing slice's id and cannot reach the
+        // cluster KV-Store where `SliceTargetValue.owningBlueprint` lives, so the one hop from slice
+        // identity to blueprint identity is supplied here. Registered unconditionally and for the
+        // same reason as the resolver above: absence is what a test/minimal runtime looks like, and
+        // on a real node the resolver must always be present or a co-deployed publisher and
+        // subscriber fall back to two DIFFERENT slice-derived namespaces and silently never meet.
+        spi.registerExtension(OwningBlueprintResolver.class, OwningBlueprintResolver.kvBacked(kvStore));
+        // #1564: every stream, durable topic and durable entity declaration resolves its replication_factor /
+        // confirmation_factor against the COMMITTED cluster config — the `[replication]` defaults and the desired
+        // core count — read on each resolution, exactly as deploy validation reads it.
+        spi.registerExtension(ReplicationContext.Source.class,
+                              ClusterReplication.source(() -> kvStore.getTyped(AetherKey.ClusterConfigKey.CURRENT,
+                                                                               AetherValue.ClusterConfigValue.class)));
+        // #1564 / #1617 (R10): the replication warnings a stream, durable topic or durable entity raises when it
+        // activates reach this node's cluster event log through its own operator-warning sink.
+        spi.registerExtension(OperatorWarningSink.class, operatorWarningSink);
     }
 
     /// A6 cold-boot convergence window: how long after THIS node's `start()` the SWIM cold-boot
@@ -5928,7 +10030,19 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
-        return network::send;
+        return new StreamForwardTransport() {
+            @Contract
+            @Override
+            public void send(NodeId target, StreamForwardMessage message) {
+                network.send(target, message);
+            }
+
+            @Contract
+            @Override
+            public void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+                network.send(target, message, callerWait);
+            }
+        };
     }
 
     private static void registerStreamForwardExtensions(ResourceProviderSetup resourceProviderSetup,
@@ -6159,5 +10273,66 @@ public interface AetherNode extends ManageableNode {
 
         return org.pragmatica.lang.parse.Number.parseLong(raw)
                                                .or(defaultValue);
+    }
+
+    /// Cloud routing always uses committed sources. Only explicitly local integrations can
+    /// provision before source config exists, which keeps Forge usable without cloud fallback.
+    static NodeLifecycleManager sourceLifecycleManager(Option<EnvironmentIntegration> environment,
+                                                       Option<ConfigurationProvider> protectedConfig,
+                                                       Option<ClusterName> clusterName,
+                                                       Option<Integer> maxNodes,
+                                                       Supplier<Option<AetherValue.ClusterConfigValue>> configuration,
+                                                       Function<NodeId, Result<SourceName>> sourceForNode) {
+        var registry = SourceComputeRegistry.sourceComputeRegistry(configuration,
+                                                                   environment.flatMap(EnvironmentIntegration::localCompute),
+                                                                   protectedConfig);
+
+        return NodeLifecycleManager.nodeLifecycleManager(registry, sourceForNode, clusterName, maxNodes);
+    }
+
+    static Result<SourceName> computeSource(NodeId node,
+                                            Function<NodeId, Option<AetherValue.NodePlacementValue>> placements,
+                                            Function<NodeId, Option<MemberDescriptor>> members) {
+        return placements.apply(node)
+                         .map(AetherValue.NodePlacementValue::sourceName)
+                         .orElse(() -> members.apply(node)
+                                              .filter(member -> member.isCore() || "worker".equalsIgnoreCase(member.role()))
+                                              .map(MemberDescriptor::source))
+                         .toResult(EnvironmentError.operationNotSupported("No authoritative compute source for node " + node.id()))
+                         .flatMap(SourceName::sourceName);
+    }
+
+    /// Serving metadata requires active consensus participation, unlike staged-core execution readiness.
+    static boolean metadataServingReady(boolean worker, RabiaNode<KVCommand<AetherKey>> cluster) {
+        return ! worker && cluster.isActive();
+    }
+
+    static boolean runtimeReady(RabiaNode<KVCommand<AetherKey>> cluster) {
+        return cluster.isActive() || cluster.isPassiveClientReady() || (cluster.isObserving() && !installedVoterIds(cluster).contains(cluster.self()));
+    }
+
+    private static List<NodeInfo> metadataDirectory(MembershipFsm membership, Set<NodeId> peers) {
+        return peers.stream()
+                    .sorted()
+                    .flatMap(peer -> membership.memberDescriptor(peer)
+                                               .flatMap(descriptor -> descriptor.address()
+                                                                                .map(address -> NodeInfo.nodeInfo(peer,
+                                                                                                                  address,
+                                                                                                                  Map.of(NodeInfo.LABEL_ROLE,
+                                                                                                                         descriptor.role(),
+                                                                                                                         NodeInfo.LABEL_SOURCE,
+                                                                                                                         descriptor.source()))))
+                                               .stream())
+                    .toList();
+    }
+
+    private static void installWorkerDhtRing(DHTNode dhtNode, Set<NodeId> cores) {
+        dhtNode.ring()
+               .nodes()
+               .stream()
+               .filter(node -> !cores.contains(node))
+               .toList()
+               .forEach(dhtNode.ring()::removeNode);
+        cores.forEach(dhtNode.ring()::addNode);
     }
 }

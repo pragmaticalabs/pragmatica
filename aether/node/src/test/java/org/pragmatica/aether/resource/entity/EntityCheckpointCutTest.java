@@ -1,0 +1,430 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.resource.entity;
+
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+import io.netty.buffer.ByteBuf;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.dht.EntityPartitionArc;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.stream.EvictionListener;
+import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.LastSealedOffsetSource;
+import org.pragmatica.aether.stream.replication.ReplicaSetController;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
+import org.pragmatica.storage.LocalDiskTier;
+import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.StorageInstance;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLogSubstrate;
+import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+
+/// #2087 (B4-cut, round 4): a checkpoint is usable only over the lineage it was taken over. On the real ring, the real checkpoint block store
+/// and the real KV pointer: `k` and `j` are committed and checkpointed (claim 1); the bounded promotion escape's contract is that a node may
+/// then cut ACKNOWLEDGED records, so `j` is cut and a different record `z` lands at offset 1 and commits. The checkpoint's claim (1) is still
+/// within the log, but it folded `j`. A rebuild that seeded from it would hold `j` and never fold `z`.
+class EntityCheckpointCutTest {
+    private static final String KEYSPACE = "orders";
+    private static final int PARTITION = 0;
+    private static final long ONE_GB = 1024L * 1024 * 1024;
+    private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
+    private static final Epoch E2 = Epoch.epoch(1L, 2L, 1L);
+
+    @TempDir
+    java.nio.file.Path storageDir;
+
+    private StreamPartitionManager manager;
+    private StorageInstance storage;
+    private EntityLogSubstrate substrate;
+    private KVStore<AetherKey, AetherValue> kv;
+    private String arc;
+    private volatile long sealedFloor = -1L;
+
+    @BeforeEach
+    void setUp() {
+        start(Option.some(storageDir.resolve("wal")));
+    }
+
+    /// `walBaseDir` none is a copy that keeps no log, and so no owner-epoch history.
+    private void start(Option<java.nio.file.Path> walBaseDir) {
+        arc = EntityPartitionArc.arcName(KEYSPACE);
+        manager = streamPartitionManager(64L * 1024 * 1024,
+                                         EvictionListener.NOOP,
+                                         org.pragmatica.aether.stream.replication.ReplicationManager.NONE,
+                                         walBaseDir,
+                                         (_, _) -> sealedFloor);
+        manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+        storage = StorageInstance.storageInstance("entity-ckpt",
+                                                  List.of(MemoryTier.memoryTier(ONE_GB), LocalDiskTier.localDiskTier(storageDir.resolve("blocks"), ONE_GB).unwrap()),
+                                                  MetadataStore.inMemoryMetadataStore("entity-ckpt"));
+        kv = new KVStore<>(MessageRouter.mutable(), noopSerializer(), noopDeserializer());
+        substrate = streamEntityLogSubstrate(manager,
+                                             (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0, true),
+                                             null,
+                                             new SegmentIndex(),
+                                             EvictionListener.NOOP,
+                                             storage,
+                                             kv,
+                                             commands -> {
+                                                 kv.process(kv.createBatch(commands));
+
+                                                 return Promise.success(List.of());
+                                             });
+        substrate.ensureLog(KEYSPACE, 1, new ReplicationFactors(1, 1)).unwrap();
+    }
+
+    @AfterEach
+    void tearDown() {
+        manager.close();
+        storage.shutdown();
+    }
+
+    @Test
+    void aCheckpointTakenOverACutRecord_isDiscarded_andTheRebuildFoldsTheNewLineage() {
+        landAcknowledged(0L, record("k", 1), E1);
+        landAcknowledged(1L, record("j", 2), E1);
+        commit(1L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        assertThat(candidate.throughOffset()).as("control: the claim covers both committed records").isEqualTo(1L);
+        assertThat(candidate.lineage().isPresent()).as("control: the lineage of the record at the claim was recorded").isTrue();
+        assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, candidate.throughOffset(), candidate.snapshot(), candidate.lineage()).await().isSuccess())
+            .as("control: saved through the real block store and the real KV pointer").isTrue();
+        assertThat(substrate.loadCheckpoint(KEYSPACE, PARTITION).await().unwrap().unwrap().lineage().isPresent()).as("control: the lineage survives the block").isTrue();
+
+        // the bounded escape's lineage: it cuts back to offset 0 and puts a DIFFERENT record at offset 1, which is acknowledged in turn
+        var z = record("z", 9);
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 1L, z, 5L, E2).isFailure()).as("control: a divergence at offset 1").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 1L, z, 5L, E2).isSuccess()).as("control: the new lineage lands at offset 1").isTrue();
+        commit(1L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "j").isPresent()).as("j was cut: the rebuilt fold must not hold it").isFalse();
+        assertThat(fold.get(PARTITION, "z").isPresent()).as("z is the new lineage's record at offset 1").isTrue();
+        assertThat(fold.get(PARTITION, "k").isPresent()).as("k, at offset 0, is shared by both lineages").isTrue();
+    }
+
+    /// A checkpoint block written by code that recorded no lineage (the bare fold) is discarded when a fold would seed from it, because it cannot
+    /// be told from one taken over a lineage a cut removed: the same cut scenario, with the checkpoint saved the old way, must still rebuild from
+    /// the log.
+    @Test
+    void aCheckpointBlockWithNoLineage_isDiscarded_andTheRebuildFoldsTheNewLineage() {
+        landAcknowledged(0L, record("k", 1), E1);
+        landAcknowledged(1L, record("j", 2), E1);
+        commit(1L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, candidate.throughOffset(), candidate.snapshot()).await().isSuccess()).as("control: saved the old way, no lineage in the block").isTrue();
+        assertThat(substrate.loadCheckpoint(KEYSPACE, PARTITION).await().unwrap().unwrap().lineage().isPresent()).isFalse();
+
+        var z = record("z", 9);
+
+        manager.appendRecovered(arc, PARTITION, 1L, z, 5L, E2);
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut").isTrue();
+        manager.appendRecovered(arc, PARTITION, 1L, z, 5L, E2);
+        commit(1L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "j").isPresent()).as("j was cut").isFalse();
+        assertThat(fold.get(PARTITION, "z").isPresent()).as("the new lineage's record").isTrue();
+    }
+
+    /// The identity covers a WINDOW of records: a new lineage that reproduces the record at the claim byte for byte, but not the ones before it,
+    /// still differs from what the checkpoint folded.
+    @Test
+    void aCutThatRewritesAnEarlierRecord_butReproducesTheClaimRecordByteForByte_isStillDetected() {
+        var b = record("b", 2);
+
+        landAcknowledged(0L, record("a", 1), E1);
+        landAcknowledged(1L, b, E1);
+        commit(1L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        substrate.saveCheckpoint(KEYSPACE, PARTITION, candidate.throughOffset(), candidate.snapshot(), candidate.lineage()).await();
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 0L, record("a2", 5), 5L, E2).isFailure()).as("control: a divergence at offset 0").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the whole tail is cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 0L, record("a2", 5), 5L, E2).isSuccess()).isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 1L, b, 6L, E2).isSuccess()).as("control: the claim record is reproduced byte for byte").isTrue();
+        commit(1L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "a").isPresent()).as("a was cut: not folded from the stale checkpoint").isFalse();
+        assertThat(fold.get(PARTITION, "a2").isPresent()).as("the new lineage's record at offset 0").isTrue();
+    }
+
+    /// The owner epoch is part of the identity: the SAME last records, byte for byte, written again under a different owner epoch are not the
+    /// lineage the checkpoint folded. The snapshot is doctored to lack `j`, so the checkpoint is observably seeded or discarded: seeded, `j` is
+    /// missing although the log holds it.
+    @Test
+    void theSameRecordsUnderADifferentOwnerEpoch_areADifferentLineage_andTheCheckpointIsDiscarded() {
+        var j = record("j", 2);
+
+        landAcknowledged(0L, record("k", 1), E1);
+        commit(0L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var withoutJ = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        landAcknowledged(1L, j, E1);
+        commit(1L, E1);
+        var lineage = substrate.lineageAt(KEYSPACE, PARTITION, 1L);
+
+        assertThat(lineage.isPresent() && lineage.unwrap().length > 0).as("control: a copy with an epoch history vouches for the record").isTrue();
+        assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, 1L, withoutJ.snapshot(), lineage).await().isSuccess()).isTrue();
+        assertThat(EntityFold.entityFold(KEYSPACE, substrate).get(PARTITION, "j").isPresent())
+            .as("control: while the lineage is untouched the doctored checkpoint IS what seeds a fold (j is missing)").isFalse();
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 1L, j, 5L, E2).isFailure()).as("control: a divergence at offset 1 (the epoch differs)").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 1L, j, 1001L, E2).isSuccess()).as("control: the same bytes land again under E2").isTrue();
+        commit(1L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "j").isPresent()).as("discarded and rebuilt from the log, which holds j").isTrue();
+    }
+
+    /// A copy that keeps no epoch history cannot vouch for the epoch of the claim record, and the digest alone can false-match (a new lineage that
+    /// rewrote a record BEFORE the window and reproduced the window): the checkpoint is discarded, not trusted.
+    @Test
+    void onACopyWithNoEpochHistory_aRewrittenRecordBeforeTheWindow_isNotMistakenForTheSameLineage() {
+        manager.close();
+        storage.shutdown();
+        start(Option.none());
+        var records = new byte[9][];
+
+        for (int i = 0; i < records.length; i++) {
+            records[i] = record(i == 0 ? "a" : "r" + i, i + 1);
+            landAcknowledged(i, records[i], E1);
+        }
+
+        commit(8L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        assertThat(candidate.throughOffset()).as("control: the claim is offset 8, its window offsets 1..8").isEqualTo(8L);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, 8L, candidate.snapshot(), candidate.lineage()).await().isSuccess()).isTrue();
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 0L, record("a2", 5), 5L, E2).isFailure()).as("control: a divergence at offset 0").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the whole tail is cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 0L, record("a2", 5), 5L, E2).isSuccess()).isTrue();
+
+        for (int i = 1; i < records.length; i++) {
+            assertThat(manager.appendRecovered(arc, PARTITION, i, records[i], 10L + i, E2).isSuccess()).as("control: the window is reproduced byte for byte").isTrue();
+        }
+
+        commit(8L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "a").isPresent()).as("a was cut: not served from the stale checkpoint").isFalse();
+        assertThat(fold.get(PARTITION, "a2").isPresent()).as("the new lineage's record at offset 0").isTrue();
+    }
+
+    private static final int RECORDS = 8;
+    private static final long NOW = System.currentTimeMillis();
+
+    /// Records 0..7 under E1, offsets 0..4 old (evictable) and 5..7 recent; committed through 7, checkpoint claim 7 with its full window. Returns the fold.
+    private EntityFold checkpointedAtSeven() {
+        for (int i = 0; i < RECORDS; i++) {
+            landAcknowledged(i, record("r" + i, i + 1), E1, i < 5 ? 1000L + i : NOW);
+        }
+
+        commit(7L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        assertThat(candidate.throughOffset()).as("control: the claim is offset 7").isEqualTo(7L);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, 7L, candidate.snapshot(), candidate.lineage()).await().isSuccess()).isTrue();
+
+        return fold;
+    }
+
+    /// Retention evicts the START of the claim's window (offsets 0..4) but the claim record (7) is still in the ring, above the sealed floor (-1): the
+    /// checkpoint is still validated, over the records both copies hold (5..7). Control: an untouched log validates and seeds.
+    @Test
+    void aClaimWhoseWindowStartWasEvicted_isValidatedOverTheRecordsStillHeld_andSeeds() {
+        var fold = checkpointedAtSeven();
+
+        evictOld();
+        assertThat(manager.earliestRetainedOffset(arc, PARTITION)).as("control: the window start is gone, the claim record is not").isEqualTo(5L);
+        assertThat(substrate.lineageAt(KEYSPACE, PARTITION, 7L).isPresent()).as("an identity over offsets 5..7").isTrue();
+        assertThat(EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await().isSuccess())
+            .as("the log below 5 is gone: only a checkpoint that validated can seed").isTrue();
+    }
+
+    /// The same eviction, then a cut that rewrites the claim record: the retained part of the window differs, so the checkpoint is discarded -- and
+    /// the rebuild, with the log below 5 gone, refuses rather than seed the removed record.
+    @Test
+    void aClaimWhoseWindowStartWasEvicted_andWhoseRecordWasCut_isDiscarded() {
+        var fold = checkpointedAtSeven();
+
+        evictOld();
+        var z = record("z", 9);
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 7L, z, NOW, E2).isFailure()).as("control: a divergence at offset 7").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 7L, z, NOW, E2).isSuccess()).as("control: a different record lands at 7").isTrue();
+        commit(7L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isFailure()).as("not seeded from the stale checkpoint; the log below 5 is gone, so the rebuild refuses").isTrue();
+    }
+
+    /// A claim at or below the sealed floor the checkpoint's WRITER saw is the one region no cut can reach (the floor only rises, and a cut is
+    /// refused at or below it): accepted with no record to compare. The floor is read at WRITE time and recorded in the checkpoint.
+    @Test
+    void aClaimAtOrBelowTheSealedFloorTheWriterSaw_whoseRecordIsGone_isAcceptedWithoutValidation() {
+        for (int i = 0; i < RECORDS; i++) {
+            landAcknowledged(i, record("r" + i, i + 1), E1);
+        }
+
+        commit(7L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        substrate.saveCheckpoint(KEYSPACE, PARTITION, 7L, candidate.snapshot(), candidate.lineage()).await();
+        evictOld();
+        assertThat(manager.earliestRetainedOffset(arc, PARTITION)).as("control: every record is gone").isEqualTo(8L);
+        assertThat(EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await().isFailure())
+            .as("control: written when the claim was above the floor, an unreadable claim record cannot be validated, so it is discarded").isTrue();
+
+        sealedFloor = 7L;
+        var sealedFold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        sealedFold.ready(PARTITION).await();
+        substrate.saveCheckpoint(KEYSPACE, PARTITION, 7L, candidate.snapshot(), substrate.lineageAt(KEYSPACE, PARTITION, 7L)).await();
+
+        assertThat(EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await().isSuccess())
+            .as("written at the sealed floor: the checkpoint is what makes the unreadable prefix a non-event").isTrue();
+    }
+
+    /// The floor RISING over a rewritten claim proves nothing. The checkpoint is written at claim 7 while the floor is below it; a cut rewrites
+    /// offset 7 under a new owner epoch; then the floor rises over the new lineage to 9. The checkpoint's claim is now at or below the CURRENT floor,
+    /// but not the floor its writer saw: it is validated, found stale, and discarded -- the rebuilt fold holds the new record, not the cut one.
+    @Test
+    void aFloorThatRoseOverTheNewLineage_doesNotMakeAStaleCheckpointValid() {
+        var fold = checkpointedAtSeven();
+        var z = record("z", 9);
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 7L, z, NOW, E2).isFailure()).as("control: a divergence at offset 7").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 7L, z, NOW, E2).isSuccess()).as("control: a different record lands at 7").isTrue();
+        commit(7L, E2);
+        sealedFloor = 9L;
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "r7").isPresent()).as("r7 was cut: it must not be served from the stale checkpoint").isFalse();
+        assertThat(fold.get(PARTITION, "z").isPresent()).as("the new lineage's record at 7").isTrue();
+    }
+
+    /// Control: the validation does not discard a checkpoint whose lineage still holds -- a cut ABOVE the claim leaves it valid, and the
+    /// rebuild seeds from it (the log below the claim is not needed).
+    @Test
+    void aCheckpointOverAnUntouchedPrefix_isStillUsed_afterACutAboveItsClaim() {
+        landAcknowledged(0L, record("k", 1), E1);
+        landAcknowledged(1L, record("j", 2), E1);
+        commit(0L, E1);
+        landAcknowledged(2L, record("x", 3), E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        assertThat(candidate.throughOffset()).as("control: the claim is the committed position").isEqualTo(0L);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, candidate.throughOffset(), candidate.snapshot(), candidate.lineage()).await().isSuccess()).isTrue();
+        var seeded = substrate.loadCheckpoint(KEYSPACE, PARTITION).await().unwrap().unwrap();
+
+        assertThat(EntityFoldSnapshot.decode(seeded.snapshot()).isSuccess()).isTrue();
+        assertThat(substrate.lineageAt(KEYSPACE, PARTITION, 0L).unwrap()).as("the local record at the claim still has the recorded identity")
+                                                                         .isEqualTo(seeded.lineage().unwrap());
+    }
+
+    /// The owner reports `through` committed. With a WAL the replica's own write is durable a moment after the append returns, and the position
+    /// is exposed only up to that, so the report is repeated (as the owner's tick does) until the substrate shows it.
+    private void commit(long through, Epoch epoch) {
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+
+        manager.syncReplicated(arc, PARTITION).await();
+
+        do {
+            manager.commitAdvanced(arc, PARTITION, through, epoch);
+
+            if (substrate.committedOffset(KEYSPACE, PARTITION) >= through) {
+                return;
+            }
+
+            java.util.concurrent.locks.LockSupport.parkNanos(5_000_000L);
+        } while (System.nanoTime() < deadline);
+
+        assertThat(substrate.committedOffset(KEYSPACE, PARTITION)).as("the committed position reached " + through).isGreaterThanOrEqualTo(through);
+    }
+
+    private void landAcknowledged(long offset, byte[] record, Epoch epoch) {
+        landAcknowledged(offset, record, epoch, 1000L + offset);
+    }
+
+    private void landAcknowledged(long offset, byte[] record, Epoch epoch, long timestamp) {
+        assertThat(manager.appendRecovered(arc, PARTITION, offset, record, timestamp, epoch).isSuccess()).isTrue();
+    }
+
+    /// Retention evicts the records whose timestamp is old: the ones landed with timestamp 1000+.
+    private void evictOld() {
+        manager.partitionBuffer(arc, PARTITION).or(() -> fail("no ring")).evictByAge(3_600_000L);
+    }
+
+    private static byte[] record(String key, int value) {
+        return EntityLogRecord.upsert(key, String.valueOf(value).getBytes(StandardCharsets.UTF_8)).encode();
+    }
+
+    private static Serializer noopSerializer() {
+        return new Serializer() {
+            @Override
+            public <T> void write(ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private static Deserializer noopDeserializer() {
+        return new Deserializer() {
+            @Override
+            public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        };
+    }
+}

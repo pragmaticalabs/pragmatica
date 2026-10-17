@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -12,6 +12,7 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -19,6 +20,7 @@ import org.pragmatica.aether.config.cluster.SshConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
@@ -40,22 +42,30 @@ public final class WaveExecutor {
                                               ClusterBootstrapConfig stored,
                                               ClusterBootstrapConfig desired) {
         var managementPort = desired.operations().ports().management();
+        var created = new CreatedNodes();
 
-        return executeAdditions(plan.additions(), desired).flatMap(added -> executeModifications(plan.modifications(),
-                                                                                                 stored,
-                                                                                                 desired).flatMap(modified -> executeRemovals(plan.removals(),
-                                                                                                                                              stored,
-                                                                                                                                              managementPort).map(removed -> applyResult(plan,
-                                                                                                                                                                                         added,
-                                                                                                                                                                                         removed,
-                                                                                                                                                                                         modified))));
+        return executeAdditions(plan.additions(),
+                                desired,
+                                created).flatMap(added -> executeModifications(plan.modifications(),
+                                                                               stored,
+                                                                               desired,
+                                                                               created).flatMap(modified -> executeRemovals(plan.removals(),
+                                                                                                                            stored,
+                                                                                                                            managementPort).map(removed -> applyResult(plan,
+                                                                                                                                                                       added,
+                                                                                                                                                                       removed,
+                                                                                                                                                                       modified))))
+                               .mapError(cause -> WaveNodeProvisioning.PartiallyProvisioned.partiallyProvisioned(created.snapshot(),
+                                                                                                                 cause));
     }
 
-    private static Result<Integer> executeAdditions(List<DiffAction> additions, ClusterBootstrapConfig desired) {
+    private static Result<Integer> executeAdditions(List<DiffAction> additions,
+                                                    ClusterBootstrapConfig desired,
+                                                    CreatedNodes created) {
         var totalAdded = 0;
 
         for (var action : additions) {
-            var result = executeAddition(action, desired);
+            var result = executeAddition(action, desired, created);
 
             if (result.isFailure()) {
                 return result;
@@ -67,11 +77,13 @@ public final class WaveExecutor {
         return success(totalAdded);
     }
 
-    private static Result<Integer> executeAddition(DiffAction action, ClusterBootstrapConfig desired) {
+    private static Result<Integer> executeAddition(DiffAction action,
+                                                   ClusterBootstrapConfig desired,
+                                                   CreatedNodes created) {
         return switch (action) {
             case DiffAction.AddSource a -> logNewSource(a.sourceName());
-            case DiffAction.AddRole a -> provisionRole(a.sourceName(), a.role(), a.count(), desired);
-            case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(), a.role(), a.from(), a.to(), desired);
+            case DiffAction.AddRole a -> provisionRole(a.sourceName(), a.role(), a.count(), desired, created);
+            case DiffAction.ScaleUp a -> provisionScaleUp(a.sourceName(), a.role(), a.from(), a.to(), desired, created);
             default -> success(0);
         };
     }
@@ -85,13 +97,15 @@ public final class WaveExecutor {
     private static Result<Integer> provisionRole(SourceName sourceName,
                                                  NodeRole role,
                                                  int count,
-                                                 ClusterBootstrapConfig desired) {
+                                                 ClusterBootstrapConfig desired,
+                                                 CreatedNodes created) {
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> dispatchProvision(sourceName,
                                                                                    source,
                                                                                    role,
                                                                                    count,
-                                                                                   desired.cluster().name()))
+                                                                                   desired,
+                                                                                   created))
                            .map(nodes -> logAndCount("+",
                                                      sourceName
                                                     + "." + role.value()
@@ -104,16 +118,13 @@ public final class WaveExecutor {
                                                     NodeRole role,
                                                     int from,
                                                     int to,
-                                                    ClusterBootstrapConfig desired) {
+                                                    ClusterBootstrapConfig desired,
+                                                    CreatedNodes created) {
         var delta = to - from;
 
         return lookupSource(sourceName,
                             desired.sources()).flatMap(source -> rejectSshScaleUp(source, sourceName))
-                           .flatMap(source -> dispatchProvision(sourceName,
-                                                                source,
-                                                                role,
-                                                                delta,
-                                                                desired.cluster().name()))
+                           .flatMap(source -> dispatchProvision(sourceName, source, role, delta, desired, created))
                            .map(nodes -> logAndCount("~",
                                                      sourceName
                                                     + "." + role.value()
@@ -132,39 +143,74 @@ public final class WaveExecutor {
                                                                    SourceProfile source,
                                                                    NodeRole role,
                                                                    int count,
-                                                                   ClusterName clusterName) {
+                                                                   ClusterBootstrapConfig desired,
+                                                                   CreatedNodes created) {
+        return provisionBySourceType(sourceName, source, role, count, desired).onSuccess(nodes -> created.record(nodes,
+                                                                                                                 source));
+    }
+
+    static Result<List<ProvisionedNode>> provisionBySourceType(SourceName sourceName,
+                                                               SourceProfile source,
+                                                               NodeRole role,
+                                                               int count,
+                                                               ClusterBootstrapConfig desired) {
         return switch (source.type()) {
-            case CLOUD -> resolveCloudAndProvision(sourceName, source, role, count, clusterName);
-            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, clusterName);
+            case CLOUD -> resolveCloudAndProvision(source, role, count, desired);
+            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, desired);
             case FORGE -> forgeProvisionPlaceholder(sourceName, role, count);
             case SSH -> sshProvisionPlaceholder(sourceName, role, source);
         };
     }
 
-    private static Result<List<ProvisionedNode>> resolveCloudAndProvision(SourceName sourceName,
-                                                                          SourceProfile source,
+    /// #1695 / #1027: a CLOUD node is provisioned through [WaveNodeProvisioning] — rendered user-data carrying the
+    /// cluster identity and live peers, a freshly minted unique node id, and a zone placement only when the source
+    /// names one — so it boots able to join.
+    private static Result<List<ProvisionedNode>> resolveCloudAndProvision(SourceProfile source,
                                                                           NodeRole role,
                                                                           int count,
-                                                                          ClusterName clusterName) {
-        return ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionViaCompute(compute,
-                                                                                                   sourceName,
-                                                                                                   role,
-                                                                                                   count,
-                                                                                                   source,
-                                                                                                   clusterName));
+                                                                          ClusterBootstrapConfig desired) {
+        var clusterName = desired.cluster().name();
+
+        return WaveNodeProvisioning.resolveJoinInputs(clusterName).flatMap(inputs -> ProviderResolver.resolveCloudCompute(source).flatMap(compute -> provisionCloudNodes(compute,
+                                                                                                                                                                         desired,
+                                                                                                                                                                         source,
+                                                                                                                                                                         role,
+                                                                                                                                                                         count,
+                                                                                                                                                                         inputs)));
+    }
+
+    /// The CLOUD wave provisioning itself, with the provider and the join inputs already resolved. Package-private
+    /// so a test drives the real composition — minted ids, rendered user-data, optional zone — against a fake
+    /// provider.
+    static Result<List<ProvisionedNode>> provisionCloudNodes(ComputeProvider compute,
+                                                             ClusterBootstrapConfig desired,
+                                                             SourceProfile source,
+                                                             NodeRole role,
+                                                             int count,
+                                                             WaveNodeProvisioning.JoinInputs inputs) {
+        return WaveNodeProvisioning.provisionCloud(compute,
+                                                   desired,
+                                                   source,
+                                                   role,
+                                                   count,
+                                                   inputs,
+                                                   WaveNodeProvisioning.mintedIds(desired.cluster().name()));
     }
 
     private static Result<List<ProvisionedNode>> resolveDockerAndProvision(SourceName sourceName,
                                                                            NodeRole role,
                                                                            int count,
                                                                            SourceProfile source,
-                                                                           ClusterName clusterName) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionViaCompute(compute,
-                                                                                              sourceName,
-                                                                                              role,
-                                                                                              count,
-                                                                                              source,
-                                                                                              clusterName));
+                                                                           ClusterBootstrapConfig desired) {
+        var image = NodeUserDataRenderer.pinnedImageFor(desired, source, role);
+
+        return ProviderResolver.resolveDockerCompute(source, image).flatMap(compute -> provisionViaCompute(compute,
+                                                                                                           sourceName,
+                                                                                                           role,
+                                                                                                           count,
+                                                                                                           source,
+                                                                                                           desired.cluster()
+                                                                                                                  .name()));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -247,11 +293,12 @@ public final class WaveExecutor {
 
     private static Result<Integer> executeModifications(List<DiffAction> modifications,
                                                         ClusterBootstrapConfig stored,
-                                                        ClusterBootstrapConfig desired) {
+                                                        ClusterBootstrapConfig desired,
+                                                        CreatedNodes created) {
         var totalModified = 0;
 
         for (var action : modifications) {
-            var result = executeModification(action, stored, desired);
+            var result = executeModification(action, stored, desired, created);
 
             if (result.isFailure()) {
                 return result;
@@ -265,127 +312,46 @@ public final class WaveExecutor {
 
     private static Result<Integer> executeModification(DiffAction action,
                                                        ClusterBootstrapConfig stored,
-                                                       ClusterBootstrapConfig desired) {
+                                                       ClusterBootstrapConfig desired,
+                                                       CreatedNodes created) {
         return switch (action) {
-            case DiffAction.RuntimeChange a -> executeRuntimeChange(a, stored, desired);
-            case DiffAction.SourceFieldChange a -> executeSourceFieldChange(a, stored, desired);
+            case DiffAction.RuntimeChange a -> executeRuntimeChange(a, stored, desired, created);
+            case DiffAction.SourceFieldChange a -> executeSourceFieldChange(a, stored, desired, created);
             case DiffAction.ClusterLevelChange a -> logClusterLevelChange(a);
             default -> logUnknownModification(action);
         };
     }
 
+    /// #1543 F: refused. Rolling a role onto a new runtime here stopped a node and started another in its place by deterministic
+    /// id (the SSH branch re-registered the SAME id on the same host), so a node came back under an id the cluster had retired. See
+    /// [RuntimeChangeNotSupported] for the supported ways to change what a node runs.
     private static Result<Integer> executeRuntimeChange(DiffAction.RuntimeChange change,
                                                         ClusterBootstrapConfig stored,
-                                                        ClusterBootstrapConfig desired) {
-        logAction("~",
-                  change.sourceName()
-                 + "." + change.role().value()
-                 + ": runtime change " + change.fromRuntime()
-                 + " -> " + change.toRuntime());
-
-        return lookupSource(change.sourceName(), stored.sources()).flatMap(source -> rollingRestart(change.sourceName(),
-                                                                                                    change.role(),
-                                                                                                    source,
-                                                                                                    desired));
+                                                        ClusterBootstrapConfig desired,
+                                                        CreatedNodes created) {
+        return new RuntimeChangeNotSupported(change.sourceName(),
+                                             change.role(),
+                                             change.fromRuntime(),
+                                             change.toRuntime()).result();
     }
 
-    private static Result<Integer> rollingRestart(SourceName sourceName,
-                                                  NodeRole role,
-                                                  SourceProfile source,
-                                                  ClusterBootstrapConfig desired) {
-        var managementPort = desired.operations().ports().management();
-        var maxUnavailable = resolveMaxUnavailable(role, desired);
-        var nodeCount = option(source.roles().get(role)).flatMap(RoleSubTable::count).or(0);
-        var modified = 0;
-
-        for (int batch = 0; batch < nodeCount; batch += maxUnavailable) {
-            var batchSize = Math.min(maxUnavailable, nodeCount - batch);
-            var result = rollingRestartBatch(sourceName, role, source, desired, managementPort, batch, batchSize);
-
-            if (result.isFailure()) {
-                return result;
-            }
-
-            modified += result.or(0);
+    /// There is no supported way today to change the runtime profile of a source role on a running cluster: replacements are
+    /// provisioned from the committed cluster config, and `cluster apply` does not change runtime-profile content. What IS supported
+    /// is moving nodes onto a new VERSION by replacement.
+    public record RuntimeChangeNotSupported(SourceName sourceName, NodeRole role, String from, String to) implements Cause {
+        @Override
+        public String message() {
+            return "Changing the runtime of " + sourceName.value()
+                 + "." + role.value()
+                 + " (" + from
+                 + " -> " + to
+                 + ") by apply is not supported: "
+                 + "it would stop a node and start another in its place under the same id, and a node id never returns. "
+                 + "Nodes are moved onto new software by REPLACEMENT under a fresh id: `aether cluster upgrade --version X.Y.Z --wait` replaces every node "
+                 + "one at a time, and `POST /api/v1/nodes/replace/{id}` replaces one. Replacements are provisioned from the committed cluster config, "
+                 + "and `aether cluster apply` does not change runtime-profile content, so there is no supported way today to change a source role's "
+                 + "runtime profile on a running cluster.";
         }
-
-        return success(modified);
-    }
-
-    private static Result<Integer> rollingRestartBatch(SourceName sourceName,
-                                                       NodeRole role,
-                                                       SourceProfile source,
-                                                       ClusterBootstrapConfig desired,
-                                                       int managementPort,
-                                                       int startIndex,
-                                                       int batchSize) {
-        var modified = 0;
-
-        for (int i = startIndex; i < startIndex + batchSize; i++) {
-            var nodeId = sourceName.value() + "-" + role.value() + "-" + i;
-            var result = rollingRestartSingleNode(nodeId, sourceName, role, source, desired, managementPort);
-
-            if (result.isFailure()) {
-                return result;
-            }
-
-            modified++;
-        }
-
-        return success(modified);
-    }
-
-    private static Result<Integer> rollingRestartSingleNode(String nodeId,
-                                                            SourceName sourceName,
-                                                            NodeRole role,
-                                                            SourceProfile source,
-                                                            ClusterBootstrapConfig desired,
-                                                            int managementPort) {
-        logAction("~", "  draining " + nodeId + "...");
-
-        return drainAndDestroyNode(nodeId, sourceName, role, source, managementPort).flatMap(_ -> reprovisionNode(sourceName,
-                                                                                                                  role,
-                                                                                                                  desired))
-                                  .map(_ -> logAndCount("~", "  " + nodeId + " restarted with new runtime", 1));
-    }
-
-    private static Result<Unit> drainAndDestroyNode(String nodeId,
-                                                    SourceName sourceName,
-                                                    NodeRole role,
-                                                    SourceProfile source,
-                                                    int managementPort) {
-        return switch (source.type()) {
-            case SSH -> drainSshNode(nodeId, sourceName, source, managementPort);
-            case CLOUD, DOCKER -> drainAndDestroyComputeNode(nodeId, sourceName, role, source, managementPort);
-            case FORGE -> forgeRestartPlaceholder(nodeId);
-        };
-    }
-
-    private static Result<Unit> drainSshNode(String nodeId,
-                                             SourceName sourceName,
-                                             SourceProfile source,
-                                             int managementPort) {
-        var hosts = option(source.roles()
-                                 .values()
-                                 .stream()
-                                 .flatMap(r -> r.hosts()
-                                                .stream()
-                                                .flatMap(List::stream))
-                                 .toList()).filter(l -> !l.isEmpty())
-                          .or(List.of());
-
-        if (hosts.isEmpty()) {
-            return Result.unitResult();
-        }
-
-        var host = hosts.getFirst();
-
-        return ClusterHttpClient.drainNode(host, managementPort, nodeId)
-                                .flatMap(_ -> ClusterHttpClient.waitForDrainComplete(host,
-                                                                                     managementPort,
-                                                                                     nodeId,
-                                                                                     DRAIN_TIMEOUT_MS))
-                                .flatMap(_ -> sshStopNode(host, source));
     }
 
     private static Result<Unit> sshStopNode(String host, SourceProfile source) {
@@ -394,34 +360,6 @@ public final class WaveExecutor {
         logAction("~", "  SSH stop on " + host);
 
         return RemoteCommandRunner.ssh(host, "docker stop aether-node || true", sshConfig).mapToUnit();
-    }
-
-    private static Result<Unit> drainAndDestroyComputeNode(String nodeId,
-                                                           SourceName sourceName,
-                                                           NodeRole role,
-                                                           SourceProfile source,
-                                                           int managementPort) {
-        var address = resolveNodeAddress(nodeId);
-
-        return ClusterHttpClient.drainNode(address, managementPort, nodeId)
-                                .flatMap(_ -> ClusterHttpClient.waitForDrainComplete(address,
-                                                                                     managementPort,
-                                                                                     nodeId,
-                                                                                     DRAIN_TIMEOUT_MS))
-                                .flatMap(_ -> dispatchDestroy(sourceName, source, role, 1, managementPort));
-    }
-
-    private static Result<List<ProvisionedNode>> reprovisionNode(SourceName sourceName,
-                                                                 NodeRole role,
-                                                                 ClusterBootstrapConfig desired) {
-        return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName,
-                                                                                   source,
-                                                                                   role,
-                                                                                   1,
-                                                                                   desired.cluster().name()))
-                           .flatMap(nodes -> waitForNewNodes(nodes,
-                                                             desired.operations().ports().management()));
     }
 
     private static Result<List<ProvisionedNode>> waitForNewNodes(List<ProvisionedNode> nodes, int managementPort) {
@@ -438,7 +376,8 @@ public final class WaveExecutor {
 
     private static Result<Integer> executeSourceFieldChange(DiffAction.SourceFieldChange change,
                                                             ClusterBootstrapConfig stored,
-                                                            ClusterBootstrapConfig desired) {
+                                                            ClusterBootstrapConfig desired,
+                                                            CreatedNodes created) {
         logAction("~",
                   change.sourceName() + ": " + change.field() + " changed (replace-before-retire)");
 
@@ -446,13 +385,15 @@ public final class WaveExecutor {
                                                                                                      desired.sources()).flatMap(newSource -> replaceBeforeRetire(change.sourceName(),
                                                                                                                                                                  oldSource,
                                                                                                                                                                  newSource,
-                                                                                                                                                                 desired)));
+                                                                                                                                                                 desired,
+                                                                                                                                                                 created)));
     }
 
     private static Result<Integer> replaceBeforeRetire(SourceName sourceName,
                                                        SourceProfile oldSource,
                                                        SourceProfile newSource,
-                                                       ClusterBootstrapConfig desired) {
+                                                       ClusterBootstrapConfig desired,
+                                                       CreatedNodes created) {
         var managementPort = desired.operations().ports().management();
         var totalAffected = 0;
 
@@ -464,7 +405,7 @@ public final class WaveExecutor {
                 continue;
             }
 
-            var result = replaceBeforeRetireRole(sourceName, role, count, newSource, desired, managementPort);
+            var result = replaceBeforeRetireRole(sourceName, role, count, newSource, desired, managementPort, created);
 
             if (result.isFailure()) {
                 return result;
@@ -481,14 +422,12 @@ public final class WaveExecutor {
                                                            int count,
                                                            SourceProfile newSource,
                                                            ClusterBootstrapConfig desired,
-                                                           int managementPort) {
+                                                           int managementPort,
+                                                           CreatedNodes created) {
         logAction("~", "  provisioning " + count + " new " + role.value() + " node(s)...");
 
-        return dispatchProvision(sourceName,
-                                 newSource,
-                                 role,
-                                 count,
-                                 desired.cluster().name()).flatMap(nodes -> waitForNewNodes(nodes, managementPort))
+        return dispatchProvision(sourceName, newSource, role, count, desired, created).flatMap(nodes -> waitForNewNodes(nodes,
+                                                                                                                        managementPort))
                                 .flatMap(_ -> drainOldNodes(sourceName, role, count, desired))
                                 .map(count2 -> logAndCount("~",
                                                            "  " + sourceName
@@ -498,19 +437,13 @@ public final class WaveExecutor {
                                                            count));
     }
 
-    private static Result<Unit> drainOldNodes(SourceName sourceName,
-                                              NodeRole role,
-                                              int count,
-                                              ClusterBootstrapConfig desired) {
+    static Result<Unit> drainOldNodes(SourceName sourceName, NodeRole role, int count, ClusterBootstrapConfig desired) {
         var managementPort = desired.operations().ports().management();
 
         for (int i = 0; i < count; i++) {
             var nodeId = sourceName.value() + "-" + role.value() + "-old-" + i;
             var address = resolveNodeAddress(nodeId);
-            Result<Unit> result = ClusterHttpClient.drainNode(address, managementPort, nodeId).flatMap(_ -> ClusterHttpClient.waitForDrainComplete(address,
-                                                                                                                                                   managementPort,
-                                                                                                                                                   nodeId,
-                                                                                                                                                   DRAIN_TIMEOUT_MS));
+            Result<Unit> result = ClusterHttpClient.drainNodeAndAwait(address, managementPort, nodeId, DRAIN_TIMEOUT_MS);
 
             if (result.isFailure()) {
                 return result;
@@ -533,13 +466,6 @@ public final class WaveExecutor {
         return success(0);
     }
 
-    private static int resolveMaxUnavailable(NodeRole role, ClusterBootstrapConfig config) {
-        return role == NodeRole.CORE
-               ? config.coreTopology()
-                       .maxUnavailable()
-               : Integer.MAX_VALUE;
-    }
-
     private static String resolveNodeAddress(String nodeId) {
         return nodeId;
     }
@@ -550,12 +476,6 @@ public final class WaveExecutor {
         var port = source.sshPort().or(22);
 
         return SshConfig.sshConfig(user, keyPath, port);
-    }
-
-    private static Result<Unit> forgeRestartPlaceholder(String nodeId) {
-        logAction("~", "  " + nodeId + "/forge: in-process node will be restarted by Forge");
-
-        return Result.unitResult();
     }
 
     private static Result<Integer> executeRemovals(List<DiffAction> removals,
@@ -576,9 +496,7 @@ public final class WaveExecutor {
         return success(totalRemoved);
     }
 
-    private static Result<Integer> executeRemoval(DiffAction action,
-                                                  ClusterBootstrapConfig stored,
-                                                  int managementPort) {
+    static Result<Integer> executeRemoval(DiffAction action, ClusterBootstrapConfig stored, int managementPort) {
         return switch (action) {
             case DiffAction.RemoveSource a -> destroyEntireSource(a.sourceName(), stored, managementPort);
             case DiffAction.RemoveRole a -> destroyRole(a.sourceName(), a.role(), a.count(), stored, managementPort);
@@ -597,10 +515,14 @@ public final class WaveExecutor {
                                                        int managementPort) {
         return lookupSource(sourceName, stored.sources()).flatMap(source -> destroyAllRoles(sourceName,
                                                                                             source,
+                                                                                            stored.cluster().name(),
                                                                                             managementPort));
     }
 
-    private static Result<Integer> destroyAllRoles(SourceName sourceName, SourceProfile source, int managementPort) {
+    private static Result<Integer> destroyAllRoles(SourceName sourceName,
+                                                   SourceProfile source,
+                                                   ClusterName cluster,
+                                                   int managementPort) {
         var totalDestroyed = 0;
 
         for (var entry : source.roles().entrySet()) {
@@ -610,7 +532,7 @@ public final class WaveExecutor {
                 continue;
             }
 
-            var result = dispatchDestroy(sourceName, source, entry.getKey(), count, managementPort);
+            var result = dispatchRemoval(cluster, sourceName, source, entry.getKey(), count, managementPort);
 
             if (result.isFailure()) {
                 return result.map(_ -> 0);
@@ -630,7 +552,8 @@ public final class WaveExecutor {
                                                ClusterBootstrapConfig stored,
                                                int managementPort) {
         return lookupSource(sourceName,
-                            stored.sources()).flatMap(source -> dispatchDestroy(sourceName,
+                            stored.sources()).flatMap(source -> dispatchRemoval(stored.cluster().name(),
+                                                                                sourceName,
                                                                                 source,
                                                                                 role,
                                                                                 count,
@@ -649,7 +572,8 @@ public final class WaveExecutor {
         var excess = from - to;
 
         return lookupSource(sourceName,
-                            stored.sources()).flatMap(source -> dispatchDestroy(sourceName,
+                            stored.sources()).flatMap(source -> dispatchRemoval(stored.cluster().name(),
+                                                                                sourceName,
                                                                                 source,
                                                                                 role,
                                                                                 excess,
@@ -662,14 +586,71 @@ public final class WaveExecutor {
                                                  excess));
     }
 
-    private static Result<Unit> dispatchDestroy(SourceName sourceName,
+    /// Removal of the NEWEST `count` nodes of a source's role (scale-down, role removal, source removal). A docker node's id is its container name
+    /// (`aether-<cluster>-node-<ulid>`), which the `<source>-<role>-<index>` label never matches, so docker removal discovers the real containers
+    /// ([#destroyDockerNodes]); the other source types keep addressing their own ids (#1027).
+    private static Result<Unit> dispatchRemoval(ClusterName clusterName,
+                                                SourceName sourceName,
                                                 SourceProfile source,
                                                 NodeRole role,
                                                 int count,
                                                 int managementPort) {
+        return source.type() == SourceType.DOCKER
+               ? ProviderResolver.resolveDockerComputeWithoutBackup(clusterName).flatMap(compute -> destroyDockerNodes(compute,
+                                                                                                                       clusterName,
+                                                                                                                       sourceName,
+                                                                                                                       role,
+                                                                                                                       count))
+               : dispatchDestroy(sourceName, source, role, count, managementPort);
+    }
+
+    /// Terminates the `count` newest containers of `cluster`/`source`/`role`, newest = the greatest node id (a ULID, so id order is creation
+    /// order). Fewer matching containers than `count` is a refusal, not a partial removal: terminating whatever happens to match could remove a
+    /// node the plan did not name.
+    @SuppressWarnings("JBCT-EX-01")
+    static Result<Unit> destroyDockerNodes(ComputeProvider compute,
+                                           ClusterName clusterName,
+                                           SourceName sourceName,
+                                           NodeRole role,
+                                           int count) {
+        var found = compute.listInstances(Map.of("aether.cluster",
+                                                 clusterName.value(),
+                                                 "aether.role",
+                                                 role.value(),
+                                                 "aether.source",
+                                                 sourceName.value()))
+                           .await();
+
+        return found.flatMap(instances -> newestNodeIds(instances, sourceName, role, count))
+                    .flatMap(ids -> CloudProviderSupport.destroyVia(compute, ids).await());
+    }
+
+    private static Result<List<String>> newestNodeIds(List<InstanceInfo> instances,
+                                                      SourceName sourceName,
+                                                      NodeRole role,
+                                                      int count) {
+        var ids = instances.stream()
+                           .map(info -> info.nodeId()
+                                            .or(info.id().value()))
+                           .sorted(Comparator.reverseOrder())
+                           .toList();
+
+        return ids.size() < count
+               ? new ApplyError.ScaleDownShort(sourceName, role, count, ids).<List<String>> result()
+               : Result.success(ids.subList(0, count));
+    }
+
+    /// Removal for the source types addressed by their own ids. A docker node's id is its container name, which the `<source>-<role>-<index>` label
+    /// never matches (#1027), so docker removal goes through [#dispatchRemoval] and its label discovery; reaching this with a docker source is a
+    /// routing defect and is refused rather than destroying by the stale label-index ids.
+    static Result<Unit> dispatchDestroy(SourceName sourceName,
+                                        SourceProfile source,
+                                        NodeRole role,
+                                        int count,
+                                        int managementPort) {
         return switch (source.type()) {
             case CLOUD -> resolveCloudAndDestroy(source, sourceName, role, count);
-            case DOCKER -> resolveDockerAndDestroy(sourceName, role, count);
+            case DOCKER -> new ApplyError.DockerRemovalMisrouted(sourceName).result();
             case FORGE -> forgeDestroyPlaceholder(sourceName, role, count);
             case SSH -> drainAndStopSshNodes(sourceName, role, count, source, managementPort);
         };
@@ -683,13 +664,6 @@ public final class WaveExecutor {
                                                                                                  sourceName,
                                                                                                  role,
                                                                                                  count));
-    }
-
-    private static Result<Unit> resolveDockerAndDestroy(SourceName sourceName, NodeRole role, int count) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> destroyViaCompute(compute,
-                                                                                            sourceName,
-                                                                                            role,
-                                                                                            count));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -731,12 +705,8 @@ public final class WaveExecutor {
         for (int i = 0; i < stopCount; i++) {
             var host = hosts.get(hosts.size() - 1 - i);
             var nodeId = sourceName.value() + "-" + role.value() + "-" + (hosts.size() - 1 - i);
-            var result = ClusterHttpClient.drainNode(host, managementPort, nodeId)
-                                          .flatMap(_ -> ClusterHttpClient.waitForDrainComplete(host,
-                                                                                               managementPort,
-                                                                                               nodeId,
-                                                                                               DRAIN_TIMEOUT_MS))
-                                          .flatMap(_ -> sshStopNode(host, source));
+            var result = ClusterHttpClient.drainNodeAndAwait(host, managementPort, nodeId, DRAIN_TIMEOUT_MS).flatMap(_ -> sshStopNode(host,
+                                                                                                                                      source));
 
             if (result.isFailure()) {
                 return result;
@@ -744,6 +714,29 @@ public final class WaveExecutor {
         }
 
         return Result.unitResult();
+    }
+
+    /// Every cloud VM one apply creates, recorded as it is created, so an apply that fails later — in any step — names
+    /// them all (#1695, CodeRabbit on #1716). The apply records nothing else about them: `ApplyState` holds no created
+    /// resources and `--rollback` does not see them.
+    ///
+    /// Only CLOUD sources are recorded, because only there did a provider create a billed VM. An SSH "node" is one of
+    /// the operator's own pre-existing hosts, so telling them to delete it would be harmful advice. A FORGE node is an
+    /// in-process placeholder. A DOCKER node is a local container, not billed and not reported.
+    static final class CreatedNodes {
+        private final List<WaveNodeProvisioning.CreatedNode> nodes = new ArrayList<>();
+
+        Unit record(List<ProvisionedNode> provisioned, SourceProfile source) {
+            if (source.type() == SourceType.CLOUD) {
+                nodes.addAll(WaveNodeProvisioning.created(provisioned, source));
+            }
+
+            return Unit.unit();
+        }
+
+        List<WaveNodeProvisioning.CreatedNode> snapshot() {
+            return List.copyOf(nodes);
+        }
     }
 
     private static Result<SourceProfile> lookupSource(SourceName sourceName, Map<String, SourceProfile> sources) {
@@ -774,6 +767,26 @@ public final class WaveExecutor {
             public String message() {
                 return "SSH source '" + sourceName
                      + "' cannot scale up: hosts are fixed. Add hosts to the config and re-apply.";
+            }
+        }
+
+        record ScaleDownShort(SourceName sourceName, NodeRole role, int wanted, List<String> found) implements ApplyError {
+            @Override
+            public String message() {
+                return "cannot remove " + wanted
+                     + " " + role.value()
+                     + " node(s) of docker source '" + sourceName
+                     + "': only " + found.size()
+                     + " container(s) carry its labels (" + found
+                     + "). Nothing was removed.";
+            }
+        }
+
+        record DockerRemovalMisrouted(SourceName sourceName) implements ApplyError {
+            @Override
+            public String message() {
+                return "docker source '" + sourceName
+                     + "' reached the label-index removal path; docker nodes are removed by discovering their real containers. Nothing was removed.";
             }
         }
 

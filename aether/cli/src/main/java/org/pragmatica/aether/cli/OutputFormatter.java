@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
 import java.io.PrintStream;
@@ -27,7 +26,17 @@ public sealed interface OutputFormatter {
         return printQuery(json, options, Option.option(tableSpec));
     }
 
+    /// #1033: `AetherCli.fetch` folds a failed send (or a non-2xx reply) into an error envelope
+    /// rather than a `Result`, so it arrives here looking like a document. Rendered as one, a
+    /// transport failure became an empty table with exit 0 — "no nodes" where the truth was
+    /// "could not ask". The envelope is refused before any format or `--quiet` handling: the cause
+    /// goes to stderr and the exit code is `ERROR` (`NOT_FOUND` for a 404), as `checkResponseError`
+    /// already does for the commands that call it explicitly.
     private static int printQuery(String json, OutputOptions options, Option<TableSpec> tableSpec) {
+        if (isErrorResponse(json)) {
+            return printResponseError(json, extractErrorMessage(json), options);
+        }
+
         if (options.isQuiet()) {
             return ExitCode.SUCCESS;
         }
@@ -40,7 +49,13 @@ public sealed interface OutputFormatter {
         };
     }
 
+    /// Same refusal as [#printQuery] for the action commands (#1033 review): the success line
+    /// over an error envelope reported an operation that never ran as one that succeeded.
     static int printAction(String json, OutputOptions options, String successMessage) {
+        if (isErrorResponse(json)) {
+            return printResponseError(json, extractErrorMessage(json), options);
+        }
+
         if (options.isQuiet()) {
             return ExitCode.SUCCESS;
         }
@@ -334,8 +349,10 @@ public sealed interface OutputFormatter {
             return -1;
         }
 
-        var message = actionLabel + ": " + extractErrorMessage(response);
+        return printResponseError(response, actionLabel + ": " + extractErrorMessage(response), options);
+    }
 
+    private static int printResponseError(String response, String message, OutputOptions options) {
         return isNotFoundResponse(response)
                ? printNotFound(message, options)
                : printError(message, options);

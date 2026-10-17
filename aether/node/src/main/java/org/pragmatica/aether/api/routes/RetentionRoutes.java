@@ -23,7 +23,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.WalSnapshot;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalStats;
+import org.pragmatica.storage.AppendLog.WalStats;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -90,6 +90,9 @@ public final class RetentionRoutes implements RouteSource {
     /// @param wal            the WAL's live counters, absent when this partition has no WAL
     /// @param ringTail       earliest offset still in the in-memory ring
     /// @param sealedThrough  the durable sealed bound — what WAL truncation chases
+    /// @param reclaimedThrough the persisted reclaimed-through floor: the highest offset retention reclaimed
+    ///                       (#1278), `-1` when nothing was reclaimed. A WAL starting at or below `reclaimedThrough + 1`
+    ///                       is reclaimed history; one starting above `sealedThrough + 1` is a lost head
     /// @param earliestSegment earliest sealed-segment start offset still retained
     /// @param checkpointFloor entity checkpoint (`throughOffset`), `-1` when none
     /// @param coveredFrom    the MINIMUM start offset across local sources, `-1` when this node
@@ -102,6 +105,7 @@ public final class RetentionRoutes implements RouteSource {
                                   Option<WalDetail> wal,
                                   long ringTail,
                                   long sealedThrough,
+                                  long reclaimedThrough,
                                   long earliestSegment,
                                   long checkpointFloor,
                                   long coveredFrom,
@@ -121,7 +125,21 @@ public final class RetentionRoutes implements RouteSource {
                      double fsyncMaxMicros,
                      boolean failStopped) {}
 
-    record RetentionResponse(long walTotalBytes, List<RetentionPartitionView> partitions) {}
+    /// @param walRecoveryHeadsLost        node-wide count, since process start, of WAL recoveries refused
+    ///                                    because the file started above the durable sealed watermark, which
+    ///                                    already counts what retention reclaimed (#1278, `WalHeadLost`) — any
+    ///                                    non-zero value is lost records, and the ERROR naming the range says
+    ///                                    which
+    /// @param walReclamationHeldBackTicks consecutive WAL-truncation ticks (30 s each) in which some
+    ///                                    partition's sealed watermark ON DISK sat below its live watermark
+    ///                                    without advancing (#1345): `0` while the streams metadata snapshot
+    ///                                    keeps up; climbing means WAL reclamation is halted because that
+    ///                                    snapshot cannot be written or read, and the tick's WARN names the
+    ///                                    partitions and bytes
+    record RetentionResponse(long walTotalBytes,
+                             List<RetentionPartitionView> partitions,
+                             long walRecoveryHeadsLost,
+                             long walReclamationHeldBackTicks) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -131,16 +149,42 @@ public final class RetentionRoutes implements RouteSource {
     private RetentionResponse retention() {
         var node = nodeSupplier.get();
 
-        return assembleRetention(node.streamPartitionManager().walSnapshot(),
-                                 node.streamSegmentIndex(),
-                                 node.kvStore());
+        return assembleRetention(node.streamPartitionManager(), node.streamSegmentIndex(), node.kvStore());
+    }
+
+    /// The production assembler: the WAL snapshot and the held-back counter come from the SAME manager, the
+    /// lost-head counter from its process-wide accumulator.
+    static RetentionResponse assembleRetention(StreamPartitionManager manager,
+                                               SegmentIndex segmentIndex,
+                                               KVStore<AetherKey, AetherValue> kvStore) {
+        return assembleRetention(manager.walSnapshot(),
+                                 segmentIndex,
+                                 kvStore,
+                                 StreamPartitionManager.walRecoveryHeadsLost(),
+                                 manager.walReclamationHeldBackTicks());
     }
 
     /// Package-visible assembler (the `ClusterTopologyRoutes` precedent) so the tri-floor join and the
-    /// invariant are unit-testable off a seeded snapshot/index/store without the HTTP layer.
+    /// invariant are unit-testable off a seeded snapshot/index/store without the HTTP layer. With no manager
+    /// in hand there is no held-back counter to read; it reports `0`.
     static RetentionResponse assembleRetention(WalSnapshot snapshot,
                                                SegmentIndex segmentIndex,
                                                KVStore<AetherKey, AetherValue> kvStore) {
+        return assembleRetention(snapshot, segmentIndex, kvStore, StreamPartitionManager.walRecoveryHeadsLost(), 0L);
+    }
+
+    static RetentionResponse assembleRetention(WalSnapshot snapshot,
+                                               SegmentIndex segmentIndex,
+                                               KVStore<AetherKey, AetherValue> kvStore,
+                                               long walRecoveryHeadsLost) {
+        return assembleRetention(snapshot, segmentIndex, kvStore, walRecoveryHeadsLost, 0L);
+    }
+
+    static RetentionResponse assembleRetention(WalSnapshot snapshot,
+                                               SegmentIndex segmentIndex,
+                                               KVStore<AetherKey, AetherValue> kvStore,
+                                               long walRecoveryHeadsLost,
+                                               long walReclamationHeldBackTicks) {
         var rows = new HashMap<PartitionCoordinate, RetentionPartitionView>();
 
         snapshot.streams()
@@ -153,7 +197,10 @@ public final class RetentionRoutes implements RouteSource {
         segmentIndex.listPartitionKeys().forEach(key -> putSegmentOnlyRow(rows, key, segmentIndex, kvStore));
         var partitions = rows.values().stream().sorted(RetentionRoutes::byCoordinate).toList();
 
-        return new RetentionResponse(walTotalBytes(snapshot), partitions);
+        return new RetentionResponse(walTotalBytes(snapshot),
+                                     partitions,
+                                     walRecoveryHeadsLost,
+                                     walReclamationHeldBackTicks);
     }
 
     /// Total live WAL bytes across every partition on this node — the number the storage capacity
@@ -182,6 +229,7 @@ public final class RetentionRoutes implements RouteSource {
                           view.wal(),
                           view.ringTailOffset(),
                           view.sealedThroughOffset(),
+                          segmentIndex.reclaimedThrough(stream, view.partition()),
                           earliestSegmentOffset(segmentIndex, stream, view.partition()),
                           checkpointFloor(kvStore, stream, view.partition())));
     }
@@ -199,6 +247,7 @@ public final class RetentionRoutes implements RouteSource {
                                            Option.none(),
                                            - 1L,
                                            segmentIndex.lastSealedOffset(key.streamName(), key.partition()),
+                                           segmentIndex.reclaimedThrough(key.streamName(), key.partition()),
                                            earliestSegmentOffset(segmentIndex, key.streamName(), key.partition()),
                                            checkpointFloor(kvStore, key.streamName(), key.partition())));
     }
@@ -207,6 +256,7 @@ public final class RetentionRoutes implements RouteSource {
                                                    Option<WalStats> wal,
                                                    long ringTail,
                                                    long sealedThrough,
+                                                   long reclaimedThrough,
                                                    long earliestSegment,
                                                    long checkpointFloor) {
         var coveredFrom = coveredFrom(wal, ringTail, earliestSegment);
@@ -221,6 +271,7 @@ public final class RetentionRoutes implements RouteSource {
                                           wal.map(RetentionRoutes::toWalDetail),
                                           ringTail,
                                           sealedThrough,
+                                          reclaimedThrough,
                                           earliestSegment,
                                           checkpointFloor,
                                           coveredFrom,

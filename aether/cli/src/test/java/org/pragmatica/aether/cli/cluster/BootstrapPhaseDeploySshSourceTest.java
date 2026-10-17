@@ -1,0 +1,396 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.cli.cluster;
+
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.config.cluster.AutoHealSpec;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
+import org.pragmatica.aether.config.cluster.ClusterIdentity;
+import org.pragmatica.aether.config.cluster.CoreTopology;
+import org.pragmatica.aether.config.cluster.InfrastructureConfig;
+import org.pragmatica.aether.config.cluster.LoadBalancerMode;
+import org.pragmatica.aether.config.cluster.NetworkingType;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
+import org.pragmatica.aether.config.cluster.OperationsConfig;
+import org.pragmatica.aether.config.cluster.PortMapping;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
+import org.pragmatica.aether.config.cluster.RuntimeProfile;
+import org.pragmatica.aether.config.cluster.RuntimeType;
+import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceType;
+import org.pragmatica.aether.config.cluster.SshConfig;
+import org.pragmatica.aether.config.cluster.TimeoutsConfig;
+import org.pragmatica.aether.config.cluster.TlsDeploymentConfig;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.NodeAddress;
+import org.pragmatica.aether.environment.ProvisionedNode;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.lang.Functions.Fn4;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import org.junit.jupiter.api.Test;
+
+import static org.pragmatica.aether.environment.ClusterName.clusterName;
+import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
+import static org.assertj.core.api.Assertions.assertThat;
+
+
+/// #1090 — the SSH source's launch, pinned the way #1085 pinned the cloud re-launch: through
+/// `deploySshSource` with captured `ssh`/`scp` commands, asserting on what would reach the host.
+/// Four defects on one path: `:latest` instead of the resolved image, no role (label or
+/// `AETHER_ROLE`), the runtime profile ignored, and every SSH node of every SSH source deployed onto
+/// each other's hosts.
+class BootstrapPhaseDeploySshSourceTest {
+    private static final ClusterName CLUSTER = clusterName("prod").unwrap();
+    private static final String VERSION = "1.0.0";
+    private static final String SECRET = "super-secret-token";
+
+    private final Map<String, String> startCommands = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedQueue<String> scpTargets = new ConcurrentLinkedQueue<>();
+    // Every ssh/scp call in arrival order: `ssh:<host>:<command>` (the launch line abbreviated to
+    // `launch`) and `scp:<host>` — so the ORDER of what reaches a host is assertable, not only the set.
+    private final ConcurrentLinkedQueue<String> calls = new ConcurrentLinkedQueue<>();
+
+    private final Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+        if (command.contains("docker run") || command.contains("systemctl")) {
+            startCommands.put(host, command);
+            calls.add("ssh:" + host + ":launch");
+        } else {
+            calls.add("ssh:" + host + ":" + command);
+        }
+
+        return Result.success("");
+    };
+
+    private final Fn4<Result<Unit>, String, String, String, SshConfig> scpExec = (local, host, remote, config) -> {
+        scpTargets.add(host + ":" + remote);
+        calls.add("scp:" + host);
+
+        return Result.unitResult();
+    };
+
+    private static SourceProfile sshSource(String name,
+                                           List<String> coreHosts,
+                                           List<String> workerHosts,
+                                           String runtimeRef) {
+        return sshSource(name, coreHosts, workerHosts, runtimeRef, Option.empty());
+    }
+
+    private static SourceProfile sshSource(String name,
+                                           List<String> coreHosts,
+                                           List<String> workerHosts,
+                                           String runtimeRef,
+                                           Option<org.pragmatica.config.toml.TomlDocument> nodeConfig) {
+        var roles = workerHosts.isEmpty()
+                    ? Map.of(NodeRole.CORE,
+                             RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                       Option.empty(),
+                                                       Option.some(coreHosts),
+                                                       Option.empty(),
+                                                       Option.empty(),
+                                                       runtimeRef))
+                    : Map.of(NodeRole.CORE,
+                             RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                       Option.empty(),
+                                                       Option.some(coreHosts),
+                                                       Option.empty(),
+                                                       Option.empty(),
+                                                       runtimeRef),
+                             NodeRole.WORKER,
+                             RoleSubTable.roleSubTable(NodeRole.WORKER,
+                                                       Option.empty(),
+                                                       Option.some(workerHosts),
+                                                       Option.empty(),
+                                                       Option.empty(),
+                                                       runtimeRef));
+
+        return SourceProfile.sourceProfile(sourceNameOrDefault(name),
+                                           SourceType.SSH,
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.some("aether"),
+                                           Option.some("/home/op/.ssh/id"),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           roles,
+                                           List.of(),
+                                           nodeConfig);
+    }
+
+    private static BootstrapContext context(Map<String, SourceProfile> sources,
+                                            Map<String, RuntimeProfile> runtimes,
+                                            List<ProvisionedNode> nodes) {
+        var ops = OperationsConfig.operationsConfig(AutoHealSpec.defaultAutoHealSpec(),
+                                                    TlsDeploymentConfig.defaultTlsConfig(),
+                                                    TimeoutsConfig.timeoutsConfig("3s", "10s", "10s"),
+                                                    PortMapping.defaultPortMapping());
+        var config = ClusterBootstrapConfig.clusterBootstrapConfig(VERSION,
+                                                                   ClusterIdentity.clusterIdentity(CLUSTER.value(),
+                                                                                                   VERSION)
+                                                                                  .unwrap(),
+                                                                   CoreTopology.defaultCoreTopology(),
+                                                                   sources,
+                                                                   runtimes,
+                                                                   InfrastructureConfig.infrastructureConfig(NetworkingType.MANUAL),
+                                                                   ops, java.util.Map.of());
+        var addresses = nodes.stream()
+                             .map(n -> NodeAddress.nodeAddress(n.nodeId(),
+                                                               n.publicIp(),
+                                                               Option.empty()))
+                             .toList();
+        var state = BootstrapState.initialState(CLUSTER, "h", "now").withClusterSecret(SECRET);
+
+        return BootstrapContext.bootstrapContext(config, state, nodes, addresses).withClusterSecret(SECRET);
+    }
+
+    private static ProvisionedNode ssh(String nodeId, String host) {
+        return ProvisionedNode.provisionedNode(nodeId, "ssh", host);
+    }
+
+    private Result<Unit> deploy(BootstrapContext ctx, String sourceName) {
+        return deploy(ctx, sourceName, name -> null);
+    }
+
+    private Result<Unit> deploy(BootstrapContext ctx, String sourceName, Fn1<String, String> envLookup) {
+        return BootstrapPhaseDeploy.deploySshSource(ctx,
+                                                    ctx.config().sources().get(sourceName),
+                                                    sourceNameOrDefault(sourceName),
+                                                    sshExec,
+                                                    scpExec,
+                                                    envLookup);
+    }
+
+    @Test
+    void sshSource_launchesTheResolvedImage_neverLatest() {
+        var runtimes = Map.of("pinned",
+                              RuntimeProfile.runtimeProfile("pinned",
+                                                            RuntimeType.CONTAINER,
+                                                            Option.some("ghcr.io/pragmaticalabs/aether-node:1.0.0-rc4"),
+                                                            Option.empty()));
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "pinned")),
+                          runtimes,
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        var cmd = startCommands.get("10.0.0.1");
+
+        assertThat(cmd).as("the host runs the image the operator bootstrapped, not whatever :latest points at")
+                  .contains("aether-node:1.0.0-rc4")
+                  .doesNotContain(":latest");
+    }
+
+    /// #1968: an SSH source's first start must give the node the backup volume its `node_config` `[backup]` asks for: the host
+    /// directory is created and bind-mounted at `[backup] path`. Driven through `deploySshSource`, so a call that stops passing the
+    /// composed config's path to the launch line cannot hide behind a correct builder.
+    @Test
+    void sshSource_withBackupInNodeConfig_launchLineMountsTheBackupVolume() {
+        var backup = org.pragmatica.config.toml.TomlParser.parse("[backup]\nenabled = true\npath = \"/var/aether/backups\"\n").unwrap();
+        var ctx = context(Map.of("dc", sshSource("dc", List.of("10.0.0.1"), List.of(), "default", Option.some(backup))),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        var cmd = startCommands.get("10.0.0.1");
+
+        assertThat(cmd).as("CONTROL: the launch line was captured").contains("docker run");
+        assertThat(cmd).contains("-v /opt/aether/backups:/var/aether/backups")
+                       .contains("install -d -m 0750 -o 1000 -g 1000 /opt/aether/backups");
+        assertThat(cmd.indexOf("install -d -m 0750 -o 1000 -g 1000 /opt/aether/backups")).as("created before docker run")
+                                                                                         .isLessThan(cmd.indexOf("docker run"));
+    }
+
+    @Test
+    void sshSource_withoutBackup_launchLineMountsNothing() {
+        var ctx = context(Map.of("dc", sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).doesNotContain("/opt/aether/backups");
+    }
+
+    /// #1543 part C: `{version}` in the runtime profile's image follows `[cluster] version` on the SSH launch too.
+    @Test
+    void sshSource_imagePlaceholder_isSubstitutedWithTheClusterVersion() {
+        var runtimes = Map.of("tracking",
+                              RuntimeProfile.runtimeProfile("tracking",
+                                                            RuntimeType.CONTAINER,
+                                                            Option.some("registry/aether-node:{version}"),
+                                                            Option.empty()));
+        var ctx = context(Map.of("dc", sshSource("dc", List.of("10.0.0.1"), List.of(), "tracking")),
+                          runtimes,
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).contains("registry/aether-node:" + VERSION).doesNotContain("{version}");
+    }
+
+    /// Review SF-1: the case #1090 was filed on — `[source.x.core] hosts = […]` with no `[runtime.*]`
+    /// table at all. The image is then derived from the cluster version; it must never be `:latest`.
+    @Test
+    void sshSource_withoutARuntimeProfile_launchesTheVersionDerivedImage_neverLatest() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).as("no profile → the tag is the version being bootstrapped")
+                  .contains("docker pull ghcr.io/pragmaticalabs/aether-node:" + VERSION + " ")
+                  .contains(" ghcr.io/pragmaticalabs/aether-node:" + VERSION)
+                  .doesNotContain(":latest");
+    }
+
+    /// #1650 F2 (v1650 MI): the launch line `deploySshSource` builds stamps the node's OWN source -- the one being
+    /// deployed -- and never the default, nor the operator host's `AETHER_SOURCE`. Driven through the call site,
+    /// not the builder, so a wrong argument at the call cannot hide behind a correct builder.
+    @Test
+    void sshSource_launchLineStampsTheDeployedSource_neverTheDefaultOrTheHostsOwn() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of("10.0.0.2"), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1"), ssh("dc-worker-0", "10.0.0.2")));
+        var result = deploy(ctx, "dc", name -> name.equals("AETHER_SOURCE")
+                                               ? "operator-host-source"
+                                               : null);
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands).as("CONTROL: both SSH nodes were launched").hasSize(2);
+        startCommands.forEach((host, cmd) -> assertThat(cmd).as("launch line on %s", host)
+                                                          .contains("-e AETHER_SOURCE=\"dc\"")
+                                                          .doesNotContain("AETHER_SOURCE=\"default\"")
+                                                          .doesNotContain("operator-host-source"));
+    }
+
+    /// Review N-1: the config dir is created by its own ssh call BEFORE the scp that lands in it —
+    /// the launch line's `mkdir -p` prefix runs too late to help the scp.
+    @Test
+    void sshSource_createsTheConfigDirBeforeTheScpLandsInIt() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of("10.0.0.2"), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1"), ssh("dc-worker-0", "10.0.0.2")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(calls).containsExactly("ssh:10.0.0.1:mkdir -p /opt/aether/config",
+                                          "scp:10.0.0.1",
+                                          "scp:10.0.0.1",
+                                          "ssh:10.0.0.1:launch",
+                                          "ssh:10.0.0.2:mkdir -p /opt/aether/config",
+                                          "scp:10.0.0.2",
+                                          "scp:10.0.0.2",
+                                          "ssh:10.0.0.2:launch");
+    }
+
+    /// Review N-2: the "identity allow-list" is `ClusterIdentityEnv.IDENTITY_VARS` — env-var NAMES
+    /// forwarded from the operator's host env into the container. A listed name present on the host
+    /// reaches the launch line; an unlisted one never does.
+    @Test
+    void sshSource_forwardsListedIdentityEnvFromTheOperatorHost_andNothingElse() {
+        var hostEnv = Map.of("AETHER_API_KEYS", "k1,k2", "AETHER_PROVISIONED_BY", "ops", "NOT_ON_THE_LIST", "leak");
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc", hostEnv::get);
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).as("#828: a credential-class identity var rides the secret file, not argv")
+                  .doesNotContain("k1,k2")
+                  .contains("-e AETHER_PROVISIONED_BY=\"ops\"")
+                  .doesNotContain("NOT_ON_THE_LIST")
+                  .contains("-e AETHER_API_KEYS_FILE=\"/run/secrets/aether-api-keys\"")
+                  .doesNotContain("--env-file");
+        assertThat(scpTargets).as("positive control: the keys were pushed to their staged file").contains("10.0.0.1:" + BootstrapPhaseDeploy.stagedPath("AETHER_API_KEYS", false));
+    }
+
+    /// #828: the SSH source's launch line used to inline the cluster secret as `-e AETHER_CLUSTER_SECRET`.
+    @Test
+    void sshSource_launchLineCarriesNoSecretMaterial_itMountsAFileInstead() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands).as("CONTROL: the host was launched").containsKey("10.0.0.1");
+        assertThat(startCommands.get("10.0.0.1")).doesNotContain(SECRET)
+                  .doesNotContain("AETHER_CLUSTER_SECRET=")
+                  .doesNotContain("--env-file")
+                  .contains("AETHER_CLUSTER_SECRET_FILE=\"" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT + "\"");
+    }
+
+    @Test
+    void sshSource_labelsAndEnvsEachHostWithItsOwnRole() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of("10.0.0.2"), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1"), ssh("dc-worker-0", "10.0.0.2")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).contains("-l aether-role=core").contains("-e AETHER_ROLE=\"core\"");
+        assertThat(startCommands.get("10.0.0.2")).as("a host the operator declared as a worker must join as one — with no "
+                                                    + "AETHER_ROLE the node classifies itself as CORE")
+                  .contains("-l aether-role=worker")
+                  .contains("-e AETHER_ROLE=\"worker\"")
+                  .contains("-l aether-node-id=dc-worker-0")
+                  .contains("-e AETHER_CLUSTER_NAME=\"prod\"");
+    }
+
+    @Test
+    void sshSource_deploysOnlyItsOwnHosts_notAnotherSshSources() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "default"),
+                                 "lab",
+                                 sshSource("lab", List.of("10.0.1.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1"), ssh("lab-core-0", "10.0.1.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.keySet()).as("`dc`'s deploy must not touch `lab`'s host").containsExactly("10.0.0.1");
+        assertThat(scpTargets).containsExactly("10.0.0.1:/opt/aether/config/aether.toml",
+                                                     "10.0.0.1:" + BootstrapPhaseDeploy.CONTAINER_SECRET_STAGED);
+    }
+
+    @Test
+    void sshSource_nonContainerRuntime_isRefusedByName_notSilentlyRunAsAContainer() {
+        var runtimes = Map.of("jvm",
+                              RuntimeProfile.runtimeProfile("jvm", RuntimeType.JVM, Option.empty(), Option.empty()));
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "jvm")),
+                          runtimes,
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isFailure()).as("a declared JVM runtime must not be silently replaced by a container")
+                  .isTrue();
+        assertThat(result.fold(Cause::message, _ -> "")).contains("jvm").contains("dc-core-0");
+        assertThat(startCommands).as("nothing may be launched under the wrong runtime").isEmpty();
+    }
+}

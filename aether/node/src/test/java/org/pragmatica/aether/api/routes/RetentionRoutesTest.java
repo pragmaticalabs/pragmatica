@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -11,6 +12,7 @@ import java.util.Locale;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.routes.RetentionRoutes.RetentionInvariantWatch;
 import org.pragmatica.aether.api.routes.RetentionRoutes.RetentionInvariantWatch.AlertSink;
@@ -24,12 +26,15 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
+import org.pragmatica.aether.stream.DurableSealedOffsetSource;
+import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.PartitionWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamWalView;
 import org.pragmatica.aether.stream.StreamPartitionManager.WalSnapshot;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
-import org.pragmatica.aether.stream.wal.PartitionWal.WalStats;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.AppendLog.WalStats;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
@@ -38,6 +43,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.groups.Tuple.tuple;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.api.routes.RetentionRoutes.RetentionInvariantWatch.retentionInvariantWatch;
 
@@ -156,7 +162,12 @@ class RetentionRoutesTest {
         void assembleRetention_includesSegmentOnlyPartitions() {
             var segmentIndex = new SegmentIndex();
 
+            // History tiered away the way it happens on a live node: [0-99] and [100-200] seal, then
+            // retention reclaims [0-99]. Since #1234 the sealed-through bound is CONTIGUOUS, so a lone
+            // segment starting at 100 would (correctly) report -1 — offsets 0-99 never sealed.
+            segmentIndex.addSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 0L, 99L);
             segmentIndex.addSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 100L, 200L);
+            segmentIndex.removeSegment(PLAIN_STREAM, SEGMENT_ONLY_PARTITION, 0L);
 
             var response = RetentionRoutes.assembleRetention(snapshot(PLAIN_STREAM,
                                                                       PARTITION,
@@ -224,6 +235,101 @@ class RetentionRoutesTest {
             assertThat(RetentionRoutes.walTotalBytes(snapshot))
                 .as("a partition with no WAL contributes nothing rather than skewing the node's disk total")
                 .isEqualTo(390L);
+        }
+
+        /// #1278: the node-wide count of WAL recoveries refused for a lost head reaches the operator surface,
+        /// not only the ERROR log.
+        @Test
+        void assembleRetention_reportsWalRecoveryHeadsLost() {
+            var response = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore(), 7L);
+
+            assertThat(response.walRecoveryHeadsLost()).isEqualTo(7L);
+        }
+
+        /// #1278: the persisted reclaimed-through floor is reported per partition, so an operator can see what
+        /// explains a WAL that starts above offset 0. A partition retention never reclaimed reports `-1`.
+        @Test
+        void assembleRetention_reportsReclaimedThroughPerPartition() {
+            var index = new SegmentIndex();
+
+            index.addSegment("alpha", 0, 0, 99);
+            index.addSegment("alpha", 0, 100, 199);
+            index.recordReclaimed("alpha", 0, 99);
+            index.addSegment("beta", 0, 0, 9);
+
+            var rows = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), index, emptyStore()).partitions();
+
+            assertThat(rows).extracting(RetentionPartitionView::stream, RetentionPartitionView::reclaimedThrough)
+                            .containsExactly(tuple("alpha", 99L),
+                                             tuple("beta", -1L));
+        }
+
+        /// #1345: the held-back counter reaches the operator surface through the manager overload the route
+        /// calls; the snapshot-only overloads have no manager and report 0. Held-back is driven the way the
+        /// tick computes it: a durable bound below the live watermark that did not move since the previous
+        /// tick — two ticks with a stuck `-1` bound against a sealed index count one.
+        @Test
+        void assembleRetention_managerOverload_reportsWalReclamationHeldBackTicks(@TempDir Path walDir) {
+            var index = new SegmentIndex();
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE,
+                                                                        EvictionListener.NOOP,
+                                                                        Option.some(walDir),
+                                                                        index::lastSealedOffset,
+                                                                        DurableSealedOffsetSource.none());
+
+            manager.createStream(StreamConfig.streamConfig("held",
+                                                           1,
+                                                           RetentionPolicy.retentionPolicy(1_000, 1024L * 1024, 3_600_000),
+                                                           "earliest"))
+                   .onFailure(cause -> fail(cause.message()));
+            index.addSegment("held", 0, 0, 9);
+            manager.truncateWalsToSealed();
+            manager.truncateWalsToSealed();
+
+            var reported = RetentionRoutes.assembleRetention(manager, new SegmentIndex(), emptyStore());
+
+            manager.close();
+            assertThat(reported.walReclamationHeldBackTicks()).isEqualTo(1L).isEqualTo(manager.walReclamationHeldBackTicks());
+            assertThat(RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore())
+                                      .walReclamationHeldBackTicks()).as("no manager in hand: nothing to report")
+                                                                     .isZero();
+        }
+
+        /// The same field on a MATERIALIZED partition's row (built from the WAL snapshot, not from the index alone):
+        /// the two row builders are separate paths and each must carry the floor.
+        @Test
+        void assembleRetention_reportsReclaimedThrough_onAMaterializedPartitionRow() {
+            var index = new SegmentIndex();
+
+            index.recordReclaimed("alpha", 0, 99);
+            var snapshot = new WalSnapshot(List.of(new StreamWalView("alpha", List.of(wallessPartition(0)))));
+
+            assertThat(onlyRow(RetentionRoutes.assembleRetention(snapshot, index, emptyStore())).reclaimedThrough()).isEqualTo(99L);
+        }
+
+        /// #1258 round 3 nit, re-aimed by #1278: pins the PRODUCTION overload the route calls. A real WAL
+        /// recovery refuses a lost head (a WAL starting at offset 5 with nothing sealed or reclaimed), and the
+        /// three-argument assembler must report the node-wide count — forcing it to 0 there used to leave every
+        /// test green.
+        @Test
+        void assembleRetention_productionOverload_reportsTheRealRecoveryCounter(@TempDir Path walDir) {
+            var wal = AppendLog.open(walDir.resolve("gapped").resolve("0.wal")).unwrap();
+
+            wal.append(5L, new byte[]{1}, 1L).await().onFailure(cause -> fail(cause.message()));
+            wal.close();
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+            manager.createStream(StreamConfig.streamConfig("gapped",
+                                                           1,
+                                                           RetentionPolicy.retentionPolicy(1_000, 1024L * 1024, 3_600_000),
+                                                           "earliest"))
+                   .onSuccess(_ -> fail("a lost head must refuse recovery"));
+            manager.close();
+
+            var reported = RetentionRoutes.assembleRetention(new WalSnapshot(List.of()), new SegmentIndex(), emptyStore())
+                                          .walRecoveryHeadsLost();
+
+            assertThat(reported).isPositive().isEqualTo(StreamPartitionManager.walRecoveryHeadsLost());
         }
 
         @Test
@@ -467,7 +573,7 @@ class RetentionRoutesTest {
     }
 
     private static RetentionResponse responseOf(RetentionPartitionView row) {
-        return new RetentionResponse(0L, List.of(row));
+        return new RetentionResponse(0L, List.of(row), 0L, 0L);
     }
 
     private static RetentionPartitionView violatedRow() {
@@ -475,6 +581,7 @@ class RetentionRoutesTest {
                                           PARTITION,
                                           Option.none(),
                                           15L,
+                                          -1L,
                                           -1L,
                                           -1L,
                                           CHECKPOINT,
@@ -488,6 +595,7 @@ class RetentionRoutesTest {
                                           PARTITION,
                                           Option.none(),
                                           11L,
+                                          -1L,
                                           -1L,
                                           -1L,
                                           CHECKPOINT,

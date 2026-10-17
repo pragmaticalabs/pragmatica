@@ -5,9 +5,11 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 
 /// Failure causes raised by [SchemaRoutes], each projecting itself onto the HTTP status its
@@ -44,10 +46,21 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         }
     }
 
-    /// 409 — `retry` was addressed at a datasource that is not in `FAILED`. The request is
-    /// well-formed and the datasource exists; the conflict is with current cluster state, which is
-    /// exactly `CONFLICT` rather than `BAD_REQUEST`. Carrying the observed status makes the response
-    /// self-explaining: the operator learns what the state actually is without a second call.
+    /// 409 — `retry` was addressed at a datasource that is not in `FAILED` or `PENDING` (#724: PENDING
+    /// is also retriable, since a migration that never dispatched has no other lever short of a
+    /// redeploy). The request is well-formed and the datasource exists; the conflict is with current
+    /// cluster state, which is exactly `CONFLICT` rather than `BAD_REQUEST`. Carrying the observed
+    /// status makes the response self-explaining: the operator learns what the state actually is
+    /// without a second call.
+    ///
+    /// **`message()` must keep the literal substring "not in FAILED state"** — two integration
+    /// scripts (`10-database/test-schema-retry.sh`, `06-deployment/test-schema-migration.sh`,
+    /// pinned by `SchemaRouteStatusTest.RetryConflict.problemBody_retainsScriptedClientPhrase_whenSchemaIsNotFailed`)
+    /// grep the response body for that exact phrase.
+    ///
+    /// Name kept as `SchemaNotFailed` despite the widened gate: three references total codebase-wide,
+    /// and `SchemaNotRetriable` would ripple further than this ticket's scope justifies. A taste call,
+    /// not a correctness one — the `message()` text is the part a caller actually observes.
     record SchemaNotFailed(String datasource, SchemaStatus currentStatus) implements SchemaRouteError {
         public static SchemaNotFailed schemaNotFailed(String datasource, SchemaStatus currentStatus) {
             return new SchemaNotFailed(datasource, currentStatus);
@@ -57,7 +70,64 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         public String message() {
             return "Schema for datasource '" + datasource
                  + "' is not in FAILED state (currently " + currentStatus.name()
-                 + ") — retry only applies to failed migrations";
+                 + ") — retry applies to FAILED or PENDING migrations only";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// 409 — `/migrate` was addressed at a COMPLETED record whose owning blueprint has at least one
+    /// live slice instance already ACTIVE (#760 review BLOCKING 1). Re-arming to MIGRATING has no
+    /// orchestrator effect on its own (only a PENDING record's Put dispatches an actual migration —
+    /// see `SchemaRoutes.triggerMigration`'s header) and one real hazard: MIGRATING stays a blocking
+    /// status with no automatic clearing path, so the next slice instance to reach LOADED (scale-up,
+    /// rolling redeploy, rejoining node) is held on a record the operator themselves re-armed. A
+    /// COMPLETED record with zero live ACTIVE slices is unaffected and still allowed through.
+    record SchemaAlreadyServing(String datasource, int activeSliceCount) implements SchemaRouteError {
+        public static SchemaAlreadyServing schemaAlreadyServing(String datasource, int activeSliceCount) {
+            return new SchemaAlreadyServing(datasource, activeSliceCount);
+        }
+
+        @Override
+        public String message() {
+            return "Schema for datasource '" + datasource
+                 + "' is already COMPLETED and serving " + activeSliceCount
+                 + " active slice instance" + (activeSliceCount == 1
+                                               ? ""
+                                               : "s")
+                 + " — re-triggering migration would hold the next slice to activate with no automatic"
+                 + " recovery; baseline or undo first if a re-migration is genuinely intended";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// 409 — `/migrate` was addressed at a PENDING record (#760/#724 review round 2 item l).
+    /// `guardReactivation` special-cased only COMPLETED-with-active-slices; every other status,
+    /// PENDING included, fell through to `writeMigratingStatus` and was silently re-armed to
+    /// MIGRATING. That reproduces the exact hazard `SchemaAlreadyServing` above already guards
+    /// against: MIGRATING has no automatic clearing path, so a PENDING record — one already sitting
+    /// in the state that dispatches a migration on its own Put (`SchemaOrchestratorService.migrateIfNeeded`,
+    /// #724's single-flight retry) — gains nothing from re-arming and loses its PENDING-specific
+    /// retry lever (`SchemaNotFailed` above) in the process. Refused (409) for the same reason
+    /// COMPLETED-with-active-slices is: no functional benefit, one real hazard.
+    record SchemaAlreadyPending(String datasource) implements SchemaRouteError {
+        public static SchemaAlreadyPending schemaAlreadyPending(String datasource) {
+            return new SchemaAlreadyPending(datasource);
+        }
+
+        @Override
+        public String message() {
+            return "Schema for datasource '" + datasource
+                 + "' already has a migration PENDING — re-arming to MIGRATING has no dispatch effect"
+                 + " of its own and would strand the record with no automatic clearing path; wait for"
+                 + " the pending migration to dispatch, or use retry if it has since failed";
         }
 
         @Override
@@ -74,6 +144,31 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
     /// metrics. An unparseable parameter is the caller's error, so it is a 400 with a body naming
     /// the offending parameter and value. An ABSENT parameter keeps its documented default
     /// (`0` for undo, `1` for baseline) and is not an error.
+    /// 409 — the addressed record's `status` decoded to `SchemaStatus.UNKNOWN`, meaning the node that
+    /// wrote it is running a `SchemaStatus` with constants this node does not have (#964).
+    ///
+    /// A conflict rather than a 500: the request is well-formed and the datasource exists; what this
+    /// node cannot do is reason about a status it cannot name. The arm it replaces was a `default ->`
+    /// that STARTED A MIGRATION, so an unreadable status previously armed one — a fail-open on a
+    /// state-changing route, reached by falling through rather than by any decision.
+    record SchemaStatusUndecodable(String datasource) implements SchemaRouteError {
+        public static SchemaStatusUndecodable schemaStatusUndecodable(String datasource) {
+            return new SchemaStatusUndecodable(datasource);
+        }
+
+        @Override
+        public String message() {
+            return "Schema status for datasource '" + datasource
+                 + "' was written by a node running a newer SchemaStatus and cannot be read here;"
+                 + " no migration was started. Address this route at a node on the newer version.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record InvalidVersionParameter(String parameterName, String value) implements SchemaRouteError {
         public static InvalidVersionParameter invalidVersionParameter(String parameterName, String value) {
             return new InvalidVersionParameter(parameterName, value);
@@ -87,6 +182,36 @@ public sealed interface SchemaRouteError extends Cause, HttpStatusAware {
         @Override
         public HttpStatus httpStatus() {
             return HttpStatus.BAD_REQUEST;
+        }
+    }
+
+    /// 409 — `/undo` and `/baseline` (#543) mutate the datasource's DB state directly and rely on
+    /// `SchemaOrchestratorServiceInstance`'s single-flight fence to keep a single migration in
+    /// flight at a time. That fence is an in-process `ConcurrentHashMap`, not a KV-transactional
+    /// lock (#543 condition 2) — it serializes calls made through it on ONE node, and does nothing
+    /// for a second node reading and writing the same schema row concurrently. Leader-binding
+    /// closes that gap the same way AB-test mutations already rely on exactly one node ever running
+    /// the operation at a time, without needing a distributed lock of its own. A non-leader node
+    /// refuses outright (409, not attempted-then-rolled-back) and names the current leader, when
+    /// known, so the operator's retry has somewhere to go.
+    record SchemaNotLeader(String datasource, String operation, Option<NodeId> currentLeader) implements SchemaRouteError {
+        public static SchemaNotLeader schemaNotLeader(String datasource,
+                                                      String operation,
+                                                      Option<NodeId> currentLeader) {
+            return new SchemaNotLeader(datasource, operation, currentLeader);
+        }
+
+        @Override
+        public String message() {
+            return "Schema " + operation
+                 + " for datasource '" + datasource
+                 + "' requires the leader node" + currentLeader.map(id -> " — current leader: " + id.id())
+                                                               .or("");
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 }

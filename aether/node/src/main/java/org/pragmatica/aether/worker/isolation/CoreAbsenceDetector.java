@@ -16,11 +16,14 @@ import org.pragmatica.lang.concurrent.AtomicHolder;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.concurrent.AtomicHolder.atomicHolder;
+import static org.pragmatica.utility.warning.OperatorWarningCode.CORE_ABSENCE_FENCE;
 
 
 /// Per-node observer of CORE reachability, and the community tier's half of the #590 mechanism.
@@ -103,6 +106,8 @@ public final class CoreAbsenceDetector {
     /// as suppress, because fencing on an unresolved view is the dangerous direction.
     private volatile BooleanSupplier fenceSuppressor = () -> true;
     private volatile Consumer<CoreAbsenceIntent> listener = CoreAbsenceDetector::ignoreIntent;
+    /// Where the fence's operator warning goes beyond the log (#1574). Log-only until wired.
+    private volatile OperatorWarningSink operatorWarningSink = OperatorWarningSink.logOnly();
 
     private CoreAbsenceDetector(TimeSpan coreAbsence,
                                 TimeSpan checkInterval,
@@ -149,6 +154,13 @@ public final class CoreAbsenceDetector {
     @Contract
     public void setFenceSuppressor(BooleanSupplier suppressor) {
         fenceSuppressor = suppressor;
+    }
+
+    /// Route the fence's operator warning to this node's cluster event log (#1574). Until this is
+    /// wired, the fence is reported by its log line alone.
+    @Contract
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarningSink = sink;
     }
 
     @Contract
@@ -247,11 +259,15 @@ public final class CoreAbsenceDetector {
 
         var intent = CoreAbsenceIntent.coreAbsenceIntent(age, coreAbsence.nanos());
 
-        log.warn("CORE ABSENCE fence firing: no accepted ClusterSyncPing for {} ms (threshold {} ms) — "
-                + "dissolving locally. This node stops serving without writing to the core, which it cannot "
-                + "reach; the core independently re-places this community's slices on a strictly longer window.",
-                 intent.sinceLastPingNanos() / 1_000_000,
-                 intent.thresholdNanos() / 1_000_000);
+        OperatorWarnings.raise(log,
+                               operatorWarningSink,
+                               CORE_ABSENCE_FENCE,
+                               "core",
+                               "CORE ABSENCE fence firing: no accepted ClusterSyncPing for {} ms (threshold {} ms) — "
+                              + "dissolving locally. This node stops serving without writing to the core, which it cannot "
+                              + "reach; the core independently re-places this community's slices on a strictly longer window.",
+                               intent.sinceLastPingNanos() / 1_000_000,
+                               intent.thresholdNanos() / 1_000_000);
         listener.accept(intent);
     }
 

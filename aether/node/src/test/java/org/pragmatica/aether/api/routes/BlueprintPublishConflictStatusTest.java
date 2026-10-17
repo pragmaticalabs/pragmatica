@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -15,7 +16,9 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.deployment.cluster.PublishedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.RequestContext;
@@ -158,20 +161,29 @@ class BlueprintPublishConflictStatusTest {
     /// `SchemaVersionKey("database")` record is already owned by `billing-app`.
     private static BlueprintService refusingBlueprintService() {
         return new BlueprintService() {
-            @Override public Promise<ExpandedBlueprint> publish(String dsl) {
+            @Override public Promise<PublishedBlueprint> publish(String dsl) {
                 return CONFLICT.promise();
             }
 
-            @Override public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords) {
+            @Override public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords) {
                 return CONFLICT.promise();
             }
 
-            @Override public Promise<ExpandedBlueprint> publishFromArtifact(String artifactCoords,
+            @Override public Promise<PublishedBlueprint> publishFromArtifact(String artifactCoords,
                                                                             boolean registerOnly) {
                 return CONFLICT.promise();
             }
 
             @Override public Option<ExpandedBlueprint> get(BlueprintId id) {
+                return Option.none();
+            }
+
+            @Override
+            public Option<DeploymentOutcomeValue> attributedOutcome(BlueprintId id) {
+                return Option.none();
+            }
+
+            @Override public Option<DeploymentOutcomeValue> outcome(BlueprintId id) {
                 return Option.none();
             }
 
@@ -189,14 +201,20 @@ class BlueprintPublishConflictStatusTest {
         };
     }
 
-    /// The body route reads its payload through `fromJson` only; nothing else on the context is
-    /// touched before the handler fails.
+    /// The body route reads its payload through `fromJson`, wrapped by the `jsonBody` DEFAULT
+    /// method (#772). A proxy's `InvocationHandler` intercepts every interface call, default
+    /// methods included, so any other default method (`jsonBody` today, whichever comes next)
+    /// must be forwarded to its real body via [InvocationHandler#invokeDefault] rather than
+    /// enumerated by name here — the point of this test double is that only `fromJson` is
+    /// stubbed, everything else on `RequestContext` behaves exactly as it does in production.
     private static RequestContext requestContext() {
         return (RequestContext) Proxy.newProxyInstance(RequestContext.class.getClassLoader(),
                                                        new Class[]{RequestContext.class},
-                                                       (_, method, _) -> "fromJson".equals(method.getName())
-                                                                         ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS))
-                                                                         : unsupported(method.getName()));
+                                                       (proxy, method, args) -> "fromJson".equals(method.getName())
+                                                                                 ? Result.success(new SliceRoutes.BlueprintDeployRequest(COORDS))
+                                                                                 : method.isDefault()
+                                                                                   ? InvocationHandler.invokeDefault(proxy, method, args)
+                                                                                   : unsupported(method.getName()));
     }
 
     private static final class RecordingResponseWriter implements ResponseWriter {

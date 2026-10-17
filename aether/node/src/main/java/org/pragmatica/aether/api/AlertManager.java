@@ -10,13 +10,16 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.ClusterEvent.AlertInjected;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ManagementApiResponses.AlertInjectResponse;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
@@ -30,6 +33,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -44,15 +48,42 @@ import org.slf4j.LoggerFactory;
 @SuppressWarnings("JBCT-RET-01")
 public class AlertManager {
     private static final Logger log = LoggerFactory.getLogger(AlertManager.class);
-    private static final int MAX_ALERT_HISTORY = 100;
+    /// Alert-ladder severities. These are the ALERT's own ladder and are deliberately distinct from
+    /// [ClusterEvent.Severity], which is the event log's bucket — a CRITICAL alert and a CRITICAL
+    /// event mean different things to different consumers, and conflating them is how the two ladders
+    /// would drift.
+    private static final String SEVERITY_WARNING = "WARNING";
+    private static final String SEVERITY_CRITICAL = "CRITICAL";
+    /// Cap for [#sliceFailureHistory], which is now this constant's ONLY user. The threshold-alert
+    /// deque it also bounded is gone (#957): threshold history lives in the cluster event log, whose
+    /// RetentionPolicy (count + bytes + age) replaces the 100-entry cap. Renamed rather than left as
+    /// `MAX_ALERT_HISTORY`, which would have named a thing that no longer exists.
+    private static final int MAX_SLICE_FAILURE_HISTORY = 100;
+    /// Default bound on a history read. The dashboard polls `/api/alerts/history` every 2s, so this
+    /// read must NOT become a full scan of the retained event window (up to 10,000 events) — it takes
+    /// the most recent entries, preserving the effective shape of the 100-entry deque it replaces.
+    private static final int DEFAULT_HISTORY_LIMIT = 100;
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Map<String, Threshold> thresholds = new ConcurrentHashMap<>();
-    private final Map<String, ActiveAlert> activeAlerts = new ConcurrentHashMap<>();
-
-    private final LinkedBlockingDeque<AlertHistoryEntry> alertHistory = new LinkedBlockingDeque<>(MAX_ALERT_HISTORY);
-
+    /// The MAINTAINED VIEW of what is firing now — and it is deliberately NOT the durable record.
+    ///
+    /// It looks like the map #957 removed and its role is the opposite. The old `activeAlerts` was
+    /// ACCUMULATED state: authoritative, the only copy, lost forever on restart. This is DERIVED state:
+    /// every entry is recomputed from live metrics by [#checkThreshold] on each evaluation tick, so
+    /// after a restart or a failover it repopulates within one tick and is correct again.
+    ///
+    /// **Rebuilt from live metrics, never by replaying the log**, and that is what keeps the hot query
+    /// honest. Stream retention is `RetentionMode.ANY` (count OR bytes OR age), so a breach older than
+    /// the age floor has had its `ThresholdBreached` evicted while still firing — a view folded from the
+    /// log would report it clear. Re-deriving from current values cannot make that mistake.
+    ///
+    /// It also holds the EDGE STATE that makes a sustained breach fire once rather than once per tick,
+    /// which is why evaluation runs on every node even though only the owner publishes: an owner that
+    /// evaluated only while holding the gate would start empty and re-fire every active alert on each
+    /// ownership change.
+    private final Map<String, ActiveAlert> derivedActiveAlerts = new ConcurrentHashMap<>();
     private final Map<String, InjectedAlert> injectedAlerts = new ConcurrentHashMap<>();
     private final AtomicLong injectionSequence = new AtomicLong();
 
@@ -75,6 +106,12 @@ public class AlertManager {
     /// Optional cluster-wide read source for cross-node visibility on `/api/alerts`. Returns a
     /// Promise because the underlying namespace-stream consumer is async.
     private volatile Option<Supplier<Promise<List<ClusterEvent>>>> clusterEventsSource = Option.none();
+    /// Hysteresis margin (#969), bound from node config by [#bindAlertConfig]. Defaulted rather than
+    /// Option-wrapped because every read is on the evaluation path and a damping margin has a sane
+    /// default; an unconfigured node damps at [AlertConfig#DEFAULT_HYSTERESIS_MARGIN].
+    private volatile double hysteresisMargin = AlertConfig.DEFAULT_HYSTERESIS_MARGIN;
+    /// Optional outbound hop for raised threshold alerts. See [#bindAlertForwarder].
+    private volatile Option<AlertForwarder> alertForwarder = Option.none();
 
     private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode, KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
@@ -94,6 +131,52 @@ public class AlertManager {
     /// projection-agnostic.
     public void bindClusterEventsSource(Supplier<Promise<List<ClusterEvent>>> source) {
         this.clusterEventsSource = Option.option(source);
+    }
+
+    /// Bind node configuration — the hysteresis margin (#969) and the durable-entity checkpoint-lag
+    /// default threshold (#1302). Called from `AetherNode` after
+    /// [org.pragmatica.aether.config.AlertConfig#check] has passed at boot, so a margin that reaches
+    /// here has already been validated to lie in `[0.0, 1.0)` and the lag pair to be ordered.
+    ///
+    /// The lag threshold is installed only when the cluster holds none for the metric, so an
+    /// operator's `/api/v1/thresholds` value always wins over the configured default.
+    public void bindAlertConfig(AlertConfig alertConfig) {
+        this.hysteresisMargin = alertConfig.hysteresisMargin();
+        thresholds.putIfAbsent(EntityCheckpointDriver.CHECKPOINT_LAG_METRIC,
+                               new Threshold(alertConfig.entityCheckpointLag().warning(),
+                                             alertConfig.entityCheckpointLag().critical()));
+    }
+
+    /// Bind the forwarder that carries raised alerts OUT of this process (webhooks). Bound
+    /// post-construction from `AetherNode`, mirroring `bindEventSink`. When unbound -- the
+    /// `readOnly` factory and unit tests without a forwarder -- alerts are still raised, recorded
+    /// and broadcast exactly as before; only the outbound hop is skipped.
+    ///
+    /// Before this binding existed, `AlertEvent.ThresholdAlert` was declared, pattern-matched by
+    /// `AlertForwarder`'s renderer and received by its `@MessageReceiver` -- and constructed
+    /// NOWHERE in `src/main`. The renderer handling a variant is not the same as anything emitting
+    /// one (#957).
+    public void bindAlertForwarder(AlertForwarder forwarder) {
+        this.alertForwarder = Option.option(forwarder);
+    }
+
+    /// Release the bound forwarder's webhook client, if any. Called once from `AetherNode.stop()`.
+    public Promise<Unit> closeForwarder() {
+        return alertForwarder.map(AlertForwarder::close)
+                             .or(Promise.unitPromise());
+    }
+
+    /// Construct the forwarder from config and bind it, as ONE production expression.
+    ///
+    /// This exists so a test can call the same expression production calls instead of re-typing
+    /// `bindAlertForwarder(alertForwarder(config))` in a fixture -- a fixture that rebuilds the
+    /// wiring cannot pin the wiring, and that shape has stayed green through a full revert in this
+    /// repo before. `AetherNode` calls this and nothing else; `dead-surface-gate` asserts this method
+    /// is reachable from production bytecode, so deleting that call reddens a test (#957).
+    public AlertManager withAlertForwarder(AlertConfig alertConfig) {
+        bindAlertForwarder(AlertForwarder.alertForwarder(alertConfig));
+
+        return this;
     }
 
     public static AlertManager alertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
@@ -183,12 +266,6 @@ public class AlertManager {
         return result;
     }
 
-    public void clearAlerts() {
-        activeAlerts.clear();
-        injectedAlerts.clear();
-        log.info("All active alerts cleared");
-    }
-
     public Promise<AlertInjectResponse> inject(String name,
                                                String severity,
                                                String message,
@@ -196,6 +273,19 @@ public class AlertManager {
                                                Option<Double> value) {
         return validateInjectionInput(name, severity, message).async()
                                      .map(_ -> stampAndStoreInjection(name, severity, message, metric, value));
+    }
+
+    /// #1564 (v1735 B1): a node-raised alert that must CLEAR with its condition. It is stored in THIS node's list
+    /// only and never replicated to the cluster event log: a replicated `AlertInjected` copy is served by every node's
+    /// `/api/alerts/active` until log retention, and [#clearInjected] cannot remove it. Listed on this node's
+    /// `/api/alerts/active`; its [#clearInjected] resolves it completely.
+    public Promise<AlertInjectResponse> injectLocal(String name, String severity, String message) {
+        return validateInjectionInput(name, severity, message).async()
+                                     .map(_ -> responseFor(storeInjection(name,
+                                                                          severity,
+                                                                          message,
+                                                                          Option.none(),
+                                                                          Option.none())));
     }
 
     // RET-06: `name`/`message` are raw injection-request fields; the null/blank checks ARE the
@@ -226,16 +316,34 @@ public class AlertManager {
                                                        String message,
                                                        Option<String> metric,
                                                        Option<Double> value) {
+        var alert = storeInjection(name, severity, message, metric, value);
+
+        publishInjectionToClusterLog(alert);
+
+        return responseFor(alert);
+    }
+
+    private InjectedAlert storeInjection(String name,
+                                         String severity,
+                                         String message,
+                                         Option<String> metric,
+                                         Option<Double> value) {
         var timestamp = System.currentTimeMillis();
         var alertId = "injected-" + timestamp + "-" + injectionSequence.incrementAndGet();
         var alert = new InjectedAlert(alertId, name, severity, message, metric, value, timestamp);
 
         injectedAlerts.put(alertId, alert);
-        addInjectedToHistory(alert);
-        publishInjectionToClusterLog(alert);
         log.info("Injected synthetic alert id={} name={} severity={}", alertId, name, severity);
 
-        return new AlertInjectResponse(alertId, name, severity, message, timestamp);
+        return alert;
+    }
+
+    private static AlertInjectResponse responseFor(InjectedAlert alert) {
+        return new AlertInjectResponse(alert.alertId(),
+                                       alert.name(),
+                                       alert.severity(),
+                                       alert.message(),
+                                       alert.timestamp());
     }
 
     /// Replicate the injected alert via the cluster-wide events stream so peer nodes can return
@@ -271,20 +379,6 @@ public class AlertManager {
         return Map.copyOf(metadata);
     }
 
-    private void addInjectedToHistory(InjectedAlert alert) {
-        var nodeIdMarker = "@operator";
-        var entry = new AlertHistoryEntry(alert.timestamp,
-                                          alert.metric.or(alert.name),
-                                          nodeIdMarker,
-                                          alert.value.or(0.0),
-                                          alert.severity,
-                                          "INJECTED");
-
-        while (!alertHistory.offerLast(entry)) {
-            alertHistory.pollFirst();
-        }
-    }
-
     private enum InjectionError implements Cause {
         NAME_REQUIRED("Injected alert requires a non-blank name"),
         MESSAGE_REQUIRED("Injected alert requires a non-blank message"),
@@ -300,7 +394,7 @@ public class AlertManager {
     }
 
     public int activeAlertCount() {
-        return activeAlerts.size();
+        return derivedActiveAlerts.size();
     }
 
     public Option<String> checkThreshold(String metric, NodeId nodeId, double value) {
@@ -312,30 +406,74 @@ public class AlertManager {
 
     private Option<String> evaluateThreshold(Threshold threshold, String metric, NodeId nodeId, double value) {
         var alertKey = metric + ":" + nodeId.id();
-        var existing = Option.option(activeAlerts.get(alertKey));
+        var existing = Option.option(derivedActiveAlerts.get(alertKey));
 
-        return threshold.severity(value)
-                        .onEmpty(() -> resolveExistingAlert(alertKey, existing, metric, nodeId, value))
-                        .flatMap(severity -> handleAlertValue(alertKey,
-                                                              existing,
-                                                              severity,
-                                                              metric,
-                                                              nodeId,
-                                                              value,
-                                                              threshold));
+        return effectiveSeverity(threshold, existing, value).onEmpty(() -> resolveExistingAlert(alertKey,
+                                                                                                existing,
+                                                                                                threshold,
+                                                                                                metric,
+                                                                                                nodeId,
+                                                                                                value))
+                                .flatMap(severity -> handleAlertValue(alertKey,
+                                                                      existing,
+                                                                      severity,
+                                                                      metric,
+                                                                      nodeId,
+                                                                      value,
+                                                                      threshold));
+    }
+
+    /// The severity this metric holds AFTER hysteresis (#969) — the whole of the damping logic.
+    ///
+    /// **The margin applies to the CLEAR and DOWNGRADE edges only.** With no active alert the bare
+    /// ladder position is returned unmodified: damping the RAISE edge would delay first detection,
+    /// which is a regression, and raising is already edge-triggered so a sustained breach fires once
+    /// regardless.
+    private Option<String> effectiveSeverity(Threshold threshold, Option<ActiveAlert> existing, double value) {
+        var raw = threshold.severity(value);
+
+        return existing.fold(() -> raw, alert -> holdOrRelease(threshold, alert, raw, value));
+    }
+
+    /// An active alert HOLDS its current severity until the value falls below that severity's clear
+    /// point, so a metric oscillating across the boundary does not re-fire on every crossing.
+    ///
+    /// **An UPGRADE is never damped.** Without this arm a WARNING alert would hold at WARNING even as
+    /// the value crossed into CRITICAL — the clear point for WARNING sits far below it, so the hold
+    /// branch would win and the escalation would be swallowed. Damping exists to suppress repeated
+    /// notification of the SAME condition, never to hide a worsening one.
+    private Option<String> holdOrRelease(Threshold threshold, ActiveAlert alert, Option<String> raw, double value) {
+        if (isUpgrade(alert.severity, raw)) {
+            return raw;
+        }
+
+        return value >= threshold.clearPoint(alert.severity, hysteresisMargin)
+               ? Option.option(alert.severity)
+               : raw;
+    }
+
+    private static boolean isUpgrade(String current, Option<String> raw) {
+        return SEVERITY_WARNING.equals(current) && raw.filter(SEVERITY_CRITICAL::equals)
+                                                      .isPresent();
     }
 
     private void resolveExistingAlert(String alertKey,
                                       Option<ActiveAlert> existing,
+                                      Threshold threshold,
                                       String metric,
                                       NodeId nodeId,
                                       double value) {
-        existing.onPresent(alert -> resolveAlert(alertKey, metric, nodeId, value, alert));
+        existing.onPresent(alert -> resolveAlert(alertKey, threshold, metric, nodeId, value, alert));
     }
 
-    private void resolveAlert(String alertKey, String metric, NodeId nodeId, double value, ActiveAlert alert) {
-        activeAlerts.remove(alertKey);
-        addToHistory(metric, nodeId, value, alert.severity, "RESOLVED");
+    private void resolveAlert(String alertKey,
+                              Threshold threshold,
+                              String metric,
+                              NodeId nodeId,
+                              double value,
+                              ActiveAlert alert) {
+        derivedActiveAlerts.remove(alertKey);
+        emitThresholdCleared(threshold, metric, nodeId, value, alert);
         broadcastAlertResolved(metric, nodeId);
     }
 
@@ -347,6 +485,33 @@ public class AlertManager {
                     + "}}";
 
         DashboardWebSocketHandler.broadcast(message);
+    }
+
+    /// Emit the raised threshold as an `AlertEvent.ThresholdAlert` on the outbound hop. Failure to
+    /// forward is logged and never propagated: an unreachable webhook must not suppress the alert's
+    /// in-process recording, which is the operator's other surface.
+    private void forwardThresholdAlert(String alertKey,
+                                       String metric,
+                                       NodeId nodeId,
+                                       double value,
+                                       String severity,
+                                       Threshold threshold) {
+        alertForwarder.onPresent(forwarder -> forwarder.forward(new AlertEvent.ThresholdAlert(alertKey,
+                                                                                              System.currentTimeMillis(),
+                                                                                              toEventSeverity(severity),
+                                                                                              metric,
+                                                                                              nodeId,
+                                                                                              value,
+                                                                                              threshold.forSeverity(severity)))
+                                                       .onFailure(cause -> log.error("Failed to forward threshold alert {}: {}",
+                                                                                     alertKey,
+                                                                                     cause.message())));
+    }
+
+    private static AlertEvent.Severity toEventSeverity(String severity) {
+        return "CRITICAL".equals(severity)
+               ? AlertEvent.Severity.CRITICAL
+               : AlertEvent.Severity.WARNING;
     }
 
     private Option<String> handleAlertValue(String alertKey,
@@ -366,8 +531,9 @@ public class AlertManager {
                                         severity,
                                         System.currentTimeMillis());
 
-            activeAlerts.put(alertKey, alert);
-            addToHistory(metric, nodeId, value, severity, "TRIGGERED");
+            derivedActiveAlerts.put(alertKey, alert);
+            emitThresholdBreached(alert);
+            forwardThresholdAlert(alertKey, metric, nodeId, value, severity, threshold);
 
             return Option.option(buildAlertMessage(alert));
         }
@@ -413,12 +579,73 @@ public class AlertManager {
              + "\"}}";
     }
 
-    private void addToHistory(String metric, NodeId nodeId, double value, String severity, String status) {
-        var entry = new AlertHistoryEntry(System.currentTimeMillis(), metric, nodeId.id(), value, severity, status);
+    /// Publish a threshold breach to the cluster event log (#957).
+    ///
+    /// Routed through the bound sink, which `AetherNode` binds to `ClusterEventAggregator::emit` — the
+    /// OWNER-GATED path. Every node holds every other node's metrics via `ClusterSyncCollector`, so every
+    /// node reaches this same conclusion; the gate is what keeps it to one write per breach in the steady
+    /// state, where an un-gated emit would write it once per node. It is not a guarantee: the gate is each
+    /// node's own view of partition-0 ownership, so across an ownership handover the old and the new owner
+    /// can both pass it and the breach is written twice, with distinct `eventId`s that no read collapses
+    /// (#1653; at-least-once across a handover, see guarantees.md).
+    private void emitThresholdBreached(ActiveAlert alert) {
+        emitClusterEvent(clock -> new ClusterEvent.ThresholdBreached(clock.now(),
+                                                                     severityFor(alert.severity),
+                                                                     "Metric " + alert.metric
+                                                                    + " on node " + alert.nodeId.id()
+                                                                    + " breached its " + alert.severity
+                                                                    + " threshold (" + alert.value
+                                                                    + " >= " + alert.threshold
+                                                                    + ")",
+                                                                     Map.of("metric",
+                                                                            alert.metric,
+                                                                            "nodeId",
+                                                                            alert.nodeId.id(),
+                                                                            "value",
+                                                                            String.valueOf(alert.value),
+                                                                            "threshold",
+                                                                            String.valueOf(alert.threshold),
+                                                                            "alertSeverity",
+                                                                            alert.severity)));
+    }
 
-        while (!alertHistory.offerLast(entry)) {
-            alertHistory.pollFirst();
-        }
+    /// Publish the clear edge (#957). This must be its own event because **an append-only log cannot
+    /// represent absence** — there is nothing to delete to signal that a breach ended.
+    ///
+    /// `clearPoint` is recorded alongside the value so an operator can see WHY it cleared here rather
+    /// than at the breach threshold: the hysteresis margin moved the boundary.
+    private void emitThresholdCleared(Threshold threshold,
+                                      String metric,
+                                      NodeId nodeId,
+                                      double value,
+                                      ActiveAlert alert) {
+        var clearPoint = threshold.clearPoint(alert.severity, hysteresisMargin);
+
+        emitClusterEvent(clock -> new ClusterEvent.ThresholdCleared(clock.now(),
+                                                                    Severity.INFO,
+                                                                    "Metric " + metric
+                                                                   + " on node " + nodeId.id()
+                                                                   + " cleared its " + alert.severity
+                                                                   + " threshold (" + value
+                                                                   + " < " + clearPoint
+                                                                   + ")",
+                                                                    Map.of("metric",
+                                                                           metric,
+                                                                           "nodeId",
+                                                                           nodeId.id(),
+                                                                           "value",
+                                                                           String.valueOf(value),
+                                                                           "clearedFrom",
+                                                                           alert.severity,
+                                                                           "clearPoint",
+                                                                           String.valueOf(clearPoint))));
+    }
+
+    /// Emit through the bound sink, if one is bound. Unbound (the `readOnly` factory, unit tests with
+    /// no consensus) is a no-op: evaluation and the derived view still work, only publication is
+    /// skipped — which is exactly the degradation the bootstrap window sees.
+    private void emitClusterEvent(Function<HlcClock, ClusterEvent> factory) {
+        eventSink.onPresent(sink -> hlcClock.onPresent(clock -> sink.emit(factory.apply(clock))));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -449,9 +676,10 @@ public class AlertManager {
     /// applicable to a given alert kind are emitted as `null` so consumers can discriminate
     /// by presence (e.g. `alertId` ⟹ injected, `nodeId` ⟹ threshold).
     ///
-    /// Replaces the previous pre-serialized JSON String pathway (`activeAlertsAsJson` /
-    /// `alertHistoryAsJson`): wrapping a String in an Object-typed handler caused Jackson
-    /// to double-encode the response, breaking integration assertions on field substrings.
+    /// Replaces the previous pre-serialized JSON String pathway (`activeAlertsAsJson`, and
+    /// `alertHistoryAsJson` until #957 removed it with the deque that backed it): wrapping a String in
+    /// an Object-typed handler caused Jackson to double-encode the response, breaking integration
+    /// assertions on field substrings.
     public record AlertView(String alertId,
                             String name,
                             String severity,
@@ -480,10 +708,10 @@ public class AlertManager {
     // JBCT-RET-08: Jackson view DTO — null is the absent-JSON-field representation, wire-contract-fixed
     @SuppressWarnings("JBCT-RET-08")
     public Promise<List<AlertView>> activeAlertsAsList() {
-        var list = new java.util.ArrayList<AlertView>(activeAlerts.size() + injectedAlerts.size());
+        var list = new java.util.ArrayList<AlertView>(derivedActiveAlerts.size() + injectedAlerts.size());
         var seenInjectedIds = new java.util.HashSet<String>();
 
-        for (var alert : activeAlerts.values()) {
+        for (var alert : derivedActiveAlerts.values()) {
             list.add(new AlertView(null,
                                    null,
                                    alert.severity,
@@ -510,6 +738,23 @@ public class AlertManager {
                                    null,
                                    null,
                                    alert.timestamp));
+        }
+        // #926: node-health alerts reach the SAME /api/alerts surface as every other kind. An alert
+        // raised but not rendered is not operator-visible, which is the defect this ticket is about one
+        // layer up. Discriminated by source="node_health"; nodeId names the FAILED node and message
+        // carries the reason.
+        for (var alert : activeNodeHealthAlerts.values()) {
+            list.add(new AlertView(alert.alertId(),
+                                   "node.failed",
+                                   alert.severity().name(),
+                                   alert.reason(),
+                                   "node_health",
+                                   null,
+                                   null,
+                                   alert.nodeId().id(),
+                                   null,
+                                   alert.timestamp(),
+                                   alert.timestamp()));
         }
 
         return appendClusterWideInjectedAlerts(list, seenInjectedIds).map(_ -> List.copyOf(list));
@@ -590,19 +835,75 @@ public class AlertManager {
                                                .or((Long) null);
     }
 
-    public List<AlertHistoryView> alertHistoryAsList() {
-        var list = new java.util.ArrayList<AlertHistoryView>(alertHistory.size());
+    /// Alert history, projected from the CLUSTER EVENT LOG (#957) rather than from a node-local deque.
+    ///
+    /// Three behaviour changes an operator sees, all improvements, none free:
+    /// - **Cluster-wide.** The deque held only what THIS node observed; the log is replicated, so a
+    ///   breach on any node is now visible from any node. `/api/alerts/history` had no cross-node union
+    ///   at all before this.
+    /// - **Retention-bounded, not count-bounded.** The 100-entry cap degraded to a ~50-SECOND window on
+    ///   a flapping metric. The stream's RetentionPolicy (10,000 events / 16 MB / 24 h, `ANY`) is a far
+    ///   larger window — but it IS still a bound, and an unqualified "durable" claim would be wrong.
+    /// - **Async.** The read crosses the partition transport, so this returns a `Promise`. Unbound
+    ///   source (bootstrap window, `readOnly` factory) yields an empty list rather than failing.
+    ///
+    /// **Bounded deliberately.** The dashboard polls this every 2 seconds; an unbounded projection would
+    /// scan the full retained window (up to 10,000 events) on every poll.
+    public Promise<List<AlertHistoryView>> alertHistoryAsList() {
+        return alertHistoryAsList(DEFAULT_HISTORY_LIMIT);
+    }
 
-        for (var entry : alertHistory) {
-            list.add(new AlertHistoryView(entry.timestamp,
-                                          entry.metric,
-                                          entry.nodeId,
-                                          entry.value,
-                                          entry.severity,
-                                          entry.status));
+    public Promise<List<AlertHistoryView>> alertHistoryAsList(int limit) {
+        return clusterEventsSource.fold(() -> Promise.success(List.of()),
+                                        source -> source.get()
+                                                        .map(events -> projectHistory(events, limit)));
+    }
+
+    /// Keep only alert-bearing variants, newest last, and take the most recent `limit`.
+    private static List<AlertHistoryView> projectHistory(List<ClusterEvent> events, int limit) {
+        var all = new java.util.ArrayList<AlertHistoryView>();
+
+        for (var event : events) {
+            historyViewOf(event).onPresent(all::add);
         }
 
-        return List.copyOf(list);
+        return all.size() <= limit
+               ? List.copyOf(all)
+               : List.copyOf(all.subList(all.size() - limit, all.size()));
+    }
+
+    /// Map a cluster event to a history row, or none for the events that are not alerts. `status`
+    /// preserves the wire contract the deque produced: TRIGGERED / RESOLVED / INJECTED.
+    private static Option<AlertHistoryView> historyViewOf(ClusterEvent event) {
+        return switch (event) {
+            case ClusterEvent.ThresholdBreached breached -> Option.option(historyRow(breached,
+                                                                                     breached.details().getOrDefault("alertSeverity",
+                                                                                                                     breached.severity().name()),
+                                                                                     "TRIGGERED"));
+            case ClusterEvent.ThresholdCleared cleared -> Option.option(historyRow(cleared,
+                                                                                   cleared.details().getOrDefault("clearedFrom",
+                                                                                                                  cleared.severity().name()),
+                                                                                   "RESOLVED"));
+            case AlertInjected injected -> Option.option(historyRow(injected,
+                                                                    injected.details().getOrDefault("severity",
+                                                                                                    injected.severity().name()),
+                                                                    "INJECTED"));
+            default -> Option.none();
+        };
+    }
+
+    /// `@operator` is the nodeId marker the deque used for injected rows; kept so the JSON shape does
+    /// not shift under consumers that already parse it.
+    private static AlertHistoryView historyRow(ClusterEvent event, String severity, String status) {
+        var details = event.details();
+        var value = org.pragmatica.lang.parse.Number.parseDouble(details.getOrDefault("value", "0")).option().or(0.0);
+
+        return new AlertHistoryView(event.at().physicalMillis(),
+                                    details.getOrDefault("metric", event.summary()),
+                                    details.getOrDefault("nodeId", "@operator"),
+                                    value,
+                                    severity,
+                                    status);
     }
 
     public List<ThresholdView> thresholdsAsList() {
@@ -623,7 +924,7 @@ public class AlertManager {
         boolean first = true;
         var seenInjectedIds = new java.util.HashSet<String>();
 
-        for (var alert : activeAlerts.values()) {
+        for (var alert : derivedActiveAlerts.values()) {
             if (!first) sb.append(",");
 
             sb.append("{");
@@ -691,32 +992,6 @@ public class AlertManager {
         return java.util.List.of();
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    public String alertHistoryAsJson() {
-        var sb = new StringBuilder();
-
-        sb.append("[");
-        boolean first = true;
-
-        for (var entry : alertHistory) {
-            if (!first) sb.append(",");
-
-            sb.append("{");
-            sb.append("\"timestamp\":").append(entry.timestamp).append(",");
-            sb.append("\"metric\":\"").append(escapeJson(entry.metric)).append("\",");
-            sb.append("\"nodeId\":\"").append(escapeJson(entry.nodeId)).append("\",");
-            sb.append("\"value\":").append(entry.value).append(",");
-            sb.append("\"severity\":\"").append(escapeJson(entry.severity)).append("\",");
-            sb.append("\"status\":\"").append(escapeJson(entry.status)).append("\"");
-            sb.append("}");
-            first = false;
-        }
-
-        sb.append("]");
-
-        return sb.toString();
-    }
-
     @MessageReceiver
     public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
         var alertKey = "slice.all_failed:" + event.artifact().asString() + "/" + event.method().name();
@@ -739,7 +1014,7 @@ public class AlertManager {
 
     private final Map<String, SliceFailureAlert> activeSliceFailureAlerts = new ConcurrentHashMap<>();
 
-    private final LinkedBlockingDeque<SliceFailureHistoryEntry> sliceFailureHistory = new LinkedBlockingDeque<>(MAX_ALERT_HISTORY);
+    private final LinkedBlockingDeque<SliceFailureHistoryEntry> sliceFailureHistory = new LinkedBlockingDeque<>(MAX_SLICE_FAILURE_HISTORY);
 
     private void addSliceFailureToHistory(SliceFailureEvent.AllInstancesFailed event) {
         var entry = new SliceFailureHistoryEntry(event.timestamp(),
@@ -756,6 +1031,253 @@ public class AlertManager {
 
     public List<SliceFailureAlert> getActiveSliceFailureAlerts() {
         return List.copyOf(activeSliceFailureAlerts.values());
+    }
+
+    /// Hard cap on retained node-health alerts. `activeNodeHealthAlerts` is keyed by the FAILED node's
+    /// id, and CTM auto-heal mints a FRESH random id for a replacement rather than reusing the departed
+    /// one, so an id-exact clear can never match a replaced node. Without a bound, every replacement
+    /// under churn would add a permanent entry, growing heap and the `/api/alerts` payload without
+    /// limit. Mirrors the `MAX_SLICE_FAILURE_HISTORY` bound on `sliceFailureHistory`.
+    private static final int MAX_NODE_HEALTH_ALERTS = 64;
+
+    /// Membership-event causes that mean the node ANNOUNCED its departure rather than died.
+    ///
+    /// **`SwimDeparted` is NOT in this set, and putting it here was a blocking regression.** Round 2 of
+    /// #926 included it on the strength of `MembershipFsm.onSwimDeparted`'s docstring ("SWIM reported
+    /// `id` DEPARTED gracefully") — a comment that contradicts its own producer.
+    /// `SwimProtocol.emitFaultyEdgePair` delivers `FaultyObserved` and `DepartedObserved` **as a pair at
+    /// the FAULTY edge**, because "FAULTY IS confirmed death (canonical SWIM) … The death broadcast
+    /// therefore fires AT the FAULTY edge" — deliberately, to cut `NODE_FAILED` latency inside the 60s
+    /// SLO. `DepartedObserved` routes to `onSwimDeparted` (`AetherNode:4968`), which dispatches
+    /// `SwimDeparted`. **So `SwimDeparted` is SWIM's death broadcast and is the PRIMARY crash path**,
+    /// not a graceful goodbye: with it in this set, `kill -9` raised no CRITICAL alert at all.
+    ///
+    /// That is precisely the failure [`#onNodeFailed`] warns against one paragraph down — suppressing a
+    /// real failure re-creates the defect #926 exists to remove — reached by trusting a docstring
+    /// instead of its producer.
+    ///
+    /// `DrainRequested` alone is sound: it is raised only by the operator/controller drain command, and
+    /// nothing in SWIM's failure detection produces it. **Do not add a cause here without tracing it to
+    /// the code that RAISES it.** A graceful shutdown that is not operator-driven is currently
+    /// indistinguishable from a crash at this layer, so it stays noisy — noisy beats silent on a
+    /// failure-detection surface, and no signal SWIM carries can separate them.
+    private static final java.util.Set<String> GRACEFUL_DEPARTURE_CAUSES = java.util.Set.of("DrainRequested");
+
+    /// Active node-health alerts, keyed by [`AlertEvent.NodeHealthAlert#alertId`] (derived from the
+    /// failed node id). Per-node local state — never replicated, never consensus-backed — which is
+    /// precisely why it survives the conditions of #926. Bounded by [`#MAX_NODE_HEALTH_ALERTS`].
+    private final Map<String, AlertEvent.NodeHealthAlert> activeNodeHealthAlerts = new ConcurrentHashMap<>();
+
+    /// Insertion order for [`#activeNodeHealthAlerts`], oldest first — the eviction order.
+    ///
+    /// Round 2 ordered eviction by `min(timestamp)`. That was both unpinned (flipping it to `max` left
+    /// the suite green, since the bound test asserted only size) and **unpinnable**: alerts raised in a
+    /// tight loop share a `System.currentTimeMillis()` value, so "oldest" was not even well defined.
+    /// An insertion queue makes the order deterministic and therefore assertable.
+    private final java.util.concurrent.ConcurrentLinkedQueue<String> nodeHealthAlertOrder = new java.util.concurrent.ConcurrentLinkedQueue<>();
+
+    /// Node ids observed announcing a graceful departure, id → wall-clock millis. Bounded by
+    /// [`#MAX_NODE_HEALTH_ALERTS`]; when full, new marks are DROPPED rather than evicting, so the
+    /// failure mode is a spurious CRITICAL alert and never a suppressed one.
+    private final Map<String, Long> announcedDeparture = new ConcurrentHashMap<>();
+
+    /// Feed for `MembershipFsm` transitions (#926 round 2). Records that `nodeId` announced a departure,
+    /// so the DEAD edge that follows can be told apart from a crash.
+    ///
+    /// The DEAD edge itself cannot make that distinction — a graceful `SwimDeparted` and a drain both
+    /// reach DEAD through the same `Stopped` transition a failure does — so without this every rolling
+    /// restart raised a CRITICAL node-health alert on every surviving node. An alert surface that fires
+    /// CRITICAL during routine planned operations gets muted, and a muted alert is the same end state
+    /// as the silence #926 exists to fix, reached from the opposite direction.
+    ///
+    /// Ordering is guaranteed, and by a different mechanism than round 2 claimed. The earlier note said
+    /// the transition and confirmed-departure emissions share one `emissions` list; **that is false** —
+    /// the two arrive from SEPARATE dispatches (e.g. `DrainRequested` then `Stopped`), each building
+    /// its own list. What actually holds the order is `MemberTracking.dispatch`, which runs
+    /// `synchronized (transitionGuard) { applyEvent(event).forEach(Runnable::run) }`: every dispatch for
+    /// a member is serialised on that member's guard and runs its staged fan-out synchronously before
+    /// returning, so an earlier dispatch's transition record has always run before a later dispatch's
+    /// DEAD hooks. **Recorded precisely because a guarantee resting on a fictional mechanism cannot be
+    /// re-checked when the code moves** — if that fan-out ever becomes asynchronous, this ordering is
+    /// what breaks, and the guard is where to look.
+    ///
+    /// Within a single dispatch the order is also fixed: `applyEvent` stages the calls "in the exact
+    /// order the pre-#929 inline code fired them (transition, JOINED delta, DEPARTING hook,
+    /// DEPARTING-recovery hook, then the DEAD hooks)".
+    @Contract
+    public void noteMembershipTransition(NodeId nodeId, String cause) {
+        if (!GRACEFUL_DEPARTURE_CAUSES.contains(cause)) {
+            return;
+        }
+
+        if (announcedDeparture.size() >= MAX_NODE_HEALTH_ALERTS && !announcedDeparture.containsKey(nodeId.id())) {
+            return;
+        }
+
+        announcedDeparture.put(nodeId.id(), System.currentTimeMillis());
+    }
+
+    /// How long a node must stay absent from every drain record, while reporting itself READY, before a mark
+    /// the record created is dropped (#2014). The drain set is LEADER-LOCAL (`DrainCommandRegistry`, in memory,
+    /// not committed), so after a leader change the new leader's pings omit a drainee that is still draining.
+    public static final long DRAIN_OMISSION_GRACE_MS = 30_000L;
+
+    /// id → last wall-clock millis a drain record named the node. Only marks CREATED from a drain record are
+    /// tracked here, so a mark from the local FSM edge is never expired by absence.
+    private final Map<String, Long> broadcastDrainSeen = new ConcurrentHashMap<>();
+
+    /// Feed from a DRAIN RECORD: the leader's broadcast drain set on every authoritative ping (empty set
+    /// included), and the leader's own registry on its tick (#2014). The mark keys on that record, never on
+    /// a membership edge or a clock: run 2 showed a SWIM incarnation refutation clearing it mid-drain, and run 3
+    /// showed a 30 s clock expiring it before a follower's DEAD edge, which lags the drainee's halt by ~50 s.
+    ///
+    /// Marks every node in `drainSet` (never `self`). A mark the record created is dropped only on POSITIVE
+    /// evidence that the drain is over: the node is absent from the record for [`#DRAIN_OMISSION_GRACE_MS`]
+    /// AND `nodeReadyAgain` says it reports itself READY (alive, responsive, not draining). A drainee that
+    /// halted reports nothing, so its mark stays until its DEAD edge consumes it or it rejoins; a cancelled
+    /// drain returns the node to READY, so a later real crash of it alerts.
+    @Contract
+    public void observeDrainSet(java.util.Set<NodeId> drainSet,
+                                NodeId self,
+                                long nowMs,
+                                java.util.function.Predicate<NodeId> nodeReadyAgain) {
+        drainSet.stream().filter(id -> !id.equals(self)).forEach(id -> markFromBroadcast(id, nowMs));
+        broadcastDrainSeen.keySet()
+                          .stream()
+                          .filter(id -> drainSet.stream()
+                                                .noneMatch(named -> named.id()
+                                                                         .equals(id)))
+                          .forEach(id -> ageOut(id, nowMs, nodeReadyAgain));
+    }
+
+    private void markFromBroadcast(NodeId id, long nowMs) {
+        noteMembershipTransition(id, "DrainRequested");
+        if (announcedDeparture.containsKey(id.id())) {
+            broadcastDrainSeen.put(id.id(), nowMs);
+        }
+    }
+
+    private void ageOut(String id, long nowMs, java.util.function.Predicate<NodeId> nodeReadyAgain) {
+        var lastSeen = broadcastDrainSeen.get(id);
+
+        if (lastSeen == null) {
+            return;
+        }
+
+        if (nowMs - lastSeen >= DRAIN_OMISSION_GRACE_MS && nodeReadyAgain.test(new NodeId(id))) {
+            announcedDeparture.remove(id);
+            broadcastDrainSeen.remove(id);
+        }
+    }
+
+    /// Whether this node holds an announced-departure mark for `nodeId` (#2014). A NON-consuming read:
+    /// [`#onNodeFailed`] consumes the mark, so the departure notifier asks first and routes the event
+    /// by the answer. The mark is fed by the local FSM's `DrainRequested` edge AND by the leader's
+    /// broadcast drain set, so a follower that never saw `DrainRequested` still holds it.
+    @Contract
+    public boolean hasAnnouncedDeparture(NodeId nodeId) {
+        return announcedDeparture.containsKey(nodeId.id());
+    }
+
+    /// Raise a node-health alert for a confirmed member death (#926).
+    ///
+    /// Invoked from the ungated `MembershipFsm` DEAD edge on EVERY node that confirms the death, so it
+    /// is reachable with no leader and no quorum. Node health previously had no alerting path at all:
+    /// `AlertEvent` carried only threshold, slice-failure and resolved variants, and repo-wide
+    /// "unhealthy" in `aether/node/src/main` appeared twice, both rendering a status string into an
+    /// HTTP response.
+    ///
+    /// GUARANTEE: **at-most-one active alert per ABRUPTLY departed node, per observing node.** The map
+    /// key is derived from the failed node alone, so a repeated observation of the same death replaces
+    /// rather than accumulates — idempotent, needing no dedup token and no coordination. Each node keeps
+    /// its own map, so there is no cross-node duplication to reconcile: the alert is a local judgment
+    /// about a remote peer, exposed on the observing node's own `/api/alerts`.
+    ///
+    /// A departure this node saw ANNOUNCED (see [`#noteMembershipTransition`]) is logged at INFO and
+    /// raises NO alert. The mark is CONSUMED on read, so a node that gracefully departs, rejoins and
+    /// later crashes still alerts on the crash. **The bias is deliberate and one-directional:** an
+    /// unmarked departure always alerts, so a missed or dropped mark costs a spurious CRITICAL, never a
+    /// silent one. Suppressing a real failure would re-create the defect this ticket exists to remove.
+    ///
+    /// Cleared by [`#clearNodeHealthAlert`] when the node rejoins. Raising without clearing would leave
+    /// a permanently red signal, which trains an operator to ignore the surface.
+    @Contract
+    public void onNodeFailed(NodeId failed, NodeId observedBy) {
+        if (announcedDeparture.remove(failed.id()) != null) {
+            log.info("Node {} departed gracefully (announced; observed by {}) — no alert raised",
+                     failed.id(),
+                     observedBy.id());
+
+            return;
+        }
+
+        var alert = AlertEvent.NodeHealthAlert.nodeFailed(failed, observedBy);
+
+        if (activeNodeHealthAlerts.put(alert.alertId(), alert) == null) {
+            nodeHealthAlertOrder.add(alert.alertId());
+        }
+
+        evictOldestNodeHealthAlertIfOverCap();
+        log.error("CRITICAL: node {} confirmed failed (observed by {}) — cluster membership degraded",
+                  failed.id(),
+                  observedBy.id());
+    }
+
+    /// Drop the OLDEST-INSERTED alerts once the map exceeds [`#MAX_NODE_HEALTH_ALERTS`]. A replaced
+    /// node's alert can never be cleared by id (the replacement carries a new one), so the bound — not
+    /// the clear path — is what keeps this map finite under sustained churn. Oldest-first is the
+    /// deliberate direction: the most recent failures are the ones an operator is still acting on.
+    private void evictOldestNodeHealthAlertIfOverCap() {
+        while (activeNodeHealthAlerts.size() > MAX_NODE_HEALTH_ALERTS) {
+            var oldest = nodeHealthAlertOrder.poll();
+
+            if (oldest == null) {
+                return;
+            }
+
+            activeNodeHealthAlerts.remove(oldest);
+        }
+    }
+
+    /// Resolve the node-health alert for `rejoined` (#926). Wired to the transport `PeerJoined`
+    /// handshake — the same ungated surface that sources NODE_JOINED — so recovery is exactly as
+    /// reachable as the failure it clears. A no-op when no alert is active for that node.
+    ///
+    /// This clear is id-exact and therefore CANNOT resolve a CTM-replaced node, whose replacement boots
+    /// under a freshly minted random id. That case is handled by the bound above, not here; the honest
+    /// statement is that a replaced node's alert ages out under churn rather than being resolved.
+    @Contract
+    public void clearNodeHealthAlert(NodeId rejoined) {
+        announcedDeparture.remove(rejoined.id());
+        broadcastDrainSeen.remove(rejoined.id());
+        nodeHealthAlertOrder.remove(AlertEvent.NodeHealthAlert.alertId(rejoined));
+        Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
+                                                                                                                                 rejoined.id(),
+                                                                                                                                 cleared.reason()));
+    }
+
+    /// #1564: resolve every injected alert named `name`. For a node-raised alert whose condition has cleared (the
+    /// `cluster-events-registration-refused` refusal, once a corrected cluster config commits the stream), so the
+    /// alert does not outlive its cause on `/api/alerts/active`. Returns how many were resolved.
+    @Contract
+    public int clearInjected(String name) {
+        var resolved = injectedAlerts.values()
+                                     .stream()
+                                     .filter(alert -> alert.name()
+                                                           .equals(name))
+                                     .map(InjectedAlert::alertId)
+                                     .toList();
+
+        resolved.forEach(injectedAlerts::remove);
+        if (!resolved.isEmpty()) {
+            log.info("Resolved {} injected alert(s) named {}", resolved.size(), name);
+        }
+
+        return resolved.size();
+    }
+
+    public List<AlertEvent.NodeHealthAlert> getActiveNodeHealthAlerts() {
+        return List.copyOf(activeNodeHealthAlerts.values());
     }
 
     public void clearSliceFailureAlert(Artifact artifact, MethodName method) {
@@ -871,17 +1393,36 @@ public class AlertManager {
 
     private record Threshold(double warning, double critical) {
         Option<String> severity(double value) {
-            if (value >= critical) return Option.option("CRITICAL");
+            if (value >= critical) return Option.option(SEVERITY_CRITICAL);
 
-            if (value >= warning) return Option.option("WARNING");
+            if (value >= warning) return Option.option(SEVERITY_WARNING);
 
             return Option.none();
         }
 
         double forSeverity(String severity) {
-            return "CRITICAL".equals(severity)
+            return SEVERITY_CRITICAL.equals(severity)
                    ? critical
                    : warning;
+        }
+
+        /// The value an active alert at `severity` must fall BELOW before it clears (#969).
+        ///
+        /// **The clamp is the load-bearing part, not the margin.** Without `max(..., warning)` a
+        /// CRITICAL alert on a threshold pair closer together than the margin would clear beneath its
+        /// own WARNING threshold and re-raise as WARNING on the same tick — manufacturing exactly the
+        /// flapping the margin exists to damp. With it, an inversion is impossible for ANY operator
+        /// configuration, which is what makes the margin's value a tunable default rather than a
+        /// correctness constant.
+        ///
+        /// No clamp is needed for WARNING: there is no lower rung to invert into, so a WARNING alert
+        /// clears at `warning * (1 - margin)` and the metric simply stops alerting.
+        double clearPoint(String severity, double margin) {
+            var damped = forSeverity(severity) * (1.0 - margin);
+
+            return SEVERITY_CRITICAL.equals(severity)
+                   ? Math.max(damped, warning)
+                   : damped;
         }
     }
 

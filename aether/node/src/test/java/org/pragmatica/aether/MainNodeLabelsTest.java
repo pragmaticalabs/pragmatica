@@ -43,4 +43,12 @@ class MainNodeLabelsTest {
         assertThat(labels.get(NodeInfo.LABEL_SOURCE)).isEqualTo("seed");
         assertThat(labels.get(NodeInfo.LABEL_ROLE)).isEqualTo("active");
     }
+
+    /// #1543 part C: the node always advertises the version of the binary it runs, env or no env.
+    @Test
+    void collectNodeLabels_alwaysAdvertisesTheRunningVersion() {
+        var labels = Main.collectNodeLabels("host-1", _ -> Option.none());
+
+        assertThat(labels.get(NodeInfo.LABEL_VERSION)).isEqualTo(org.pragmatica.aether.node.AetherNode.VERSION).isNotBlank();
+    }
 }

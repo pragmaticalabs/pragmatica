@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.aether.cli.cluster;
+
+import org.junit.jupiter.api.Test;
+
+import org.pragmatica.json.JsonMapper;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/// CLI half of the `POST /api/v1/cluster/upgrade` wire contract (#1424); `UpgradeRequestContractTest` in
+/// `aether/node` is the server half. Same shape as `ClusterScaleCommandTest`: the CLI cannot depend on the module
+/// holding the request record, so both spellings are pinned to the same field names.
+class ClusterUpgradeCommandTest {
+    private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
+
+    @Test
+    void validate_acceptsOurOwnReleaseVersions_rc4ToRc5() {
+        for (var version : java.util.List.of("1.0.0", "1.0.0-rc4", "1.0.0-rc5", "1.2.3-alpha.1")) {
+            assertThat(ClusterUpgradeCommand.validate(version).isSuccess()).as(version).isTrue();
+        }
+    }
+
+    /// The command itself, not only `validate`: garbage is refused before any request is made (no cluster is reachable here).
+    @Test
+    void call_garbageVersion_isRefusedBeforeAnyRequest() {
+        var err = new java.io.ByteArrayOutputStream();
+        var original = System.err;
+
+        System.setErr(new java.io.PrintStream(err));
+        try {
+            var exit = new picocli.CommandLine(new ClusterUpgradeCommand()).execute("--version", "not-a-version");
+
+            assertThat(exit).isNotZero();
+            assertThat(err.toString()).contains("Invalid version format").contains("SemVer");
+        } finally {
+            System.setErr(original);
+        }
+    }
+
+    @Test
+    void validate_refusesGarbage_namingTheExpectedShape() {
+        for (var version : java.util.List.of("", "1.0", "v1.0.0", "1.0.0-", "1.0.0+build", "abc", "../1.0.0")) {
+            var result = ClusterUpgradeCommand.validate(version);
+
+            assertThat(result.isFailure()).as("'" + version + "'").isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("SemVer").contains(version));
+        }
+    }
+
+    @Test
+    void buildUpgradeJson_emitsExactlyTheFieldNamesUpgradeRequestReads() {
+        var json = ClusterUpgradeCommand.buildUpgradeJson("1.1.0", 42);
+
+        MAPPER.readTree(json)
+              .onSuccess(node -> {
+                  assertThat(node.path("targetVersion").asText()).isEqualTo("1.1.0");
+                  assertThat(node.path("expectedVersion").asLong()).isEqualTo(42);
+              })
+              .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+    }
+}

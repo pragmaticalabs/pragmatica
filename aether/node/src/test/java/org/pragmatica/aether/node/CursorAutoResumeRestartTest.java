@@ -111,7 +111,7 @@ class CursorAutoResumeRestartTest {
     /// stream storage + partition log over the same data dir (the same-node restart) and return the
     /// re-attached access.
     private PartitionedStreamAccess<byte[]> commitCursorThenRestart(Path dataDir) {
-        var setup1 = StorageFactory.defaultStreamStorage(Option.none(), dataDir, NODE_ID);
+        var setup1 = StorageFactory.defaultStreamStorage(Option.none(), dataDir, NODE_ID).unwrap();
         var manager1 = partitionManagerWithBatch();
         var access1 = durableAccess(manager1, CursorStore.cursorStore(setup1.instance()));
 
@@ -123,7 +123,7 @@ class CursorAutoResumeRestartTest {
         setup1.snapshotManager().forceSnapshot();
         manager1.close();
 
-        var setup2 = StorageFactory.defaultStreamStorage(Option.none(), dataDir, NODE_ID);
+        var setup2 = StorageFactory.defaultStreamStorage(Option.none(), dataDir, NODE_ID).unwrap();
         var manager2 = partitionManagerWithBatch();
 
         return durableAccess(manager2, CursorStore.cursorStore(setup2.instance()));

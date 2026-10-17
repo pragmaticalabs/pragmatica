@@ -10,16 +10,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.deployment.schema.SchemaError;
+import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -33,6 +47,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
@@ -75,6 +90,8 @@ class SchemaRouteStatusTest {
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
     private static final String INSTANCE = "/api/v1/schema/status/" + DATASOURCE;
     private static final String REQUEST_ID = "req-1";
+    private static final Version SLICE_VERSION = new Version(1, 0, 0, "");
+    private static final NodeId NODE = new NodeId("node-a");
 
     private InMemoryKvStore store;
     private SchemaRoutes routes;
@@ -174,6 +191,251 @@ class SchemaRouteStatusTest {
             seed(SchemaStatus.FAILED);
             handle(ManagementRoute.SCHEMA_RETRY, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Retry against a FAILED record must succeed: " + cause.message()));
         }
+
+        /// #724: a migration that never dispatched (PENDING) has no other lever short of a redeploy
+        /// to re-trigger it — the retry guard now accepts PENDING alongside FAILED.
+        @Test
+        void retryRoute_succeeds_whenSchemaIsPending() {
+            seed(SchemaStatus.PENDING);
+            handle(ManagementRoute.SCHEMA_RETRY, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Retry against a PENDING record must succeed (#724): " + cause.message()));
+        }
+    }
+
+    /// #760: `heldSlices` makes a schema hold visible on the management API, without reaching for
+    /// DEBUG logs. Ownership matches on the base artifact coordinates (group:artifact, stripped of
+    /// version) — the same rule `ClusterDeploymentState` uses to decide whether a slice's blueprint
+    /// is the one a schema record blocks.
+    ///
+    /// #760 review BLOCKING 1: `heldSlices` used to scan ownership alone (`SliceTargetKey`/
+    /// `SliceTargetValue`) with no per-node state check at all, so `seedSliceTarget` below now also
+    /// plants the LIVE `SliceNodeKey`/`SliceNodeValue` state the fixed implementation actually reads —
+    /// LOADED for the tests below, which model a slice genuinely waiting at the gate.
+    @Nested
+    class HeldSlices {
+        private static final String HELD_SLICE = "org.example:orders-worker";
+        private static final String UNRELATED_SLICE = "org.other:unrelated-worker";
+
+        @Test
+        void statusRoute_listsOwnedSlice_whenSchemaIsBlocking() {
+            seed(SchemaStatus.PENDING);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).containsExactly(HELD_SLICE);
+        }
+
+        @Test
+        void statusRoute_matchesOnBase_ignoringOwningBlueprintVersion() {
+            seed(SchemaStatus.MIGRATING);
+            var differentVersionOfSameBase = BlueprintId.blueprintId("org.example:orders-app:9.9.9").unwrap();
+            seedSliceTarget(HELD_SLICE, differentVersionOfSameBase);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("ownership matches the base artifact, not the exact blueprint version")
+                      .containsExactly(HELD_SLICE);
+        }
+
+        @Test
+        void statusRoute_omitsUnrelatedSlice_whenSchemaIsBlocking() {
+            seed(SchemaStatus.FAILED);
+            var unrelatedOwner = BlueprintId.blueprintId("org.other:unrelated-app:1.0.0").unwrap();
+            seedSliceTarget(UNRELATED_SLICE, unrelatedOwner);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).isEmpty();
+        }
+
+        @Test
+        void statusRoute_reportsNoHeldSlices_whenSchemaIsNotBlocking() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("a COMPLETED record holds nothing regardless of ownership")
+                      .isEmpty();
+        }
+
+        /// #760 review BLOCKING 1 pinning test. Before the fix, `heldSlices` matched ownership alone
+        /// with no per-node state check, so an ACTIVE slice — one that already passed the activation
+        /// gate and has no transition path back through LOADED — was reported as held whenever its
+        /// record carried a blocking status. Seeded from FAILED rather than COMPLETED or PENDING: a
+        /// COMPLETED record with a live ACTIVE slice is refused outright by `/migrate`, and (#760/#724
+        /// review round 2 item l) so is a PENDING one ([ReactivationGuard]) — so the only way `/migrate`
+        /// can still legitimately land a blocking status next to an already-ACTIVE slice is a record
+        /// that is neither COMPLETED nor PENDING, i.e. FAILED — exactly what this seeds, mirroring a
+        /// slice that activated on an earlier schema version while this datasource's own migration
+        /// attempt failed.
+        @Test
+        void statusRoute_omitsActiveSlice_whenMigrateReArmsFromFailed() {
+            seed(SchemaStatus.FAILED);
+            seedActiveSlice(HELD_SLICE, OWNER);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("migrate from FAILED must succeed: "
+                                                                                                                    + cause.message()));
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("an ACTIVE slice already passed the gate and has no transition path back through LOADED")
+                      .isEmpty();
+        }
+
+        /// #760 review round 2 item a pinning test — the exact divergent state the review named:
+        /// `heldSlices` and the FSM gate (`blocksSliceActivation`/`blockingSchemaRecords`) resolved
+        /// `schemaRequired` through two different paths (the gate via its in-memory `blueprints` map,
+        /// the route not at all), so a slice owned by a `schema_required = false` blueprint could be
+        /// reported held on the management API even though the gate itself never blocked it. Before
+        /// the fix this asserted `containsExactly(HELD_SLICE)` — the divergence — instead of empty.
+        @Test
+        void statusRoute_omitsSlice_whenOwningBlueprintDoesNotRequireSchema() {
+            seedOwningBlueprintWithoutSchemaRequirement(OWNER);
+            seed(SchemaStatus.PENDING);
+            seedSliceTarget(HELD_SLICE, OWNER);
+
+            assertThat(successResponseFor(ManagementRoute.SCHEMA_STATUS_ONE).heldSlices()).as("schema_required = false means the gate never blocks this slice")
+                      .isEmpty();
+        }
+    }
+
+    /// #760 review BLOCKING 1's 409 decision: `/migrate` writing MIGRATING has no orchestrator effect
+    /// by itself (only a PENDING record's Put dispatches `SchemaOrchestratorService.migrateIfNeeded`),
+    /// so re-arming a COMPLETED record whose owning blueprint has live ACTIVE slices has no functional
+    /// benefit and one real hazard: MIGRATING has no automatic clearing path, so the next slice
+    /// instance to reach LOADED (scale-up, rolling redeploy, rejoining node) is held on a record the
+    /// operator re-armed themselves. Refused (409) rather than allowed; a COMPLETED record with zero
+    /// live ACTIVE slices is unaffected.
+    @Nested
+    class ReactivationGuard {
+        private static final String ACTIVE_SLICE = "org.example:orders-worker";
+
+        @Test
+        void migrateRoute_respondsConflict_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("re-arming a serving schema would strand the next LOADED slice with no automatic recovery")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void migrateRoute_propagatesCauseUnwrapped_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_MIGRATE)).isEqualTo(SchemaRouteError.SchemaAlreadyServing.schemaAlreadyServing(DATASOURCE, 1));
+        }
+
+        @Test
+        void problemBody_namesActiveSliceCount_whenCompletedRecordHasActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedActiveSlice(ACTIVE_SLICE, OWNER);
+
+            assertThat(problemBodyFor(ManagementRoute.SCHEMA_MIGRATE)).contains(DATASOURCE)
+                      .contains("already COMPLETED and serving")
+                      .contains("409");
+        }
+
+        @Test
+        void migrateRoute_succeeds_whenCompletedRecordHasNoActiveSlices() {
+            seed(SchemaStatus.COMPLETED);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("A COMPLETED record with no active slices must be allowed to re-migrate: "
+                                                                                                                    + cause.message()));
+        }
+
+        @Test
+        void migrateRoute_succeeds_whenActiveSlicesAreOwnedByAnotherBlueprint() {
+            seed(SchemaStatus.COMPLETED);
+            var otherOwner = BlueprintId.blueprintId("org.other:unrelated-app:1.0.0").unwrap();
+            seedActiveSlice(ACTIVE_SLICE, otherOwner);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("An active slice owned by a different blueprint must not block re-migration: "
+                                                                                                                    + cause.message()));
+        }
+
+        /// #760 review round 2 item b pinning test — a slice mid-activation is already occupying the
+        /// datasource it is about to serve from; before the fix `countIfActiveAndOwnedBy` matched only
+        /// `SliceState.ACTIVE`, so a re-arm raced a slice seconds from going live instead of being
+        /// refused like the ACTIVE case above.
+        @Test
+        void migrateRoute_respondsConflict_whenCompletedRecordHasActivatingSlices() {
+            seed(SchemaStatus.COMPLETED);
+            seedSliceInState(ACTIVE_SLICE, OWNER, SliceState.ACTIVATING);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("a slice mid-activation is about to serve the same datasource, same as one already ACTIVE")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        /// #760/#724 review round 2 item l pinning test — before the fix, `guardReactivation` special-
+        /// cased only COMPLETED and let every other status (PENDING included) fall through to
+        /// `writeMigratingStatus`, silently re-arming a PENDING record to MIGRATING with no dispatch
+        /// effect of its own and the same missing-clearing-path hazard `SchemaAlreadyServing` guards
+        /// against above. No active-slice setup is needed: PENDING is refused unconditionally.
+        @Test
+        void migrateRoute_respondsConflict_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).as("a PENDING record already dispatches on its own Put; re-arming it gains nothing and strands the record")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void migrateRoute_propagatesCauseUnwrapped_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_MIGRATE)).isEqualTo(SchemaRouteError.SchemaAlreadyPending.schemaAlreadyPending(DATASOURCE));
+        }
+
+        @Test
+        void problemBody_namesDatasource_whenRecordIsPending() {
+            seed(SchemaStatus.PENDING);
+
+            assertThat(problemBodyFor(ManagementRoute.SCHEMA_MIGRATE)).contains(DATASOURCE)
+                      .contains("already has a migration PENDING")
+                      .contains("409");
+        }
+    }
+
+    /// #964. `guardReactivation` ended in `default -> writeMigratingStatus`, so ANY status it did not
+    /// name started a migration — including, once the sentinel existed, a status decoded as `UNKNOWN`
+    /// because the record was written by a node running a newer `SchemaStatus`. That is a fail-open on
+    /// a state-changing route, reached by falling through rather than by any decision, and it is the
+    /// exact shape the sentinel was added to prevent rather than introduce. The arms are now
+    /// enumerated, so the next `SchemaStatus` constant is a compile error here instead of a silent
+    /// migration.
+    @Nested
+    class UndecodableStatus {
+        @Test
+        void migrateRoute_respondsConflict_whenStatusIsUndecodable() {
+            seed(SchemaStatus.UNKNOWN);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_MIGRATE)).isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void migrateRoute_propagatesCauseUnwrapped_whenStatusIsUndecodable() {
+            seed(SchemaStatus.UNKNOWN);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_MIGRATE))
+                .isEqualTo(SchemaRouteError.SchemaStatusUndecodable.schemaStatusUndecodable(DATASOURCE));
+        }
+
+        /// THE load-bearing assertion of this class. A 409 alone would still be satisfied by a handler
+        /// that refused the response after writing; this shows the record was not touched, which is
+        /// what "no migration was started" actually means.
+        @Test
+        void migrateRoute_writesNothing_whenStatusIsUndecodable() {
+            seed(SchemaStatus.UNKNOWN);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none());
+
+            assertThat(recorded().status()).as("a refused migrate must not have re-armed the record")
+                      .isEqualTo(SchemaStatus.UNKNOWN);
+        }
+
+        /// The control: the SAME call against a status this node can read DOES write MIGRATING. Without
+        /// it, the assertion above is equally satisfied by a route that writes nothing ever.
+        @Test
+        void migrateRoute_writesMigrating_forAReadableStatus() {
+            seed(SchemaStatus.FAILED);
+
+            handle(ManagementRoute.SCHEMA_MIGRATE, Option.none(), Option.none());
+
+            assertThat(recorded().status()).isEqualTo(SchemaStatus.MIGRATING);
+        }
     }
 
     /// A present-but-unparseable version parameter used to throw `NumberFormatException` out of the
@@ -246,6 +508,272 @@ class SchemaRouteStatusTest {
         }
     }
 
+    /// #543 condition 2: `requireLeader` must refuse a non-leader node with 409
+    /// (`SchemaRouteError.SchemaNotLeader`) BEFORE the call ever reaches the orchestrator — the
+    /// in-process single-flight fence only serializes calls made on one node, so a second node acting
+    /// on the same datasource is a correctness gap the fence itself cannot close. This class swaps in
+    /// its own `routes`/`nodeOverAsFollower` (the shared `@BeforeEach routes` hardcodes `isLeader ->
+    /// true`) rather than parameterizing every existing dispatch helper. `undoRoute_neverInvokes...`
+    /// and `baselineRoute_neverInvokes...` are the controls: without them, a refusal that happened
+    /// AFTER a (later-discarded) orchestrator call would still report 409 and pass the status
+    /// assertions alone.
+    @Nested
+    class LeaderBinding {
+        private static final NodeId CURRENT_LEADER = new NodeId("node-b");
+
+        private RecordingOrchestrator orchestrator;
+
+        @BeforeEach
+        void asFollower() {
+            seed(SchemaStatus.COMPLETED);
+            orchestrator = new RecordingOrchestrator(store);
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverAsFollower(store, orchestrator, Option.some(CURRENT_LEADER)));
+        }
+
+        @Test
+        void undoRoute_respondsConflict_whenNodeIsNotLeader() {
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2"))
+                    .isEqualTo(SchemaRouteError.SchemaNotLeader.schemaNotLeader(DATASOURCE, "undo", Option.some(CURRENT_LEADER)));
+        }
+
+        @Test
+        void baselineRoute_respondsConflict_whenNodeIsNotLeader() {
+            assertThat(causeFrom(ManagementRoute.SCHEMA_BASELINE, "version", "7"))
+                    .isEqualTo(SchemaRouteError.SchemaNotLeader.schemaNotLeader(DATASOURCE, "baseline", Option.some(CURRENT_LEADER)));
+        }
+
+        @Test
+        void problemBody_namesCurrentLeaderAndConflictStatus_whenNodeIsNotLeader() {
+            assertThat(problemBodyFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).contains(DATASOURCE)
+                      .contains("requires the leader node")
+                      .contains(CURRENT_LEADER.id())
+                      .contains("409");
+        }
+
+        @Test
+        void undoRoute_neverInvokesOrchestrator_whenNodeIsNotLeader() {
+            causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2");
+
+            assertThat(orchestrator.undoInvoked).as("the leader refusal must happen before the orchestrator is ever touched")
+                      .isFalse();
+        }
+
+        @Test
+        void baselineRoute_neverInvokesOrchestrator_whenNodeIsNotLeader() {
+            causeFrom(ManagementRoute.SCHEMA_BASELINE, "version", "7");
+
+            assertThat(orchestrator.baselineInvoked).as("the leader refusal must happen before the orchestrator is ever touched")
+                      .isFalse();
+        }
+    }
+
+    /// #543 condition 4: `UndoNotAvailable`/`BaselineConflict`/`ChecksumMismatch` are the schema
+    /// manager's own typed refusals — a missing undo script, applied history a baseline can't
+    /// discard, and a tampered/edited migration file — and each already carries its own
+    /// `HttpStatusAware` mixin (422/409/422; see `SchemaError`'s per-record docs). Per this file's
+    /// class-level javadoc, the risk is a hop between the raising site and the response funnel that
+    /// re-wraps the cause and silently restores 500 — so, exactly like [RetryConflict] and
+    /// [LeaderBinding] above, the proof is taken at the ROUTE level with a REAL failing orchestrator,
+    /// never at the `SchemaError` unit level (which would only prove the record itself was typed
+    /// correctly).
+    @Nested
+    class ErrorMapping {
+        @Test
+        void undoRoute_respondsUnprocessable_whenUndoScriptIsMissing() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.UndoNotAvailable.undoNotAvailable(DATASOURCE, 2))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a missing undo script is the artifact's fault, not the cluster's — 422 not 500")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenUndoScriptIsMissing() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.UndoNotAvailable.undoNotAvailable(DATASOURCE, 2))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.UndoNotAvailable.undoNotAvailable(DATASOURCE, 2));
+        }
+
+        @Test
+        void undoRoute_respondsUnprocessable_whenChecksumMismatchIsFound() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.ChecksumMismatch.checksumMismatch(DATASOURCE, 2, 111L, 222L))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("an edited migration script is a content problem, not a server fault")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenChecksumMismatchIsFound() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.ChecksumMismatch.checksumMismatch(DATASOURCE, 2, 111L, 222L))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.ChecksumMismatch.checksumMismatch(DATASOURCE, 2, 111L, 222L));
+        }
+
+        @Test
+        void baselineRoute_respondsConflict_whenAppliedHistoryBlocksBaseline() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingBaseline(SchemaError.BaselineConflict.baselineConflict(DATASOURCE, 3))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_BASELINE, "version", "5")).as("applied history blocking a baseline is a state conflict, not a server fault")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void baselineRoute_propagatesCauseUnwrapped_whenAppliedHistoryBlocksBaseline() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingBaseline(SchemaError.BaselineConflict.baselineConflict(DATASOURCE, 3))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_BASELINE, "version", "5")).isEqualTo(SchemaError.BaselineConflict.baselineConflict(DATASOURCE, 3));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: the fence/lock conflict path built an ad hoc,
+        /// untyped `Cause` instead of this variant, so a lock conflict answered 500 despite
+        /// `LockAcquisitionFailed` already existing and already being `HttpStatusAware` —
+        /// `SchemaOrchestratorService#acquireLock` now raises it directly, so this is genuinely
+        /// production-reachable through undo/baseline's shared lock-acquisition step.
+        @Test
+        void undoRoute_respondsConflict_whenMigrationLockIsHeld() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(DATASOURCE))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a concurrent attempt holding the lock is a conflict, not a server fault")
+                      .isEqualTo(HttpStatus.CONFLICT);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationLockIsHeld() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(DATASOURCE))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(DATASOURCE));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: production-reachable through undo/baseline's own
+        /// `resolveMigrationScripts` (distinct from forward migrate's `resolveAndParseMigrations`,
+        /// which raises the same variant on its own, separate path) — a schema version record that
+        /// declares a migration set but carries no artifact coordinates.
+        @Test
+        void undoRoute_respondsUnprocessable_whenMigrationArtifactIsUnresolved() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(DATASOURCE, 2, "V002__add_index.sql"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("missing artifact coordinates on a record that declares migrations is a content problem, not a server fault")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationArtifactIsUnresolved() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(DATASOURCE, 2, "V002__add_index.sql"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(DATASOURCE, 2, "V002__add_index.sql"));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: production-reachable through the same
+        /// `resolveMigrationScripts` chain — the resolved artifact holds no scripts for a datasource
+        /// that declared them (republished coordinates, or a fallback resolving a different jar).
+        @Test
+        void undoRoute_respondsUnprocessable_whenMigrationSetIsUnavailable() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationSetUnavailable.migrationSetUnavailable(DATASOURCE, COORDS, 2))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a resolved artifact missing the declared scripts is a content problem, not a server fault")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationSetIsUnavailable() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationSetUnavailable.migrationSetUnavailable(DATASOURCE, COORDS, 2))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.MigrationSetUnavailable.migrationSetUnavailable(DATASOURCE, COORDS, 2));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: production-reachable through `AetherSchemaManager`'s
+        /// `parseAll` — undo and baseline each parse their resolved scripts through the same
+        /// filename-format check migrate uses (`ParsedMigration`), so a malformed script name fails
+        /// identically here.
+        @Test
+        void undoRoute_respondsUnprocessable_whenMigrationFilenameIsMalformed() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.InvalidMigrationFormat.invalidMigrationFormat("XYZ__bad.sql", "unknown prefix 'XYZ', expected V/R/U/B"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a malformed migration filename is a content problem, not a server fault")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationFilenameIsMalformed() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.InvalidMigrationFormat.invalidMigrationFormat("XYZ__bad.sql", "unknown prefix 'XYZ', expected V/R/U/B"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.InvalidMigrationFormat.invalidMigrationFormat("XYZ__bad.sql", "unknown prefix 'XYZ', expected V/R/U/B"));
+        }
+
+        /// #543/#832 review round 1 SHOULD-FIX 4: `MigrationFailed` and `DatasourceUnreachable` are
+        /// NOT constructed anywhere in this repository's production code as of this review round —
+        /// `classifyFailure` below references both in `instanceof` branches that are themselves dead,
+        /// and the only apparent `MigrationFailed` construction site resolves to the unrelated,
+        /// same-named `SchemaEvent.MigrationFailed`. These two tests prove the mapping funnel is
+        /// correct in advance of either ever being wired up to a real raise site; they are NOT
+        /// evidence either is currently reachable through any route. Disclosed to the #543/#832
+        /// review as a scope gap — a follow-up ticket should either wire these in or retire them.
+        @Test
+        void undoRoute_respondsUnprocessable_whenMigrationHasFailed() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationFailed.migrationFailed(DATASOURCE, 2, "constraint violation"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("a failed migration script is a content problem, not a server fault — not currently raised by production code (see class note above)")
+                      .isEqualTo(HttpStatus.UNPROCESSABLE_ENTITY);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenMigrationHasFailed() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.MigrationFailed.migrationFailed(DATASOURCE, 2, "constraint violation"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.MigrationFailed.migrationFailed(DATASOURCE, 2, "constraint violation"));
+        }
+
+        @Test
+        void undoRoute_respondsServiceUnavailable_whenDatasourceIsUnreachable() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.DatasourceUnreachable.datasourceUnreachable(DATASOURCE, "connection refused"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(statusFor(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).as("an infrastructure fault named as such is a 503 — not currently raised by production code (see class note above)")
+                      .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        }
+
+        @Test
+        void undoRoute_propagatesCauseUnwrapped_whenDatasourceIsUnreachable() {
+            routes = SchemaRoutes.schemaRoutes(() -> nodeOverWithOrchestrator(store,
+                                                                              orchestratorFailingUndo(SchemaError.DatasourceUnreachable.datasourceUnreachable(DATASOURCE, "connection refused"))));
+            seed(SchemaStatus.COMPLETED);
+
+            assertThat(causeFrom(ManagementRoute.SCHEMA_UNDO, "targetVersion", "2")).isEqualTo(SchemaError.DatasourceUnreachable.datasourceUnreachable(DATASOURCE, "connection refused"));
+        }
+    }
+
     // --- assertions ---
     private void assertRespondsNotFound(ManagementRoute route) {
         assertThat(statusFor(route)).as("an unknown datasource is a missing resource, not a server fault")
@@ -309,6 +837,18 @@ class SchemaRouteStatusTest {
         return holder.get();
     }
 
+    /// Mirror of [#causeFrom] for the success path — drives the real route handler and returns the
+    /// value it produced, failing loudly if the route unexpectedly refused.
+    private SchemaRoutes.SchemaStatusResponse successResponseFor(ManagementRoute route) {
+        var holder = new AtomicReference<SchemaRoutes.SchemaStatusResponse>();
+
+        handle(route, Option.none(), Option.none()).onFailure(cause -> Assertions.fail("Route " + route.name()
+                                                                                       + " must succeed, got: " + cause.message()))
+              .onSuccess(value -> holder.set((SchemaRoutes.SchemaStatusResponse) value));
+
+        return holder.get();
+    }
+
     private Result<?> handle(ManagementRoute route, Option<String> queryName, Option<String> queryValue) {
         return schemaRoute(route).handler()
                           .handle(requestContext(queryName, queryValue))
@@ -328,6 +868,50 @@ class SchemaRouteStatusTest {
                   SchemaVersionValue.schemaVersionValue(DATASOURCE, 3, "V003__add_index.sql", status, COORDS, OWNER));
     }
 
+    /// Plants ownership (`SliceTargetKey`/`SliceTargetValue`) alongside the LIVE per-node state
+    /// (`SliceNodeKey`/`SliceNodeValue`) that `SchemaRoutes.heldSlices` reads post-#760-review — a
+    /// slice genuinely waiting at the gate.
+    private void seedSliceTarget(String artifactBaseString, BlueprintId owner) {
+        seedSliceInState(artifactBaseString, owner, SliceState.LOADED);
+    }
+
+    /// Same join as [#seedSliceTarget], but ACTIVE: a slice that already passed the gate and has no
+    /// transition path back through LOADED.
+    private void seedActiveSlice(String artifactBaseString, BlueprintId owner) {
+        seedSliceInState(artifactBaseString, owner, SliceState.ACTIVE);
+    }
+
+    private void seedSliceInState(String artifactBaseString, BlueprintId owner, SliceState state) {
+        var artifactBase = ArtifactBase.artifactBase(artifactBaseString).unwrap();
+        var artifact = Artifact.artifact(artifactBase, SLICE_VERSION);
+
+        store.put(SliceTargetKey.sliceTargetKey(artifactBase),
+                  SliceTargetValue.sliceTargetValue(SLICE_VERSION, 1, Option.some(owner)));
+        store.put(SliceNodeKey.sliceNodeKey(artifact, NODE), SliceNodeValue.sliceNodeValue(state));
+    }
+
+    /// #760 review round 2 item a: plants an `AppBlueprintValue` whose embedded resources.toml
+    /// declares `schema_required = false`, so `heldSlices` (via
+    /// `ClusterDeploymentState.resolveSchemaRequired`) resolves ownership to non-schema-required
+    /// instead of defaulting to `true`. Mirrors `SchemaRequiredResolutionTest.resourcesToml`: a
+    /// non-empty `[[slices]]` and a `[deployment].strategy` are both required for `schema_required`
+    /// to be read at all.
+    private void seedOwningBlueprintWithoutSchemaRequirement(BlueprintId owner) {
+        var resourcesToml = """
+                             id = "%s"
+
+                             [[slices]]
+                             artifact = "org.example:seed-slice:1.0.0"
+
+                             [deployment]
+                             strategy = "rolling"
+                             schema_required = false
+                             """.formatted(owner.asString());
+        var expanded = ExpandedBlueprint.expandedBlueprint(owner, List.of(), Option.some(resourcesToml));
+
+        store.put(AppBlueprintKey.appBlueprintKey(owner), AppBlueprintValue.appBlueprintValue(expanded));
+    }
+
     private SchemaVersionValue recorded() {
         return store.get(SchemaVersionKey.schemaVersionKey(DATASOURCE))
                     .filter(SchemaVersionValue.class::isInstance)
@@ -340,11 +924,79 @@ class SchemaRouteStatusTest {
     }
 
     private ManageableNode nodeOver(InMemoryKvStore kvStore) {
+        var orchestrator = new RecordingOrchestrator(kvStore);
+
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
                                                        (_, method, args) -> switch (method.getName()) {
             case "kvStore" -> kvStore;
             case "apply" -> applyBatch(args);
+            case "isLeader" -> true;
+            case "leader" -> Option.none();
+            case "schemaOrchestrator" -> orchestrator;
+            default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
+        });
+    }
+
+    /// #543: `SchemaRoutes.baselineAtVersion`/`undoToVersion` now delegate to
+    /// `ManageableNode.schemaOrchestrator()` instead of fabricating the KV write inline, so the proxy
+    /// needs one to hand back. This file's tests are about ROUTE-LEVEL parameter handling (default
+    /// version, 400 on unparseable input), not about `SchemaOrchestratorService`'s own script
+    /// resolution — that boundary is `SchemaRoutesBaselineTest`'s job, which wires a REAL
+    /// orchestrator. Faking only this collaborator (while the route logic above it stays real) is a
+    /// legitimate layer boundary, not the pre-fix anti-pattern where the ROUTE ITSELF fabricated the
+    /// write with no orchestrator in the loop at all.
+    ///
+    /// `DATASOURCE = "orders_db"` also makes a real orchestrator a non-option here:
+    /// `BlueprintArtifactParser` only ever derives `"database"` or `"database.<folder>"` schema-set
+    /// keys from a migration script's path, so no blueprint jar could ever populate scripts under the
+    /// literal key `"orders_db"` — resolution would fail every time regardless of jar content.
+    private static final class RecordingOrchestrator implements SchemaOrchestratorService {
+        private final InMemoryKvStore kvStore;
+        boolean undoInvoked;
+        boolean baselineInvoked;
+
+        RecordingOrchestrator(InMemoryKvStore kvStore) {
+            this.kvStore = kvStore;
+        }
+
+        @Override
+        public Promise<Unit> migrateIfNeeded(String datasourceName) {
+            return Causes.cause("migrateIfNeeded() not exercised by SchemaRouteStatusTest's fake orchestrator").promise();
+        }
+
+        @Override
+        public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
+            undoInvoked = true;
+            return recordOutcome(datasourceName, targetVersion, "U%03d__undo".formatted(targetVersion));
+        }
+
+        @Override
+        public Promise<Unit> baseline(String datasourceName, int version) {
+            baselineInvoked = true;
+            return recordOutcome(datasourceName, version, "V%03d__baseline".formatted(version));
+        }
+
+        private Promise<Unit> recordOutcome(String datasourceName, int version, String lastMigration) {
+            kvStore.put(SchemaVersionKey.schemaVersionKey(datasourceName),
+                        SchemaVersionValue.schemaVersionValue(datasourceName, version, lastMigration, SchemaStatus.COMPLETED, COORDS, OWNER));
+
+            return Promise.unitPromise();
+        }
+    }
+
+    /// #543 condition 2 fixture: a non-leader node must refuse (409) before the orchestrator is ever
+    /// touched. Mirrors [#nodeOver] with `isLeader`/`leader` swapped for the follower case; everything
+    /// else (kvStore, apply, schemaOrchestrator) is identical.
+    private ManageableNode nodeOverAsFollower(InMemoryKvStore kvStore, RecordingOrchestrator orchestrator, Option<NodeId> currentLeader) {
+        return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
+                                                       new Class[]{ManageableNode.class},
+                                                       (_, method, args) -> switch (method.getName()) {
+            case "kvStore" -> kvStore;
+            case "apply" -> applyBatch(args);
+            case "isLeader" -> false;
+            case "leader" -> currentLeader;
+            case "schemaOrchestrator" -> orchestrator;
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         });
     }
@@ -354,6 +1006,61 @@ class SchemaRouteStatusTest {
         ((List<KVCommand<AetherKey>>) args[0]).forEach(store::apply);
 
         return Promise.success(List.of());
+    }
+
+    /// #543 condition 4 fixture: leader like [#nodeOver], but hands back a caller-supplied
+    /// orchestrator instead of the always-succeeding [RecordingOrchestrator] — [ErrorMapping] needs
+    /// `undoTo`/`baseline` to actually FAIL with a typed `SchemaError` to prove the route propagates
+    /// it unwrapped.
+    private ManageableNode nodeOverWithOrchestrator(InMemoryKvStore kvStore, SchemaOrchestratorService orchestrator) {
+        return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
+                                                       new Class[]{ManageableNode.class},
+                                                       (_, method, args) -> switch (method.getName()) {
+            case "kvStore" -> kvStore;
+            case "apply" -> applyBatch(args);
+            case "isLeader" -> true;
+            case "leader" -> Option.none();
+            case "schemaOrchestrator" -> orchestrator;
+            default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
+        });
+    }
+
+    private static SchemaOrchestratorService orchestratorFailingUndo(Cause cause) {
+        return new SchemaOrchestratorService() {
+            @Override
+            public Promise<Unit> migrateIfNeeded(String datasourceName) {
+                return Causes.cause("migrateIfNeeded() not exercised by ErrorMapping's fake orchestrator").promise();
+            }
+
+            @Override
+            public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
+                return cause.promise();
+            }
+
+            @Override
+            public Promise<Unit> baseline(String datasourceName, int version) {
+                return Causes.cause("baseline() not exercised by this ErrorMapping fixture").promise();
+            }
+        };
+    }
+
+    private static SchemaOrchestratorService orchestratorFailingBaseline(Cause cause) {
+        return new SchemaOrchestratorService() {
+            @Override
+            public Promise<Unit> migrateIfNeeded(String datasourceName) {
+                return Causes.cause("migrateIfNeeded() not exercised by ErrorMapping's fake orchestrator").promise();
+            }
+
+            @Override
+            public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
+                return Causes.cause("undoTo() not exercised by this ErrorMapping fixture").promise();
+            }
+
+            @Override
+            public Promise<Unit> baseline(String datasourceName, int version) {
+                return cause.promise();
+            }
+        };
     }
 
     /// The path parameter carries the datasource and the query parameter (when the route declares

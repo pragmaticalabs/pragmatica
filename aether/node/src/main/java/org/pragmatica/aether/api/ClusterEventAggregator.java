@@ -6,28 +6,36 @@ package org.pragmatica.aether.api;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.api.ClusterEvent.AccessDenied;
-import org.pragmatica.aether.api.ClusterEvent.BackupCreated;
-import org.pragmatica.aether.api.ClusterEvent.BackupRestored;
+import org.pragmatica.aether.api.ClusterEvent.AutoRollback;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeleted;
 import org.pragmatica.aether.api.ClusterEvent.BlueprintDeployed;
 import org.pragmatica.aether.api.ClusterEvent.ConfigChanged;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionEstablished;
 import org.pragmatica.aether.api.ClusterEvent.ConnectionFailed;
+import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
+import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
+import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
+import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
+import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentFailed;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentStarted;
-import org.pragmatica.aether.api.ClusterEvent.GenerationChanged;
 import org.pragmatica.aether.api.ClusterEvent.LeaderElected;
 import org.pragmatica.aether.api.ClusterEvent.LeaderLost;
 import org.pragmatica.aether.api.ClusterEvent.NodeFailed;
@@ -43,15 +51,23 @@ import org.pragmatica.aether.api.ClusterEvent.Severity;
 import org.pragmatica.aether.api.ClusterEvent.SliceFailure;
 import org.pragmatica.aether.api.ClusterEvent.StreamMemoryExceeded;
 import org.pragmatica.aether.controller.ScalingEvent;
+import org.pragmatica.aether.controller.RollbackEvent;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.StreamAccess.PartitionInfo;
 import org.pragmatica.aether.slice.StreamAccess.StreamEvent;
 import org.pragmatica.aether.slice.StreamAccess.StreamMetadata;
+import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
+import org.pragmatica.aether.slice.stream.SystemStreams;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
@@ -61,11 +77,16 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.WarningLevel;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -147,6 +168,10 @@ public final class ClusterEventAggregator {
     private final HlcClock hlcClock;
     private final NodeId selfNode;
     private final AtomicLong quorumSequence = new AtomicLong();
+
+    /// True while THIS node drains because the leader commanded it (#2014); wired by `AetherNode`.
+    private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfCommandedDrain = new java.util.concurrent.atomic.AtomicReference<>(() -> false);
+
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
@@ -154,14 +179,146 @@ public final class ClusterEventAggregator {
     /// Per-`(streamName, phase)` last-emit timestamp (HLC physical millis) for the budget-exhaustion
     /// rate-limiter (spec §4.5c / reconciliation #15). A saturated growing stream fires exhaustion on
     /// every append; this throttles to at most one `StreamMemoryExceeded` event per key per
-    /// {@link #STREAM_MEMORY_EVENT_THROTTLE_MS}. Create-phase exhaustion is naturally infrequent but
+    /// {@link #EVENT_THROTTLE_MS}. Create-phase exhaustion is naturally infrequent but
     /// shares the same key space (keyed by phase), so it is never starved by growth-phase noise.
-    private final ConcurrentHashMap<String, Long> streamMemoryEventThrottle = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ThrottleWindow> streamMemoryEventThrottle = new ConcurrentHashMap<>();
 
-    /// Throttle window for {@link #onStreamMemoryExceeded}: 60s per `(streamName, phase)` (spec §4.5c).
-    private static final long STREAM_MEMORY_EVENT_THROTTLE_MS = 60_000L;
+    /// Per-`(code, subject)` window for {@link #onOperatorWarning} (#1574). The same mechanism as the
+    /// stream-memory throttle, with its own key space, so a flood of one kind cannot starve the other.
+    /// The key is `code:subject`. It is unambiguous because a code is kebab-case and never contains `:`,
+    /// which `OperatorWarningCodeTest` enforces.
+    private final ConcurrentHashMap<String, ThrottleWindow> operatorWarningThrottle = new ConcurrentHashMap<>();
+    /// Throttle keys of operator warnings that were published and whose recovery code has not been raised since (#752).
+    /// A recovery is published exactly when its key is here, so it never appears without the warning it closes and is
+    /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
+    private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
+    /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
+    /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
+    private final ConcurrentHashMap<String, ClusterEvent> replayHeldRecoveries = new ConcurrentHashMap<>();
+
+    private final ConcurrentHashMap<String, Option<ClusterEvent>> awaitingDelivery = new ConcurrentHashMap<>();
+
+    /// Per-task window for the scheduled-task outcome events (#1723): the same 60 s mechanism, its own key space
+    /// (`task@node`), so one flapping task cannot starve another and neither starves the operator warnings.
+    private final ConcurrentHashMap<String, ThrottleWindow> scheduledOutcomeThrottle = new ConcurrentHashMap<>();
+    /// What the operator can see of each task's unknown outcome, keyed like [#scheduledOutcomeThrottle]. One map, one
+    /// entry per task, changed only through `compute`/`remove`, so "announce a held UNKNOWN" and "the outcome was
+    /// resolved" cannot interleave into a published UNKNOWN that no RESTORED will ever follow.
+    private final ConcurrentHashMap<String, ScheduledOutcome> scheduledOutcomes = new ConcurrentHashMap<>();
+
+    /// `visible`: its UNKNOWN event was published (or would have been, on a node that is not the events owner), so a
+    /// RESTORED may follow it. Otherwise the UNKNOWN was held back by the window: nothing is visible yet, and a
+    /// resolution cancels it instead of announcing an all-clear for something never announced.
+    private record ScheduledOutcome(OperationalEvent.ScheduledTaskOutcomeUnknown unknown, boolean visible) {}
+
+    /// The same mechanism for a scheduled fire that is still in flight while its ticks are skipped (#1930), with its own key
+    /// space (`task@node`): one window per task and node, one entry per in-flight fire, changed only through `compute` /
+    /// `remove`. `visible` as for [ScheduledOutcome]: a held event that resolves inside the window is never announced, nor
+    /// is its release.
+    private final ConcurrentHashMap<String, ThrottleWindow> fireHeldThrottle = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, HeldFire> heldFires = new ConcurrentHashMap<>();
+
+    private record HeldFire(OperationalEvent.ScheduledTaskFireHeld event, boolean visible) {}
+
+    /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
+    /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
+    private static final long EVENT_THROTTLE_MS = 60_000L;
+    /// After an operator-warning event is LOST (redelivery gave up on it, or replay suppressed it), its key is held for
+    /// this long before the next attempt (#1617 R4, v1562; since #1653 a failure redelivery retries past is not a loss).
+    /// Releasing the window outright left attempts unbounded while publishing kept failing: 1,000 raises made 1,000
+    /// publish attempts. A short window bounds a failing key to one attempt per this long.
+    static final long OPERATOR_WARNING_RETRY_MS = 5_000L;
+
+    private volatile Option<ClusterEvent> lastRaisedOperatorWarning = Option.none();
+
+    /// A key with no call for this long is evicted by [#evictIdleThrottleWindows] (#1617 R3). Twice the
+    /// window, so a key is never evicted while its window could still hold a call back.
+    private static final long THROTTLE_IDLE_EVICTION_MS = 2 * EVENT_THROTTLE_MS;
+    /// Most keys named in the log line that reports evicted held-back counts.
+    private static final int EVICTION_SAMPLE_KEYS = 5;
+
+    /// One throttle key's current window. `suppressed` counts the calls held back since `openedAt`, and
+    /// `lastSeen` is the time of the latest call, admitted or not. `admitted` records whether the call that
+    /// produced this state was let through, and for an admitted call `suppressedBefore` is the count held
+    /// back in the window it closed.
+    private record ThrottleWindow(long openedAt,
+                                  long length,
+                                  long lastSeen,
+                                  long suppressed,
+                                  boolean admitted,
+                                  long suppressedBefore) {
+        /// A new window opened at `now` by an admitted call, closing one that held back `suppressedBefore`.
+        static ThrottleWindow throttleWindow(long now, long suppressedBefore) {
+            return new ThrottleWindow(now, EVENT_THROTTLE_MS, now, 0, true, suppressedBefore);
+        }
+
+        /// The same window with one more suppressed call.
+        ThrottleWindow held(long now) {
+            return new ThrottleWindow(openedAt, length, now, suppressed + 1, false, 0);
+        }
+
+        boolean openAt(long now) {
+            return now - openedAt < length;
+        }
+
+        /// The window an admitted call opened, shortened because its event was not published (#1617 R4). It closes
+        /// [#OPERATOR_WARNING_RETRY_MS] after it opened, so the next attempt waits that long instead of a full window,
+        /// and a key whose publishes keep failing makes at most one attempt per retry window. It carries every
+        /// occurrence no published event represents: the count the failed event was meant to report, those held back
+        /// while it was in flight, and the failed occurrence itself.
+        ThrottleWindow shortenedForRetry() {
+            return new ThrottleWindow(openedAt,
+                                      OPERATOR_WARNING_RETRY_MS,
+                                      lastSeen,
+                                      suppressed + suppressedBefore + 1,
+                                      false,
+                                      0);
+        }
+
+        boolean idleAt(long now) {
+            return now - lastSeen >= THROTTLE_IDLE_EVICTION_MS;
+        }
+    }
 
     private final IntSupplier clusterSizeSupplier;
+
+    /// Default for the legacy factories: ownership is always resolvable, so they never take the
+    /// ownerless-drop branch. Those factories pass `ALWAYS_OWNER` and therefore never suppress at all.
+    private static final BooleanSupplier OWNERSHIP_ALWAYS_RESOLVABLE = () -> true;
+
+    /// Distinguishes the two DIFFERENT falses `ownerCheck` returns (#957).
+    ///
+    /// `ownerCheck` is false both when ANOTHER node owns partition 0 — the normal steady state on N-1
+    /// nodes, where the event IS published, just not by this node — and when ownership cannot be
+    /// determined at all, where NO node publishes and the event is lost. A single boolean cannot tell
+    /// them apart, so logging the first at WARN would emit a line per suppressed event per non-owner
+    /// per tick and report correct operation as a fault.
+    private final BooleanSupplier ownershipResolvable;
+    /// Count of events dropped because ownership was unresolvable — the size of the audit-log hole.
+    /// Read by [#ownerlessDrops].
+    private final AtomicLong ownerlessDrops = new AtomicLong();
+    /// #1640: events whose publish did not land wait here and are retried.
+    private final ClusterEventRedelivery redelivery;
+    private volatile Option<Function<ClusterEvent, Promise<Unit>>> publishHook = Option.none();
+    /// #1653 round 2: stamps each event with `details.eventId` so a redelivered copy is recognised on read.
+    private final ClusterEventIdentity identity = ClusterEventIdentity.clusterEventIdentity();
+    private volatile int lastReadDuplicates;
+    /// #1653: cluster-events ownership changes applied on this node; the event feed re-anchors when it moves.
+    private final AtomicLong ownershipChanges = new AtomicLong();
+    private volatile long lastEventsFrom = -1;
+
+    /// Typed so [ClusterEventRedelivery#failuresByCause] counts it by name (#1653).
+    private enum PublishError implements Cause {
+        PUBLISHER_NOT_BOUND("cluster-events publisher not yet bound");
+        private final String message;
+        PublishError(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
 
     private ClusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
                                    Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
@@ -170,7 +327,8 @@ public final class ClusterEventAggregator {
                                    HlcClock hlcClock,
                                    IntSupplier clusterSizeSupplier,
                                    BooleanSupplier replayingCheck,
-                                   BooleanSupplier leaderCheck) {
+                                   BooleanSupplier leaderCheck,
+                                   BooleanSupplier ownershipResolvable) {
         this.publisherSupplier = publisherSupplier;
         this.consumerSupplier = consumerSupplier;
         this.ownerCheck = ownerCheck;
@@ -179,6 +337,10 @@ public final class ClusterEventAggregator {
         this.clusterSizeSupplier = clusterSizeSupplier;
         this.replayingCheck = replayingCheck;
         this.leaderCheck = leaderCheck;
+        this.ownershipResolvable = ownershipResolvable;
+        this.redelivery = ClusterEventRedelivery.clusterEventRedelivery(this::publishOnce,
+                                                                        () -> hlcClock.now()
+                                                                                      .physicalMillis());
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -192,7 +354,8 @@ public final class ClusterEventAggregator {
                                           hlcClock,
                                           UNKNOWN_CLUSTER_SIZE,
                                           NEVER_REPLAYING,
-                                          LEADER_ALWAYS);
+                                          LEADER_ALWAYS,
+                                          OWNERSHIP_ALWAYS_RESOLVABLE);
     }
 
     public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
@@ -207,7 +370,8 @@ public final class ClusterEventAggregator {
                                           hlcClock,
                                           clusterSizeSupplier,
                                           NEVER_REPLAYING,
-                                          LEADER_ALWAYS);
+                                          LEADER_ALWAYS,
+                                          OWNERSHIP_ALWAYS_RESOLVABLE);
     }
 
     /// Legacy production factory (pre-leader-gate): owner-gated emit + replay-gate, with the
@@ -228,7 +392,8 @@ public final class ClusterEventAggregator {
                                           hlcClock,
                                           clusterSizeSupplier,
                                           replayingCheck,
-                                          LEADER_ALWAYS);
+                                          LEADER_ALWAYS,
+                                          OWNERSHIP_ALWAYS_RESOLVABLE);
     }
 
     /// Production factory (B5b): emit is gated by `ownerCheck` — only the owner of
@@ -255,7 +420,31 @@ public final class ClusterEventAggregator {
                                           hlcClock,
                                           clusterSizeSupplier,
                                           replayingCheck,
-                                          leaderCheck);
+                                          leaderCheck,
+                                          OWNERSHIP_ALWAYS_RESOLVABLE);
+    }
+
+    /// Production factory (#957) — as above, plus `ownershipResolvable`, which reports whether this node
+    /// can determine partition-0 ownership AT ALL. See [#ownershipResolvable] for why the extra supplier
+    /// is needed rather than reusing `ownerCheck`.
+    public static ClusterEventAggregator clusterEventAggregator(Supplier<FrameworkStreamPublisher<ClusterEvent>> publisherSupplier,
+                                                                Supplier<FrameworkStreamConsumer<ClusterEvent>> consumerSupplier,
+                                                                BooleanSupplier ownerCheck,
+                                                                NodeId selfNode,
+                                                                HlcClock hlcClock,
+                                                                IntSupplier clusterSizeSupplier,
+                                                                BooleanSupplier replayingCheck,
+                                                                BooleanSupplier leaderCheck,
+                                                                BooleanSupplier ownershipResolvable) {
+        return new ClusterEventAggregator(publisherSupplier,
+                                          consumerSupplier,
+                                          ownerCheck,
+                                          selfNode,
+                                          hlcClock,
+                                          clusterSizeSupplier,
+                                          replayingCheck,
+                                          leaderCheck,
+                                          ownershipResolvable);
     }
 
     /// Read all events currently retained in the system stream's partition.
@@ -273,7 +462,7 @@ public final class ClusterEventAggregator {
         return consume(consumer -> consumer.metadata()
                                            .map(ClusterEventAggregator::retainedTailOffset)
                                            .flatMap(fromOffset -> consumer.fetch(fromOffset, FETCH_BATCH))
-                                           .map(ClusterEventAggregator::extractPayloads));
+                                           .map(this::extractPayloads));
     }
 
     /// Oldest still-retained offset for partition 0. Empty/absent partition → 0 (fetch from start).
@@ -285,6 +474,56 @@ public final class ClusterEventAggregator {
                        .filter(tail -> tail >= 0)
                        .findFirst()
                        .orElse(0L);
+    }
+
+    /// One event as the log holds it, with its offset.
+    public record LandedEvent(long offset, ClusterEvent event) {}
+
+    /// A page of the log from an offset: the events at `[from, nextOffset)` in log order, as stored (not
+    /// de-duplicated or sorted: the event feed de-duplicates against what it has already sent and sends in log order).
+    /// `tailOffset` is the oldest retained offset. `ownershipChanges` counts the cluster-events ownership changes this
+    /// node has applied, read before the fetch: a reader that sees it move knows the log may now be a new owner's,
+    /// whose offsets can reuse ones it already read (#1653).
+    public record EventPage(List<LandedEvent> events, long nextOffset, long tailOffset, long ownershipChanges) {}
+
+    /// #1653: the event feed's incremental read. Reads from `fromOffset` (clamped up to the oldest retained offset)
+    /// and reports where the next read starts. A redelivered event is APPENDED, so it lands at an offset beyond any
+    /// earlier read of the same owner's log, whatever its `at`; each read costs what is new since the last one.
+    public Promise<EventPage> eventsFrom(long fromOffset) {
+        var changes = ownershipChanges.get();
+
+        lastEventsFrom = fromOffset;
+
+        return Option.option(consumerSupplier.get())
+                     .map(consumer -> pageFrom(consumer, fromOffset, changes))
+                     .or(() -> Promise.success(new EventPage(List.of(),
+                                                             fromOffset,
+                                                             0L,
+                                                             changes)));
+    }
+
+    /// The offset the last [#eventsFrom] was asked for (observability for the #1653 feed-wiring pin).
+    long lastEventsFrom() {
+        return lastEventsFrom;
+    }
+
+    private static Promise<EventPage> pageFrom(FrameworkStreamConsumer<ClusterEvent> consumer,
+                                               long fromOffset,
+                                               long changes) {
+        return consumer.metadata()
+                       .map(ClusterEventAggregator::retainedTailOffset)
+                       .flatMap(tail -> consumer.fetch(Math.max(fromOffset, tail),
+                                                       FETCH_BATCH)
+                                                .map(raw -> page(raw, fromOffset, tail, changes)));
+    }
+
+    private static EventPage page(List<StreamEvent<ClusterEvent>> raw, long fromOffset, long tail, long changes) {
+        var nextOffset = raw.stream().mapToLong(StreamEvent::offset).max().orElse(fromOffset - 1) + 1;
+
+        return new EventPage(raw.stream().map(event -> new LandedEvent(event.offset(), event.payload())).toList(),
+                             nextOffset,
+                             tail,
+                             changes);
     }
 
     /// Read events whose timestamp is strictly after `since`.
@@ -301,10 +540,29 @@ public final class ClusterEventAggregator {
                      .toList();
     }
 
-    private static List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
-        return raw.stream()
-                  .map(StreamEvent::payload)
-                  .toList();
+    /// #1640: an event can be in the log twice. A publish whose outcome was unknown may have landed, and its
+    /// redelivery sends the same event again. Every copy carries the same `details.eventId` (see
+    /// [ClusterEventIdentity]), so duplicates are removed here, keeping the first occurrence. Events without an id
+    /// (from a node that predates it, or an `ExtendedEvent` that is not a record) fall back to `at`.
+    ///
+    /// #1653 round 2: the result is sorted by `at`, stably. A redelivered event lands in the log after events
+    /// produced later, and readers of this method (the REST list, the event feed, alert history, traces) expect
+    /// a timeline. Ties keep log order.
+    ///
+    /// Every reader of the aggregator goes through here. The raw stream read endpoint
+    /// (`GET /api/v1/streams/system/cluster-events/1.0.0/read`) does not: it returns the log as stored, so it can
+    /// show a redelivered event twice and out of `at` order. `details.eventId` is there to de-duplicate by.
+    private List<ClusterEvent> extractPayloads(List<StreamEvent<ClusterEvent>> raw) {
+        var seen = new HashSet<String>();
+        var unique = raw.stream()
+                        .map(StreamEvent::payload)
+                        .filter(event -> seen.add(ClusterEventIdentity.key(event)))
+                        .sorted(Comparator.comparing(ClusterEvent::at))
+                        .toList();
+
+        lastReadDuplicates = raw.size() - unique.size();
+
+        return unique;
     }
 
     private Promise<List<ClusterEvent>> consume(Function<FrameworkStreamConsumer<ClusterEvent>, Promise<List<ClusterEvent>>> fn) {
@@ -332,12 +590,45 @@ public final class ClusterEventAggregator {
         }
 
         if (!ownerCheck.getAsBoolean()) {
-            LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
+            suppressUnowned(event);
 
             return;
         }
 
         publishSafely(event);
+    }
+
+    /// Split the owner-gate's two falses (#957) so the loud one is actually loud.
+    ///
+    /// **Another node owns** — the steady state on every non-owner, once per emit per tick. The event
+    /// reaches the log via the owner, nothing is lost, DEBUG.
+    ///
+    /// **Ownership unresolvable** — bootstrap window, quorum loss, partition 0 not yet materialized.
+    /// NO node passes the gate, so the event is dropped by all of them and **never queued or retried**.
+    /// That is a permanent hole in the audit log, and it is the same shape as the #926 defect where the
+    /// event announcing there is no leader was itself leader-gated. WARN plus a counter, so the hole is
+    /// measurable rather than inferred: a reader asking "did we lose alerts during that outage?" gets a
+    /// number instead of an argument.
+    ///
+    /// The operator surface does NOT go dark in this window — `AlertManager` serves "what is firing now"
+    /// from its locally-derived view, which needs no ownership. Only the durable history gaps.
+    private void suppressUnowned(ClusterEvent event) {
+        if (ownershipResolvable.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: not owner of cluster-events partition — suppressing emit of {}", event);
+
+            return;
+        }
+
+        LOG.warn("ClusterEventAggregator: cluster-events ownership UNRESOLVABLE — {} dropped, not queued;"
+                + " the audit log will gap here. Ownerless drops on this node since start: {}",
+                 event.type(),
+                 ownerlessDrops.incrementAndGet());
+    }
+
+    /// Events lost on this node because ownership could not be determined. Non-decreasing; the audit
+    /// hole's size. Zero is the claim "no event was lost this way", and it is checkable.
+    public long ownerlessDrops() {
+        return ownerlessDrops.get();
     }
 
     /// Leader-gated emit for consensus-committed membership-DEPARTURE facts (NODE_FAILED / NODE_LEFT).
@@ -385,25 +676,143 @@ public final class ClusterEventAggregator {
     /// so it can never propagate to the caller. {@link #onConfirmedDeparture} runs on the MembershipFsm
     /// DEAD-edge chokepoint (`enteredDead`) BEFORE the FSM emits its REMOVED membership delta; a publish
     /// that threw there (e.g. the leader's cluster-events partition not yet materialized mid-churn) would
-    /// abort the death edge and starve membership recovery. The async publish Promise is fire-and-forget
-    /// (observability); a synchronous failure is logged and dropped, never re-thrown.
+    /// abort the death edge and starve membership recovery.
+    ///
+    /// #926 made the asynchronous failure visible. #1640 stops dropping it: a publish that does not land
+    /// (most importantly `PublishOutcomeUnknown` while the partition's owner is dead) is handed to
+    /// [ClusterEventRedelivery], which retries the same event until it lands or its horizon passes, and counts
+    /// what it gives up on. Still never propagated to the caller.
     @Contract
     private void publishSafely(ClusterEvent event) {
-        Option.option(publisherSupplier.get())
-              .onPresent(publisher -> Result.lift(Causes::fromThrowable,
-                                                  () -> publisher.publish(event))
-                                            .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw, dropped: {}",
-                                                                         event,
-                                                                         cause.message())))
-              .onEmpty(() -> LOG.info("ClusterEventAggregator publisher not yet bound — event {} dropped (bootstrap window)",
-                                      event));
+        redelivery.deliver(stampedOrAsIs(event));
+    }
+
+    /// #1653: stamping copies `details` and so runs inside the same throw isolation as the publish. An event whose
+    /// details cannot be copied (a null value) goes out without an id and is de-duplicated by `at`.
+    private ClusterEvent stampedOrAsIs(ClusterEvent event) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> identity.stamped(event))
+                     .onFailure(cause -> LOG.warn("ClusterEventAggregator: {} published without an eventId: {}",
+                                                  event.type(),
+                                                  cause.message()))
+                     .or(event);
+    }
+
+    /// One publish attempt with its outcome: fails when the publisher is not yet bound, when the publish
+    /// throws, or when its promise fails. Each failure is logged once here; whether it is retried is
+    /// [ClusterEventRedelivery]'s decision.
+    private Promise<Unit> publishOnce(ClusterEvent event) {
+        return publishHook.map(hook -> hook.apply(event))
+                          .or(() -> publishViaPublisher(event));
+    }
+
+    /// Test seam: replaces the publish attempt, so a test can script outcomes the sealed publisher cannot produce, such
+    /// as [PublishOutcomeUnknown] (#752). Never set in production.
+    void interceptPublish(Function<ClusterEvent, Promise<Unit>> hook) {
+        publishHook = Option.some(hook);
+    }
+
+    private Promise<Unit> publishViaPublisher(ClusterEvent event) {
+        return Option.option(publisherSupplier.get())
+                     .map(publisher -> publishedBy(publisher, event))
+                     .or(() -> unboundPublisher(event));
+    }
+
+    private static Promise<Unit> publishedBy(FrameworkStreamPublisher<ClusterEvent> publisher, ClusterEvent event) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> publisher.publish(event))
+                     .onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} threw: {}",
+                                                  event.type(),
+                                                  cause.message()))
+                     .async()
+                     .flatMap(promise -> promise.onFailure(cause -> LOG.warn("ClusterEventAggregator: publish of {} at {} failed: {}",
+                                                                             event.type(),
+                                                                             event.at(),
+                                                                             cause.message())));
+    }
+
+    private static Promise<Unit> unboundPublisher(ClusterEvent event) {
+        LOG.info("ClusterEventAggregator publisher not yet bound — event {} held for redelivery (bootstrap window)",
+                 event.type());
+
+        return PublishError.PUBLISHER_NOT_BOUND.promise();
+    }
+
+    /// #1640: re-sends the cluster events whose publish has not landed yet and are due. `AetherNode` calls it
+    /// once a second.
+    public Unit redeliverDue() {
+        releaseReplayHeldRecoveries();
+        redelivery.redeliver(false);
+
+        return Unit.unit();
+    }
+
+    /// #1640: a new owner of the cluster-events partition means publishes can land again, so every waiting
+    /// event is re-sent at once instead of on its backoff. #1653: the change is also counted, so the event feed
+    /// re-reads the new owner's log instead of trusting offsets it read from the old one.
+    @Contract
+    public void onStreamPartitionOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
+        if (isClusterEventsPartition(put.cause().key())) {
+            ownershipChanges.incrementAndGet();
+            redelivery.redeliver(true);
+        }
+    }
+
+    private static boolean isClusterEventsPartition(StreamPartitionOwnershipKey key) {
+        return key.partition() == 0 && SystemStreams.CLUSTER_EVENTS.asString().equals(key.stream());
+    }
+
+    /// Observability for #1640: events waiting for redelivery on this node.
+    public int redeliveryWaiting() {
+        return redelivery.waiting();
+    }
+
+    /// Observability for #1640: events this node gave up on, by reason (overflow, expired, permanent).
+    public Map<String, Long> redeliveryDropped() {
+        return Map.of("overflow",
+                      redelivery.dropped(ClusterEventRedelivery.DropReason.OVERFLOW),
+                      "expired",
+                      redelivery.dropped(ClusterEventRedelivery.DropReason.EXPIRED),
+                      "permanent",
+                      redelivery.dropped(ClusterEventRedelivery.DropReason.PERMANENT));
+    }
+
+    /// Observability for #1640: publishes that landed, retries attempted, and publishes whose outcome was unknown.
+    public Map<String, Long> redeliveryCounters() {
+        return Map.of("accepted",
+                      redelivery.accepted(),
+                      "held",
+                      redelivery.held(),
+                      "inFlight",
+                      redelivery.inFlight(),
+                      "delivered",
+                      redelivery.delivered(),
+                      "retried",
+                      redelivery.retried(),
+                      "outcomeUnknown",
+                      redelivery.outcomeUnknown());
+    }
+
+    /// Observability for #1640: failed publish attempts on this node by cause type.
+    public Map<String, Long> redeliveryFailuresByCause() {
+        return redelivery.failuresByCause();
+    }
+
+    /// Observability for #1640: duplicate events (same `at`) that the most recent read removed.
+    public int lastReadDuplicates() {
+        return lastReadDuplicates;
+    }
+
+    /// Whether this node currently owns cluster-events partition 0 (observability; the owner gate reads the same).
+    public boolean isClusterEventsOwner() {
+        return ownerCheck.getAsBoolean();
     }
 
     /// Budget-exhaustion sink entry point (spec §4.5c / reconciliation #13). Bound into the
     /// `StreamPartitionManager` by `AetherNode` (reconciliation #14). Stamps THIS node's id, builds a
     /// `StreamMemoryExceeded` event, and emits it through the un-gated {@link #emitLocal} path
     /// (per-node fact). Rate-limited per `(streamName, phase)` to one event per
-    /// {@link #STREAM_MEMORY_EVENT_THROTTLE_MS} so a saturated growing stream cannot flood the log.
+    /// {@link #EVENT_THROTTLE_MS} so a saturated growing stream cannot flood the log.
     @Contract
     public void onStreamMemoryExceeded(Exhaustion exhaustion) {
         if (!shouldEmitStreamMemoryEvent(exhaustion)) {
@@ -420,35 +829,318 @@ public final class ClusterEventAggregator {
     }
 
     /// Throttle decision: emit iff no event for this `(streamName, phase)` key fired within the window.
-    /// The window check + timestamp update run atomically inside `compute` (the remapping function holds
-    /// the bin lock), so concurrent growth-phase appends from multiple partitions cannot both pass the
-    /// gate within the same window. The admit decision is captured in a thread-confined holder set
-    /// inside the remapping function — robust even when two calls land on the same physical millisecond.
+    /// The stream-memory throttle consumes its window on admission, whether or not the event lands; only
+    /// operator warnings shorten a window to a retry window on a failed publish (#1617 R4 is scoped to them).
     private boolean shouldEmitStreamMemoryEvent(Exhaustion exhaustion) {
-        var key = exhaustion.streamName() + ":" + exhaustion.phase().name();
-        var now = hlcClock.now().physicalMillis();
-        var admitted = new boolean[1];
-
-        streamMemoryEventThrottle.compute(key, (_, previous) -> advanceWindow(previous, now, admitted));
-
-        return admitted[0];
+        return admit(streamMemoryEventThrottle,
+                     exhaustion.streamName() + ":" + exhaustion.phase().name()).admitted();
     }
 
-    /// Advance the throttle window for one key: when the previous emit is absent or older than the
-    /// window, stamp `now` and record admission; otherwise keep the previous stamp and suppress.
+    /// Operator-warning sink entry point (#1574). Bound into lower modules by `AetherNode` as their
+    /// `OperatorWarningSink`, and reached only through `OperatorWarnings.raise`, which has already
+    /// logged the warning. So this method only decides whether to emit. It stamps THIS node's id and
+    /// emits through the ungated {@link #emitLocal} path, because a warning is a per-node fact. It is
+    /// throttled per `(code, subject)` to one event per {@link #EVENT_THROTTLE_MS}, and the next
+    /// admitted event carries the number held back as `suppressedSince`.
+    ///
+    /// #1617 R4, with #1653: a full window is consumed by an event that lands or that redelivery is still holding. Only an
+    /// event that is LOST (replay in progress suppressed it, or redelivery finally dropped it: permanent failure, expiry
+    /// past its horizon, overflow) shortens the window to [#OPERATOR_WARNING_RETRY_MS], so the next occurrence after it
+    /// is admitted and reports what this one could not, while a key whose events keep being lost is attempted at most
+    /// once per retry window.
+    @Contract
+    public void onOperatorWarning(OperatorWarning warning) {
+        var key = throttleKey(warning.code(), warning.subject());
+
+        warning.code()
+               .recoveryOf()
+               .onPresent(closes -> onRecovery(warning, closes))
+               .onEmpty(() -> onCondition(warning, key));
+    }
+
+    private void onCondition(OperatorWarning warning, String key) {
+        // A recurrence makes a repair still held from replay stale: the tick must not publish it behind the new condition.
+        replayHeldRecoveries.remove(key);
+        var window = admit(operatorWarningThrottle, key);
+
+        if (!window.admitted()) {
+            LOG.debug("ClusterEventAggregator: suppressing throttled OperatorWarning {} for {}",
+                      warning.code().code(),
+                      warning.subject());
+
+            return;
+        }
+
+        var event = warningEvent(warning, window.suppressedBefore());
+
+        lastRaisedOperatorWarning = Option.some(event);
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
+            shortenWindow(key, window);
+
+            return;
+        }
+        // #1653: through redelivery, like every other event, so a publish to a dying owner is held and re-sent rather
+        // than lost. The window is shortened only if redelivery finally gives up on it: a failure it retries past is
+        // not a gap, and shortening on it would admit a second event while the first is still being delivered.
+        if (warning.code().hasRecovery()) {
+            deliverRecoverable(event, key, window);
+        } else {
+            redelivery.deliver(stampedOrAsIs(event), () -> shortenWindow(key, window));
+        }
+    }
+
+    /// #752: a warning that has a recovery is "shown" only once it is in the log. Until then a recovery that arrives is
+    /// held in `awaitingDelivery` and released when the warning lands, or dropped with it if redelivery gives up, so a
+    /// recovery never reaches the log without the warning it closes.
+    private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window) {
+        awaitingDelivery.put(key, Option.none());
+        redelivery.deliver(stampedOrAsIs(event), outcome -> warningLost(key, window, outcome), () -> warningLanded(key));
+    }
+
+    /// A warning redelivery gave up on. If an attempt's outcome was unknown it may be in the log, so it is treated as
+    /// landed: a recovery for it is less harmful than an alarm left open for good, and the condition really is repaired.
+    /// So a repair may appear without its warning only when the warning's delivery outcome was unknown; this avoids an
+    /// alarm left open forever.
+    /// If it was definitely not delivered, a recovery held for it is dropped, except that an earlier published warning
+    /// for the subject that is still open keeps its recovery.
+    private void warningLost(String key, ThrottleWindow window, ClusterEventRedelivery.GiveUpOutcome outcome) {
+        if (outcome == ClusterEventRedelivery.GiveUpOutcome.POSSIBLY_DELIVERED) {
+            warningLanded(key);
+        } else {
+            Option.option(awaitingDelivery.remove(key))
+                  .flatMap(held -> held)
+                  .filter(_ -> openRecoverable.contains(key))
+                  .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+        }
+
+        shortenWindow(key, window);
+    }
+
+    /// The mark is opened before the held recovery is looked up, so a recovery arriving between the two finds it open.
+    private void warningLanded(String key) {
+        openRecoverable.add(key);
+        Option.option(awaitingDelivery.remove(key))
+              .flatMap(held -> held)
+              .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+    }
+
+    private void releaseHeldRecovery(String key, ClusterEvent recovery) {
+        openRecoverable.remove(key);
+        redelivery.deliver(stampedOrAsIs(recovery));
+    }
+
+    /// A recovery is published iff the warning it closes was published for the same subject and is still open, and it
+    /// closes it. It has no window of its own: one published warning allows one recovery. Publishing it also ends the
+    /// warning's throttle window, so a condition that recurs right after its recovery is shown again rather than
+    /// throttled behind a "repaired" that is no longer true (#752).
+    private void onRecovery(OperatorWarning warning, OperatorWarningCode closes) {
+        var closedKey = throttleKey(closes, warning.subject());
+        var event = warningEvent(warning, 0);
+        var held = Option.option(awaitingDelivery.computeIfPresent(closedKey, (_, _) -> Option.some(event)));
+
+        if (held.isPresent()) {
+            operatorWarningThrottle.remove(closedKey);
+            LOG.debug("ClusterEventAggregator: holding OperatorWarning {} for {} until the warning it closes is delivered",
+                      warning.code().code(),
+                      warning.subject());
+
+            return;
+        }
+
+        if (warning.code().closesAcrossNodes()) {
+            // #2062: the warning may have been raised by another node (a previous leader); the raiser of this recovery holds its open state.
+            openRecoverable.add(closedKey);
+        }
+
+        if (replayingCheck.getAsBoolean()) {
+            holdDuringReplay(closedKey, event);
+
+            return;
+        }
+
+        replayHeldRecoveries.remove(closedKey);
+        if (!openRecoverable.remove(closedKey)) {
+            LOG.debug("ClusterEventAggregator: refusing OperatorWarning {} for {}, no published warning is open",
+                      warning.code().code(),
+                      warning.subject());
+
+            return;
+        }
+
+        publishRecovery(closedKey, event);
+    }
+
+    /// A shown warning must get its recovery, but replay suppresses local emits. So during replay the recovery is held
+    /// and the open mark is left alone; [#releaseReplayHeldRecoveries] publishes it on the first tick after replay.
+    private void holdDuringReplay(String closedKey, ClusterEvent recovery) {
+        if (openRecoverable.contains(closedKey)) {
+            replayHeldRecoveries.put(closedKey, recovery);
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends", recovery);
+        }
+    }
+
+    private void releaseReplayHeldRecoveries() {
+        if (replayingCheck.getAsBoolean()) {
+            return;
+        }
+
+        replayHeldRecoveries.keySet().forEach(this::releaseReplayHeld);
+    }
+
+    private void releaseReplayHeld(String closedKey) {
+        Option.option(replayHeldRecoveries.remove(closedKey))
+              .filter(_ -> openRecoverable.remove(closedKey))
+              .onPresent(recovery -> publishRecovery(closedKey, recovery));
+    }
+
+    private void publishRecovery(String closedKey, ClusterEvent event) {
+        operatorWarningThrottle.remove(closedKey);
+        lastRaisedOperatorWarning = Option.some(event);
+        redelivery.deliver(stampedOrAsIs(event));
+    }
+
+    private ClusterEvent.OperatorWarning warningEvent(OperatorWarning warning, long suppressedSince) {
+        return new ClusterEvent.OperatorWarning(hlcClock.now(),
+                                                severityOf(warning.code().level()),
+                                                warning.message(),
+                                                operatorWarningDetails(warning, suppressedSince));
+    }
+
+    /// Observability: the operator-warning event this node most recently admitted for publication,
+    /// whether or not the publish then landed. On a node that cannot reach the event log (an isolated
+    /// worker is the case that matters) this is the only in-process evidence that the warning reached
+    /// the aggregator rather than stopping at the log line.
+    public Option<ClusterEvent> lastRaisedOperatorWarning() {
+        return lastRaisedOperatorWarning;
+    }
+
+    /// The tasks whose UNKNOWN the aggregator is tracking (published or held): it ends with the task's RESTORED,
+    /// including `task-removed`, so a removed task cannot leave an entry behind.
+    public int trackedScheduledFires() {
+        return heldFires.size();
+    }
+
+    public int trackedScheduledOutcomes() {
+        return scheduledOutcomes.size();
+    }
+
+    /// Operator-warning throttle keys currently held (observability for #1617 R3).
+    public int operatorWarningThrottleKeys() {
+        return operatorWarningThrottle.size();
+    }
+
+    /// Evicts throttle keys idle for [#THROTTLE_IDLE_EVICTION_MS] from both throttles, so a key space as
+    /// open as peers or `stream[partition]` subjects cannot grow without bound (#1617 R3). `AetherNode`
+    /// schedules it once per window. An evicted operator-warning key that still held calls back would take
+    /// that count with it, so the evicted counts are reported in one aggregate log line.
+    public Unit evictIdleThrottleWindows() {
+        var now = hlcClock.now().physicalMillis();
+
+        announceHeldScheduledOutcomes();
+        announceHeldFires();
+        evictIdle(streamMemoryEventThrottle, now);
+        evictIdle(scheduledOutcomeThrottle, now);
+        evictIdle(fireHeldThrottle, now);
+
+        return reportEvictedHeldBack(evictIdle(operatorWarningThrottle, now));
+    }
+
+    private static List<Map.Entry<String, ThrottleWindow>> evictIdle(ConcurrentHashMap<String, ThrottleWindow> throttle,
+                                                                     long now) {
+        var idle = throttle.entrySet()
+                           .stream()
+                           .filter(entry -> entry.getValue()
+                                                 .idleAt(now))
+                           .map(entry -> Map.entry(entry.getKey(),
+                                                   entry.getValue()))
+                           .toList();
+        // remove(key, value) is conditional, so a key that saw a call after the scan is kept.
+        return idle.stream()
+                   .filter(entry -> throttle.remove(entry.getKey(),
+                                                    entry.getValue()))
+                   .toList();
+    }
+
+    private static Unit reportEvictedHeldBack(List<Map.Entry<String, ThrottleWindow>> evicted) {
+        var heldBack = evicted.stream().filter(entry -> entry.getValue()
+                                                             .suppressed() > 0).toList();
+        var total = heldBack.stream().mapToLong(entry -> entry.getValue()
+                                                              .suppressed()).sum();
+
+        if (total > 0) {
+            LOG.warn("ClusterEventAggregator: {} held-back operator warning(s) across {} idle key(s) were never emitted "
+                    + "as events; their log lines were written. Keys include: {}",
+                     total,
+                     heldBack.size(),
+                     heldBack.stream().limit(EVICTION_SAMPLE_KEYS).map(Map.Entry::getKey).toList());
+        }
+
+        return Unit.unit();
+    }
+
+    /// Shortens `window` to a retry window if it is still the key's current window. A later window is left alone.
+    private Unit shortenWindow(String key, ThrottleWindow window) {
+        operatorWarningThrottle.computeIfPresent(key, (_, current) -> shortenedIfCurrent(current, window));
+
+        return Unit.unit();
+    }
+
+    private static ThrottleWindow shortenedIfCurrent(ThrottleWindow current, ThrottleWindow admitted) {
+        return current.openedAt() == admitted.openedAt()
+               ? current.shortenedForRetry()
+               : current;
+    }
+
+    private static String throttleKey(OperatorWarningCode code, String subject) {
+        return code.code() + ":" + subject;
+    }
+
+    private static Severity severityOf(WarningLevel level) {
+        return switch (level) {
+            case INFO -> Severity.INFO;
+            case WARNING -> Severity.WARNING;
+            case CRITICAL -> Severity.CRITICAL;
+        };
+    }
+
+    private Map<String, String> operatorWarningDetails(OperatorWarning warning, long suppressedSince) {
+        return withNodeId(Map.of("code",
+                                 warning.code().code(),
+                                 "subsystem",
+                                 warning.code().subsystem(),
+                                 "subject",
+                                 warning.subject(),
+                                 "suppressedSince",
+                                 Long.toString(suppressedSince)));
+    }
+
+    /// Advance `key`'s window in `throttle` and report the outcome. The window check and update run
+    /// atomically inside `compute`, because the remapping function holds the bin lock. So concurrent
+    /// callers on the same key cannot both pass the gate within one window, even when they land on the
+    /// same physical millisecond.
+    private ThrottleWindow admit(ConcurrentHashMap<String, ThrottleWindow> throttle, String key) {
+        var now = hlcClock.now().physicalMillis();
+
+        return throttle.compute(key, (_, previous) -> advanceWindow(previous, now));
+    }
+
+    /// Advance the throttle window for one key. When the previous window is absent or older than
+    /// {@link #EVENT_THROTTLE_MS}, open a new one at `now`, admit the call, and carry the closed window's
+    /// suppressed count. Otherwise keep the window open and count one more suppressed call.
     // RET-06: `previous` is the nullable prior value supplied by JDK Map.compute (absent key → null) —
     // a framework boundary, not a business optional.
     @SuppressWarnings("JBCT-RET-06")
-    private static long advanceWindow(Long previous, long now, boolean[] admitted) {
-        if (previous != null && now - previous < STREAM_MEMORY_EVENT_THROTTLE_MS) {
-            admitted[0] = false;
-
-            return previous;
+    private static ThrottleWindow advanceWindow(ThrottleWindow previous, long now) {
+        if (previous == null) {
+            return ThrottleWindow.throttleWindow(now, 0);
         }
 
-        admitted[0] = true;
+        if (previous.openAt(now)) {
+            return previous.held(now);
+        }
 
-        return now;
+        return ThrottleWindow.throttleWindow(now, previous.suppressed());
     }
 
     private Map<String, String> withNodeId(Map<String, String> details) {
@@ -483,6 +1175,16 @@ public final class ClusterEventAggregator {
     @Contract
     public void onSwimObservation(@SuppressWarnings("unused") org.pragmatica.swim.SwimObservation observation) {}
 
+    /// LEADER_ELECTED stays leader-gated — the newly elected leader is by definition the authoritative
+    /// emitter of its own election, and the gate holds for it.
+    ///
+    /// LEADER_LOST does NOT (#926). It was previously emitted through {@link #emitAsLeader}, which made
+    /// **the event announcing that there is no leader conditional on being the leader** — the branch is
+    /// reached precisely when `leaderId()` is empty, so no node passes the gate and the signal was
+    /// suppressed everywhere it mattered. It is emitted through the un-gated {@link #emitLocal} path
+    /// instead: this is the "no leader, degraded observability" signal, and it is worthless if it can
+    /// only be sent by a leader. Same at-least-once-per-observer contract as
+    /// {@link #onConfirmedDeparture}, with the same bounded duplication and the same `observedBy` key.
     @Contract
     public void onLeaderChange(LeaderNotification.LeaderChange event) {
         event.leaderId()
@@ -491,12 +1193,47 @@ public final class ClusterEventAggregator {
                                                                    "Node " + leaderId.id() + " elected as leader",
                                                                    Map.of("leaderId",
                                                                           leaderId.id()))))
-             .onEmpty(() -> emitAsLeader(new LeaderLost(hlcClock.now(),
-                                                        Severity.WARNING,
-                                                        "Leadership lost, election in progress",
-                                                        Map.of())));
+             .onEmpty(() -> {
+                          LOG.warn("Leadership lost on {}, election in progress — cluster observability degraded",
+                                   selfNode.id());
+                          emitLocal(new LeaderLost(hlcClock.now(),
+                                                   Severity.WARNING,
+                                                   "Leadership lost, election in progress",
+                                                   Map.of("observedBy",
+                                                          selfNode.id())));
+                      });
     }
 
+    /// Wire the "this node is draining by command" probe (#2014), from the local `DrainProcedure`.
+    @Contract
+    public void bindSelfCommandedDrain(BooleanSupplier selfCommandedDrain) {
+        this.selfCommandedDrain.set(selfCommandedDrain);
+    }
+
+    /// Quorum transitions, UN-gated via {@link #emitLocal} (#926) — previously both leader-gated.
+    ///
+    /// QUORUM_LOST is the most severe event this class emits (CRITICAL) and was the least emittable.
+    /// A cluster that has gone PASSIVE cannot commit through consensus and therefore cannot sustain a
+    /// leader lease, so `leaderCheck` is false on every node exactly when quorum is lost — the same
+    /// self-defeating shape as {@link #onLeaderChange}'s LEADER_LOST branch and
+    /// {@link #onConfirmedDeparture}.
+    ///
+    /// QUORUM_ESTABLISHED is un-gated for a second, independent reason: quorum forms BEFORE a leader is
+    /// elected, so the gate drops the recovery notice at the one moment it is guaranteed to be false.
+    /// Un-gating the loss while leaving the recovery gated would be worse than fixing neither — an
+    /// operator would see the cluster enter "quorum lost" and never see it leave, a permanently red
+    /// signal that trains its own audience to ignore it. **A failure signal is only usable if its
+    /// matching recovery signal is at least as reachable.**
+    ///
+    /// Quorum state is genuinely a per-node observation, not a cluster fact: a node partitioned away
+    /// from the majority sees PASSIVE while the majority side sees ACTIVE, and each node is the only
+    /// authority on its own consensus participation. `emitLocal` is therefore the semantically correct
+    /// path here, matching the `SelfDrainInitiated` per-node contract rather than merely a workaround.
+    ///
+    /// Per-node duplicate suppression is unchanged and still applies: `advanceSequence` drops
+    /// duplicate/out-of-order notifications on this node before any emit. Cross-node duplication is
+    /// bounded by cluster size, per the {@link #onConfirmedDeparture} contract, and `observedBy` names
+    /// the emitter.
     @Contract
     public void onQuorumStateChange(ClusterStateNotification event) {
         if (!event.advanceSequence(quorumSequence)) {
@@ -504,11 +1241,43 @@ public final class ClusterEventAggregator {
         }
 
         switch (event.state()) {
-            case ACTIVE -> emitAsLeader(new QuorumEstablished(hlcClock.now(),
-                                                              Severity.INFO,
-                                                              "Quorum established",
-                                                              Map.of()));
-            case PASSIVE -> emitAsLeader(new QuorumLost(hlcClock.now(), Severity.CRITICAL, "Quorum lost", Map.of()));
+            case ACTIVE -> {
+                // The recovery line is NOT decoration. This class nominates the local log as the
+                // surface that survives a leaderless cluster, and on that surface the pair must be
+                // complete: without this, an operator reading logs sees "Quorum lost" and never sees
+                // it restored — the same latched-red failure the un-gating of QUORUM_ESTABLISHED
+                // exists to prevent, reached on a different surface.
+                LOG.info("Quorum established on {} — consensus available", selfNode.id());
+                emitLocal(new QuorumEstablished(hlcClock.now(),
+                                                Severity.INFO,
+                                                "Quorum established",
+                                                Map.of("observedBy", selfNode.id())));
+            }
+            case PASSIVE -> {
+                if (selfCommandedDrain.get().getAsBoolean()) {
+                    // #2014: the leader COMMANDED this node to drain and its own drain took consensus passive.
+                    // Planned work. A REAL quorum loss on a survivor, or a QUORUM_LOSS self-drain, never gets here.
+                    LOG.info("Node {} went passive because it is draining by command — planned, not quorum loss",
+                             selfNode.id());
+
+                    return;
+                }
+
+                if (event.demoted()) {
+                    // #2014: a voter reconfiguration removed this node while the cluster kept its quorum
+                    // (`ClusterStateNotification#demoted`, #1790). Planned work: it is not quorum loss,
+                    // so it neither pages nor needs a recovery event.
+                    LOG.info("Node {} left the electorate by reconfiguration — observing a live quorum", selfNode.id());
+
+                    return;
+                }
+
+                LOG.warn("Quorum lost on {} — consensus unavailable, cluster observability degraded", selfNode.id());
+                emitLocal(new QuorumLost(hlcClock.now(),
+                                         Severity.CRITICAL,
+                                         "Quorum lost",
+                                         Map.of("observedBy", selfNode.id())));
+            }
         }
     }
 
@@ -553,21 +1322,66 @@ public final class ClusterEventAggregator {
     }
 
     /// FSM DEAD-edge failure hook (#210): NODE_FAILED is sourced from the SAME ungated confirmed-death
-    /// edge that drives auto-heal ({@code MembershipFsm.onConfirmedDeparture}), NOT the quorum-gated
+    /// edge that drives auto-heal ({@code MembershipFsm.onConfirmedDeparture}; since #1835 its reachable
+    /// half, {@code MembershipFsm.onReachableDeath}), NOT the quorum-gated
     /// {@link MembershipDecision.NodeRemoved}. On a multi-node cluster a non-leader kill heals (the DEAD
     /// edge fires on every node's FSM) but the `NodeRemoved` decision is dropped by the projector's
     /// `inQuorum` gate / drainer-confined `announced` baseline during the post-kill re-election window,
     /// so NODE_FAILED never reached `/api/events`. The DEAD edge is the reliable signal — the projector
     /// derives `NodeRemoved` FROM it, so it is a strict superset — and whenever the cluster confirms a
-    /// death, the leader emits here. LEADER-gated via {@link #emitAsLeader}: the hook fires on every
-    /// node's FSM but only the leader publishes (no N-way fan-out). Mirrors the NODE_JOINED fix
-    /// (sourced from the ungated transport handshake, not the unreliable membership delta).
+    /// death, every survivor emits here. Mirrors the NODE_JOINED fix (sourced from the ungated
+    /// transport handshake, not the unreliable membership delta).
+    ///
+    /// **UN-gated via {@link #emitLocal} (#926), previously leader-gated.** The leader gate
+    /// deduplicated — one emitter instead of N — and in exchange made the report of a cluster failure
+    /// depend on the cluster electing a leader. Measured over ten days on a five-node cluster: SWIM
+    /// confirmed 8 faulty members, 1,297,717 leader-election lines were logged, and `NodeFailed`
+    /// appeared 0 times. **The observability path failed exactly when the cluster did**, and a consumer
+    /// cannot distinguish that silence from health.
+    ///
+    /// A dedup token is NOT the fix: any token whose scope matches the counted unit must be visible to
+    /// every emitter, which costs at least quorum — and the measured incident ran three of five nodes
+    /// unhealthy, below quorum. It would have been silent in the very incident it is meant to report,
+    /// and would newly bind this path to a coordination outcome it does not otherwise need (the local
+    /// append takes no leader, quorum or consensus). Gating on `leader().isEmpty()` fails for a related
+    /// reason: it makes the leadership view — the least trustworthy input in this incident — the guard
+    /// on the failure path, so a stale `currentLeader()` naming a dead node silences every survivor.
+    ///
+    /// GUARANTEE: **at-least-once per observing core member, per confirmed departure of a member that
+    /// observer's FSM had ever seen reachable** (#1835: `MembershipFsm.onReachableDeath`; a death with no
+    /// such evidence raises the `node-never-joined` operator warning instead), into that
+    /// member's LOCAL partition-0 ring. Deliberately NOT exactly-once and NOT deduplicated. Duplicates
+    /// are bounded, not unbounded — `MembershipFsm.enteredDead` is a fresh-edge fan-out firing once per
+    /// DEAD transition per member FSM — so the ceiling is one event per member confirming the death.
+    /// `details.observedBy` carries the emitting node so consumers can collapse duplicates, and the
+    /// distinct-observer count is itself signal. The `replayingCheck` gate is retained, so snapshot
+    /// replay still does not re-publish history.
+    ///
+    /// The WARN log is the surface that survives everything this contract is about: it needs no leader,
+    /// quorum, replica or network. `/api/events` read-back is NOT claimed here — that read prefers a
+    /// remote replica and can fail while the event sits in the local ring.
     @Contract
     public void onConfirmedDeparture(NodeId departed) {
-        emitAsLeader(new NodeFailed(hlcClock.now(),
-                                    Severity.CRITICAL,
-                                    "Node " + departed.id() + " failed (confirmed departure)",
-                                    Map.of("nodeId", departed.id())));
+        LOG.warn("Node {} failed (confirmed departure), observed by {} — cluster membership degraded",
+                 departed.id(),
+                 selfNode.id());
+        emitLocal(new NodeFailed(hlcClock.now(),
+                                 Severity.CRITICAL,
+                                 "Node " + departed.id() + " failed (confirmed departure)",
+                                 Map.of("nodeId", departed.id(), "observedBy", selfNode.id())));
+    }
+
+    /// A confirmed departure this node saw ANNOUNCED (an operator or controller drain, #2014). The stream
+    /// keeps the record — a departure is history — but as an INFO `NodeLeft`, not a CRITICAL `NodeFailed`:
+    /// a planned drain or replacement must not page. Same un-gated, per-observer contract as
+    /// [`#onConfirmedDeparture`]; an UNPLANNED death never reaches this method.
+    @Contract
+    public void onAnnouncedDeparture(NodeId departed) {
+        LOG.info("Node {} departed gracefully (announced drain), observed by {}", departed.id(), selfNode.id());
+        emitLocal(new NodeLeft(hlcClock.now(),
+                               Severity.INFO,
+                               "Node " + departed.id() + " departed (announced drain)",
+                               Map.of("nodeId", departed.id(), "observedBy", selfNode.id(), "cause", "DrainRequested")));
     }
 
     /// Departure-push overrun sink (issue #427, D4). The gracefully-departing node reports the chunks
@@ -595,6 +1409,29 @@ public final class ClusterEventAggregator {
                       String.valueOf(keysAtRisk),
                       "sampleKeys",
                       String.join(",", sampleKeys));
+    }
+
+    /// #1652 — community mint and lifecycle-state edges, projected from the committed `CommunityValue`
+    /// write by [CommunityLifecycleEvents]. Every node sees the commit; only the owner publishes
+    /// (guarantees.md row 14b).
+    @Contract
+    public void onCommunityPut(ValuePut<CommunityKey, CommunityValue> event) {
+        CommunityLifecycleEvents.fromCommunityPut(hlcClock::now,
+                                                  event.cause().key().communityId(),
+                                                  event.oldValue(),
+                                                  event.cause().value())
+                                .forEach(this::emit);
+    }
+
+    /// #1652 — community roster joins and leaves, projected from the committed `GovernorAnnouncementValue`
+    /// write by [CommunityLifecycleEvents]. Owner-gated like [#onCommunityPut].
+    @Contract
+    public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> event) {
+        CommunityLifecycleEvents.fromRosterPut(hlcClock::now,
+                                               event.cause().key().communityId(),
+                                               event.oldValue(),
+                                               event.cause().value())
+                                .forEach(this::emit);
     }
 
     @Contract
@@ -647,19 +1484,54 @@ public final class ClusterEventAggregator {
                                   buildFailedMetadata(artifact, nodeId, reason, durationMs)));
     }
 
+    /// #1573: every committed automatic rollback, CRITICAL, with its evidence. Leader-gated
+    /// ([#emitAsLeader]), not owner-gated: the rollback is decided and committed on the leader only, so
+    /// under the owner gate the event was lost whenever another node owned the cluster-events partition.
+    @Contract
+    public void onAutoRollback(RollbackEvent.AutoRollbackExecuted executed) {
+        emitAsLeader(new AutoRollback(hlcClock.now(),
+                                      Severity.CRITICAL,
+                                      "Automatic rollback of " + executed.failedArtifact().asString()
+                                     + " to " + executed.targetVersion().withQualifier(),
+                                      autoRollbackDetails(executed)));
+    }
+
+    private static Map<String, String> autoRollbackDetails(RollbackEvent.AutoRollbackExecuted executed) {
+        var details = new HashMap<String, String>();
+
+        details.put("artifact",
+                    executed.failedArtifact().base().asString());
+        details.put("from",
+                    executed.failedArtifact().version().withQualifier());
+        details.put("to",
+                    executed.targetVersion().withQualifier());
+        details.put("rollbackNumber",
+                    String.valueOf(executed.rollbackNumber()));
+        details.put("windowMs",
+                    String.valueOf(executed.windowMs()));
+        details.put("requestId", executed.requestId());
+        executed.defectsPerHost()
+                .forEach((node, defects) -> details.put("defects." + node.id(),
+                                                        String.valueOf(defects)));
+
+        return Map.copyOf(details);
+    }
+
+    /// #1573: produced by the leader's all-instances-failed detector only, so it is leader-gated for
+    /// the same reason as [#onAutoRollback].
     @Contract
     public void onSliceFailure(SliceFailureEvent.AllInstancesFailed event) {
-        emit(new SliceFailure(hlcClock.now(),
-                              Severity.CRITICAL,
-                              "All instances of " + event.artifact().asString()
-                             + ":" + event.method().name()
-                             + " failed",
-                              Map.of("artifact",
-                                     event.artifact().asString(),
-                                     "method",
-                                     event.method().name(),
-                                     "attemptedNodes",
-                                     String.valueOf(event.attemptedNodes().size()))));
+        emitAsLeader(new SliceFailure(hlcClock.now(),
+                                      Severity.CRITICAL,
+                                      "All instances of " + event.artifact().asString()
+                                     + ":" + event.method().name()
+                                     + " failed",
+                                      Map.of("artifact",
+                                             event.artifact().asString(),
+                                             "method",
+                                             event.method().name(),
+                                             "attemptedNodes",
+                                             String.valueOf(event.attemptedNodes().size()))));
     }
 
     @Contract
@@ -794,27 +1666,483 @@ public final class ClusterEventAggregator {
     }
 
     @Contract
-    public void onBackupCreated(OperationalEvent.BackupCreated event) {
-        emit(new BackupCreated(hlcClock.now(),
-                               Severity.INFO,
-                               "Backup created: " + event.commitId(),
-                               Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
-    }
-
-    @Contract
-    public void onBackupRestored(OperationalEvent.BackupRestored event) {
-        emit(new BackupRestored(hlcClock.now(),
-                                Severity.WARNING,
-                                "Backup restored: " + event.commitId(),
-                                Map.of("commitId", event.commitId(), "requestedBy", event.requestedBy())));
-    }
-
-    @Contract
     public void onBlueprintDeployed(OperationalEvent.BlueprintDeployed event) {
         emit(new BlueprintDeployed(hlcClock.now(),
                                    Severity.INFO,
                                    "Blueprint deployed: " + event.artifactCoords(),
                                    Map.of("artifactCoords", event.artifactCoords(), "requestedBy", event.requestedBy())));
+    }
+
+    @Contract
+    public void onStreamFailoverRefused(OperationalEvent.StreamFailoverRefused event) {
+        emit(new StreamFailoverRefused(hlcClock.now(),
+                                       Severity.CRITICAL,
+                                       "Stream " + event.stream()
+                                      + "[" + event.partition()
+                                      + "] has no owner: owner " + event.owner()
+                                      + " is not live and no in-sync replica " + event.isr()
+                                      + " is live",
+                                       streamFailoverDetails(event.stream(),
+                                                             event.partition(),
+                                                             event.owner(),
+                                                             event.isr(),
+                                                             event.live(),
+                                                             event.reason(),
+                                                             event.eventId())));
+    }
+
+    @Contract
+    public void onStreamFailoverResolved(OperationalEvent.StreamFailoverResolved event) {
+        emit(new StreamFailoverResolved(hlcClock.now(),
+                                        Severity.INFO,
+                                        "Stream " + event.stream()
+                                       + "[" + event.partition()
+                                       + "] has an owner again: " + event.owner(),
+                                        streamFailoverDetails(event.stream(),
+                                                              event.partition(),
+                                                              event.owner(),
+                                                              event.isr(),
+                                                              event.live(),
+                                                              event.reason(),
+                                                              event.eventId())));
+    }
+
+    @Contract
+    public void onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum event) {
+        emit(new StreamIsrBelowMinimum(hlcClock.now(),
+                                       Severity.WARNING,
+                                       "Stream " + event.stream()
+                                      + "[" + event.partition()
+                                      + "] refuses acknowledged publishes: in-sync replicas " + event.isr()
+                                      + " are fewer than the confirmation factor " + event.confirmationFactor(),
+                                       streamIsrDetails(event.stream(),
+                                                        event.partition(),
+                                                        event.owner(),
+                                                        event.isr(),
+                                                        event.fenced(),
+                                                        event.confirmationFactor(),
+                                                        event.eventId())));
+    }
+
+    @Contract
+    public void onStreamIsrRestored(OperationalEvent.StreamIsrRestored event) {
+        emit(new StreamIsrRestored(hlcClock.now(),
+                                   Severity.INFO,
+                                   "Stream " + event.stream()
+                                  + "[" + event.partition()
+                                  + "] accepts acknowledged publishes again: in-sync replicas " + event.isr(),
+                                   streamIsrDetails(event.stream(),
+                                                    event.partition(),
+                                                    event.owner(),
+                                                    event.isr(),
+                                                    event.fenced(),
+                                                    event.confirmationFactor(),
+                                                    event.eventId())));
+    }
+
+    /// #1723: a scheduled task has a fire whose outcome is unknown. Throttled per task to one event per
+    /// [#EVENT_THROTTLE_MS]: an UNKNOWN that arrives inside the window is HELD, and [#announceHeldScheduledOutcomes]
+    /// publishes it once the window has closed IF the outcome is still unknown by then. One that resolved meanwhile
+    /// is never announced, nor is its RESTORED (see [#onScheduledTaskOutcomeRestored]).
+    @Contract
+    public void onScheduledTaskOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
+            return;
+        }
+
+        var key = event.key();
+        var window = admit(scheduledOutcomeThrottle, key);
+        var entry = new ScheduledOutcome(event, window.admitted());
+        var previous = scheduledOutcomes.putIfAbsent(key, entry);
+
+        if (previous != null) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskOutcomeUnknown for {} repeats an outcome already tracked",
+                      key);
+
+            return;
+        }
+
+        if (window.admitted()) {
+            emitScheduledOutcomeUnknown(event, window.suppressedBefore());
+        } else {
+            LOG.debug("ClusterEventAggregator: holding throttled ScheduledTaskOutcomeUnknown for {}", key);
+        }
+    }
+
+    /// #1723: the unknown fire was answered late. Announced only if its UNKNOWN was: a RESTORED with no visible UNKNOWN
+    /// would be an all-clear for a condition the operator never saw. Not throttled, since it follows a published event.
+    @Contract
+    public void onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
+            return;
+        }
+
+        var previous = scheduledOutcomes.remove(event.key());
+
+        if (previous == null || !previous.visible()) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskOutcomeRestored for {} has no published UNKNOWN; not announced",
+                      event.key());
+
+            return;
+        }
+
+        var unknown = previous.unknown();
+
+        emit(new ClusterEvent.ScheduledTaskOutcomeRestored(hlcClock.now(),
+                                                           Severity.INFO,
+                                                           restoredSummary(event),
+                                                           scheduledOutcomeDetails(event.task(),
+                                                                                   event.node(),
+                                                                                   unknown.fireAt(),
+                                                                                   event.eventId(),
+                                                                                   Map.of("outcome",
+                                                                                          event.outcome(),
+                                                                                          "reason",
+                                                                                          event.reason(),
+                                                                                          "late",
+                                                                                          String.valueOf(event.late())))));
+    }
+
+    private static String restoredSummary(OperationalEvent.ScheduledTaskOutcomeRestored event) {
+        var task = "Scheduled task " + event.task();
+
+        return switch (event.reason()) {
+            case OperationalEvent.ScheduledTaskOutcomeRestored.LATE_ANSWER -> task + " resolved its unknown outcome: the late response says it " + event.outcome();
+            case OperationalEvent.ScheduledTaskOutcomeRestored.NODE_DEPARTED -> task + " is closed: the node that fired it left the cluster while its outcome was unknown";
+            case OperationalEvent.ScheduledTaskOutcomeRestored.TASK_REMOVED -> task + " was removed while its outcome was unknown";
+            default -> task + " is known again: a later fire completed and " + event.outcome();
+        };
+    }
+
+    /// #1206: two artifacts serve one route. Derived from the committed route table on every node; `emit` publishes it on the
+    /// cluster-events owner only, once. The event id is a function of the route and the claimants, so two copies read as one.
+    @Contract
+    public void onRoutePrefixCollision(OperationalEvent.RoutePrefixCollision event) {
+        emit(new ClusterEvent.RoutePrefixCollision(hlcClock.now(),
+                                                   Severity.WARNING,
+                                                   "Route " + event.method()
+                                                  + " " + event.prefix()
+                                                  + " is claimed by " + String.join(" and ", event.artifacts())
+                                                  + ": one of them serves nothing (the lexically smaller coordinate wins)",
+                                                   routeCollisionDetails(event.method(),
+                                                                         event.prefix(),
+                                                                         event.artifacts(),
+                                                                         event.eventId())));
+    }
+
+    /// #1206: the route has one claimant again.
+    @Contract
+    public void onRoutePrefixCollisionCleared(OperationalEvent.RoutePrefixCollisionCleared event) {
+        emit(new ClusterEvent.RoutePrefixCollisionCleared(hlcClock.now(),
+                                                          Severity.INFO,
+                                                          "Route " + event.method()
+                                                         + " " + event.prefix()
+                                                         + " is no longer claimed by more than one artifact",
+                                                          routeCollisionDetails(event.method(),
+                                                                                event.prefix(),
+                                                                                event.artifacts(),
+                                                                                event.eventId())));
+    }
+
+    private static Map<String, String> routeCollisionDetails(String method,
+                                                             String prefix,
+                                                             List<String> artifacts,
+                                                             String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "method",
+                      method,
+                      "prefix",
+                      prefix,
+                      "artifacts",
+                      String.join(",", artifacts));
+    }
+
+    /// #1930: a scheduled fire is still in flight when its next tick arrives. Raised by the node whose scheduler holds the
+    /// fire, ONCE per fire; throttled per task and node to one event per [#EVENT_THROTTLE_MS]. Published through
+    /// [#emitLocal]: the fact is that node's own, so the events-owner gate (which would drop it on every node but one) does
+    /// not apply. A held event that is still in flight when the window closes is announced by [#announceHeldFires].
+    @Contract
+    public void onScheduledTaskFireHeld(OperationalEvent.ScheduledTaskFireHeld event) {
+        if (replayingCheck.getAsBoolean()) {
+            return;
+        }
+
+        var key = event.key();
+        var window = admit(fireHeldThrottle, key);
+        var previous = heldFires.putIfAbsent(key, new HeldFire(event, window.admitted()));
+
+        if (previous != null) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskFireHeld for {} repeats a fire already tracked", key);
+
+            return;
+        }
+
+        if (window.admitted()) {
+            emitFireHeld(event, window.suppressedBefore());
+        } else {
+            LOG.debug("ClusterEventAggregator: holding throttled ScheduledTaskFireHeld for {}", key);
+        }
+    }
+
+    /// #1930: the held fire resolved. Announced only if its held event was: a release for something the operator was never
+    /// told is not news.
+    @Contract
+    public void onScheduledTaskFireReleased(OperationalEvent.ScheduledTaskFireReleased event) {
+        if (replayingCheck.getAsBoolean()) {
+            return;
+        }
+
+        var previous = heldFires.remove(event.key());
+
+        if (previous == null || !previous.visible()) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskFireReleased for {} has no published hold; not announced",
+                      event.key());
+
+            return;
+        }
+
+        emitLocal(new ClusterEvent.ScheduledTaskFireReleased(hlcClock.now(),
+                                                             Severity.INFO,
+                                                             "Scheduled task " + event.task()
+                                                            + " is firing again: the fire that held it resolved (" + event.outcome()
+                                                            + ") after " + event.inFlightMs()
+                                                            + " ms",
+                                                             scheduledOutcomeDetails(event.task(),
+                                                                                     event.node(),
+                                                                                     event.fireAt(),
+                                                                                     event.eventId(),
+                                                                                     Map.of("inFlightMs",
+                                                                                            Long.toString(event.inFlightMs()),
+                                                                                            "outcome",
+                                                                                            event.outcome()))));
+    }
+
+    /// Publishes every held fire the window held back whose window has since closed and which is still in flight (still in
+    /// the map). Run once per window through [#evictIdleThrottleWindows].
+    public Unit announceHeldFires() {
+        var now = hlcClock.now().physicalMillis();
+
+        heldFires.entrySet()
+                 .stream()
+                 .filter(entry -> !entry.getValue()
+                                        .visible())
+                 .filter(entry -> windowClosed(fireHeldThrottle.get(entry.getKey()),
+                                               now))
+                 .map(Map.Entry::getKey)
+                 .toList()
+                 .forEach(this::announceHeldFire);
+
+        return Unit.unit();
+    }
+
+    private void announceHeldFire(String key) {
+        var promoted = new AtomicReference<HeldFire>();
+
+        heldFires.computeIfPresent(key,
+                                   (_, held) -> held.visible()
+                                                ? held
+                                                : promoteFire(held, promoted));
+        Option.option(promoted.get()).onPresent(entry -> emitFireHeld(entry.event(),
+                                                                      admit(fireHeldThrottle, key).suppressedBefore()));
+    }
+
+    private static HeldFire promoteFire(HeldFire held, AtomicReference<HeldFire> promoted) {
+        var visible = new HeldFire(held.event(), true);
+
+        promoted.set(visible);
+
+        return visible;
+    }
+
+    private void emitFireHeld(OperationalEvent.ScheduledTaskFireHeld event, long suppressedSince) {
+        emitLocal(new ClusterEvent.ScheduledTaskFireHeld(hlcClock.now(),
+                                                         Severity.WARNING,
+                                                         "Scheduled task " + event.task()
+                                                        + " is not firing: its previous fire is still in flight (" + event.inFlightMs()
+                                                        + " ms) and each tick is skipped until it resolves",
+                                                         scheduledOutcomeDetails(event.task(),
+                                                                                 event.node(),
+                                                                                 event.fireAt(),
+                                                                                 event.eventId(),
+                                                                                 Map.of("inFlightMs",
+                                                                                        Long.toString(event.inFlightMs()),
+                                                                                        "suppressedSince",
+                                                                                        Long.toString(suppressedSince)))));
+    }
+
+    /// Publishes every UNKNOWN the window held back whose window has since closed and whose outcome is still unknown:
+    /// a held entry still in the map has not been resolved. Run once per window by `AetherNode` (through
+    /// [#evictIdleThrottleWindows]), so a held UNKNOWN is announced within about two windows.
+    public Unit announceHeldScheduledOutcomes() {
+        var now = hlcClock.now().physicalMillis();
+
+        scheduledOutcomes.entrySet()
+                         .stream()
+                         .filter(entry -> !entry.getValue()
+                                                .visible())
+                         .filter(entry -> windowClosed(scheduledOutcomeThrottle.get(entry.getKey()),
+                                                       now))
+                         .map(Map.Entry::getKey)
+                         .toList()
+                         .forEach(this::announceHeld);
+
+        return Unit.unit();
+    }
+
+    // RET-06: `window` is the nullable value of a JDK map lookup (absent key → null), a framework boundary.
+    @SuppressWarnings("JBCT-RET-06")
+    private static boolean windowClosed(ThrottleWindow window, long now) {
+        return window == null || !window.openAt(now);
+    }
+
+    private void announceHeld(String key) {
+        var promoted = new AtomicReference<ScheduledOutcome>();
+
+        scheduledOutcomes.computeIfPresent(key,
+                                           (_, held) -> held.visible()
+                                                        ? held
+                                                        : promote(held, promoted));
+        Option.option(promoted.get()).onPresent(entry -> emitScheduledOutcomeUnknown(entry.unknown(),
+                                                                                     admit(scheduledOutcomeThrottle, key).suppressedBefore()));
+    }
+
+    private static ScheduledOutcome promote(ScheduledOutcome held, AtomicReference<ScheduledOutcome> promoted) {
+        var visible = new ScheduledOutcome(held.unknown(), true);
+
+        promoted.set(visible);
+
+        return visible;
+    }
+
+    private void emitScheduledOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown event, long suppressedSince) {
+        emit(new ClusterEvent.ScheduledTaskOutcomeUnknown(hlcClock.now(),
+                                                          Severity.WARNING,
+                                                          "Scheduled task " + event.task()
+                                                         + " has a fire whose outcome is unknown: no response arrived in"
+                                                         + " time, so it is not known whether the work ran",
+                                                          scheduledOutcomeDetails(event.task(),
+                                                                                  event.node(),
+                                                                                  event.fireAt(),
+                                                                                  event.eventId(),
+                                                                                  Map.of("suppressedSince",
+                                                                                         Long.toString(suppressedSince)))));
+    }
+
+    private static Map<String, String> scheduledOutcomeDetails(String task,
+                                                               String node,
+                                                               long fireAt,
+                                                               String eventId,
+                                                               Map<String, String> extra) {
+        var details = new HashMap<>(extra);
+
+        details.put(ClusterEventIdentity.EVENT_ID, eventId);
+        details.put("task", task);
+        details.put("fireAt", Long.toString(fireAt));
+        if (!node.isEmpty()) {
+            details.put("node", node);
+        }
+
+        return Map.copyOf(details);
+    }
+
+    /// Taste: WARNING. The operator asked for a lower factor and the system will not do it; nothing is lost and
+    /// nothing stalls by this event itself.
+    @Contract
+    public void onStreamConfigChangeNotApplied(OperationalEvent.StreamConfigChangeNotApplied event) {
+        emit(new StreamConfigChangeNotApplied(hlcClock.now(),
+                                              Severity.WARNING,
+                                              "Stream " + event.stream()
+                                             + " keeps confirmation factor " + event.effectiveConfirmationFactor()
+                                             + ": the committed change to " + event.requestedConfirmationFactor()
+                                             + " is not applied (" + event.reason()
+                                             + ")",
+                                              Map.of(ClusterEventIdentity.EVENT_ID,
+                                                     event.eventId(),
+                                                     "stream",
+                                                     event.stream(),
+                                                     "requestedConfirmationFactor",
+                                                     String.valueOf(event.requestedConfirmationFactor()),
+                                                     "effectiveConfirmationFactor",
+                                                     String.valueOf(event.effectiveConfirmationFactor()),
+                                                     "reason",
+                                                     event.reason())));
+    }
+
+    @Contract
+    public void onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted event) {
+        emit(new StreamLineageRestarted(hlcClock.now(),
+                                        Severity.INFO,
+                                        "Stream " + event.stream()
+                                       + "[" + event.partition()
+                                       + "] began a new epoch " + event.newEpoch()
+                                       + " on its owner " + event.owner()
+                                       + " at offset " + event.startOffset()
+                                       + ": its ring was rebuilt, consumers read from that offset again",
+                                        Map.of("stream",
+                                               event.stream(),
+                                               "partition",
+                                               String.valueOf(event.partition()),
+                                               "owner",
+                                               event.owner(),
+                                               "oldEpoch",
+                                               event.oldEpoch(),
+                                               "newEpoch",
+                                               event.newEpoch(),
+                                               "startOffset",
+                                               String.valueOf(event.startOffset()))));
+    }
+
+    private static Map<String, String> streamIsrDetails(String stream,
+                                                        int partition,
+                                                        String owner,
+                                                        List<String> isr,
+                                                        List<String> fenced,
+                                                        int confirmationFactor,
+                                                        String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "stream",
+                      stream,
+                      "partition",
+                      String.valueOf(partition),
+                      "owner",
+                      owner,
+                      "isr",
+                      String.join(",", isr),
+                      "fenced",
+                      String.join(",", fenced),
+                      "confirmationFactor",
+                      String.valueOf(confirmationFactor));
+    }
+
+    private static Map<String, String> streamFailoverDetails(String stream,
+                                                             int partition,
+                                                             String owner,
+                                                             List<String> isr,
+                                                             List<String> live,
+                                                             String reason,
+                                                             String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "stream",
+                      stream,
+                      "partition",
+                      String.valueOf(partition),
+                      "owner",
+                      owner,
+                      "isr",
+                      String.join(",", isr),
+                      "live",
+                      String.join(",", live),
+                      "reason",
+                      reason);
     }
 
     @Contract
@@ -825,20 +2153,87 @@ public final class ClusterEventAggregator {
                                   Map.of("artifactId", event.artifactId(), "requestedBy", event.requestedBy())));
     }
 
+    /// #1777 R1b: every node derives this from the committed change record, so it goes through the owner-gated [#emit]
+    /// and is published at most once (missed if the owner cannot publish at that moment).
     @Contract
-    public void onGenerationChanged(OperationalEvent.GenerationChanged event) {
-        emitAsLeader(new GenerationChanged(hlcClock.now(),
-                                           Severity.INFO,
-                                           "Generation epoch advanced " + event.oldEpoch()
-                                          + " -> " + event.newEpoch()
-                                          + " (" + event.reason()
-                                          + ")",
-                                           Map.of("oldEpoch",
-                                                  event.oldEpoch(),
-                                                  "newEpoch",
-                                                  event.newEpoch(),
-                                                  "reason",
-                                                  event.reason())));
+    public void onDhtReplicationUnsettled(OperationalEvent.DhtReplicationUnsettled event) {
+        emit(new ClusterEvent.DhtReplicationUnsettled(hlcClock.now(),
+                                                      Severity.WARNING,
+                                                      "DHT replication change " + event.changeVersion()
+                                                     + " (RF " + event.replicationFactor()
+                                                     + ", CF " + event.confirmationFactor()
+                                                     + ") is " + event.reason()
+                                                     + "; the stricter transitional quorums stay in force",
+                                                      Map.of("changeVersion",
+                                                             String.valueOf(event.changeVersion()),
+                                                             "replicationFactor",
+                                                             String.valueOf(event.replicationFactor()),
+                                                             "confirmationFactor",
+                                                             String.valueOf(event.confirmationFactor()),
+                                                             "stage",
+                                                             event.stage(),
+                                                             "since",
+                                                             String.valueOf(event.since()),
+                                                             "reason",
+                                                             event.reason())));
+    }
+
+    @Contract
+    public void onDhtReplicationSettled(OperationalEvent.DhtReplicationSettled event) {
+        emit(new ClusterEvent.DhtReplicationSettled(hlcClock.now(),
+                                                    Severity.INFO,
+                                                    "DHT replication change " + event.changeVersion()
+                                                   + " is no longer unsettled: " + event.reason(),
+                                                    Map.of("changeVersion",
+                                                           String.valueOf(event.changeVersion()),
+                                                           "replicationFactor",
+                                                           String.valueOf(event.replicationFactor()),
+                                                           "confirmationFactor",
+                                                           String.valueOf(event.confirmationFactor()),
+                                                           "since",
+                                                           String.valueOf(event.since()),
+                                                           "reason",
+                                                           event.reason())));
+    }
+
+    /// #1777 (owner rule): a per-node fact raised by the stale writer itself, so it bypasses the owner gate
+    /// ([#emitLocal]); published at most once per episode.
+    @Contract
+    public void onDhtWriterStale(OperationalEvent.DhtWriterStale event) {
+        emitLocal(new ClusterEvent.DhtWriterStale(hlcClock.now(),
+                                                  Severity.WARNING,
+                                                  "DHT writes of node " + event.nodeId()
+                                                 + " have been refused for over 5 minutes as stamped under replication change " + event.fence()
+                                                 + "; the node has not adopted the cluster's newer change",
+                                                  writerStaleDetails(event.nodeId(), event.fence(), event.since())));
+    }
+
+    @Contract
+    public void onDhtWriterStaleResolved(OperationalEvent.DhtWriterStaleResolved event) {
+        emitLocal(new ClusterEvent.DhtWriterStaleResolved(hlcClock.now(),
+                                                          Severity.INFO,
+                                                          "DHT writes of node " + event.nodeId()
+                                                         + " are stamped under the cluster's replication change again",
+                                                          writerStaleDetails(event.nodeId(),
+                                                                             event.fence(),
+                                                                             event.since())));
+    }
+
+    private static Map<String, String> writerStaleDetails(String nodeId, long fence, long since) {
+        return Map.of("nodeId", nodeId, "fence", String.valueOf(fence), "since", String.valueOf(since));
+    }
+
+    /// #1996: request frames the transport dropped at an offline-buffer flush because their callers had given up. The
+    /// transport has already logged the drop, so this only emits, through the same per-`(code, subject)` throttle as
+    /// every operator warning. A reattach flapping inside the window folds into `suppressedSince`; the exact total is
+    /// the `quic_offline_expired_total` metric.
+    @Contract
+    public void onOfflineFramesExpired(NetworkServiceMessage.OfflineFramesExpired event) {
+        onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
+                                                          event.nodeId().id(),
+                                                          "Dropped " + event.count()
+                                                         + " buffered request frame(s) for peer " + event.nodeId().id()
+                                                         + " on reattach, their callers had already given up: " + event.byPath()));
     }
 
     @Contract

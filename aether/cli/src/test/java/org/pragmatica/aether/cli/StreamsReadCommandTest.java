@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
 import org.junit.jupiter.api.Test;
@@ -15,9 +14,9 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 /// (unblocks RC1-blocker #1 in `aether/docs/internal/audits/integration-test-audit-2026-05-21.md` §2.2).
 /// Verifies that the picocli wiring binds positional + optional fields correctly so the
 /// command can fetch the now-catalog-form `STREAM_READ` with the expected path + query-string
-/// shape. `address` accepts a bare name (client-side default to `system:name:1.0.0` — see
-/// `AetherCli.StreamCommand#resolveStreamAddress`) or a full `namespace:stream:version` address;
-/// this test pins the raw picocli binding, not the resolution, so a bare name is enough here.
+/// shape. `address` must be a full `namespace:stream:version` address — a bare name is refused at
+/// resolution (#1044, see `AetherCli.StreamCommand#resolveStreamAddress`); this test pins the raw
+/// picocli binding, not the resolution, so a bare name is enough here.
 class StreamsReadCommandTest {
 
     @Test

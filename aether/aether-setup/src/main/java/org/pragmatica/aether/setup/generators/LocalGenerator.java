@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.setup.generators;
 
 import java.nio.file.Path;
@@ -161,7 +160,7 @@ public final class LocalGenerator implements Generator {
     private String formatNodeStart(int index, int mgmtPort, int clusterPort, String heap, String gc, String peerList) {
         return String.format("""
             echo "Starting node %d (management: %d, cluster: %d)..."
-            java -Xmx%s -XX:+Use%s \\
+            java -XX:+ExitOnOutOfMemoryError -Xmx%s -XX:+Use%s \\
                 -DNODE_ID=%d \\
                 -DMANAGEMENT_PORT=%d \\
                 -DCLUSTER_PORT=%d \\
@@ -222,6 +221,9 @@ public final class LocalGenerator implements Generator {
     private String generateStatusScript(AetherConfig config) {
         var mgmtPort = config.cluster().ports().management();
         var lastNode = config.cluster().nodes() - 1;
+        var scheme = config.tlsEnabled()
+                     ? "https"
+                     : "http";
 
         return String.format("""
             #!/bin/bash
@@ -240,7 +242,7 @@ public final class LocalGenerator implements Generator {
                 if [ -f "$PID_FILE" ]; then
                     PID=$(cat "$PID_FILE")
                     if kill -0 "$PID" 2>/dev/null; then
-                        HEALTH=$(curl -s http://localhost:$PORT/health 2>/dev/null || echo "unreachable")
+                        HEALTH=$(curl -sk %s://localhost:$PORT/health/ready 2>/dev/null || echo "unreachable")
                         echo "running (PID: $PID) - $HEALTH"
                     else
                         echo "dead (stale PID file)"
@@ -251,7 +253,8 @@ public final class LocalGenerator implements Generator {
             done
             """,
                              lastNode,
-                             mgmtPort);
+                             mgmtPort,
+                             scheme);
     }
 
     @SuppressWarnings("JBCT-SEQ-01")

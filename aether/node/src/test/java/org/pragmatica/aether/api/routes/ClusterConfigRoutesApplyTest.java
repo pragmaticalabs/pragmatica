@@ -19,6 +19,7 @@ import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigResponse;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -71,6 +72,7 @@ class ClusterConfigRoutesApplyTest {
         [source.hetzner]
         type = "cloud"
         provider = "hetzner"
+        credentials = "hcloud-token"
         region = "eu-central"
 
         [source.hetzner.core]
@@ -98,13 +100,13 @@ class ClusterConfigRoutesApplyTest {
         /// which is what BootstrapModule's own comment ("Bootstrap replaces it with the real
         /// per-source spec at formation") always claimed happened.
         @Test
-        void handleApplyConfig_storedBlankTomlSeed_replacesSeedWithFullOperatorTopology() {
+        void handleApplyConfig_storedBootstrapSeed_replacesSeedWithFullOperatorTopology() {
             var store = storeWith(bootstrapSeed());
 
             var response = applySucceeds(store, new ApplyConfigRequest(OPERATOR_TOML, 0));
             var committed = committedConfig(store);
 
-            assertThat(committed.tomlContent()).isEqualTo(OPERATOR_TOML);
+            assertThat(committed.tomlContent()).isEqualTo(Option.some(OPERATOR_TOML));
             assertThat(committed.desiredTopology()).containsExactlyInAnyOrder(CORE_ENTRY, WORKER_ENTRY);
             assertThat(committed.configVersion()).as("seed version + 1, so the successor fence accepts the write")
                                                  .isEqualTo(2);
@@ -114,7 +116,7 @@ class ClusterConfigRoutesApplyTest {
         /// The operator-visible symptom: without the worker entry in committed state,
         /// `reconcileWorkerTopology` has nothing to act on and no cloud worker is ever created.
         @Test
-        void handleApplyConfig_storedBlankTomlSeed_carriesWorkerCountIntoClusterState() {
+        void handleApplyConfig_storedBootstrapSeed_carriesWorkerCountIntoClusterState() {
             var store = storeWith(bootstrapSeed());
 
             applySucceeds(store, new ApplyConfigRequest(OPERATOR_TOML, 0));
@@ -125,23 +127,13 @@ class ClusterConfigRoutesApplyTest {
         /// The seed's placeholder entry (empty source name) must not survive alongside the real one,
         /// or the topology would declare a phantom source.
         @Test
-        void handleApplyConfig_storedBlankTomlSeed_dropsThePlaceholderSourceEntry() {
+        void handleApplyConfig_storedBootstrapSeed_dropsThePlaceholderSourceEntry() {
             var store = storeWith(bootstrapSeed());
 
             applySucceeds(store, new ApplyConfigRequest(OPERATOR_TOML, 0));
 
             assertThat(committedConfig(store).desiredTopology()).noneMatch(entry -> entry.sourceName().isEmpty());
             assertThat(committedConfig(store).deploymentType()).isEqualTo("cloud");
-        }
-
-        @Test
-        void isBootstrapSeed_blankTomlContent_isSeed() {
-            assertThat(ClusterConfigRoutes.isBootstrapSeed(bootstrapSeed())).isTrue();
-        }
-
-        @Test
-        void isBootstrapSeed_realTomlContent_isNotSeed() {
-            assertThat(ClusterConfigRoutes.isBootstrapSeed(committedOperatorConfig(1))).isFalse();
         }
     }
 
@@ -191,7 +183,7 @@ class ClusterConfigRoutesApplyTest {
             var committed = committedConfig(store);
 
             assertThat(committed.clusterName()).isEqualTo("prod");
-            assertThat(committed.tomlContent()).isEqualTo(OPERATOR_TOML);
+            assertThat(committed.tomlContent()).isEqualTo(Option.some(OPERATOR_TOML));
             assertThat(committed.configVersion()).isEqualTo(expectedVersion);
         }
     }
@@ -213,6 +205,25 @@ class ClusterConfigRoutesApplyTest {
             assertThat(response.coreCount()).isEqualTo(3);
         }
 
+        /// #1564 B1: `[replication.cluster_events] confirmation_factor` above the desired core count (3 here) is
+        /// refused at apply, typed, and nothing is committed — instead of committing a config the cluster-events
+        /// registrar can never satisfy.
+        @Test
+        void handleApplyConfig_clusterEventsConfirmationAboveCoreCount_isRefusedAndNothingCommits() {
+            var store = new TestKVStore();
+            var toml = OPERATOR_TOML + """
+
+                [replication.cluster_events]
+                confirmation_factor = 5
+                """;
+
+            var result = apply(store, new ApplyConfigRequest(toml, 0));
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterReplication.ClusterEventsFactorsRefused.class));
+            assertThat(store.get(ClusterConfigKey.CURRENT).isEmpty()).isTrue();
+        }
+
         /// Defect 3. The first-time store used a bare `Put` and reported success unconditionally,
         /// but the successor fence rejects silently — nothing in the apply result reveals the loss.
         /// A write that did not land must be a failure, never a fabricated version and timestamp.
@@ -227,7 +238,7 @@ class ClusterConfigRoutesApplyTest {
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterConfigError.VersionConflict.class));
             assertThat(committedConfig(store).tomlContent()).as("the competing writer's config is what committed")
-                                                            .isEqualTo(OPERATOR_TOML);
+                                                            .isEqualTo(Option.some(OPERATOR_TOML));
         }
     }
 
@@ -254,7 +265,7 @@ class ClusterConfigRoutesApplyTest {
 
             var committed = committedConfig(store);
             assertThat(committed.tomlContent()).as("a rejected apply must leave the previously committed config untouched")
-                                               .isEqualTo(OPERATOR_TOML);
+                                               .isEqualTo(Option.some(OPERATOR_TOML));
             assertThat(committed.configVersion()).isEqualTo(5);
         }
     }
@@ -289,8 +300,7 @@ class ClusterConfigRoutesApplyTest {
     /// The BootstrapModule self-seed exactly as a formed cluster carries it: no TOML, a core-only
     /// topology under an EMPTY source name (the seed predates any source definition), version 1.
     private static ClusterConfigValue bootstrapSeed() {
-        return ClusterConfigValue.clusterConfigValue("",
-                                                     "prod",
+        return ClusterConfigValue.bootstrapSeed("prod",
                                                      "1.0.0",
                                                      List.of(new TopologyEntry("", TopologyEntry.CORE_ROLE, 3)),
                                                      3,
@@ -319,6 +329,7 @@ class ClusterConfigRoutesApplyTest {
     private static Object dispatch(TestKVStore store, Method method, Object[] args) {
         return switch (method.getName()) {
             case "kvStore" -> store;
+            case "isLeader" -> true;
             case "apply" -> applyBatch(store, args);
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
         };
@@ -326,15 +337,22 @@ class ClusterConfigRoutesApplyTest {
 
     @SuppressWarnings("unchecked")
     private static Promise<List<Object>> applyBatch(TestKVStore store, Object[] args) {
-        ((List<KVCommand<AetherKey>>) args[0]).forEach(command -> routeCommand(store, command));
-
-        return Promise.success(List.of());
+        var results = ((List<KVCommand<AetherKey>>) args[0]).stream()
+            .map(command -> routeCommand(store, command)).toList();
+        return Promise.success(results);
     }
 
-    private static void routeCommand(TestKVStore store, KVCommand<AetherKey> command) {
-        if (command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof AetherValue value) {
-            store.applyPut(put.key(), value);
+    private static Object routeCommand(TestKVStore store, KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.LeaderTransaction<?, ?> transaction) {
+            var mutation = transaction.mutations().getFirst();
+            var key = (AetherKey) mutation.key();
+            var value = (AetherValue) mutation.replacement().unwrap();
+            boolean accepted = store.raceWinner.isEmpty() && store.get(key).equals(mutation.expected())
+                && store.isSuccessor(key, value);
+            if (accepted || store.raceWinner.isPresent()) { store.applyPut(key, value); }
+            return new KVCommand.TransactionResult(transaction.transactionId(), accepted);
         }
+        return new KVCommand.TransactionResult("unexpected", false);
     }
 
     private static final class TestKVStore extends KVStore<AetherKey, AetherValue> {
@@ -376,6 +394,15 @@ class ClusterConfigRoutesApplyTest {
             }
 
             return incoming.configVersion() == stored.configVersion() + 1;
+        }
+
+        @Override
+        public <VV> Option<VV> getTyped(org.pragmatica.cluster.state.kvstore.StructuredKey key, Class<VV> type) {
+            if (key == org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE) {
+                return Option.some(type.cast(new org.pragmatica.cluster.state.kvstore.LeaderValue(
+                    new org.pragmatica.consensus.NodeId("core"), 1)));
+            }
+            return Option.option(storage.get(key)).filter(type::isInstance).map(type::cast);
         }
 
         @Override

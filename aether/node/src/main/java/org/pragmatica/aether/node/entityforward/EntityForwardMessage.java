@@ -6,6 +6,7 @@ package org.pragmatica.aether.node.entityforward;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.NoOfflineBuffering;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.serialization.Codec;
 
@@ -18,7 +19,7 @@ import org.pragmatica.serialization.Codec;
 /// derivation, and the disagreement would put a write on the wrong per-key queue — losing the ordering
 /// the forward exists to preserve.
 @Codec
-public sealed interface EntityForwardMessage extends ProtocolMessage {
+public sealed interface EntityForwardMessage extends ProtocolMessage, NoOfflineBuffering {
     /// The FORWARD lane, same as the stream forward pair — this is an owner-forward and shares
     /// that traffic's shape and lifetime. It is a logical lane name, not a routing policy.
     @Override
