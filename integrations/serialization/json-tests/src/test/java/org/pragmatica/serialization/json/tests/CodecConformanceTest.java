@@ -31,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// Pins the generated codecs to the production mapper (Jackson 3 + PragmaticaModule + value-object mixins, see Baseline):
+/// Pins the generated codecs to the production slice-route mapper (Jackson 3 + PragmaticaModule + ValueObjectModule, see Baseline):
 /// identical bytes out, equal values in, and no exception escaping on any input.
 class CodecConformanceTest {
     static final JsonMapper JACKSON = org.pragmatica.serialization.json.tests.Baseline.MAPPER;
@@ -198,7 +198,8 @@ class CodecConformanceTest {
     }
 
     // Value objects decode through their factories: a refused value fails the decode, naming the field and
-    // carrying the factory's cause, while the rest of the input is still read. Jackson builds it unchecked.
+    // carrying the factory's cause, while the rest of the input is still read. The production mapper runs the same
+    // factory (ValueObjectModule) and refuses it too, with the factory's message.
     @org.junit.jupiter.api.Test
     void decode_refusedValueObject_failsWithFieldAndFactoryCause() {
         var json = new String(Ecommerce_OrderConfirmationJsonCodecs.Ecommerce_OrderConfirmationJson.CODEC.encode(Samples.orderConfirmation()),
@@ -212,8 +213,9 @@ class CodecConformanceTest {
                                                                                                                                    && invalid.field().equals("orderId")
                                                                                                                                    && invalid.origin().message().contains("Invalid OrderId")),
                                                                                                                cause.message()));
-        assertTrue(JACKSON.readBytes(json.getBytes(StandardCharsets.UTF_8), Ecommerce.OrderConfirmation.class).isSuccess(),
-                   "Jackson accepts it: the validation is new");
+        JACKSON.readBytes(json.getBytes(StandardCharsets.UTF_8), Ecommerce.OrderConfirmation.class)
+               .onSuccess(value -> Assertions.fail("production mapper accepted: " + value))
+               .onFailure(cause -> assertTrue(cause.message().contains("Invalid OrderId"), cause.message()));
     }
 
     // Owner ruling 2026-10-17: value objects travel as their bare component, map keys included.

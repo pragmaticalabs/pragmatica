@@ -21,6 +21,7 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.NestingKind;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
@@ -32,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
 
@@ -43,6 +45,14 @@ import org.pragmatica.lang.Option;
 final class JsonTypeAnalyzer {
     private static final String OPTION = "org.pragmatica.lang.Option";
     private static final String RESULT = "org.pragmatica.lang.Result";
+    // Generated readers track seen and required fields as bits of one long: field i is `1L << i`, so bits
+    // 0..63 exist and a 65th component would wrap onto bit 0.
+    static final int MAX_COMPONENTS = Long.SIZE;
+
+    // Packages whose annotations Jackson honours; a generated codec would silently ignore them.
+    private static final List<String> JACKSON_ANNOTATION_PACKAGES = List.of("com.fasterxml.jackson.annotation.",
+                                                                            "com.fasterxml.jackson.databind.annotation.",
+                                                                            "tools.jackson.");
 
     private final Elements elements;
     private final Types types;
@@ -66,6 +76,21 @@ final class JsonTypeAnalyzer {
 
     Map<String, JsonType.EnumDefinition> enums() {
         return enums;
+    }
+
+    /// A root's model, or empty when unsupported ([#reason] then says why). A refused root leaves no trace:
+    /// every record and enum definition its analysis added is removed again, so no definition can refer to a
+    /// record that never got one.
+    Option<JsonType> analyzeRoot(TypeMirror type) {
+        var knownRecords = Set.copyOf(records.keySet());
+        var knownEnums = Set.copyOf(enums.keySet());
+
+        return analyze(type).onEmpty(() -> rollback(knownRecords, knownEnums));
+    }
+
+    private void rollback(Set<String> knownRecords, Set<String> knownEnums) {
+        records.keySet().retainAll(knownRecords);
+        enums.keySet().retainAll(knownEnums);
     }
 
     /// The type's model, or empty when unsupported ([#reason] then says why).
@@ -160,19 +185,32 @@ final class JsonTypeAnalyzer {
             return fail(name, "not accessible from package '" + holderPackage + "' where its codec is generated");
         }
 
+        if (element.getKind() != ElementKind.ENUM && element.getKind() != ElementKind.RECORD) {
+            return fail(name,
+                        "neither a record nor an enum (interfaces and sealed hierarchies are left to the fallback)");
+        }
+
+        var jackson = jacksonAnnotation(element);
+
+        if (jackson.isPresent()) {
+            return jackson.flatMap(reason -> fail(name, reason));
+        }
+
         if (element.getKind() == ElementKind.ENUM) {
             enums.computeIfAbsent(name, _ -> enumDefinition(element));
 
             return Option.some(new JsonType.EnumRef(element));
         }
 
-        if (element.getKind() != ElementKind.RECORD) {
-            return fail(name,
-                        "neither a record nor an enum (interfaces and sealed hierarchies are left to the fallback)");
-        }
-
         if (!element.getTypeParameters().isEmpty()) {
             return fail(name, "generic record");
+        }
+
+        if (element.getRecordComponents().size() > MAX_COMPONENTS) {
+            return fail(name,
+                        element.getRecordComponents()
+                               .size()
+                       + " components; generated codecs support at most " + MAX_COMPONENTS);
         }
 
         if (records.containsKey(name) || inProgress.contains(name)) {
@@ -197,10 +235,112 @@ final class JsonTypeAnalyzer {
         }
 
         inProgress.remove(name);
+        var definition = new JsonType.RecordDefinition(element, List.copyOf(components), findFactory(element));
+        // The value-object rule must not depend on where the holder lives (Jackson cannot know it): a value
+        // object whose factory this holder cannot call is left to the fallback, never re-shaped into an object.
+        if (definition.isValueObject() && !isAccessible(definition.factory())) {
+            return fail(name,
+                        "value object factory " + definition.factoryName()
+                       + " is not accessible from package '" + holderPackage
+                       + "' where its codec is generated");
+        }
+
         records.put(name,
-                    new JsonType.RecordDefinition(element, List.copyOf(components), findFactory(element)));
+                    definition.isValueObject() || isAccessible(definition.factory())
+                    ? definition
+                    : new JsonType.RecordDefinition(element, definition.components(), Option.none()));
 
         return Option.some(new JsonType.RecordRef(element));
+    }
+
+    private boolean isAccessible(Option<ExecutableElement> factory) {
+        return factory.map(method -> isAccessible(method.getModifiers(),
+                                                  samePackage((TypeElement) method.getEnclosingElement())))
+                      .or(true);
+    }
+
+    private boolean samePackage(TypeElement element) {
+        return elements.getPackageOf(element)
+                       .getQualifiedName()
+                       .contentEquals(holderPackage);
+    }
+
+    // Jackson honours its annotations on the type, on every member and parameter, on every supertype, and
+    // through meta-annotations; the first one found, with where it sits.
+    private Option<String> jacksonAnnotation(TypeElement element) {
+        return Option.from(supertypesAndSelf(element).stream()
+                                            .flatMap(JsonTypeAnalyzer::annotationSites)
+                                            .flatMap(site -> jacksonAnnotations(site).map(annotation -> "Jackson annotation @" + annotation
+                                                                                                       + " on " + describe(site)))
+                                            .findFirst());
+    }
+
+    private List<TypeElement> supertypesAndSelf(TypeElement element) {
+        var found = new LinkedHashMap<String, TypeElement>();
+        var pending = new ArrayList<TypeElement>(List.of(element));
+
+        while (!pending.isEmpty()) {
+            var current = pending.removeFirst();
+
+            if (found.putIfAbsent(current.getQualifiedName().toString(),
+                                  current) == null) {
+                types.directSupertypes(current.asType())
+                     .stream()
+                     .filter(DeclaredType.class::isInstance)
+                     .map(supertype -> (TypeElement)((DeclaredType) supertype).asElement())
+                     .forEach(pending::add);
+            }
+        }
+
+        return List.copyOf(found.values());
+    }
+
+    // The type and everything Jackson reads on it: fields, record components, methods (accessors included),
+    // constructors, enum constants and every parameter. Nested types are types of their own.
+    private static Stream<Element> annotationSites(TypeElement type) {
+        var members = type.getEnclosedElements()
+                          .stream()
+                          .filter(member -> !(member instanceof TypeElement))
+                          .map(Element.class::cast)
+                          .toList();
+        var parameters = members.stream()
+                                .filter(ExecutableElement.class::isInstance)
+                                .map(ExecutableElement.class::cast)
+                                .flatMap(member -> member.getParameters()
+                                                         .stream())
+                                .map(Element.class::cast);
+        var components = type.getRecordComponents().stream().map(Element.class::cast);
+
+        return Stream.concat(Stream.concat(Stream.of(type), members.stream()),
+                             Stream.concat(components, parameters));
+    }
+
+    private static Stream<String> jacksonAnnotations(Element site) {
+        return site.getAnnotationMirrors()
+                   .stream()
+                   .map(mirror -> (TypeElement) mirror.getAnnotationType()
+                                                      .asElement())
+                   .filter(annotation -> isJackson(annotation) || annotation.getAnnotationMirrors()
+                                                                            .stream()
+                                                                            .map(meta -> (TypeElement) meta.getAnnotationType()
+                                                                                                           .asElement())
+                                                                            .anyMatch(JsonTypeAnalyzer::isJackson))
+                   .map(annotation -> annotation.getQualifiedName()
+                                                .toString());
+    }
+
+    private static boolean isJackson(TypeElement annotation) {
+        var name = annotation.getQualifiedName().toString();
+
+        return JACKSON_ANNOTATION_PACKAGES.stream().anyMatch(name::startsWith);
+    }
+
+    private static String describe(Element site) {
+        return switch (site) {
+            case TypeElement type -> type.getQualifiedName().toString();
+            case VariableElement parameter when parameter.getKind() == ElementKind.PARAMETER -> "parameter " + parameter.getSimpleName() + " of " + describe(parameter.getEnclosingElement());
+            default -> describe(site.getEnclosingElement()) + "." + site.getSimpleName();
+        };
     }
 
     private JsonType.EnumDefinition enumDefinition(TypeElement element) {
@@ -214,8 +354,9 @@ final class JsonTypeAnalyzer {
         return new JsonType.EnumDefinition(element, constants, constants.indexOf("UNKNOWN"));
     }
 
-    // The JBCT factory: static, public, named after the type in lower camel case, taking exactly the
-    // record's components in order, returning Result<ThisRecord>.
+    // The JBCT factory: static, not private, named after the type in lower camel case, taking exactly the
+    // record's components in order, returning Result<ThisRecord>. Whether this holder can call it is decided
+    // by the caller, so the shape alone decides what is a value object.
     private Option<ExecutableElement> findFactory(TypeElement element) {
         var simple = element.getSimpleName().toString();
         var factoryName = Character.toLowerCase(simple.charAt(0)) + simple.substring(1);
@@ -227,11 +368,10 @@ final class JsonTypeAnalyzer {
             }
 
             var method = (ExecutableElement) enclosed;
-            var samePackage = elements.getPackageOf(element).getQualifiedName().contentEquals(holderPackage);
 
-            if (!method.getModifiers().contains(Modifier.STATIC) || !isAccessible(method.getModifiers(), samePackage) || method.getParameters()
-                                                                                                                               .size() != components.size() || !returnsResultOf(method,
-                                                                                                                                                                                element)) {
+            if (!method.getModifiers().contains(Modifier.STATIC) || method.getModifiers().contains(Modifier.PRIVATE) || method.getParameters()
+                                                                                                                              .size() != components.size() || !returnsResultOf(method,
+                                                                                                                                                                               element)) {
                 continue;
             }
 
@@ -266,7 +406,7 @@ final class JsonTypeAnalyzer {
     }
 
     private boolean isAccessible(TypeElement element) {
-        var samePackage = elements.getPackageOf(element).getQualifiedName().contentEquals(holderPackage);
+        var samePackage = samePackage(element);
 
         for (Element current = element; current instanceof TypeElement type; current = current.getEnclosingElement()) {
             if (!isAccessible(type.getModifiers(), samePackage) && !(type.getNestingKind() == NestingKind.MEMBER && type.getEnclosingElement()

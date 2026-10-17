@@ -7,6 +7,10 @@ import org.junit.jupiter.api.Test;
 
 import org.pragmatica.serialization.SliceCodec;
 
+import javax.tools.JavaFileObject;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
 import static com.google.testing.compile.CompilationSubject.assertThat;
 import static com.google.testing.compile.Compiler.javac;
 
@@ -751,6 +755,156 @@ class CodecProcessorTest {
             assertThat(compilation).failed();
             assertThat(compilation).hadErrorContaining("@Json type 'com.example.Holder' cannot get a generated codec");
             assertThat(compilation).hadErrorContaining("neither a record nor an enum");
+        }
+    }
+
+    /// A type Jackson would shape through its annotations is refused, wherever the annotation sits: a generated
+    /// codec would silently ignore it and change the wire form.
+    @Nested
+    class JacksonAnnotatedTypes {
+        @Test
+        void json_failsCompilation_forJsonPropertyOnComponent() {
+            var source = JavaFileObjects.forSourceString("com.example.Renamed",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Renamed(@JsonProperty("user_name") String userName) {}
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Renamed' cannot get a generated codec");
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on com.example.Renamed");
+        }
+
+        @Test
+        void json_failsCompilation_forJsonTypeInfoOnImplementedInterface() {
+            var source = JavaFileObjects.forSourceString("com.example.Shapes",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonTypeInfo;
+                import org.pragmatica.serialization.json.Json;
+
+                public interface Shapes {
+                    @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+                    sealed interface Shape permits Circle {}
+
+                    @Json
+                    record Circle(int r) implements Shape {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonTypeInfo on com.example.Shapes.Shape");
+        }
+
+        @Test
+        void json_failsCompilation_forJsonPropertyOnEnumConstant() {
+            var source = JavaFileObjects.forSourceString("com.example.Level",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public enum Level {
+                    @JsonProperty("lo") LOW,
+                    HIGH
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on com.example.Level.LOW");
+        }
+
+        @Test
+        void json_failsCompilation_forJacksonMetaAnnotation() {
+            var marker = JavaFileObjects.forSourceString("com.example.Snake",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JacksonAnnotationsInside;
+                import java.lang.annotation.Retention;
+                import java.lang.annotation.RetentionPolicy;
+
+                @Retention(RetentionPolicy.RUNTIME)
+                @JacksonAnnotationsInside
+                public @interface Snake {}
+                """);
+            var source = JavaFileObjects.forSourceString("com.example.Tagged",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                @Snake
+                public record Tagged(String name) {}
+                """);
+
+            var compilation = compileWith(marker, source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.example.Snake on com.example.Tagged");
+        }
+
+        @Test
+        void json_generatesCodec_forUnannotatedSiblingOfRefusedType() {
+            var source = JavaFileObjects.forSourceString("com.example.Plain",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Plain(String userName) {}
+                """);
+
+            assertThat(compileWith(source)).succeeded();
+        }
+    }
+
+    /// Generated readers track fields as bits of one long (field i is `1L << i`): 64 components fit, a 65th
+    /// would wrap onto bit 0 and a missing first field would go unnoticed.
+    @Nested
+    class ComponentLimit {
+        @Test
+        void json_generatesCodec_forSixtyFourComponents() {
+            var compilation = compileWith(wideRecord("Wide64", 64));
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.Wide64JsonCodecs")
+                                   .contentsAsUtf8String()
+                                   .contains("long REQUIRED = -1L;");
+        }
+
+        @Test
+        void json_failsCompilation_forSixtyFiveComponents() {
+            var compilation = compileWith(wideRecord("Wide65", 65));
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("@Json type 'com.example.Wide65' cannot get a generated codec: 65 components; generated codecs support at most 64");
+        }
+
+        private static JavaFileObject wideRecord(String name, int components) {
+            var fields = IntStream.range(0, components)
+                                                   .mapToObj(i -> "String f" + i)
+                                                   .collect(Collectors.joining(", "));
+
+            return JavaFileObjects.forSourceString("com.example." + name,
+                                                   "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record "
+                                                   + name + "(" + fields + ") {}\n");
         }
     }
 

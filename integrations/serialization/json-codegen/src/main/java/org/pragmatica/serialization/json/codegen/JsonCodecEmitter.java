@@ -517,9 +517,10 @@ final class JsonCodecEmitter {
     private final List<List<String>> extraHelpers = new ArrayList<>();
     private int helperCount;
 
-    // Nested containers (List<List<X>>, Map<String, Option<Y>>) get their own private static method.
+    // Nested containers (List<List<X>>, Map<String, Option<Y>>) get their own private static method. Every
+    // name derived from a component starts with `read_` or `f_`, so `readNested<N>` cannot meet one.
     private String nestedHelper(JsonType type) {
-        var name = "read_nested" + helperCount++;
+        var name = "readNested" + helperCount++;
         var lines = new ArrayList<String>();
 
         lines.add("        private static " + javaType(type) + " " + name + "(" + RT + "JsonReader in) {");

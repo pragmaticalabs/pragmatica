@@ -25,6 +25,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -186,6 +187,19 @@ class JsonMapperTest {
                     assertTrue(json.contains("\"name\":\"Alice\""));
                     assertTrue(json.contains("\"email\":\"alice@example.com\""));
                 });
+        }
+
+        record Tagged(List<Option<String>> tags, Map<String, Option<String>> byKey) {}
+
+        // A container element is not an Option-typed property: its Option serializer must not be derived from
+        // the container's content type (that crashed with String -> Option ClassCastException).
+        @Test
+        void writeAsString_writesOptionsInsideContainers_asValueOrNull() {
+            var tagged = new Tagged(List.of(Option.some("a"), Option.none()), Map.of("k", Option.some("v")));
+
+            mapper.writeAsString(tagged)
+                .onFailure(cause -> fail("Should not fail: " + cause))
+                .onSuccess(json -> assertEquals("{\"tags\":[\"a\",null],\"byKey\":{\"k\":\"v\"}}", json));
         }
 
         @Test

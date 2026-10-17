@@ -1,0 +1,12 @@
+prefix = "/api/wire"
+
+[routes]
+signup = "POST /signup"
+signupAll = "POST /signup-all"
+shape = "POST /shape"
+drawing = "POST /drawing"
+renamed = "POST /renamed"
+note = "POST /note"
+
+[errors]
+default = 500

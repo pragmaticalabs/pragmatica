@@ -54,7 +54,7 @@ public final class JsonCodecGenerator {
 
     /// Adds a root type; empty when supported, otherwise why it is not.
     public Option<String> addRoot(TypeMirror type) {
-        if (analyzer.analyze(type).isPresent()) {
+        if (analyzer.analyzeRoot(type).isPresent()) {
             roots.add(type);
 
             return Option.none();

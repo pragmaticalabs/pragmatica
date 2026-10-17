@@ -37,6 +37,12 @@
             <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
+        <!-- Jackson annotations on @Json fixtures: the generator must refuse such types -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>com.google.testing.compile</groupId>
             <artifactId>compile-testing</artifactId>

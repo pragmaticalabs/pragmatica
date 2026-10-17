@@ -15,44 +15,15 @@
  */
 package org.pragmatica.serialization.json.tests;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
 import org.pragmatica.json.JsonMapper;
 
-import static org.pragmatica.serialization.json.tests.Ecommerce.CustomerId;
-import static org.pragmatica.serialization.json.tests.Ecommerce.OrderId;
-import static org.pragmatica.serialization.json.tests.Ecommerce.ProductId;
-import static org.pragmatica.serialization.json.tests.Ecommerce.Quantity;
-
-/// The Jackson contestant: the production builder (`JsonMapper.jsonMapper().withPragmaticaTypes()`)
-/// plus mixins that make it emit the same unwrapped value-object shape as the generated codecs.
-/// This is what production Jackson would need for that shape, so the comparison stays like for like.
+/// The Jackson contestant: the mapper slice HTTP routes use in production (`JsonMapper.valueObjectJsonMapper()`,
+/// value objects unwrapped through `ValueObjectModule`), with no test-only configuration. Byte equality against
+/// it is what "generated codecs and the production Jackson path write one wire form" means.
 public interface Baseline {
-    JsonMapper MAPPER = JsonMapper.jsonMapper()
-                                  .withPragmaticaTypes()
-                                  .configure(builder -> builder.addMixIn(ProductId.class, StringValueMixin.class)
-                                                               .addMixIn(CustomerId.class, StringValueMixin.class)
-                                                               .addMixIn(OrderId.class, StringValueMixin.class)
-                                                               .addMixIn(Quantity.class, IntValueMixin.class))
-                                  .build();
+    JsonMapper MAPPER = JsonMapper.valueObjectJsonMapper();
 
     static tools.jackson.databind.ObjectMapper objectMapper() {
         return ((JsonMapper.JsonMapperImpl) MAPPER).mapper();
-    }
-
-    abstract class StringValueMixin {
-        @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
-        StringValueMixin(String value) {}
-
-        @JsonValue
-        abstract String value();
-    }
-
-    abstract class IntValueMixin {
-        @JsonCreator(mode = JsonCreator.Mode.DELEGATING)
-        IntValueMixin(int value) {}
-
-        @JsonValue
-        abstract int value();
     }
 }
