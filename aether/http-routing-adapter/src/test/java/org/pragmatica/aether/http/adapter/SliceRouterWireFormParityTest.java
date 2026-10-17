@@ -29,9 +29,8 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// One wire form per slice: a route served by the generated codecs answers with the bytes the production
-/// slice-route mapper (`JsonMapper.valueObjectJsonMapper()`) writes, and a body type that falls back to that
-/// mapper (`List<Signup>`: collections are decoded by Jackson) accepts the same value-object form the
-/// generated codec accepts.
+/// slice-route mapper (`JsonMapper.valueObjectJsonMapper()`) writes, and a collection body (`List<Signup>`, now
+/// decoded through the generated element codec) accepts the same value-object form as a single body.
 class SliceRouterWireFormParityTest {
     private static final JsonMapper PRODUCTION = JsonMapper.valueObjectJsonMapper();
 
@@ -53,8 +52,8 @@ class SliceRouterWireFormParityTest {
     private static GeneratedJsonCodec codec() {
         var codecs = new HashMap<Class<?>, JsonTypeCodec<?>>();
 
-        codecs.putAll(SliceRouterWireFormParityTest_SignupJsonCodecs.CODECS);
-        codecs.putAll(SliceRouterWireFormParityTest_OutJsonCodecs.CODECS);
+        codecs.putAll(SliceRouterWireFormParityTest_SignupJson.CODECS);
+        codecs.putAll(SliceRouterWireFormParityTest_OutJson.CODECS);
         return GeneratedJsonCodec.generatedJsonCodec(codecs, JsonCodecAdapter.forMapper(PRODUCTION));
     }
 
@@ -118,7 +117,7 @@ class SliceRouterWireFormParityTest {
     @Test
     void productionMapper_decodesGeneratedOutput() {
         var signup = new Signup(new Email("a@b.c"));
-        var generated = SliceRouterWireFormParityTest_SignupJsonCodecs.SliceRouterWireFormParityTest_SignupJson.CODEC.encode(signup);
+        var generated = SliceRouterWireFormParityTest_SignupJson.CODEC.encode(signup);
 
         assertThat(new String(generated, StandardCharsets.UTF_8)).isEqualTo(new String(PRODUCTION.writeAsBytes(signup).unwrap(),
                                                                                      StandardCharsets.UTF_8));

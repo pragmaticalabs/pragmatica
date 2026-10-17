@@ -45,6 +45,13 @@ class GeneratedRouteJsonCodecTest {
         assertThat(generatedRoutes).contains("JsonCodecAdapter.forMapper(jsonMapper)");
     }
 
+    // Owner ruling: the convenience overload uses the mapper the node passes, so a slice behaves the same either way.
+    @Test
+    void convenienceFactory_defaultsToValueObjectMapper() {
+        assertThat(generatedRoutes).contains("return create(slice, JsonMapper.valueObjectJsonMapper());")
+                                   .doesNotContain("defaultJsonMapper");
+    }
+
     @Test
     void generatedCodecs_matchJacksonBytes_andDecodeJacksonOutput() {
         var request = new CreateRequest("Widget \"Pro\" é", "a@b.example");

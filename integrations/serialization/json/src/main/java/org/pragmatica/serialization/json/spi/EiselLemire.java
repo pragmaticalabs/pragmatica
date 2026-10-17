@@ -13,7 +13,7 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-package org.pragmatica.serialization.json;
+package org.pragmatica.serialization.json.spi;
 
 /// Eisel-Lemire decimal-to-double conversion (Lemire, "Number Parsing at a Gigabyte per Second",
 /// 2021; the simdjson/fast_float formulation). Exact whenever it answers; returns NaN when it cannot

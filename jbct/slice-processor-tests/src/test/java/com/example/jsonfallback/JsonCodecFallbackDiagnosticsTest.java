@@ -29,7 +29,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// `SliceProcessor`: a route type the generator refuses gets a compiler NOTE and stays on Jackson, the refusal
 /// leaves nothing behind for other roots (a recursive graph under a refused root used to leave a definition
 /// pointing at a record that never got one, and the emitter crashed), and a slice with no supported route type
-/// at all gets no codec holder and exactly the pre-codec routes factory.
+/// at all gets no codec holder and the pre-codec routes factory (whose convenience overload now defaults to the
+/// value-object mapper, as the codec path's does).
 class JsonCodecFallbackDiagnosticsTest {
     private static boolean success;
     private static List<String> notes;
@@ -109,7 +110,7 @@ class JsonCodecFallbackDiagnosticsTest {
         }
 
         @Test
-        void routesFactory_isExactlyThePreCodecForm() throws Exception {
+        void routesFactory_isThePreCodecForm_withValueObjectMapperDefault() throws Exception {
             var routes = generated("com/example/nocodecfixture/NoCodecSliceRoutes.java");
 
             assertThat(routes).contains(PRE_CODEC_FACTORY)
@@ -158,11 +159,13 @@ class JsonCodecFallbackDiagnosticsTest {
                      .toList();
     }
 
-    /// What `RouteSourceGenerator` wrote for every slice before it generated JSON codecs.
+    /// What `RouteSourceGenerator` wrote for every slice before it generated JSON codecs, except the one owner-ruled
+    /// change shared with the codec path: `create(slice)` defaults to `valueObjectJsonMapper()`, the mapper the node
+    /// passes, rather than `defaultJsonMapper()`.
     private static final String PRE_CODEC_FACTORY = """
             @Override
             public SliceRouter create(NoCodecSlice slice) {
-                return create(slice, JsonMapper.defaultJsonMapper());
+                return create(slice, JsonMapper.valueObjectJsonMapper());
             }
 
             @Override

@@ -13,13 +13,14 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-package org.pragmatica.serialization.json;
+package org.pragmatica.serialization.json.spi;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.serialization.json.JsonError;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;

@@ -106,14 +106,14 @@ class StrictDecodingTest {
 
     @Test
     void decode_recursiveRecordFarBeyondLimit_failsAsNestingTooDeep_withoutStackOverflow() {
-        var result = StrictDecodingTest_NodeJsonCodecs.StrictDecodingTest_NodeJson.CODEC.decode(utf8(nodes(20_000)));
+        var result = StrictDecodingTest_NodeJson.CODEC.decode(utf8(nodes(20_000)));
 
         assertInstanceOf(JsonError.NestingTooDeep.class, failureOf(result));
     }
 
     @Test
     void decode_recursiveRecord400Deep_succeeds() {
-        var node = StrictDecodingTest_NodeJsonCodecs.StrictDecodingTest_NodeJson.CODEC.decode(utf8(nodes(400)))
+        var node = StrictDecodingTest_NodeJson.CODEC.decode(utf8(nodes(400)))
                                                                                      .unwrap();
         var depth = 0;
 
@@ -128,13 +128,13 @@ class StrictDecodingTest {
     @Test
     void nonFiniteDouble_encodesLikeJackson_andDecodesBack() {
         for (var value : new double[]{Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
-            var ours = StrictDecodingTest_MeasuredJsonCodecs.StrictDecodingTest_MeasuredJson.CODEC.encode(new Measured(value));
+            var ours = StrictDecodingTest_MeasuredJson.CODEC.encode(new Measured(value));
             var jackson = PROD.writeAsBytes(new Measured(value))
                               .unwrap();
 
             assertEquals(new String(jackson, StandardCharsets.UTF_8), new String(ours, StandardCharsets.UTF_8));
 
-            var back = StrictDecodingTest_MeasuredJsonCodecs.StrictDecodingTest_MeasuredJson.CODEC.decode(jackson)
+            var back = StrictDecodingTest_MeasuredJson.CODEC.decode(jackson)
                                                                                                  .unwrap();
 
             assertEquals(Double.doubleToLongBits(value), Double.doubleToLongBits(back.v()));
@@ -144,7 +144,7 @@ class StrictDecodingTest {
     @Test
     void nonFiniteDouble_bareTokensAndOtherStrings_areRejected() {
         for (var bad : new String[]{"NaN", "Infinity", "-Infinity", "\"nan\"", "\"1.0\""}) {
-            assertTrue(StrictDecodingTest_MeasuredJsonCodecs.StrictDecodingTest_MeasuredJson.CODEC.decode(utf8("{\"v\":" + bad + "}"))
+            assertTrue(StrictDecodingTest_MeasuredJson.CODEC.decode(utf8("{\"v\":" + bad + "}"))
                                                                                                   .isFailure(),
                        bad);
         }
@@ -154,7 +154,7 @@ class StrictDecodingTest {
     @Test
     void decimal_hugeExponent_isExact_likeJackson() {
         var json = utf8("{\"v\":1e1234567}");
-        var ours = StrictDecodingTest_PricedJsonCodecs.StrictDecodingTest_PricedJson.CODEC.decode(json)
+        var ours = StrictDecodingTest_PricedJson.CODEC.decode(json)
                                                                                          .unwrap();
 
         assertEquals(new BigDecimal("1e1234567"), ours.v());
@@ -165,7 +165,7 @@ class StrictDecodingTest {
 
     @Test
     void decimal_exponentBeyondBigDecimal_failsAsOutOfRange() {
-        var result = StrictDecodingTest_PricedJsonCodecs.StrictDecodingTest_PricedJson.CODEC.decode(utf8("{\"v\":1e2147483649}"));
+        var result = StrictDecodingTest_PricedJson.CODEC.decode(utf8("{\"v\":1e2147483649}"));
 
         assertInstanceOf(JsonError.OutOfRange.class, failureOf(result));
     }
@@ -176,13 +176,13 @@ class StrictDecodingTest {
         for (var bad : new String[]{"{]", "[tru , , : xyz]", "{\"a\" 1}", "[1,]", "nul", "01", "\"\\x\"", "{\"a\":1,}", "[{\"a\":1]}", "{\"a\":[1}]"}) {
             var json = utf8("{\"name\":\"x\",\"u\":" + bad + "}");
 
-            assertTrue(StrictDecodingTest_NamedJsonCodecs.StrictDecodingTest_NamedJson.CODEC.decode(json)
+            assertTrue(StrictDecodingTest_NamedJson.CODEC.decode(json)
                                                                                           .isFailure(),
                        bad);
         }
 
         assertEquals(new Named("x"),
-                     StrictDecodingTest_NamedJsonCodecs.StrictDecodingTest_NamedJson.CODEC.decode(utf8("{\"u\":{\"a\":[1,{\"b\":null}]},\"name\":\"x\"}"))
+                     StrictDecodingTest_NamedJson.CODEC.decode(utf8("{\"u\":{\"a\":[1,{\"b\":null}]},\"name\":\"x\"}"))
                                                                                        .unwrap());
     }
 
@@ -190,7 +190,7 @@ class StrictDecodingTest {
     @Test
     void escapedEnumConstants_decodeToTheirConstants_likeJackson() {
         var json = utf8("{\"color\":\"\\u0041\",\"shade\":\"\\u004CIGHT\"}");
-        var ours = StrictDecodingTest_PaintJsonCodecs.StrictDecodingTest_PaintJson.CODEC.decode(json)
+        var ours = StrictDecodingTest_PaintJson.CODEC.decode(json)
                                                                                        .unwrap();
 
         assertEquals(new Paint(Color.A, Shade.LIGHT), ours);
@@ -202,7 +202,7 @@ class StrictDecodingTest {
     @Test
     void escapedFieldName_bindsToItsField_likeJackson() {
         var json = utf8("{\"\\u006eame\":\"x\"}");
-        var ours = StrictDecodingTest_NamedJsonCodecs.StrictDecodingTest_NamedJson.CODEC.decode(json)
+        var ours = StrictDecodingTest_NamedJson.CODEC.decode(json)
                                                                                        .unwrap();
 
         assertEquals(new Named("x"), ours);
@@ -217,7 +217,7 @@ class StrictDecodingTest {
         for (var text : new String[]{"1-1-1-1-1", "123e4567-e89b-12d3-a456-42661417400", "123e4567e89b12d3a456426614174000"}) {
             var json = utf8("{\"id\":\"" + text + "\"}");
 
-            assertTrue(StrictDecodingTest_IdsJsonCodecs.StrictDecodingTest_IdsJson.CODEC.decode(json)
+            assertTrue(StrictDecodingTest_IdsJson.CODEC.decode(json)
                                                                                     .isFailure(),
                        text);
             assertTrue(PROD.readBytes(json, new TypeToken<Ids>() {})
@@ -228,14 +228,14 @@ class StrictDecodingTest {
         var uuid = UUID.randomUUID();
 
         assertEquals(new Ids(uuid),
-                     StrictDecodingTest_IdsJsonCodecs.StrictDecodingTest_IdsJson.CODEC.decode(utf8("{\"id\":\"" + uuid + "\"}"))
+                     StrictDecodingTest_IdsJson.CODEC.decode(utf8("{\"id\":\"" + uuid + "\"}"))
                                                                                    .unwrap());
     }
 
     @Test
     void invalidUtf8InString_isRejectedAsMalformed_likeJackson() {
         var json = new byte[]{'{', '"', 'n', 'a', 'm', 'e', '"', ':', '"', (byte) 0xC3, (byte) 0x28, '"', '}'};
-        var ours = StrictDecodingTest_NamedJsonCodecs.StrictDecodingTest_NamedJson.CODEC.decode(json);
+        var ours = StrictDecodingTest_NamedJson.CODEC.decode(json);
 
         assertInstanceOf(JsonError.Malformed.class, failureOf(ours));
         assertTrue(PROD.readBytes(json, new TypeToken<Named>() {})
@@ -256,7 +256,7 @@ class StrictDecodingTest {
                 continue;
             }
 
-            var decoded = StrictDecodingTest_MeasuredJsonCodecs.StrictDecodingTest_MeasuredJson.CODEC.decode(utf8("{\"v\":" + text + "}"));
+            var decoded = StrictDecodingTest_MeasuredJson.CODEC.decode(utf8("{\"v\":" + text + "}"));
 
             assertTrue(decoded.isSuccess(), text);
 
@@ -319,11 +319,11 @@ class StrictDecodingTest {
 
     @Test
     void nullForNonOptionalField_isRejected_namingTheField_forEveryKind() {
-        assertTrue(StrictDecodingTest_AllRequiredJsonCodecs.StrictDecodingTest_AllRequiredJson.CODEC.decode(withNull(""))
+        assertTrue(StrictDecodingTest_AllRequiredJson.CODEC.decode(withNull(""))
                                                                                                     .isSuccess());
 
         for (var field : FIELDS) {
-            var cause = failureOf(StrictDecodingTest_AllRequiredJsonCodecs.StrictDecodingTest_AllRequiredJson.CODEC.decode(withNull(field)));
+            var cause = failureOf(StrictDecodingTest_AllRequiredJson.CODEC.decode(withNull(field)));
 
             assertInstanceOf(JsonError.UnexpectedNull.class, cause, field);
             assertEquals(field, ((JsonError.UnexpectedNull) cause).field());
@@ -337,9 +337,9 @@ class StrictDecodingTest {
         var elementNull = utf8(new String(withNull(""), StandardCharsets.UTF_8).replace("[\"a\"]", "[\"a\",null]"));
 
         assertEquals("x",
-                     ((JsonError.UnexpectedNull) failureOf(StrictDecodingTest_AllRequiredJsonCodecs.StrictDecodingTest_AllRequiredJson.CODEC.decode(nestedNull))).field());
+                     ((JsonError.UnexpectedNull) failureOf(StrictDecodingTest_AllRequiredJson.CODEC.decode(nestedNull))).field());
         assertEquals("tags",
-                     ((JsonError.UnexpectedNull) failureOf(StrictDecodingTest_AllRequiredJsonCodecs.StrictDecodingTest_AllRequiredJson.CODEC.decode(elementNull))).field());
+                     ((JsonError.UnexpectedNull) failureOf(StrictDecodingTest_AllRequiredJson.CODEC.decode(elementNull))).field());
     }
 
     static final AllOptional NOTHING = new AllOptional(Option.none(), Option.none(), Option.none(), Option.none(), Option.none(),
@@ -358,7 +358,7 @@ class StrictDecodingTest {
                 .append("\":null");
         }
 
-        var decoded = StrictDecodingTest_AllOptionalJsonCodecs.StrictDecodingTest_AllOptionalJson.CODEC.decode(utf8(json.append('}')
+        var decoded = StrictDecodingTest_AllOptionalJson.CODEC.decode(utf8(json.append('}')
                                                                                                                       .toString()));
 
         assertEquals(NOTHING, decoded.unwrap());
@@ -366,14 +366,14 @@ class StrictDecodingTest {
 
     @Test
     void optionalFields_decodeToNone_whenAbsent() {
-        var decoded = StrictDecodingTest_AllOptionalJsonCodecs.StrictDecodingTest_AllOptionalJson.CODEC.decode(utf8("{}"));
+        var decoded = StrictDecodingTest_AllOptionalJson.CODEC.decode(utf8("{}"));
 
         assertEquals(NOTHING, decoded.unwrap());
     }
 
     @Test
     void optionalFields_decodeToSome_whenPresent() {
-        var decoded = StrictDecodingTest_AllOptionalJsonCodecs.StrictDecodingTest_AllOptionalJson.CODEC.decode(withNull(""))
+        var decoded = StrictDecodingTest_AllOptionalJson.CODEC.decode(withNull(""))
                                                                                                     .unwrap();
 
         assertEquals(new AllOptional(Option.some("t"), Option.some(1L), Option.some(1.5), Option.some(2), Option.some(new Inner("y")),

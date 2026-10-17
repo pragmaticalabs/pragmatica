@@ -109,7 +109,7 @@ class ValueObjectRuleAgreementTest {
 
     @SuppressWarnings("unchecked")
     private static JsonTypeCodec<Object> codec(Fixture fixture) throws Exception {
-        var holder = Class.forName(ValueObjectFixtures.class.getPackageName() + ".ValueObjectFixtures_" + fixture.name() + "JsonCodecs");
+        var holder = Class.forName(ValueObjectFixtures.class.getPackageName() + ".ValueObjectFixtures_" + fixture.name() + "Json");
         var codecs = (Map<Class<?>, JsonTypeCodec<?>>) holder.getField("CODECS").get(null);
 
         return (JsonTypeCodec<Object>) codecs.get(fixture.sample().getClass());
@@ -117,7 +117,7 @@ class ValueObjectRuleAgreementTest {
 
     private static Class<?> generatedCodecInterface(Fixture fixture) throws Exception {
         return Class.forName(ValueObjectFixtures.class.getPackageName() + ".ValueObjectFixtures_" + fixture.name()
-                             + "JsonCodecs$ValueObjectFixtures_" + fixture.name() + "Json");
+                             + "Json$ValueObjectFixtures_" + fixture.name() + "JsonCodec");
     }
 
     private static String compileErrors(Path tempDir, Path source) throws Exception {

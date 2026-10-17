@@ -10,7 +10,7 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
 import org.pragmatica.http.ProblemDetail;
-import org.pragmatica.http.ProblemDetailJsonCodecs;
+import org.pragmatica.http.ProblemDetailJson;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteMountMode;
@@ -28,6 +28,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Stream;
 
@@ -77,8 +78,8 @@ class SliceRouterGeneratedCodecTest {
         RouteSource source = () -> Stream.of(route);
         var codecs = new HashMap<Class<?>, JsonTypeCodec<?>>();
 
-        codecs.putAll(SliceRouterGeneratedCodecTest_CreateItemJsonCodecs.CODECS);
-        codecs.putAll(SliceRouterGeneratedCodecTest_ItemCreatedJsonCodecs.CODECS);
+        codecs.putAll(SliceRouterGeneratedCodecTest_CreateItemJson.CODECS);
+        codecs.putAll(SliceRouterGeneratedCodecTest_ItemCreatedJson.CODECS);
         return SliceRouter.sliceRouter(source,
                                        ErrorMapper.defaultMapper(),
                                        JACKSON,
@@ -87,8 +88,34 @@ class SliceRouterGeneratedCodecTest {
     }
 
     private HttpResponseData send(SliceRouter router, byte[] body) {
-        var request = HttpRequestContext.httpRequestContext("/items", "POST", Map.of(), Map.of(), body, "req_test");
+        return send(router, "/items", body);
+    }
+
+    private HttpResponseData send(SliceRouter router, String path, byte[] body) {
+        var request = HttpRequestContext.httpRequestContext(path, "POST", Map.of(), Map.of(), body, "req_test");
         return router.handle(request).await().unwrap();
+    }
+
+    // Collection bodies: the element type has a generated codec, so the body is decoded by the List/Set combinator.
+    private SliceRouter collectionRouter() {
+        var list = Route.<ItemCreated>post("/batch")
+                        .withBody(new TypeToken<List<CreateItem>>() {})
+                        .to(items -> Promise.success(new ItemCreated(items.size() + ":" + items.getLast().name())))
+                        .as(CommonContentType.APPLICATION_JSON);
+        var set = Route.<ItemCreated>post("/unique")
+                       .withBody(new TypeToken<Set<CreateItem>>() {})
+                       .to(items -> Promise.success(new ItemCreated("unique-" + items.size())))
+                       .as(CommonContentType.APPLICATION_JSON);
+        RouteSource source = () -> Stream.of(list, set);
+        var codecs = new HashMap<Class<?>, JsonTypeCodec<?>>();
+
+        codecs.putAll(SliceRouterGeneratedCodecTest_CreateItemJson.CODECS);
+        codecs.putAll(SliceRouterGeneratedCodecTest_ItemCreatedJson.CODECS);
+        return SliceRouter.sliceRouter(source,
+                                       ErrorMapper.defaultMapper(),
+                                       JACKSON,
+                                       RouteMountMode.pathMode(),
+                                       GeneratedJsonCodec.generatedJsonCodec(codecs, recordingFallback()));
     }
 
     @Test
@@ -129,8 +156,35 @@ class SliceRouterGeneratedCodecTest {
     }
 
     @Test
+    void listBody_isDecodedByGeneratedCodec_andNeverTouchesFallback() {
+        var response = send(collectionRouter(), "/batch", "[{\"name\":\"a\"},{\"name\":\"b\"}]".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(new String(response.body(), StandardCharsets.UTF_8)).isEqualTo("{\"id\":\"2:b\"}");
+        assertThat(response.statusCode()).isEqualTo(200);
+        assertThat(fallbackCalls).isEmpty();
+    }
+
+    @Test
+    void setBody_isDecodedByGeneratedCodec_keepingOneOfEachElement_andNeverTouchesFallback() {
+        var response = send(collectionRouter(), "/unique", "[{\"name\":\"a\"},{\"name\":\"a\"},{\"name\":\"b\"}]".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(new String(response.body(), StandardCharsets.UTF_8)).isEqualTo("{\"id\":\"unique-2\"}");
+        assertThat(fallbackCalls).isEmpty();
+    }
+
+    @Test
+    void listBody_returns400_namingTheCollectionType_whenAnElementIsRefused() {
+        var response = send(collectionRouter(), "/batch", "[{\"name\":\"a\"},{}]".getBytes(StandardCharsets.UTF_8));
+        var body = new String(response.body(), StandardCharsets.UTF_8);
+
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(body).contains("Invalid JSON body for List<CreateItem>: Missing required field: name");
+        assertThat(fallbackCalls).isEmpty();
+    }
+
+    @Test
     void unknownTypes_goToFallback() {
-        var codec = GeneratedJsonCodec.generatedJsonCodec(SliceRouterGeneratedCodecTest_CreateItemJsonCodecs.CODECS, recordingFallback());
+        var codec = GeneratedJsonCodec.generatedJsonCodec(SliceRouterGeneratedCodecTest_CreateItemJson.CODECS, recordingFallback());
 
         assertThat(codec.serialize(Map.of("k", 1)).isSuccess()).isTrue();
         assertThat(codec.deserialize("{\"id\":\"x\"}".getBytes(StandardCharsets.UTF_8), new TypeToken<ItemCreated>() {}).isSuccess()).isTrue();
@@ -139,7 +193,7 @@ class SliceRouterGeneratedCodecTest {
 
     @Test
     void listOfGeneratedType_isEncodedWithoutFallback_andMatchesJackson() {
-        var codec = GeneratedJsonCodec.generatedJsonCodec(SliceRouterGeneratedCodecTest_ItemCreatedJsonCodecs.CODECS, recordingFallback());
+        var codec = GeneratedJsonCodec.generatedJsonCodec(SliceRouterGeneratedCodecTest_ItemCreatedJson.CODECS, recordingFallback());
         var items = List.of(new ItemCreated("a"), new ItemCreated("b\"c"));
 
         assertThat(new String(codec.serialize(items).unwrap(), StandardCharsets.UTF_8))
@@ -156,7 +210,7 @@ class SliceRouterGeneratedCodecTest {
                               new ProblemDetail("t", "T", 409, Option.some("line\nbreak\ttab"), Option.none(), "r"));
 
         for (var detail : details) {
-            assertThat(new String(ProblemDetailJsonCodecs.ProblemDetailJson.CODEC.encode(detail), StandardCharsets.UTF_8))
+            assertThat(new String(ProblemDetailJson.CODEC.encode(detail), StandardCharsets.UTF_8))
                 .isEqualTo(new String(JACKSON.writeAsBytes(detail).unwrap(), StandardCharsets.UTF_8));
         }
     }

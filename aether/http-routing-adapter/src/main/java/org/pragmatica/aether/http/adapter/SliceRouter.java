@@ -18,7 +18,7 @@ import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.JsonCodec;
-import org.pragmatica.http.ProblemDetailJsonCodecs;
+import org.pragmatica.http.ProblemDetailJson;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.ResponseSerializer;
 import org.pragmatica.http.routing.JsonCodecAdapter;
@@ -415,7 +415,7 @@ public interface SliceRouter {
             // Generated, reflection-free; byte-identical to what Jackson wrote here before (pinned by
             // SliceRouterGeneratedCodecTest). Generated encoding cannot fail, so no plain-text fallback.
             private static byte[] encodeProblem(ProblemDetail problemDetail) {
-                return ProblemDetailJsonCodecs.ProblemDetailJson.CODEC.encode(problemDetail);
+                return ProblemDetailJson.CODEC.encode(problemDetail);
             }
 
             private HttpResponseData plainErrorResponse(HttpStatus status, String message) {

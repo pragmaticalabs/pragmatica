@@ -13,7 +13,7 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-package org.pragmatica.serialization.json;
+package org.pragmatica.serialization.json.spi;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;

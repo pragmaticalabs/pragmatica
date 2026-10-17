@@ -13,7 +13,7 @@
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  */
-package org.pragmatica.serialization.json;
+package org.pragmatica.serialization.json.spi;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
@@ -32,6 +32,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.json.JsonError;
 
 
 /// Pull reader over a UTF-8 `byte[]` region, called by generated codecs.

@@ -21,10 +21,11 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 
-/// Opts a record or enum into a generated, reflection-free JSON codec: the processor emits
-/// `<Type>JsonCodecs` next to it. Separate from `@Codec` on purpose, so adopting JSON never changes a
-/// type's binary wire contract. HTTP route request and response types need no annotation: the slice
-/// processor generates their codecs.
+/// Opts a record or enum into a generated, reflection-free JSON codec: the processor emits the entry point
+/// `<Type>Json` next to it (`<Outer>_<Type>Json` for a nested type), with `CODEC` and static `decode` / `encode`,
+/// and lists the codec in its package's registry for [JsonCodecs#codecFor]. Separate from `@Codec` on purpose, so
+/// adopting JSON never changes a type's binary wire contract. HTTP route request and response types need no
+/// annotation: the slice processor generates their codecs.
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.SOURCE)
 public @interface Json {}

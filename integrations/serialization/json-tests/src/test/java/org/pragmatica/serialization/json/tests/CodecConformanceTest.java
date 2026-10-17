@@ -20,10 +20,11 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.serialization.json.JsonError;
-import org.pragmatica.serialization.json.JsonReader;
+import org.pragmatica.serialization.json.spi.JsonReader;
 import org.pragmatica.serialization.json.JsonTypeCodec;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Random;
 import java.util.stream.Stream;
 
@@ -49,19 +50,19 @@ class CodecConformanceTest {
     }
 
     static Stream<Case<?>> cases() {
-        return Stream.of(new Case<>("buyRequest", Samples.buyRequest(), Ticketing_BuyRequestJsonCodecs.Ticketing_BuyRequestJson.CODEC,
+        return Stream.of(new Case<>("buyRequest", Samples.buyRequest(), Ticketing_BuyRequestJson.CODEC,
                                     org.pragmatica.serialization.json.tests.Ticketing.BuyRequest.class),
-                         new Case<>("buyResponse", Samples.buyResponse(), Ticketing_BuyResponseJsonCodecs.Ticketing_BuyResponseJson.CODEC,
+                         new Case<>("buyResponse", Samples.buyResponse(), Ticketing_BuyResponseJson.CODEC,
                                     org.pragmatica.serialization.json.tests.Ticketing.BuyResponse.class),
-                         new Case<>("catalog", Samples.catalog(), Catalog_ItemListV2JsonCodecs.Catalog_ItemListV2Json.CODEC,
+                         new Case<>("catalog", Samples.catalog(), Catalog_ItemListV2Json.CODEC,
                                     org.pragmatica.serialization.json.tests.Catalog.ItemListV2.class),
-                         new Case<>("placeOrderRequest", Samples.placeOrderRequest(), Ecommerce_PlaceOrderRequestJsonCodecs.Ecommerce_PlaceOrderRequestJson.CODEC,
+                         new Case<>("placeOrderRequest", Samples.placeOrderRequest(), Ecommerce_PlaceOrderRequestJson.CODEC,
                                     org.pragmatica.serialization.json.tests.Ecommerce.PlaceOrderRequest.class),
-                         new Case<>("orderConfirmation", Samples.orderConfirmation(), Ecommerce_OrderConfirmationJsonCodecs.Ecommerce_OrderConfirmationJson.CODEC,
+                         new Case<>("orderConfirmation", Samples.orderConfirmation(), Ecommerce_OrderConfirmationJson.CODEC,
                                     org.pragmatica.serialization.json.tests.Ecommerce.OrderConfirmation.class),
-                         new Case<>("refundRequest", Samples.refundRequest(), Ecommerce_RefundRequestJsonCodecs.Ecommerce_RefundRequestJson.CODEC,
+                         new Case<>("refundRequest", Samples.refundRequest(), Ecommerce_RefundRequestJson.CODEC,
                                     org.pragmatica.serialization.json.tests.Ecommerce.RefundRequest.class),
-                         new Case<>("telemetry", Samples.telemetry(), Telemetry_SeriesJsonCodecs.Telemetry_SeriesJson.CODEC,
+                         new Case<>("telemetry", Samples.telemetry(), Telemetry_SeriesJson.CODEC,
                                     org.pragmatica.serialization.json.tests.Telemetry.Series.class));
     }
 
@@ -122,11 +123,9 @@ class CodecConformanceTest {
     <T> void decode_everyTruncatedPrefix_failsWithoutThrowing(Case<T> c) {
         var json = c.jacksonBytes();
         for (int len = 0; len < json.length; len++) {
-            var reader = JsonReader.jsonReader()
-                                   .reset(json, 0, len);
             var prefix = len;
             c.codec()
-             .decode(reader)
+             .decode(json, 0, len)
              .onSuccess(v -> Assertions.fail("prefix of length " + prefix + " decoded: " + v));
         }
     }
@@ -138,8 +137,8 @@ class CodecConformanceTest {
         var json = c.jacksonBytes();
         var reader = JsonReader.jsonReader();
         for (int len = 0; len < json.length; len += 7) {
-            c.codec().decode(reader.reset(json, 0, len));
-            assertEquals(c.value(), c.codec().decode(reader, json));
+            assertTrue(c.codec().decode(reader, Arrays.copyOf(json, len)).isFailure());
+            assertEquals(c.value(), c.codec().decode(reader, json).unwrap());
         }
     }
 
@@ -202,11 +201,11 @@ class CodecConformanceTest {
     // factory (ValueObjectModule) and refuses it too, with the factory's message.
     @org.junit.jupiter.api.Test
     void decode_refusedValueObject_failsWithFieldAndFactoryCause() {
-        var json = new String(Ecommerce_OrderConfirmationJsonCodecs.Ecommerce_OrderConfirmationJson.CODEC.encode(Samples.orderConfirmation()),
+        var json = new String(Ecommerce_OrderConfirmationJson.CODEC.encode(Samples.orderConfirmation()),
                               StandardCharsets.UTF_8).replace("\"orderId\":\"ord-2026-10-17-58f1c3\",\"customerId\"",
                                                               "\"orderId\":\"   \",\"customerId\"");
         assertTrue(json.contains("\"orderId\":\"   \""), json);
-        Ecommerce_OrderConfirmationJsonCodecs.Ecommerce_OrderConfirmationJson.CODEC.decode(json.getBytes(StandardCharsets.UTF_8))
+        Ecommerce_OrderConfirmationJson.CODEC.decode(json.getBytes(StandardCharsets.UTF_8))
                                                                                 .onSuccess(value -> Assertions.fail("unexpected success: " + value))
                                                                                 .onFailure(cause -> assertTrue(cause.stream()
                                                                                                                     .anyMatch(c -> c instanceof JsonError.InvalidField invalid
@@ -221,7 +220,7 @@ class CodecConformanceTest {
     // Owner ruling 2026-10-17: value objects travel as their bare component, map keys included.
     @org.junit.jupiter.api.Test
     void valueObjects_areUnwrapped_includingMapKeys() {
-        var json = new String(Ecommerce_OrderConfirmationJsonCodecs.Ecommerce_OrderConfirmationJson.CODEC.encode(Samples.orderConfirmation()), StandardCharsets.UTF_8);
+        var json = new String(Ecommerce_OrderConfirmationJson.CODEC.encode(Samples.orderConfirmation()), StandardCharsets.UTF_8);
         assertTrue(json.startsWith("{\"orderId\":\"ord-2026-10-17-58f1c3\",\"customerId\":\"cust-7f3a91\""), json);
         assertTrue(json.contains("\"quantity\":2}"), json);
         assertTrue(json.contains("\"linePrices\":{\"PROD-ABC123\":{\"productId\":\"PROD-ABC123\""), json);

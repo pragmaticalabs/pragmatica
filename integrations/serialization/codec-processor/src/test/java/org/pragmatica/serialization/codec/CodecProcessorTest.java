@@ -7,12 +7,23 @@ import org.junit.jupiter.api.Test;
 
 import org.pragmatica.serialization.SliceCodec;
 
+import javax.annotation.processing.AbstractProcessor;
+import javax.annotation.processing.RoundEnvironment;
+import javax.annotation.processing.SupportedAnnotationTypes;
+import javax.annotation.processing.SupportedSourceVersion;
+import javax.lang.model.SourceVersion;
+import javax.lang.model.element.TypeElement;
 import javax.tools.JavaFileObject;
+import javax.tools.StandardLocation;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static com.google.testing.compile.CompilationSubject.assertThat;
 import static com.google.testing.compile.Compiler.javac;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CodecProcessorTest {
 
@@ -687,7 +698,7 @@ class CodecProcessorTest {
             var compilation = compileWith(source);
 
             assertThat(compilation).succeeded();
-            assertThat(compilation).generatedSourceFile("com.example.PricesJsonCodecs")
+            assertThat(compilation).generatedSourceFile("com.example.PricesJson")
                                    .contentsAsUtf8String()
                                    .contains("Sku.sku(in.readKey())");
         }
@@ -875,6 +886,184 @@ class CodecProcessorTest {
         }
     }
 
+    /// The `@Json` user surface: one flat `<Outer_>TypeJson` entry point per annotated type, and one registry per
+    /// package for `JsonCodecs.codecFor`, listed once in the services file however many rounds it took.
+    @Nested
+    class JsonEntryPointAndRegistry {
+        private static final String SERVICES = "META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider";
+
+        @Test
+        void entryPoint_isAFlatClassNamedAfterTheType_withCodecShortcutsAndHiddenMachinery() {
+            var source = JavaFileObjects.forSourceString("com.example.Ticketing",
+                """
+                package com.example;
+
+                import org.pragmatica.serialization.json.Json;
+
+                public interface Ticketing {
+                    @Json
+                    record BuyRequest(Seat seat) {}
+
+                    record Seat(String row) {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.Ticketing_BuyRequestJson")
+                                                    .contentsAsUtf8String();
+
+            entryPoint.contains("public final class Ticketing_BuyRequestJson {");
+            entryPoint.contains("public static final org.pragmatica.serialization.json.JsonTypeCodec<com.example.Ticketing.BuyRequest> CODEC = Ticketing_BuyRequestJsonCodec.CODEC;");
+            entryPoint.contains("public static org.pragmatica.lang.Result<com.example.Ticketing.BuyRequest> decode(byte[] json) {");
+            entryPoint.contains("public static org.pragmatica.lang.Result<com.example.Ticketing.BuyRequest> decode(java.lang.String json) {");
+            entryPoint.contains("public static byte[] encode(com.example.Ticketing.BuyRequest value) {");
+            entryPoint.contains("public static final java.util.Map<java.lang.Class<?>, org.pragmatica.serialization.json.JsonTypeCodec<?>> CODECS");
+            entryPoint.contains("java.util.Map.entry(com.example.Ticketing.Seat.class, Ticketing_SeatJsonCodec.CODEC)");
+            entryPoint.contains("\n    interface Ticketing_SeatJsonCodec {");
+            entryPoint.contains("org.pragmatica.serialization.json.spi.JsonReader in");
+            entryPoint.doesNotContain("public interface");
+        }
+
+        @Test
+        void registry_isOnePerPackage_listingOnlyAnnotatedTypes() {
+            var first = JavaFileObjects.forSourceString("com.example.a.First",
+                """
+                package com.example.a;
+
+                @org.pragmatica.serialization.json.Json
+                public record First(Inner inner) {
+                    public record Inner(String text) {}
+                }
+                """);
+            var second = JavaFileObjects.forSourceString("com.example.a.Second",
+                """
+                package com.example.a;
+
+                @org.pragmatica.serialization.json.Json
+                public enum Second { ONE, UNKNOWN }
+                """);
+            var other = JavaFileObjects.forSourceString("com.example.b.Other",
+                """
+                package com.example.b;
+
+                @org.pragmatica.serialization.json.Json
+                public record Other(long id) {}
+                """);
+
+            var compilation = compileWith(first, second, other);
+
+            assertThat(compilation).succeeded();
+            var registry = assertThat(compilation).generatedSourceFile("com.example.a.AJsonCodecs")
+                                                  .contentsAsUtf8String();
+
+            registry.contains("public final class AJsonCodecs implements org.pragmatica.serialization.json.spi.JsonCodecProvider {");
+            registry.contains("java.util.Map.entry(com.example.a.First.class, FirstJson.CODEC)");
+            registry.contains("java.util.Map.entry(com.example.a.Second.class, SecondJson.CODEC)");
+            registry.doesNotContain("Inner");
+            assertThat(compilation).generatedSourceFile("com.example.b.BJsonCodecs")
+                                   .contentsAsUtf8String()
+                                   .contains("java.util.Map.entry(com.example.b.Other.class, OtherJson.CODEC)");
+            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
+                                   .contentsAsUtf8String()
+                                   .isEqualTo("com.example.a.AJsonCodecs\ncom.example.b.BJsonCodecs\n");
+        }
+
+        @Test
+        void registry_takesTheRegistrySuffixOption() {
+            var source = JavaFileObjects.forSourceString("com.example.Msg",
+                """
+                package com.example;
+
+                @org.pragmatica.serialization.json.Json
+                public record Msg(String text) {}
+                """);
+
+            var compilation = javac().withProcessors(new CodecProcessor())
+                                     .withOptions("-Acodec.registry.suffix=Test")
+                                     .compile(source);
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.ExampleJsonCodecsTest")
+                                   .contentsAsUtf8String()
+                                   .contains("java.util.Map.entry(com.example.Msg.class, MsgJson.CODEC)");
+        }
+
+        // Late is generated in the round Early is processed in, so its package is still collecting: one registry.
+        @Test
+        void registry_waitsForAPackageStillReceivingTypes_andListsThemTogether() {
+            var compilation = javac().withProcessors(new CodecProcessor(), new LateJsonType("com.example.Early"))
+                                     .compile(early());
+
+            assertThat(compilation).succeeded();
+            var registry = assertThat(compilation).generatedSourceFile("com.example.ExampleJsonCodecs")
+                                                  .contentsAsUtf8String();
+
+            registry.contains("java.util.Map.entry(com.example.Early.class, EarlyJson.CODEC)");
+            registry.contains("java.util.Map.entry(com.example.Late.class, LateJson.CODEC)");
+            assertTrue(compilation.generatedSourceFile("com.example.ExampleJsonCodecs2").isEmpty());
+            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
+                                   .contentsAsUtf8String()
+                                   .isEqualTo("com.example.ExampleJsonCodecs\n");
+        }
+
+        // Late arrives after the package's registry was written: it gets a second, numbered registry, and the
+        // services file names both, so no type is lost to round timing.
+        @Test
+        void registry_givesATypeArrivingAfterItsPackageWasWritten_aSecondRegistry() {
+            var compilation = javac().withProcessors(new CodecProcessor(), new LateJsonType("com.example.ExampleJsonCodecs"))
+                                     .compile(early());
+
+            assertThat(compilation).succeeded();
+            assertThat(compilation).generatedSourceFile("com.example.ExampleJsonCodecs")
+                                   .contentsAsUtf8String()
+                                   .contains("java.util.Map.entry(com.example.Early.class, EarlyJson.CODEC)");
+            assertThat(compilation).generatedSourceFile("com.example.ExampleJsonCodecs2")
+                                   .contentsAsUtf8String()
+                                   .contains("java.util.Map.entry(com.example.Late.class, LateJson.CODEC)");
+            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
+                                   .contentsAsUtf8String()
+                                   .isEqualTo("com.example.ExampleJsonCodecs\ncom.example.ExampleJsonCodecs2\n");
+        }
+
+        // @Deprecated is an annotation CodecProcessor does not claim, so the helper is asked in Early's round too.
+        private static JavaFileObject early() {
+            return JavaFileObjects.forSourceString("com.example.Early",
+                                                   "package com.example;\n\n@Deprecated\n@org.pragmatica.serialization.json.Json\npublic record Early(String text) {}\n");
+        }
+    }
+
+    /// Stands in for another processor that generates a `@Json` type: once, in the round where `trigger` is a root.
+    @SupportedAnnotationTypes("*")
+    @SupportedSourceVersion(SourceVersion.RELEASE_25)
+    static final class LateJsonType extends AbstractProcessor {
+        private final String trigger;
+        private boolean generated;
+
+        LateJsonType(String trigger) {
+            this.trigger = trigger;
+        }
+
+        @Override
+        public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
+            var triggered = roundEnv.getRootElements()
+                                    .stream()
+                                    .anyMatch(root -> root instanceof TypeElement type && type.getQualifiedName().contentEquals(trigger));
+
+            if (triggered && !generated) {
+                generated = true;
+                try (var writer = processingEnv.getFiler().createSourceFile("com.example.Late").openWriter()) {
+                    writer.write("package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Late(long id) {}\n");
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            }
+
+            return false;
+        }
+    }
+
     /// Generated readers track fields as bits of one long (field i is `1L << i`): 64 components fit, a 65th
     /// would wrap onto bit 0 and a missing first field would go unnoticed.
     @Nested
@@ -884,7 +1073,7 @@ class CodecProcessorTest {
             var compilation = compileWith(wideRecord("Wide64", 64));
 
             assertThat(compilation).succeeded();
-            assertThat(compilation).generatedSourceFile("com.example.Wide64JsonCodecs")
+            assertThat(compilation).generatedSourceFile("com.example.Wide64Json")
                                    .contentsAsUtf8String()
                                    .contains("long REQUIRED = -1L;");
         }

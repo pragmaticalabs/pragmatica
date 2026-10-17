@@ -20,6 +20,7 @@ import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.lang.model.element.Element;
+import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
 import java.io.PrintWriter;
 import java.io.Writer;
@@ -32,9 +33,10 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// Generates one holder of reflection-free JSON codecs for a set of root types. Shared by the codec
-/// processor (`@Json` types) and the slice processor (HTTP route request and response types), so both emit
-/// identical codecs. A root the generator cannot handle is reported, not generated; its users fall back.
+/// Generates reflection-free JSON codecs for a set of root types. Shared by the codec processor (one `@Json`
+/// type per entry point, [#writeEntryPoint]) and the slice processor (HTTP route request and response types in
+/// one holder, [#write]), so both emit identical codecs. A root the generator cannot handle is reported, not
+/// generated; its users fall back.
 public final class JsonCodecGenerator {
     private final Filer filer;
     private final JsonTypeAnalyzer analyzer;
@@ -77,8 +79,22 @@ public final class JsonCodecGenerator {
         return new JsonCodecEmitter(analyzer).emit(packageName, holderName, generatedBy);
     }
 
-    /// Writes `packageName.holderName` through the Filer.
+    /// The entry point of `root` (the only root added), named `holderName`.
+    public String entryPointSource(String holderName, TypeElement root, String generatedBy) {
+        return new JsonCodecEmitter(analyzer).emitEntryPoint(packageName, holderName, root, generatedBy);
+    }
+
+    /// Writes the holder `packageName.holderName` through the Filer.
     public Result<Unit> write(String holderName, String generatedBy, Element... originatingElements) {
+        return writeSource(holderName, source(holderName, generatedBy), originatingElements);
+    }
+
+    /// Writes the entry point `packageName.holderName` of `root` (the only root added) through the Filer.
+    public Result<Unit> writeEntryPoint(String holderName, TypeElement root, String generatedBy) {
+        return writeSource(holderName, entryPointSource(holderName, root, generatedBy), root);
+    }
+
+    private Result<Unit> writeSource(String holderName, String source, Element... originatingElements) {
         var qualified = packageName.isEmpty()
                         ? holderName
                         : packageName + "." + holderName;
@@ -86,8 +102,7 @@ public final class JsonCodecGenerator {
         return Result.lift(Causes::fromThrowable,
                            () -> filer.createSourceFile(qualified, originatingElements))
                      .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
-                     .map(writer -> print(writer,
-                                          source(holderName, generatedBy)));
+                     .map(writer -> print(writer, source));
     }
 
     private static Unit print(Writer target, String source) {

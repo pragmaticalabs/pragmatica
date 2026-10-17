@@ -61,7 +61,7 @@ import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
 ///
 ///     @Override
 ///     public SliceRouter create({SliceName} slice) {
-///         return create(slice, JsonMapper.defaultJsonMapper());
+///         return create(slice, JsonMapper.valueObjectJsonMapper());
 ///     }
 ///
 ///     @Override
@@ -404,7 +404,7 @@ public class RouteSourceGenerator {
         // SliceRouterFactory: create(slice)
         out.println("    @Override");
         out.println("    public SliceRouter create(" + sliceName + " slice) {");
-        out.println("        return create(slice, JsonMapper.defaultJsonMapper());");
+        out.println("        return create(slice, JsonMapper.valueObjectJsonMapper());");
         out.println("    }");
         out.println();
         // SliceRouterFactory: create(slice, jsonMapper)

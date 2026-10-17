@@ -29,6 +29,7 @@ public class CodecProcessor extends AbstractProcessor {
     static final String JSON = "org.pragmatica.serialization.json.Json";
 
     private CodecClassGenerator generator;
+    private JsonRegistries jsonRegistries;
     private String registrySuffix = "";
 
     @Override
@@ -42,12 +43,14 @@ public class CodecProcessor extends AbstractProcessor {
         this.registrySuffix = suffix == null
                               ? ""
                               : suffix;
+        this.jsonRegistries = new JsonRegistries(processingEnv.getFiler(), processingEnv.getElementUtils(), registrySuffix);
     }
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         Map<String, List<String>> packageToCodecNames = new LinkedHashMap<>();
         Map<String, Set<String>> packageToRequiredTypes = new LinkedHashMap<>();
+        Set<String> jsonPackages = new LinkedHashSet<>();
 
         processCodecForAnnotations(roundEnv, packageToCodecNames, packageToRequiredTypes);
         for (var annotation : annotations) {
@@ -58,7 +61,8 @@ public class CodecProcessor extends AbstractProcessor {
             }
 
             if (JSON.equals(annotationName)) {
-                roundEnv.getElementsAnnotatedWith(annotation).forEach(this::processJson);
+                roundEnv.getElementsAnnotatedWith(annotation)
+                        .forEach(element -> processJson(element, jsonPackages));
                 continue;
             }
 
@@ -68,8 +72,20 @@ public class CodecProcessor extends AbstractProcessor {
         }
 
         generateRegistries(packageToCodecNames, packageToRequiredTypes);
+        generateJsonRegistries(roundEnv, jsonPackages);
 
         return true;
+    }
+
+    // The JSON registries are flushed per round and finished in the last one; see JsonRegistries for why.
+    private void generateJsonRegistries(RoundEnvironment roundEnv, Set<String> jsonPackages) {
+        var written = roundEnv.processingOver()
+                      ? jsonRegistries.finish()
+                      : jsonRegistries.flush(jsonPackages);
+
+        written.onFailure(cause -> processingEnv.getMessager()
+                                                .printMessage(Diagnostic.Kind.ERROR,
+                                                              "Cannot write JSON registries: " + cause.message()));
     }
 
     private void processCodecForAnnotations(RoundEnvironment roundEnv,
@@ -153,8 +169,9 @@ public class CodecProcessor extends AbstractProcessor {
         return result;
     }
 
-    // One self-contained holder per @Json type: <Nested_Prefix><Simple>JsonCodecs, next to the type.
-    private void processJson(Element element) {
+    // One self-contained entry point per @Json type, <Nested_Prefix><Simple>Json next to the type, listed in its
+    // package's JSON registry once written.
+    private void processJson(Element element, Set<String> jsonPackages) {
         if (element.getKind() != ElementKind.RECORD && element.getKind() != ElementKind.ENUM) {
             error(element, "@Json can only be applied to records and enums");
 
@@ -174,15 +191,17 @@ public class CodecProcessor extends AbstractProcessor {
             return;
         }
 
-        var holder = jsonHolderName(type);
+        var entryPoint = jsonEntryPointName(type);
 
-        json.write(holder, "CodecProcessor", type)
-            .onSuccess(_ -> note(element, "Generated JSON codecs: " + holder))
+        json.writeEntryPoint(entryPoint, type, "CodecProcessor")
+            .onSuccess(_ -> note(element, "Generated JSON codec: " + entryPoint))
+            .onSuccess(_ -> jsonRegistries.add(packageName, type.getQualifiedName().toString(), entryPoint))
+            .onSuccess(_ -> jsonPackages.add(packageName))
             .onFailure(cause -> error(element,
-                                      "Cannot write " + holder + ": " + cause.message()));
+                                      "Cannot write " + entryPoint + ": " + cause.message()));
     }
 
-    private static String jsonHolderName(TypeElement type) {
+    private static String jsonEntryPointName(TypeElement type) {
         var prefix = new StringBuilder();
 
         for (var enclosing = type.getEnclosingElement(); enclosing instanceof TypeElement outer; enclosing = outer.getEnclosingElement()) {
@@ -190,7 +209,7 @@ public class CodecProcessor extends AbstractProcessor {
         }
 
         return prefix + type.getSimpleName()
-                            .toString() + "JsonCodecs";
+                            .toString() + "Json";
     }
 
     private void processAnnotatedElement(Element element, Map<String, List<String>> packageToCodecNames) {

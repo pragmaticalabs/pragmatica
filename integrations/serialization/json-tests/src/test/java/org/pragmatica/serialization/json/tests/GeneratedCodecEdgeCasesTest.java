@@ -66,7 +66,7 @@ class GeneratedCodecEdgeCasesTest {
     @Test
     void valueObjectInRecord_generatedBytesEqualProductionMapper_andDecodeEachOther() {
         var contact = new Contact(new Email("a@b.c"));
-        var generated = GeneratedCodecEdgeCasesTest_ContactJsonCodecs.GeneratedCodecEdgeCasesTest_ContactJson.CODEC.encode(contact);
+        var generated = GeneratedCodecEdgeCasesTest_ContactJson.CODEC.encode(contact);
 
         assertEquals("{\"email\":\"a@b.c\"}", text(generated));
         assertEquals(text(Baseline.MAPPER.writeAsBytes(contact).unwrap()), text(generated));
@@ -78,13 +78,13 @@ class GeneratedCodecEdgeCasesTest {
         var clash = new Clash(List.of("a"), List.of(List.of("b", "c"), List.of()));
         var prefix = new PrefixClash(List.of(List.of("x")), List.of(), List.of("y"));
 
-        assertRoundTrip(GeneratedCodecEdgeCasesTest_ClashJsonCodecs.GeneratedCodecEdgeCasesTest_ClashJson.CODEC, clash);
-        assertRoundTrip(GeneratedCodecEdgeCasesTest_PrefixClashJsonCodecs.GeneratedCodecEdgeCasesTest_PrefixClashJson.CODEC, prefix);
+        assertRoundTrip(GeneratedCodecEdgeCasesTest_ClashJson.CODEC, clash);
+        assertRoundTrip(GeneratedCodecEdgeCasesTest_PrefixClashJson.CODEC, prefix);
     }
 
     @Test
     void sixtyFourComponents_roundTrip_andEveryMissingFieldIsRefused() {
-        var codec = GeneratedCodecEdgeCasesTest_WideJsonCodecs.GeneratedCodecEdgeCasesTest_WideJson.CODEC;
+        var codec = GeneratedCodecEdgeCasesTest_WideJson.CODEC;
         var full = Baseline.MAPPER.readBytes(wideJson(-1).getBytes(StandardCharsets.UTF_8), Wide.class).unwrap();
 
         assertRoundTrip(codec, full);
@@ -94,7 +94,7 @@ class GeneratedCodecEdgeCasesTest {
 
     @Test
     void optionalSixtyFourthComponent_absentKeyDecodesAsNone() {
-        var codec = GeneratedCodecEdgeCasesTest_WideOptionalJsonCodecs.GeneratedCodecEdgeCasesTest_WideOptionalJson.CODEC;
+        var codec = GeneratedCodecEdgeCasesTest_WideOptionalJson.CODEC;
 
         assertEquals(Option.none(), codec.decode(wideJson(63).getBytes(StandardCharsets.UTF_8)).unwrap().f63());
         assertEquals(Option.some("v63"), codec.decode(wideJson(-1).getBytes(StandardCharsets.UTF_8)).unwrap().f63());
@@ -103,7 +103,7 @@ class GeneratedCodecEdgeCasesTest {
     @Test
     void emptyOption_inComponentListAndMapValue_generatedBytesEqualProductionMapper() {
         var maybe = new Maybe("1", Option.none(), List.of(Option.none(), Option.some("x")), Map.of("k", Option.none()));
-        var generated = GeneratedCodecEdgeCasesTest_MaybeJsonCodecs.GeneratedCodecEdgeCasesTest_MaybeJson.CODEC.encode(maybe);
+        var generated = GeneratedCodecEdgeCasesTest_MaybeJson.CODEC.encode(maybe);
 
         assertEquals("{\"id\":\"1\",\"note\":null,\"list\":[null,\"x\"],\"byKey\":{\"k\":null}}", text(generated));
         assertEquals(text(Baseline.MAPPER.writeAsBytes(maybe).unwrap()), text(generated));
@@ -112,7 +112,7 @@ class GeneratedCodecEdgeCasesTest {
     @Test
     void emptyOption_absentKeyAndLiteralNull_bothDecodeAsNone_generatedAndProductionMapper() {
         var expected = new Maybe("1", Option.none(), List.of(Option.none()), Map.of("k", Option.none()));
-        var codec = GeneratedCodecEdgeCasesTest_MaybeJsonCodecs.GeneratedCodecEdgeCasesTest_MaybeJson.CODEC;
+        var codec = GeneratedCodecEdgeCasesTest_MaybeJson.CODEC;
 
         for (var json : List.of("{\"id\":\"1\",\"list\":[null],\"byKey\":{\"k\":null}}",
                                 "{\"id\":\"1\",\"note\":null,\"list\":[null],\"byKey\":{\"k\":null}}")) {
