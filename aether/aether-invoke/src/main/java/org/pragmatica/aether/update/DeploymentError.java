@@ -105,7 +105,7 @@ public sealed interface DeploymentError extends Cause, HttpStatusAware {
         @Override
         public String message() {
             return "Cannot deploy version " + version
-                 + " — already active. Use /api/blueprints/deploy for redeployment.";
+                 + " — already active. Use /api/v1/blueprints/deploy for redeployment.";
         }
 
         @Override

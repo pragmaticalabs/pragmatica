@@ -2427,7 +2427,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "publish", description = "Publish a blueprint already present in the artifact repository (POST /api/blueprints/publish)")
+        @Command(name = "publish", description = "Publish a blueprint already present in the artifact repository (POST /api/v1/blueprints/publish)")
         static class PublishCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private BlueprintCommand blueprintParent;

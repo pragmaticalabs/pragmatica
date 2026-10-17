@@ -978,7 +978,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var blockedSlices = slicesOwnedBy(owner);
 
             log.error("Schema migration FAILED for datasource '{}' (owner '{}') — holding activation of {} slice(s) {};"
-                     + " clear with POST /api/schema/{}/retry or redeploy the blueprint",
+                     + " clear with POST /api/v1/schema/retry/{} or redeploy the blueprint",
                       value.datasourceName(),
                       owner.asString(),
                       blockedSlices.size(),

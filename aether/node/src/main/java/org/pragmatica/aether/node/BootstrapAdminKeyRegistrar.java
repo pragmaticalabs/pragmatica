@@ -157,7 +157,7 @@ public final class BootstrapAdminKeyRegistrar {
             %s
             ----------------------------------------------------------------
             Pass it as the `X-API-Key` header (or `--api-key` to the CLI).
-            Rotate or revoke it via /api/cluster/keys once provisioned.
+            Rotate or revoke it via /api/v1/cluster/keys once provisioned.
             ================================================================
             """.formatted(plaintext);
 
