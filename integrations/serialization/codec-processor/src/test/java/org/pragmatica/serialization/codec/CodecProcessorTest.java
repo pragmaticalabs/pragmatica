@@ -870,6 +870,78 @@ class CodecProcessorTest {
             assertThat(compilation).hadErrorContaining("Jackson annotation @com.example.Snake on com.example.Tagged");
         }
 
+        // Jackson binds through creator parameters, so an annotation found only on a parameter must refuse the type.
+        @Test
+        void json_failsCompilation_forJsonPropertyOnlyOnCanonicalConstructorParameter() {
+            var source = JavaFileObjects.forSourceString("com.example.Renamed",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Renamed(String userName) {
+                    public Renamed(@JsonProperty("user_name") String userName) {
+                        this.userName = userName;
+                    }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on parameter userName of com.example.Renamed.<init>");
+        }
+
+        @Test
+        void json_failsCompilation_forJsonPropertyOnlyOnFactoryParameter() {
+            var source = JavaFileObjects.forSourceString("com.example.Handle",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.serialization.json.Json;
+
+                @Json
+                public record Handle(String value) {
+                    public static Result<Handle> handle(@JsonProperty("h") String value) {
+                        return Result.success(new Handle(value));
+                    }
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on parameter value of com.example.Handle.handle");
+        }
+
+        // A container refused for its element says why the element was refused, not just that the container was.
+        @Test
+        void json_failsCompilation_namingTheInnermostRefusal_forARefusedListElement() {
+            var source = JavaFileObjects.forSourceString("com.example.Outer",
+                """
+                package com.example;
+
+                import com.fasterxml.jackson.annotation.JsonProperty;
+                import org.pragmatica.serialization.json.Json;
+                import java.util.List;
+
+                @Json
+                public record Outer(List<Inner> items) {
+                    public record Inner(@JsonProperty("n") String name) {}
+                }
+                """);
+
+            var compilation = compileWith(source);
+
+            assertThat(compilation).failed();
+            assertThat(compilation).hadErrorContaining("component items: java.util.List<com.example.Outer.Inner>: com.example.Outer.Inner: "
+                                                       + "Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty on com.example.Outer.Inner");
+        }
+
         @Test
         void json_generatesCodec_forUnannotatedSiblingOfRefusedType() {
             var source = JavaFileObjects.forSourceString("com.example.Plain",

@@ -105,8 +105,34 @@ final class JsonTypeAnalyzer {
         };
     }
 
+    /// Why `type` was refused. A container refused for its argument names the argument and the argument's own
+    /// reason, down to the innermost refusal: `java.util.List<Inner>: Inner: <why Inner was refused>`.
     String reason(TypeMirror type) {
-        return unsupported.getOrDefault(erasedName(type), "unsupported type " + type);
+        return argumentReason(type).map(reason -> type + ": " + reason)
+                                   .orElse(() -> recordedReason(type))
+                                   .or("unsupported type " + type);
+    }
+
+    // The first type argument with a known refusal, as `<argument>: <its reason>`.
+    private Option<String> argumentReason(TypeMirror type) {
+        return type instanceof DeclaredType declared
+               ? Option.from(declared.getTypeArguments()
+                                     .stream()
+                                     .flatMap(argument -> refusedArgument(argument).stream())
+                                     .findFirst())
+               : Option.none();
+    }
+
+    private Option<String> refusedArgument(TypeMirror argument) {
+        return knownReason(argument).map(reason -> argument + ": " + reason);
+    }
+
+    private Option<String> knownReason(TypeMirror type) {
+        return argumentReason(type).orElse(() -> recordedReason(type));
+    }
+
+    private Option<String> recordedReason(TypeMirror type) {
+        return Option.option(unsupported.get(erasedName(type)));
     }
 
     private Option<JsonType> analyzeDeclared(DeclaredType type) {

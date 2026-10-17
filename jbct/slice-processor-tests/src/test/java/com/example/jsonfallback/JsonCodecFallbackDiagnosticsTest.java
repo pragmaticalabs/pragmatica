@@ -95,6 +95,13 @@ class JsonCodecFallbackDiagnosticsTest {
         }
 
         @Test
+        void containerRefusedForItsElement_noteCarriesTheElementsReason() {
+            assertThat(notes).anyMatch(note -> note.contains("Route 'nested': com.example.rollbackfixture.NestedRequest uses the Jackson fallback: "
+                                                             + "component items: java.util.List<com.example.rollbackfixture.Bad>: "
+                                                             + "com.example.rollbackfixture.Bad: Jackson annotation @com.fasterxml.jackson.annotation.JsonProperty"));
+        }
+
+        @Test
         void valueObjectWhoseFactoryTheHolderCannotCall_staysOnJackson() {
             assertThat(notes).anyMatch(note -> note.contains("Route 'code'")
                                                && note.contains("value object factory code is not accessible from package 'com.example.rollbackfixture'"));
@@ -189,6 +196,7 @@ class JsonCodecFallbackDiagnosticsTest {
         rootA = "POST /a"
         ok = "POST /ok"
         code = "POST /code"
+        nested = "POST /nested"
 
         [errors]
         default = 500
@@ -217,6 +225,7 @@ class JsonCodecFallbackDiagnosticsTest {
                 Promise<Plain> rootA(RootA request);
                 Promise<Plain> ok(OkRequest request);
                 Promise<Plain> code(CodeRequest request);
+                Promise<Plain> nested(NestedRequest request);
 
                 static RollbackSlice rollbackSlice() {
                     return new RollbackSlice() {
@@ -233,6 +242,11 @@ class JsonCodecFallbackDiagnosticsTest {
                         @Override
                         public Promise<Plain> code(CodeRequest request) {
                             return Promise.success(new Plain("c"));
+                        }
+
+                        @Override
+                        public Promise<Plain> nested(NestedRequest request) {
+                            return Promise.success(new Plain("n"));
                         }
                     };
                 }
@@ -257,6 +271,14 @@ class JsonCodecFallbackDiagnosticsTest {
             import com.fasterxml.jackson.annotation.JsonProperty;
 
             public record Bad(@JsonProperty("x") String v) {}
+            """),
+        // Refused only through its list element: the note must say why the element was refused.
+        Map.entry("com/example/rollbackfixture/NestedRequest.java", """
+            package com.example.rollbackfixture;
+
+            import java.util.List;
+
+            public record NestedRequest(List<Bad> items) {}
             """),
         Map.entry("com/example/rollbackfixture/OkRequest.java", """
             package com.example.rollbackfixture;
