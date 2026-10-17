@@ -1,10 +1,12 @@
 # Changelog
 
-## [0.1.0-SNAPSHOT] - 2026-03-30
+> From 1.0.0-alpha the project is versioned as one monorepo. Release history is in the root [CHANGELOG.md](../../CHANGELOG.md); the entry below is the module's initial development entry, not a shipped version.
+
+## Initial development entry - 2026-03-30
 
 ### Added
 - Full PostgreSQL PEG grammar (~500 rules) covering DDL, DML, expressions, all data types
-- Standalone generated parser (73k lines, no peglib runtime dependency)
+- PostgreSQL lexer/parser/visitor generated from the grammar at build time by peglib (`peglib-maven-plugin`); not committed, and `pg-parser` depends on `peglib-runtime` at compile scope
 - CST navigator and extractor for typed AST extraction (Identifier, QualifiedName, DataTypeName)
 - Event-sourced schema model with 25 event types (Table, Column, Constraint, Index, Sequence, Type)
 - Schema builder: pure fold over events producing immutable schema snapshots
@@ -19,4 +21,4 @@
 - Java record and enum code generation from schema with configurable output directory
 - Type mapper: 40+ PostgreSQL → Java type mappings
 - Test corpus: Flyway-compatible migration examples (simple, multi-table, alterations, pg-specific)
-- 423 tests across 3 modules
+- Modules at the time of the current tree: `pg-parser`, `pg-schema`, `pg-codegen`, `pg-maven-plugin`, `pg-test-corpus`, `sql-splitter`

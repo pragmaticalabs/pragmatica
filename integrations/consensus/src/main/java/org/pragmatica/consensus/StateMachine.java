@@ -121,7 +121,7 @@ public interface StateMachine<C extends Command> {
     ///
     /// Two batches with the same id are required to have identical content (the id is a
     /// content hash). Differing ids indicate a programming error and are rejected.
-    @SuppressWarnings("JBCT-EX-01")  // TODO(RC2): merge() returns a bare Batch from the consensus
+    @SuppressWarnings("JBCT-EX-01")  // throws on differing ids (a programming error), not a Result
     default Batch<C> merge(Batch<C> a, Batch<C> b) {
         if (!a.id().equals(b.id())) {
             log.error("Cannot merge batches with different ids: {} vs {}", a.id(), b.id());

@@ -1,5 +1,7 @@
 # Changelog
 
+> From 1.0.0-alpha the project is versioned as one monorepo. Release history since then is in the root [CHANGELOG.md](../CHANGELOG.md); the entries below are this module's earlier standalone history.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

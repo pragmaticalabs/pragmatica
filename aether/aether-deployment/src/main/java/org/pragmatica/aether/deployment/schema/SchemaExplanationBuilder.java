@@ -104,9 +104,9 @@ public interface SchemaExplanationBuilder {
 
         sb.append("  ")
           .append(optionIndex++)
-          .append(". Fix the underlying issue and retry: POST /api/schema/")
+          .append(". Fix the underlying issue and retry: POST /api/v1/schema/retry/")
           .append(datasource)
-          .append("/retry\n");
+          .append("\n");
         sb.append("  ").append(optionIndex).append(". Skip schema gate: redeploy with schema_required=false\n");
     }
 }

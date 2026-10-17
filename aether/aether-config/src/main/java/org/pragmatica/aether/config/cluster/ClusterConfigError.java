@@ -536,7 +536,7 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
     record UnsupportedApplyAction(DiffAction action) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Config action not supported for live apply on POST /api/cluster/config in this release: " + action.symbol()
+            return "Config action not supported for live apply on POST /api/v1/cluster/config in this release: " + action.symbol()
                  + " " + action.description()
                  + ". No verified recovery is available through this endpoint yet — escalate rather than retry.";
         }

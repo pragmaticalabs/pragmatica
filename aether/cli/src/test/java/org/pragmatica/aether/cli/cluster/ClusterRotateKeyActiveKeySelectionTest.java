@@ -16,7 +16,7 @@ import static org.pragmatica.aether.cli.cluster.ClusterRotateKeyCommand.resolveK
 /// *that* key — revoking a credential possibly still in use, leaving the intended one valid, and
 /// reporting success either way.
 ///
-/// The listing is `GET /api/cluster/keys`, a bare JSON array of `KeyInfo` records whose per-record
+/// The listing is `GET /api/v1/cluster/keys`, a bare JSON array of `KeyInfo` records whose per-record
 /// state field is `status`.
 class ClusterRotateKeyActiveKeySelectionTest {
     private static final String REVOKED_FIRST = """

@@ -10,8 +10,9 @@ other open pull request into conflict and each needed a re-merge round before it
 ## File name
 
 `<number>-<slug>.md` — the issue number the pull request fixes (the pull request number when there is
-no issue), a dash, a short lowercase slug. Examples: `684-compose-secret-out-of-env.md`,
-`726-network-metrics-honest-home.md`.
+no issue), a dash, a short lowercase slug. Examples (illustrative; a fragment is removed from this
+directory when it is assembled into `CHANGELOG.md`): `684-compose-secret-out-of-env.md`,
+`726-quic-byte-counters.md`.
 
 ## Content
 
@@ -45,7 +46,7 @@ It fails when:
 not look and is reporting no verdict. On a pass it prints the changed-path count alongside
 `needs_fragment`, so a zero is measured rather than implied.
 
-Documentation-only pull requests (`*.md`, `docs/`, `.github/`) need no fragment.
+Documentation-only pull requests (`*.md`, `docs/`, `.github/`, `LICENSE*`, `.gitignore`, `.gitattributes`) need no fragment.
 
 ## Release prep
 

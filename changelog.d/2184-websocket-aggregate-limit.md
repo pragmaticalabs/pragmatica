@@ -1,2 +1,0 @@
-### Fixed (2026-10-13 — #2184: the WebSocket aggregate size limit is pinned by a test)
-- A test now pins the bound on a fragmented WebSocket message to the server's content length from both sides: exactly the limit is delivered whole, and one byte over is never delivered, closes the connection and gives the handler only `Close`. [verified: `integrations/net/http-server/src/test/java/org/pragmatica/http/server/WebSocketEndpointTest.java`]

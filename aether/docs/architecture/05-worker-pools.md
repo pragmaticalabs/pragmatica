@@ -2,7 +2,7 @@
 
 **Status:** Historical architecture proposal. For the RC4 implementation contract, see [hierarchical clustering](../specs/hierarchical-cluster-contract-spec.md) and [worker metadata distribution](../specs/worker-metadata-distribution-spec.md). The diagrams below that mention DecisionRelay, WorkerBootstrap, or community DHT relay are superseded: workers use bounded direct core metadata manifests and the core-hosted DHT; those dormant parallel implementations were removed. The 10K-node target is not a measured storage or application-throughput guarantee.
 
-This document describes how Aether scales beyond the Rabia consensus limit of 5-9 nodes to support 10,000+ nodes.
+This document describes a two-layer topology designed to scale beyond the Rabia consensus limit of 5-9 nodes. The design target is about 100 nodes per worker community; multi-community reach is unvalidated (see [Known Limitations](../reference/known-limitations.md)).
 
 ## Problem
 
