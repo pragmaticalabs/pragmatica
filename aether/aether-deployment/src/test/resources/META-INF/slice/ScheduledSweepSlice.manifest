@@ -1,0 +1,9 @@
+# Test fixture for NodeDeploymentStateScheduledTaskPublishTest (#1216).
+#
+# Shaped exactly as the slice processor generates a scheduled reactive binding — the ticketing
+# demo's SweepHolds slice: category `scheduled`, the method to fire, and the resources.toml section
+# the node binds to a ScheduleConfig at activation.
+reactive.count=1
+reactive.0.category=scheduled
+reactive.0.method=execute
+reactive.0.config=scheduling.sweep-holds

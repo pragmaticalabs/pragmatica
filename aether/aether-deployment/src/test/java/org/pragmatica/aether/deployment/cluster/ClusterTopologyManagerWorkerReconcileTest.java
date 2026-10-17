@@ -24,6 +24,7 @@ import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
+import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -31,6 +32,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.MembershipView;
@@ -87,35 +89,73 @@ class ClusterTopologyManagerWorkerReconcileTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
             count = 3
             """;
 
+    /// Two cloud sources with workers, each pinned to one zone (#1650).
+    private static final String TWO_WORKER_SOURCES_TOML = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [operations.ports]
+            cluster = 6000
+            management = 5160
+            app_http = 8070
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "eu-central"
+            zone = "nbg1"
+
+            [source.eu-1.core]
+            count = 3
+
+            [source.eu-1.worker]
+            count = 1
+
+            [source.eu-2]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "eu-central"
+            zone = "fsn1"
+
+            [source.eu-2.worker]
+            count = 1
+            """;
+
     private WorkerRecordingLifecycleManager lifecycleManager;
     private AtomicReference<Option<ClusterConfigValue>> configRef;
     private ClusterTopologyManager ctm;
+    private TopologyObserver observer;
+    private StubSnapshotSource snapshotSource;
 
     @BeforeEach
     void setUp() {
-        var snapshotSource = new StubSnapshotSource();
+        snapshotSource = new StubSnapshotSource();
         var config = new TopologyConfig(SELF,
                                         3,
                                         timeSpan(60).seconds(),
                                         timeSpan(1).seconds(),
                                         List.of(INFO_SELF, INFO_A, INFO_B));
-        var observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
+        observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         lifecycleManager = new WorkerRecordingLifecycleManager();
         configRef = new AtomicReference<>(Option.none());
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                     timeSpan(1).millis(),
-                                                     AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                     AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                     AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                                     timeSpan(0).millis())
-                                     .unwrap();
-        ctm = ClusterTopologyManager.clusterTopologyManager(observer,
+        ctm = buildCtm(MembershipLiveness.UNWIRED);
+    }
+
+    private ClusterTopologyManager buildCtm(MembershipLiveness liveness) {
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
+        var built = ClusterTopologyManager.clusterTopologyManager(observer,
                                                             lifecycleManager,
                                                             autoHeal,
                                                             DeploymentMap.deploymentMap(),
@@ -124,7 +164,27 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                                             ClusterTopologyManagerWorkerReconcileTest::applyNoop,
                                                             () -> AetherValue.ClusterPhase.NORMAL,
                                                             _ -> {},
-                                                            _ -> {});
+                                                            _ -> {},
+                                                            Option::none,
+                                                            liveness);
+        var placements = new java.util.HashMap<AetherKey, AetherValue>();
+        built.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
+            () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
+            key -> Option.option(placements.get(key)), commands -> {
+                var results = new java.util.ArrayList<Object>();
+                for (var command : commands) {
+                    var transaction = (KVCommand.LeaderTransaction<AetherKey, AetherValue>) command;
+                    var accepted = transaction.mutations().stream().allMatch(mutation ->
+                        Option.option(placements.get(mutation.key())).equals(mutation.expected()));
+                    if (accepted) {
+                        transaction.mutations().forEach(mutation -> mutation.replacement().onPresent(value -> placements.put(mutation.key(), value)));
+                    }
+                    results.add(new KVCommand.TransactionResult(transaction.transactionId(), accepted));
+                }
+                return Promise.success(results);
+            }));
+
+        return built;
     }
 
     private static Promise<List<Object>> applyNoop(List<KVCommand<AetherKey>> commands) {
@@ -132,16 +192,47 @@ class ClusterTopologyManagerWorkerReconcileTest {
     }
 
     private void seedTopology(AetherValue.TopologyEntry... entries) {
-        seedConfig("", entries);
+        seedConfig(Option.none(), entries);
     }
 
     private void seedConfig(String toml, AetherValue.TopologyEntry... entries) {
+        seedConfig(Option.some(toml), entries);
+    }
+
+    private void seedConfig(Option<String> toml, AetherValue.TopologyEntry... entries) {
         configRef.set(Option.some(new ClusterConfigValue(toml, CLUSTER, "1.0.0", List.of(entries), 3, 9, "test", 1L,
                                                          System.currentTimeMillis())));
     }
 
     private static AetherValue.TopologyEntry entry(String source, String role, int count) {
         return new AetherValue.TopologyEntry(source, role, count);
+    }
+
+    /// #1601: a new worker is seeded with the LIVE installed voters. PEER_B is a configured voter the observer
+    /// still has NodeInfo for, but membership no longer counts it (dead). Before #1601 the seed was the voter
+    /// set itself, so PEER_B's address rode into the new worker's PEERS.
+    @Test
+    void reconcile_workerDeficit_seedsNewWorkersWithLiveVotersOnly_neverADeadOne() {
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF,
+                                                                                                        List.of(INFO_A, INFO_B)));
+        assertThat(observer.get(PEER_B).isPresent()).as("arming: the observer still knows the dead voter's address")
+                                                    .isTrue();
+        ctm = buildCtm(new MembershipLiveness(() -> Set.of(SELF, PEER_A),
+                                              () -> Set.of(SELF, PEER_A),
+                                              _ -> false,
+                                              _ -> false,
+                                              Set::of,
+                                              () -> 3,
+                                              _ -> Option.none()));
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        assertThat(lifecycleManager.provisionedPeers()).hasSize(1);
+        assertThat(lifecycleManager.provisionedPeers().getFirst())
+            .contains(PEER_A.id())
+            .doesNotContain(PEER_B.id());
     }
 
     @Test
@@ -184,6 +275,28 @@ class ClusterTopologyManagerWorkerReconcileTest {
         ctm.activate();
 
         assertThat(lifecycleManager.provisionedSourceNames()).containsExactlyInAnyOrder("primary", "secondary");
+    }
+
+    /// #1650: two cloud sources, each backing workers in its own zone. Every worker the leader provisions must
+    /// BOOT with its own source and zone -- the provision context already carried the right source (above), but
+    /// the rendered cloud-init env took `AETHER_SOURCE`/`AETHER_ZONE` from the leader's own process env, and a
+    /// node learns its source only from that variable. Asserted on the user-data the provider receives.
+    @Test
+    void reconcile_twoCloudWorkerSources_eachWorkerBootsWithItsOwnSourceAndZone() {
+        seedConfig(TWO_WORKER_SOURCES_TOML,
+                   entry("eu-1", "core", 3),
+                   entry("eu-1", "worker", 1),
+                   entry("eu-2", "worker", 1));
+
+        ctm.activate();
+
+        var userData = lifecycleManager.userDataBySource();
+
+        assertThat(userData).containsOnlyKeys("eu-1", "eu-2");
+        assertThat(userData.get("eu-1")).contains("AETHER_SOURCE=\"eu-1\"", "AETHER_ZONE=\"nbg1\"")
+                                        .doesNotContain("AETHER_SOURCE=\"eu-2\"", "AETHER_ZONE=\"fsn1\"");
+        assertThat(userData.get("eu-2")).contains("AETHER_SOURCE=\"eu-2\"", "AETHER_ZONE=\"fsn1\"")
+                                        .doesNotContain("AETHER_SOURCE=\"eu-1\"", "AETHER_ZONE=\"nbg1\"");
     }
 
     /// Defect A, core-tier half: the auto-heal replacement path has no topology entry to read, so it
@@ -236,10 +349,24 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(lifecycleManager.provisionedNodeIds()).hasSize(2);
     }
 
+    private List<String> captureRetirementRequests() {
+        var requested = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        ctm.installCommunityPlacement(new CommunityPlacementReconciler() {
+            public Promise<org.pragmatica.lang.Unit> reconcile() { return Promise.unitPromise(); }
+            public Promise<org.pragmatica.lang.Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) {
+                requested.add(node.id());
+                return Promise.unitPromise();
+            }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+        });
+        return requested;
+    }
+
     /// Newest first: reconciler-minted `-r<clock36>` ids sort after bootstrap `-<index>` ids, so a
     /// scale-down reaps cluster-provisioned workers before bootstrap-provisioned ones.
     @Test
-    void reconcile_workerSurplus_terminatesNewestFirst() {
+    void reconcile_workerSurplus_requestsDurableRetirementNewestFirst() {
+        var requested = captureRetirementRequests();
         seedTopology(entry("primary", "core", 3), entry("primary", "worker", 1));
         lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"),
                                      workerInstance("primary", "primary-worker-1"),
@@ -248,9 +375,35 @@ class ClusterTopologyManagerWorkerReconcileTest {
 
         ctm.reconcileWorkerTopology();
 
-        assertThat(lifecycleManager.terminatedNodeIds())
-                .containsExactly("primary-worker-rzzz-0", "primary-worker-1");
+        assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        assertThat(requested).startsWith("primary-worker-rzzz-0", "primary-worker-1");
         assertThat(lifecycleManager.provisionedNodeIds()).isEmpty();
+    }
+
+    /// #1543 rule 3 through the reconcile pass: a paired +1 replacement is surge, so the pass retires
+    /// nothing; once the pairing reaches RETIRING_OLD the paired original is the one retired.
+    @Test
+    void reconcile_workerSurplus_honoursTheReplacementPairingSetOnTheCtm() {
+        var requested = captureRetirementRequests();
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        var pairing = new org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey(new NodeId("primary-worker-1"));
+        ctm.setNodeReplacements(pairings);
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"),
+                                     workerInstance("primary", "primary-worker-1"),
+                                     workerInstance("primary", "primary-worker-rzzz-0"));
+        pairings.put(pairing, new AetherValue.NodeReplacementValue(new NodeId("primary-worker-rzzz-0"), "worker",
+                                                                   AetherValue.NodeReplacementPhase.JOINING, 0L));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+        assertThat(requested).isEmpty();
+
+        pairings.put(pairing, new AetherValue.NodeReplacementValue(new NodeId("primary-worker-rzzz-0"), "worker",
+                                                                   AetherValue.NodeReplacementPhase.RETIRING_OLD, 0L));
+        ctm.reconcileWorkerTopology();
+        assertThat(requested).containsExactly("primary-worker-1");
+        assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
     }
 
     /// Defect A's scale-down consequence, on the reconciler's OWN mints rather than on inventory the
@@ -258,7 +411,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
     /// `actual` was always empty, so `terminateSurplusWorkers` had no victims to choose from and a
     /// scale-down could only ever add VMs.
     @Test
-    void reconcile_scaleDownAfterOwnMints_terminatesItsOwnNewestWorkers() {
+    void reconcile_scaleDownAfterOwnMints_neverBypassesDurableRetirement() {
+        var requested = captureRetirementRequests();
         seedTopology(entry("primary", "core", 3), entry("primary", "worker", 3));
         ctm.activate();
         var newestTwo = lifecycleManager.provisionedNodeIds()
@@ -271,7 +425,8 @@ class ClusterTopologyManagerWorkerReconcileTest {
         ctm.reconcileWorkerTopology();
 
         assertThat(lifecycleManager.provisionedNodeIds()).hasSize(3);
-        assertThat(lifecycleManager.terminatedNodeIds()).containsExactlyElementsOf(newestTwo);
+        assertThat(requested).containsExactlyElementsOf(newestTwo);
+        assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
     }
 
     @Test
@@ -332,6 +487,104 @@ class ClusterTopologyManagerWorkerReconcileTest {
                .untilAsserted(() -> assertThat(lifecycleManager.listCalls()).isEqualTo(1));
     }
 
+    /// #1650 F1 (v1650): `eu-1` is pinned to `nbg1` and runs the cores; `us-1` is a ZONELESS source with one
+    /// worker. With no configured zone the worker falls back to zone BALANCING, which must count `us-1`'s own
+    /// nodes only -- another source's zone names a location this source's provider may not have.
+    private static final String ZONELESS_SECOND_SOURCE_TOML = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [operations.ports]
+            cluster = 6000
+            management = 5160
+            app_http = 8070
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "eu-central"
+            zone = "nbg1"
+
+            [source.eu-1.core]
+            count = 3
+
+            [source.us-1]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "us-east"
+
+            [source.us-1.worker]
+            count = 1
+            """;
+
+    /// CONTROL, the pre-#1650 world: no node carries a source or zone label, so there is nothing to balance.
+    @Test
+    void reconcile_zonelessSource_unlabelledTopology_getsNoPlacement() {
+        assertThat(us1WorkerPlacements(Map.of(), Map.of(), Map.of())).containsExactly(Option.none());
+    }
+
+    /// The v1650 defect: once the renderer stamps `eu-1`'s cores with `source=eu-1, zone=nbg1`, the zoneless
+    /// `us-1` worker must NOT be steered into `nbg1` -- Hetzner would put it there, AWS and GCP would fail the create.
+    @Test
+    void reconcile_zonelessSource_isNeverPlacedInAnotherSourcesZone() {
+        var eu1 = Map.of(NodeInfo.LABEL_SOURCE, "eu-1", NodeInfo.LABEL_ZONE, "nbg1");
+
+        assertThat(us1WorkerPlacements(eu1, eu1, eu1)).containsExactly(Option.none());
+    }
+
+    /// Balancing still works WITHIN the source: `us-1`'s own nodes sit in `ash`, so the hint is `ash`. Counted
+    /// across sources, `nbg1` (one node) would be the under-represented zone and the hint would be `nbg1`.
+    @Test
+    void reconcile_zonelessSource_balancesAcrossItsOwnNodesZones_only() {
+        var eu1 = Map.of(NodeInfo.LABEL_SOURCE, "eu-1", NodeInfo.LABEL_ZONE, "nbg1");
+        var us1 = Map.of(NodeInfo.LABEL_SOURCE, "us-1", NodeInfo.LABEL_ZONE, "ash");
+
+        assertThat(us1WorkerPlacements(eu1, us1, us1)).containsExactly(Option.some(PlacementHint.zoneHint("ash")));
+    }
+
+    private List<Option<PlacementHint>> us1WorkerPlacements(Map<String, String> selfLabels,
+                                                           Map<String, String> peerALabels,
+                                                           Map<String, String> peerBLabels) {
+        var config = new TopologyConfig(SELF,
+                                        3,
+                                        timeSpan(60).seconds(),
+                                        timeSpan(1).seconds(),
+                                        List.of(labelled(INFO_SELF, selfLabels),
+                                                labelled(INFO_A, peerALabels),
+                                                labelled(INFO_B, peerBLabels)));
+        observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
+        // The observer holds only SELF until SWIM discovers the peers; configured peers are not in its topology.
+        observer.handleDiscoveredNodes(new NetworkMessage.DiscoveredNodes(SELF,
+                                                                          List.of(labelled(INFO_A, peerALabels),
+                                                                                  labelled(INFO_B, peerBLabels))));
+        assertThat(observer.topology()).as("CONTROL: the balancer sees all three nodes").hasSize(3);
+        ctm = buildCtm(MembershipLiveness.UNWIRED);
+        seedConfig(ZONELESS_SECOND_SOURCE_TOML, entry("eu-1", "core", 3), entry("us-1", "worker", 1));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+
+        var us1 = lifecycleManager.provisioned.stream()
+                                              .filter(spec -> spec.context()
+                                                                  .sourceName()
+                                                                  .value()
+                                                                  .equals("us-1"))
+                                              .toList();
+
+        assertThat(us1).as("CONTROL: the zoneless source's worker was provisioned").hasSize(1);
+
+        return us1.stream().map(ProvisionSpec::placement).toList();
+    }
+
+    private static NodeInfo labelled(NodeInfo info, Map<String, String> labels) {
+        return NodeInfo.nodeInfo(info.id(), info.address(), labels);
+    }
+
     private static InstanceInfo workerInstance(String sourceName, String nodeId) {
         return instance(CLUSTER, sourceName, "worker", nodeId);
     }
@@ -342,7 +595,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
                                 List.of("127.0.0.1"),
                                 InstanceType.ON_DEMAND,
                                 Map.of("aether-cluster", clusterName, "aether-source", sourceName, "aether-role", role),
-                                Option.some(nodeId));
+                                Option.some(nodeId), org.pragmatica.lang.Option.none());
     }
 
     private static final class StubSnapshotSource implements GenerationSnapshotSource {
@@ -382,6 +635,10 @@ class ClusterTopologyManagerWorkerReconcileTest {
             return gate;
         }
 
+        List<String> provisionedPeers() {
+            return provisioned.stream().map(spec -> spec.context().peers().or("")).toList();
+        }
+
         List<String> provisionedRoles() {
             return provisioned.stream().map(spec -> spec.context().role()).distinct().toList();
         }
@@ -390,6 +647,14 @@ class ClusterTopologyManagerWorkerReconcileTest {
         /// `aether-source` label, which is the string the reconcile selector must round-trip.
         List<String> provisionedSourceNames() {
             return provisioned.stream().map(spec -> spec.context().sourceName().value()).distinct().toList();
+        }
+
+        /// The cloud-init user-data each provision carried, by the source it was provisioned for.
+        Map<String, String> userDataBySource() {
+            return provisioned.stream()
+                              .collect(java.util.stream.Collectors.toMap(spec -> spec.context().sourceName().value(),
+                                                                         spec -> spec.userData().or(""),
+                                                                         (first, _) -> first));
         }
 
         List<String> provisionedNodeIds() {
@@ -455,11 +720,6 @@ class ClusterTopologyManagerWorkerReconcileTest {
         @Override
         public Promise<ActionResult> executeAction(NodeAction action) {
             return Promise.success(new ActionResult.NodeStopped(SELF));
-        }
-
-        @Override
-        public Promise<Unit> restartNode(NodeId nodeId) {
-            return Promise.success(unit());
         }
 
         @Override

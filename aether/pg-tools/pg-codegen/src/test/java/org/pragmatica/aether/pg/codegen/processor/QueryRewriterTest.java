@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.pg.codegen.processor;
 
@@ -46,6 +45,30 @@ class QueryRewriterTest {
             );
             assertThat(result.sql()).isEqualTo("SELECT * FROM users WHERE id = $1 OR manager_id = $1");
             assertThat(result.parameterOrder()).containsExactly("id");
+        }
+
+        /// #1707 review round 2: `:name` inside a literal, quoted identifier or comment is text, not a placeholder,
+        /// so it is neither rewritten nor reported; the real placeholder beside it still is.
+        @Test
+        void namedLookalikesInLiteralsAndComments_areLeftAsIs() {
+            var sql = "SELECT ':label', \":col\" FROM t /* :c1 */ WHERE id = :id -- :c2";
+            var result = rewriteNamedParams(sql, List.of("id"));
+
+            assertThat(result.sql()).isEqualTo("SELECT ':label', \":col\" FROM t /* :c1 */ WHERE id = $1 -- :c2");
+            assertThat(result.parameterOrder()).containsExactly("id");
+            assertThat(extractNamedParams(sql)).containsExactly("id");
+        }
+
+        /// #1707: a PostgreSQL cast `x::text` is left untouched while the real `:name` beside it is a parameter.
+        /// Controls: a `::` inside a literal and inside a comment are not placeholders either way.
+        @Test
+        void castBesideANamedParam_castIsLeftAsIs() {
+            var sql = "SELECT id::text, '::a' FROM t WHERE name = :name::varchar /* x::b */";
+            var result = rewriteNamedParams(sql, List.of("name"));
+
+            assertThat(result.sql()).isEqualTo("SELECT id::text, '::a' FROM t WHERE name = $1::varchar /* x::b */");
+            assertThat(result.parameterOrder()).containsExactly("name");
+            assertThat(extractNamedParams(sql)).containsExactly("name");
         }
 
         @Test

@@ -7,9 +7,11 @@ package org.pragmatica.aether.deployment.validation;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.stream.StreamResource;
 import org.pragmatica.lang.Option;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -62,7 +64,7 @@ class StreamResourceValidatorTest {
 
             var result = StreamResourceValidator.validate(Option.some(toml),
                                                             APP_ARTIFACT,
-                                                            Map.of("inventory", "consumer"));
+                                                            Map.of("inventory", "consumer"), ReplicationContext.BUILT_IN);
 
             result.onFailure(cause -> fail("Expected success: " + cause.message()))
                   .onSuccess(validated -> assertThat(validated.resources()).containsKey("inventory"));
@@ -107,6 +109,39 @@ class StreamResourceValidatorTest {
                   });
         }
 
+        /// #1282: a blueprint `External` source naming a runtime-provisioned stream kind is refused at the
+        /// deploy gate with its own rule, pointing at the offending section — the typed parser error, not a
+        /// message-text guess (the message says "stream name", which would otherwise classify it wrong).
+        @Test
+        void externalSourceWithReservedKindProducesSourceReservedKindFailure() {
+            var toml = "[streams.inbox]\nsource = \"entity:orders:1.0.0\"\nrole = \"consumer\"\n";
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> {
+                      var failures = ((StreamValidationFailures) cause).failures();
+                      assertThat(failures).extracting(StreamValidationFailure::rule)
+                                          .containsExactly(StreamResourceValidator.RULE_SOURCE_RESERVED_KIND);
+                      assertThat(failures).extracting(StreamValidationFailure::field)
+                                          .containsExactly("[streams.inbox]");
+                  });
+        }
+
+        /// #1338: a writing role on a `system` External source is refused at the deploy gate under its own rule, and the rule is
+        /// gating (the deploy refuses; the alias is not merely dropped). A consumer role on the same source validates.
+        @Test
+        void systemExternalSourceWithAProducerRoleProducesSourceSystemNotConsumerFailure() {
+            var toml = "[streams.inbox]\nsource = \"system:cluster-events:1.0.0\"\nrole = \"producer\"\n";
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures()).extracting(StreamValidationFailure::rule)
+                                                                                              .containsExactly(StreamResourceValidator.RULE_SOURCE_SYSTEM_NOT_CONSUMER));
+            assertThat(StreamResourceValidator.GATING_SECTION_RULES).contains(StreamResourceValidator.RULE_SOURCE_SYSTEM_NOT_CONSUMER);
+            StreamResourceValidator.validate(Option.some(toml.replace("producer", "consumer")), APP_ARTIFACT)
+                                   .onFailure(cause -> fail("a consumer-role system source must validate: " + cause.message()));
+        }
+
         @Test
         void producerLatestProducesProducerExactFailure() {
             var toml = """
@@ -132,7 +167,7 @@ class StreamResourceValidatorTest {
 
             var result = StreamResourceValidator.validate(Option.some(toml),
                                                             APP_ARTIFACT,
-                                                            Map.of("orders", "producer"));
+                                                            Map.of("orders", "producer"), ReplicationContext.BUILT_IN);
 
             result.onSuccessRun(() -> fail("Expected failure"))
                   .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
@@ -321,6 +356,61 @@ class StreamResourceValidatorTest {
                                               .contains(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
         }
 
+        /// #1262: no production caller wires the consensus publish path, so a STRONG declaration cannot be
+        /// honoured — it is rejected here, naming the ticket, instead of deploying and being written as EVENTUAL.
+        @Test
+        void strongConsistencyIsRejected_namingTheTicket() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    consistency = "strong"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .filteredOn(failure -> failure.rule()
+                                                                            .equals(StreamResourceValidator.RULE_UNSUPPORTED_CONSISTENCY))
+                                              .extracting(StreamValidationFailure::message)
+                                              .anySatisfy(message -> assertThat(message).contains("consistency")
+                                                                                        .contains("#1262")));
+        }
+
+        /// #1262 B2 pinned `consistency_mode` because the runtime record binder read it. Since #1549 the
+        /// runtime binds `[streams.X]` through the stream parser, which reads `consistency` only, so a
+        /// `consistency_mode` declaration is refused as a key nothing reads, pointing at the one that is.
+        @Test
+        void strongConsistencyMode_isRefusedAsAnUnknownKey_namingTheKeyTheRuntimeReads() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    consistency_mode = "strong"
+                    """;
+
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures())
+                                              .filteredOn(failure -> failure.rule()
+                                                                            .equals(StreamResourceValidator.RULE_UNKNOWN_STREAM_KEY))
+                                              .extracting(StreamValidationFailure::message)
+                                              .anySatisfy(message -> assertThat(message).contains("'consistency_mode'")
+                                                                                        .contains("did you mean 'consistency'")));
+        }
+
+        @Test
+        void eventualConsistencyIsAccepted() {
+            var toml = """
+                    [streams.orders]
+                    version = "1.0.0"
+                    consistency = "eventual"
+                    """;
+
+            StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
+                                   .onFailure(cause -> fail("Expected success: " + cause.message()));
+        }
+
         @Test
         void explicitAutoOffsetResetLatestIsRejected() {
             var toml = """
@@ -404,6 +494,126 @@ class StreamResourceValidatorTest {
 
             result.onFailure(cause -> fail("Expected success: " + cause.message()))
                   .onSuccess(validated -> assertThat(validated.resources()).containsKey("orders"));
+        }
+    }
+
+    /// #677 descope: the two refusals whose wording changed when these keys were descoped from 1.0
+    /// carry a contract, and this pins the CONTRACT rather than the sentence. Three properties: the
+    /// refusal NAMES the offending key (an operator has to know what to remove), the two descoped
+    /// refusals STATE the 1.0 descope, and they do NOT tell the operator to wait for pending wiring
+    /// — which is exactly what `guardInertConfig` said before #677 ("Remove it until #576's runtime
+    /// wiring lands"). An exact-string assertion on the whole message was considered and rejected:
+    /// it fails on any rewording, so it gets deleted, and the contract leaves with it.
+    ///
+    /// SCOPE — this bounds every assertion below. These tests pin the VALIDATOR'S OUTPUT, not what
+    /// an operator sees. [org.pragmatica.aether.deployment.cluster.BlueprintService] is the only
+    /// production caller of [StreamResourceValidator#validate] and ends `.or(List.of())`, so on
+    /// failure it discards the `Cause` and publishes an EMPTY bindings entry instead — no deploy
+    /// path surfaces these messages today. A consuming slice fails later with
+    /// [org.pragmatica.aether.slice.stream.StreamAddressError.UnboundStreamAlias], whose wording is
+    /// generic. Pinning this as user-facing would specify a defect rather than probe behaviour.
+    @Nested
+    class DescopedRefusalWording {
+        /// Every key `guardInertConfig` refuses, enumerated from the validator's own branches:
+        /// 3 stream-level (`guardStreamConfig`) + 7 per-consumer (`guardConsumerConfig`).
+        private static final List<String> ALL_INERT_KEYS = List.of("encryption-key-id",
+                                                                   "compression",
+                                                                   "auto-offset-reset",
+                                                                   "batch-size",
+                                                                   "processing",
+                                                                   "on-failure",
+                                                                   "checkpoint-interval",
+                                                                   "max-retries",
+                                                                   "dead-letter",
+                                                                   "read-preference");
+
+        /// Wording that would tell an operator the feature is merely unimplemented-for-now. The
+        /// first two entries are verbatim fragments of what the consumer refusal said before #677,
+        /// so reverting that hunk turns `descopedRefusalsPromiseNoPendingWiring` red.
+        private static final List<String> PENDING_WIRING_PROMISES = List.of("until #576",
+                                                                            "wiring lands",
+                                                                            "not yet supported",
+                                                                            "coming soon",
+                                                                            "will be supported",
+                                                                            "in a future release");
+
+        /// One blueprint tripping all ten guards at once, so the enumeration above is checked
+        /// against the validator rather than against itself.
+        private static final String EVERY_INERT_KEY = """
+                [streams.orders]
+                version = "1.0.0"
+                encryption-key-id = "kms-key-7"
+                compression = "lz4"
+                auto-offset-reset = "latest"
+
+                [streams.orders.consumers.billing]
+                batch-size = 50
+                processing = "parallel"
+                on-failure = "skip"
+                checkpoint-interval = "5s"
+                max-retries = 10
+                dead-letter = "orders-dlq"
+                read-preference = "nearest"
+                """;
+
+        @Test
+        void everyInertRefusalNamesItsOffendingKey() {
+            var messages = inertMessages(EVERY_INERT_KEY);
+
+            assertThat(messages).hasSize(ALL_INERT_KEYS.size());
+            ALL_INERT_KEYS.forEach(key -> assertThat(messages).as("an inert refusal naming '%s'", key)
+                                                              .anySatisfy(message -> assertThat(message).contains(key)));
+        }
+
+        @Test
+        void descopedCompressionRefusalStatesNotSupportedInOneZero() {
+            assertThat(refusalNaming("compression")).contains("not supported in 1.0");
+        }
+
+        @Test
+        void descopedConsumerRefusalStatesNotSupportedInOneZero() {
+            assertThat(refusalNaming("batch-size")).contains("not supported in 1.0");
+        }
+
+        /// The #478 `auto-offset-reset` refusal is permanent, not descoped, so it must not claim a
+        /// 1.0 descope — the control that keeps the two assertions above from being satisfied by a
+        /// blanket sentence appended to every refusal.
+        @Test
+        void permanentAutoOffsetResetRefusalClaimsNoDescope() {
+            assertThat(refusalNaming("auto-offset-reset")).doesNotContain("not supported in 1.0")
+                                                          .contains("#478");
+        }
+
+        @Test
+        void descopedRefusalsPromiseNoPendingWiring() {
+            List.of(refusalNaming("compression"), refusalNaming("batch-size"))
+                .forEach(message -> PENDING_WIRING_PROMISES.forEach(promise -> assertThat(message).as("pending-wiring promise '%s'", promise)
+                                                                                                  .doesNotContain(promise)));
+        }
+
+        private static List<String> inertMessages(String toml) {
+            var collected = new ArrayList<String>();
+
+            StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT)
+                                   .onSuccessRun(() -> fail("Expected failure"))
+                                   .onFailure(cause -> ((StreamValidationFailures) cause).failures()
+                                                                                         .stream()
+                                                                                         .filter(failure -> isInert(failure.rule()))
+                                                                                         .map(StreamValidationFailure::message)
+                                                                                         .forEach(collected::add));
+            return List.copyOf(collected);
+        }
+
+        private static boolean isInert(String rule) {
+            return rule.equals(StreamResourceValidator.RULE_INERT_STREAM_CONFIG)
+                || rule.equals(StreamResourceValidator.RULE_INERT_CONSUMER_CONFIG);
+        }
+
+        private static String refusalNaming(String key) {
+            return inertMessages(EVERY_INERT_KEY).stream()
+                                                 .filter(message -> message.contains(key))
+                                                 .findFirst()
+                                                 .orElseGet(() -> fail("No inert refusal names '" + key + "'"));
         }
     }
 }

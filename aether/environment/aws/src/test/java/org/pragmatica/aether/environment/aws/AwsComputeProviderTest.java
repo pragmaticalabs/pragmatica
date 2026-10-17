@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.environment.aws;
 
@@ -49,6 +48,14 @@ class AwsComputeProviderTest {
         provider = AwsComputeProvider.awsComputeProvider(testClient, CONFIG).unwrap();
     }
 
+    @Test
+    void observedZone_usesNativePlacement() {
+        var instance = new Instance("i-1", "t3.medium", "ami-1", "10.0.0.1", "1.2.3.4",
+                                    new Instance.InstanceState("running", 16), null,
+                                    new Instance.Placement("eu-west-1b"));
+        assertThat(AwsComputeProvider.toInstanceInfo(instance).observedZone().unwrap()).isEqualTo("eu-west-1b");
+    }
+
     @Nested
     class ProvisionTests {
 
@@ -88,7 +95,7 @@ class AwsComputeProviderTest {
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
                     .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
-                    .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
+                    .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
         }
 
         @Test
@@ -179,6 +186,27 @@ class AwsComputeProviderTest {
                     .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
         }
 
+        /// SHOULD-FIX from adversarial review: the requested-spec threading added by this change was
+        /// pinned for Hetzner and for NOBODY ELSE — reverting it here left 253 tests green. A
+        /// mutation that leaves everything green means unpinned, not independent.
+        ///
+        /// Sentinel values no catalogue contains, so this can only pass if the request's own fields
+        /// are threaded onto the failure rather than matched incidentally.
+        @Test
+        void createFrom_failure_messageNamesRequestedInstanceTypeAndZone() {
+            testClient.runInstancesResponse =
+                new AwsError.ApiError(400, "InvalidParameterValue", "Invalid instance type").promise();
+            var request = new ProvisionRequest(InstanceType.ON_DEMAND, "zz-sentinel-size-99", "ami-1", "zz-sentinel-zone-99",
+                                               Option.empty(), MarketOptions.ON_DEMAND,
+                                               ProvisionContext.forBootstrap(clusterName("c").unwrap(), "core", sourceNameOrDefault("s"), "n0"));
+
+            provider.createFrom(request)
+                    .await()
+                    .onSuccess(info -> assertThat(info).isNull())
+                    .onFailure(cause -> assertThat(cause.message()).contains("zz-sentinel-size-99")
+                                                                   .contains("zz-sentinel-zone-99"));
+        }
+
         private ProvisionRequest onDemandRequest(String image, String instanceSize) {
             return new ProvisionRequest(InstanceType.ON_DEMAND, instanceSize, image, "",
                                         Option.empty(), MarketOptions.ON_DEMAND,
@@ -258,19 +286,20 @@ class AwsComputeProviderTest {
             assertThat(testClient.lastDescribeTagKey).isEqualTo("env");
             assertThat(testClient.lastDescribeTagValue).isEqualTo("prod");
         }
-    }
 
-    @Nested
-    class RestartTests {
-
+        /// #1049 — upper layers select a node's instance by the dotted `aether.node-id`, but this
+        /// provider stamps `aether-node-id`. Untranslated, the EC2 filter matches nothing and an existing
+        /// replacement reads as deleted to the auto-heal in-flight tracker.
         @Test
-        void restart_success_callsReboot() {
-            provider.restart(new InstanceId("i-abc123"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
+        void listInstances_nodeIdTag_translatesToStampedTagKey() {
+            testClient.describeResponse = Promise.success(TestAwsClient.describeResponseWith(List.of()));
 
-            assertThat(testClient.lastRebootedIds).containsExactly("i-abc123");
+            provider.listInstances(Map.of("aether.node-id", "node-7"))
+                    .await()
+                    .onFailure(cause -> assertThat(cause).isNull());
+
+            assertThat(testClient.lastDescribeTagKey).isEqualTo("aether-node-id");
+            assertThat(testClient.lastDescribeTagValue).isEqualTo("node-7");
         }
     }
 
@@ -324,9 +353,21 @@ class AwsComputeProviderTest {
             assertThat(AwsComputeProvider.mapStatus("terminated")).isEqualTo(InstanceStatus.TERMINATED);
         }
 
+        /// #1049 — exhaustive over EC2's documented `InstanceStateName` enum (API reference, InstanceState:
+        /// pending, running, shutting-down, terminated, stopping, stopped), plus one undocumented value, which
+        /// must never read as terminated.
         @Test
-        void mapStatus_unknown_returnsTerminated() {
-            assertThat(AwsComputeProvider.mapStatus("unknown")).isEqualTo(InstanceStatus.TERMINATED);
+        void mapStatus_everyDocumentedState_andAnUnrecognisedOne_mapExhaustively() {
+            var expected = Map.ofEntries(Map.entry("pending", InstanceStatus.PROVISIONING),
+                                         Map.entry("running", InstanceStatus.RUNNING),
+                                         Map.entry("shutting-down", InstanceStatus.TERMINATED),
+                                         Map.entry("terminated", InstanceStatus.TERMINATED),
+                                         Map.entry("stopping", InstanceStatus.STOPPING),
+                                         Map.entry("stopped", InstanceStatus.STOPPING),
+                                         Map.entry("a-state-ec2-adds-later", InstanceStatus.UNKNOWN));
+
+            assertThat(expected).hasSize(7);
+            expected.forEach((state, mapped) -> assertThat(AwsComputeProvider.mapStatus(state)).as(state).isEqualTo(mapped));
         }
     }
 
@@ -469,28 +510,28 @@ class AwsComputeProviderTest {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.1", "1.2.3.4",
                             new Instance.InstanceState("running", 16),
-                            null);
+                            null, null);
     }
 
     static Instance pendingInstance(String instanceId) {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.2", null,
                             new Instance.InstanceState("pending", 0),
-                            null);
+                            null, null);
     }
 
     static Instance terminatedInstance(String instanceId) {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.3", null,
                             new Instance.InstanceState("terminated", 48),
-                            null);
+                            null, null);
     }
 
     static Instance instanceWithAddresses(String publicIp, String privateIp) {
         return new Instance("i-test", "t3.medium", "ami-12345",
                             privateIp, publicIp,
                             new Instance.InstanceState("running", 16),
-                            null);
+                            null, null);
     }
 
     static Instance instanceWithTags(String instanceId, Map<String, String> tags) {
@@ -501,6 +542,6 @@ class AwsComputeProviderTest {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             "10.0.0.1", "1.2.3.4",
                             new Instance.InstanceState("running", 16),
-                            new Instance.TagSet(tagItems));
+                            new Instance.TagSet(tagItems), null);
     }
 }

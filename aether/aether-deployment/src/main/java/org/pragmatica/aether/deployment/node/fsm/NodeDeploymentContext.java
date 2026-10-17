@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.node.fsm;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -19,9 +20,11 @@ import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -30,6 +33,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -55,6 +59,14 @@ public final class NodeDeploymentContext {
     private final AtomicLong quorumSequence;
     private final AtomicReference<Runnable> shutdownCallback;
     private final AtomicReference<Runnable> activeOnEntryCallback;
+    private final AtomicReference<OperatorWarningSink> operatorWarnings;
+
+    private final java.util.Set<String> unregisteredConsumers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /// #1109 H4: starts parked for want of a committed target, from the first refusal until the park resolves. Held here, not in
+    /// the `Active` state, because `Active` is rebuilt on every quorum cycle and the bounded park is measured across them.
+    private final java.util.concurrent.ConcurrentMap<SliceNodeKey, ParkedStart> parkedStarts = new java.util.concurrent.ConcurrentHashMap<>();
+
     private final LongSupplier clock;
     private final Supplier<Option<Epoch>> currentEpochSupplier;
     private final NodeDeploymentState dormant;
@@ -191,10 +203,60 @@ public final class NodeDeploymentContext {
         this.quorumSequence = new AtomicLong(0);
         this.shutdownCallback = new AtomicReference<>();
         this.activeOnEntryCallback = new AtomicReference<>();
+        this.operatorWarnings = new AtomicReference<>(OperatorWarningSink.logOnly());
         this.clock = clock;
         this.currentEpochSupplier = currentEpochSupplier;
-        this.dormant = new NodeDeploymentState.Dormant(this, List.of());
+        this.dormant = new NodeDeploymentState.Dormant(this, List.of(), Map.of());
         this.stopped = new NodeDeploymentState.Stopped(this);
+    }
+
+    /// #1109 H4: how long a start may stay parked before the operator is told. A LOAD that is not parked would be in LOADING, whose own
+    /// bound is 2 minutes; a start parked past that waits on something other than ordinary lag.
+    private final AtomicReference<TimeSpan> parkedStartBound = new AtomicReference<>(SliceState.LOADING.timeout().or(TimeSpan.timeSpan(2).minutes()));
+
+    public TimeSpan parkedStartBound() {
+        return parkedStartBound.get();
+    }
+
+    @Contract
+    public void setParkedStartBound(TimeSpan bound) {
+        parkedStartBound.set(bound);
+    }
+
+    /// A start (`state` is what was refused: LOAD, ACTIVATE or an ACTIVE claim) parked since `since`; `warned` once the
+    /// operator warning for it has been raised.
+    public record ParkedStart(long since, SliceState state, boolean warned) {}
+
+    /// Records the first refusal of a start. True when this call opened the park (the caller arms the bound); a repeated
+    /// refusal of the same slice keeps the original `since`, so the bound runs from the first refusal.
+    @Contract
+    public boolean parkStart(SliceNodeKey sliceKey, SliceState state) {
+        return parkedStarts.putIfAbsent(sliceKey, new ParkedStart(nowMs(), state, false)) == null;
+    }
+
+    public Option<ParkedStart> parkedStart(SliceNodeKey sliceKey) {
+        return Option.option(parkedStarts.get(sliceKey));
+    }
+
+    /// True for the one caller that moved the park from silent to warned.
+    @Contract
+    public boolean markParkWarned(SliceNodeKey sliceKey) {
+        var transitioned = new java.util.concurrent.atomic.AtomicBoolean();
+
+        parkedStarts.computeIfPresent(sliceKey,
+                                      (_, parked) -> {
+                                          transitioned.set(!parked.warned());
+
+                                          return new ParkedStart(parked.since(), parked.state(), true);
+                                      });
+
+        return transitioned.get();
+    }
+
+    /// Ends the park; returns what was recorded so the caller can raise the recovery when a warning stood.
+    @Contract
+    public Option<ParkedStart> unparkStart(SliceNodeKey sliceKey) {
+        return Option.option(parkedStarts.remove(sliceKey));
     }
 
     public long nowMs() {
@@ -218,20 +280,27 @@ public final class NodeDeploymentContext {
         return stopped;
     }
 
-    public NodeDeploymentState newDormantWithSuspended(List<SuspendedSlice> suspended) {
-        if (suspended.isEmpty()) {
+    public NodeDeploymentState newDormantWithSuspended(List<SuspendedSlice> suspended,
+                                                       Map<SliceNodeKey, SliceState> deferredStarts) {
+        if (suspended.isEmpty() && deferredStarts.isEmpty()) {
             return dormant;
         }
 
-        return new NodeDeploymentState.Dormant(this, suspended);
+        return new NodeDeploymentState.Dormant(this, suspended, deferredStarts);
     }
 
     public NodeDeploymentState.Active newActive(List<SuspendedSlice> pendingReactivation) {
+        return newActive(pendingReactivation, Map.of());
+    }
+
+    public NodeDeploymentState.Active newActive(List<SuspendedSlice> pendingReactivation,
+                                                Map<SliceNodeKey, SliceState> deferredStarts) {
         return new NodeDeploymentState.Active(this,
                                               new ConcurrentHashMap<>(),
                                               ConfigNotificationManager.configNotificationManager(),
                                               RoutingEpochAckTracker.routingEpochAckTracker(),
-                                              pendingReactivation);
+                                              pendingReactivation,
+                                              new ConcurrentHashMap<>(deferredStarts));
     }
 
     public NodeDeploymentState.Leaving newLeaving(DrainReason reason) {
@@ -292,6 +361,29 @@ public final class NodeDeploymentContext {
 
     public AtomicLong quorumSequence() {
         return quorumSequence;
+    }
+
+    /// Where operator-attention conditions of this node's deployments are raised. [OperatorWarningSink#logOnly]
+    /// until the node binds its own sink (never a process-wide one: Ember runs several nodes in one JVM).
+    public OperatorWarningSink operatorWarnings() {
+        return operatorWarnings.get();
+    }
+
+    /// Subjects (`<slice>.<method>[<section>]`) of declared stream consumers a `stream-consumer-not-registered`
+    /// warning was raised for and that have not registered since, so the resolved warning is raised only for those.
+    @Contract
+    public void markUnregisteredConsumer(String subject) {
+        unregisteredConsumers.add(subject);
+    }
+
+    /// True when `subject` was marked, which is also what clears it.
+    public boolean clearUnregisteredConsumer(String subject) {
+        return unregisteredConsumers.remove(subject);
+    }
+
+    @Contract
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarnings.set(sink);
     }
 
     public Option<Runnable> shutdownCallback() {

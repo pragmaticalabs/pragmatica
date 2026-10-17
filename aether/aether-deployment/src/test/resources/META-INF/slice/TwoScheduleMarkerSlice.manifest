@@ -1,0 +1,7 @@
+reactive.count=2
+reactive.0.category=scheduled
+reactive.0.method=onTickA
+reactive.0.config=bad-interval-section
+reactive.1.category=scheduled
+reactive.1.method=onTickB
+reactive.1.config=bad-cron-section

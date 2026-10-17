@@ -24,6 +24,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.config.ConsensusTierBounds;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
@@ -31,13 +32,16 @@ import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.PlaceholderConfigResolver;
 import org.pragmatica.aether.config.cluster.ReplacementNodeConfigComposer;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.SourceCloudBindings;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
@@ -47,10 +51,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.config.toml.TomlDocument;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -63,6 +70,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -76,6 +84,7 @@ import org.pragmatica.net.tcp.TlsConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.consensus.net.NodeInfo.LABEL_SOURCE;
 import static org.pragmatica.consensus.net.NodeInfo.LABEL_ZONE;
 import static org.pragmatica.lang.Unit.unit;
 
@@ -96,17 +105,54 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicLong lastProvisioningFailureMs,
                                     AtomicReference<LastProvisionFailure> lastProvisionFailureRef,
                                     AtomicLong formationAnchorMs,
-                                    AtomicBoolean autoHealEnabled,
+                                    Supplier<Option<AutoHealStateValue>> autoHealStateReader,
                                     LongSupplier clock,
                                     Consumer<NodeId> drainCommandSink,
                                     Consumer<NodeId> drainCommandClear,
                                     Supplier<Option<TomlDocument>> resolvedLocalConfig,
                                     AtomicBoolean workerReconcileInFlight,
-                                    AtomicBoolean workerReconcilePending) implements ClusterTopologyManager {
+                                    AtomicBoolean workerReconcilePending,
+                                    MembershipLiveness liveness,
+                                    AtomicLong activationEpoch,
+                                    Set<NodeId> abandonedReaps,
+                                    ConcurrentHashMap<NodeId, Long> refusedReaps,
+                                    ConcurrentHashMap<NodeId, NodeRole> provisionedRoleIntents,
+                                    ConcurrentHashMap<NodeId, RoleMismatch> roleMismatchLedger,
+                                    ConcurrentHashMap<NodeId, AetherValue.NodePlacementValue> recordedPlacements,
+                                    AtomicReference<Option<CommunityPlacementReconciler>> communityPlacement,
+                                    AtomicReference<Supplier<List<NodeId>>> genesisVoters,
+                                    AtomicReference<Function<NodeId, Option<String>>> retirementRefusal,
+                                    AtomicReference<NodeReplacementIndex> nodeReplacements,
+                                    AtomicReference<HierarchyStateWriter> hierarchyWriter,
+                                    ConcurrentHashMap<NodeId, Long> pendingDrains,
+                                    AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink,
+                                    Set<NodeId> unconfirmedReaps,
+                                    Set<NodeId> seenInstances,
+                                    Set<NodeId> confirmedReaps,
+                                    Set<NodeId> listedAbsent,
+                                    ConcurrentHashMap<NodeId, String> knownInstanceIds,
+                                    Set<NodeId> drainGraceChains,
+                                    ConcurrentHashMap<NodeId, Long> incarnations,
+                                    ConcurrentHashMap<NodeId, Long> failedReaps,
+                                    org.pragmatica.lang.concurrent.CancellableTask unconfirmedRecheck,
+                                    AtomicReference<Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>>> persistedMarks,
+                                    org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling,
+                                    ConcurrentHashMap<NodeId, SourceName> replacementSources) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
-    private static final String AETHER_CLUSTER_SECRET_ENV = "AETHER_CLUSTER_SECRET";
+
+    /// Names the operator command that closes a mark after the operator verified at the provider and terminated the instance by hand. Takes the node id.
+    private static final String CLEAR_HINT = "; after you have verified and terminated it, clear this warning cluster-wide with: aether cluster clear-unconfirmed {} --instance <provider-instance-id|unknown>";
+
+    private static final String NO_RETIREMENT_CHECK = "no retirement check is wired";
+    /// #1804: a refused reap is re-evaluated once per provisioning window, for an hour at the default window —
+    /// longer than the slowest voter handoff observed (14 min) with margin, bounded so a node that never becomes
+    /// retirable ends in an operator-visible WARN rather than a forever-timer.
+    static final int REFUSED_REAP_RETRIES = 60;
+    /// #2062: a reap that failed or could not be confirmed is retried this many times, one sixth of a provisioning window apart (ten seconds
+    /// at the default window, about two minutes in all), before an operator event names the node.
+    static final int FAILED_REAP_RETRIES = 12;
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -127,49 +173,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                             phaseSupplier,
                                             clock,
                                             _ -> {},
-                                            _ -> {});
+                                            _ -> {},
+                                            Option::none,
+                                            MembershipLiveness.UNWIRED);
     }
 
     /// Membership v2 / B5b — production factory wiring the leader's DRAIN command channel.
     /// `drainCommandSink` enqueues the target into the `DrainCommandRegistry` (so the leader's
     /// outbound ping carries the target in its global `drainNodes` set and the target self-drains via its
-    /// `DrainProcedure`); `drainCommandClear` removes the target after the grace-terminate
-    /// backstop reaps the container. Both default to no-op via the overload above for tests and
-    /// legacy callers.
-    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
-                                                                     NodeLifecycleManager lifecycleManager,
-                                                                     AutoHealConfig config,
-                                                                     DeploymentMap deploymentMap,
-                                                                     GenerationSnapshotSource snapshotSource,
-                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
-                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
-                                                                     Supplier<ClusterPhase> phaseSupplier,
-                                                                     LongSupplier clock,
-                                                                     Consumer<NodeId> drainCommandSink,
-                                                                     Consumer<NodeId> drainCommandClear) {
-        return clusterTopologyManagerRecord(observer,
-                                            lifecycleManager,
-                                            config,
-                                            deploymentMap,
-                                            snapshotSource,
-                                            clusterConfigReader,
-                                            commandApplier,
-                                            phaseSupplier,
-                                            clock,
-                                            drainCommandSink,
-                                            drainCommandClear,
-                                            Option::none);
-    }
-
-    /// #336 production factory overload — additionally wires the leader's OWN RESOLVED config as
-    /// `resolvedLocalConfig`. The leader runs with its per-node overlay RESOLVED to literals (the
-    /// CLI rendered it from the resolved config); the CTM render path uses it to substitute the
-    /// literal `${env:...}` / `${secrets:...}` placeholders left in a replacement's composed overlay
-    /// (which is composed from the deliberately-unresolved persisted KV TOML), so a CTM-provisioned
-    /// scale-up / auto-heal node boots with resolved credentials instead of crashing on placeholders.
-    /// Defaults to `Option::none` (placeholders pass through unchanged, preserving prior behavior)
-    /// via the overload above for tests, non-cloud, and legacy callers; only `AetherNode` supplies
-    /// the real value.
+    /// `DrainProcedure`); `drainCommandClear` removes the target when the grace-terminate
+    /// backstop fires, whether or not it reaps (#1050).
+    ///
+    /// #685 review round 1 NOTE 4 — `autoHealStateReader` (#685) is a REQUIRED trailing parameter,
+    /// not defaulted: a production wiring site that omitted it would silently get permanently-enabled
+    /// auto-heal with no compile error (a fail-open that reads as correct). The overload above (the
+    /// only caller with no plausible production use — it also lacks drain-command wiring) passes
+    /// `Option::none` explicitly at its own call site instead of hiding the default in here.
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
                                                                      AutoHealConfig config,
@@ -181,7 +200,43 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                      LongSupplier clock,
                                                                      Consumer<NodeId> drainCommandSink,
                                                                      Consumer<NodeId> drainCommandClear,
-                                                                     Supplier<Option<TomlDocument>> resolvedLocalConfig) {
+                                                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                                     MembershipLiveness liveness) {
+        return clusterTopologyManagerRecord(observer,
+                                            lifecycleManager,
+                                            config,
+                                            deploymentMap,
+                                            snapshotSource,
+                                            clusterConfigReader,
+                                            commandApplier,
+                                            phaseSupplier,
+                                            clock,
+                                            drainCommandSink,
+                                            drainCommandClear,
+                                            Option::none,
+                                            autoHealStateReader,
+                                            liveness);
+    }
+
+    /// Canonical factory. `autoHealStateReader` (#685) is the durable KV read backing
+    /// [ClusterTopologyManager#isAutoHealEnabled]. Only the legacy/test-only 9-param overload above
+    /// defaults it (to `Option::none`, absent key = enabled, explicitly at its own call site); every
+    /// other overload — including `AetherNode`'s production wiring, a direct
+    /// `KVStore.getTyped(AutoHealStateKey.SINGLETON, AutoHealStateValue.class)` lookup — requires it.
+    static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
+                                                                     NodeLifecycleManager lifecycleManager,
+                                                                     AutoHealConfig config,
+                                                                     DeploymentMap deploymentMap,
+                                                                     GenerationSnapshotSource snapshotSource,
+                                                                     Supplier<Option<ClusterConfigValue>> clusterConfigReader,
+                                                                     Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
+                                                                     Supplier<ClusterPhase> phaseSupplier,
+                                                                     LongSupplier clock,
+                                                                     Consumer<NodeId> drainCommandSink,
+                                                                     Consumer<NodeId> drainCommandClear,
+                                                                     Supplier<Option<TomlDocument>> resolvedLocalConfig,
+                                                                     Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                                     MembershipLiveness liveness) {
         return new ClusterTopologyManagerRecord(observer,
                                                 lifecycleManager,
                                                 config,
@@ -198,13 +253,92 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicLong(0L),
                                                 new AtomicReference<>(),
                                                 new AtomicLong(clock.getAsLong()),
-                                                new AtomicBoolean(true),
+                                                Option.option(autoHealStateReader).or((Supplier<Option<AutoHealStateValue>>) Option::none),
                                                 clock,
                                                 Option.option(drainCommandSink).or(_ -> {}),
                                                 Option.option(drainCommandClear).or(_ -> {}),
                                                 Option.option(resolvedLocalConfig).or((Supplier<Option<TomlDocument>>) Option::none),
                                                 new AtomicBoolean(false),
-                                                new AtomicBoolean(false));
+                                                new AtomicBoolean(false),
+                                                liveness,
+                                                new AtomicLong(0L),
+                                                ConcurrentHashMap.newKeySet(),
+                                                new ConcurrentHashMap<>(),
+                                                new ConcurrentHashMap<>(),
+                                                new ConcurrentHashMap<>(),
+                                                new ConcurrentHashMap<>(),
+                                                new AtomicReference<>(Option.none()),
+                                                new AtomicReference<>(List::of),
+                                                new AtomicReference<>(_ -> Option.some(NO_RETIREMENT_CHECK)),
+                                                new AtomicReference<>(NodeReplacementIndex.nodeReplacementIndex()),
+                                                new AtomicReference<>(HierarchyStateWriter.unavailable()),
+                                                new ConcurrentHashMap<>(),
+                                                new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
+                                                ConcurrentHashMap.newKeySet(),
+                                                ConcurrentHashMap.newKeySet(),
+                                                ConcurrentHashMap.newKeySet(),
+                                                ConcurrentHashMap.newKeySet(),
+                                                new ConcurrentHashMap<>(),
+                                                ConcurrentHashMap.newKeySet(),
+                                                new ConcurrentHashMap<>(),
+                                                new ConcurrentHashMap<>(),
+                                                org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
+                                                new AtomicReference<>(Map::of),
+                                                org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
+                                                new ConcurrentHashMap<>());
+    }
+
+    @Override
+    public Map<NodeId, AetherValue.UnconfirmedTerminationValue> unconfirmedMarks() {
+        return persistedMarks.get()
+                             .get();
+    }
+
+    @Override
+    public Unit setUnconfirmedMarks(Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>> reader) {
+        persistedMarks.set(reader);
+
+        return unit();
+    }
+
+    @Override
+    public org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
+        return warningSink.get();
+    }
+
+    @Override
+    public Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        warningSink.set(sink);
+
+        return unit();
+    }
+
+    @Override
+    public Unit setHierarchyStateWriter(HierarchyStateWriter writer) {
+        hierarchyWriter.set(writer.whileActive(active::get));
+
+        return unit();
+    }
+
+    @Override
+    public org.pragmatica.lang.Unit setGenesisVoters(Supplier<List<NodeId>> supplier) {
+        genesisVoters.set(supplier);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    @Override
+    public org.pragmatica.lang.Unit setRetirementRefusal(Function<NodeId, Option<String>> refusal) {
+        retirementRefusal.set(refusal);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    @Override
+    public org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
+        nodeReplacements.set(index);
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     private long nowMs() {
@@ -222,16 +356,31 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Override
     public Promise<Unit> setDesiredCount(SourceName sourceName, NodeRole role, int count) {
-        // The quorum floor is a property of the CORE tier only; worker and spot tiers may legitimately
-        // scale to zero.
-        if (role == NodeRole.CORE && count < MINIMUM_CLUSTER_SIZE) {
-            return Causes.cause("Cluster size cannot be below " + MINIMUM_CLUSTER_SIZE + " (quorum requirement)").promise();
+        if (count < 0) {
+            return Causes.cause("Source role count cannot be negative").promise();
+        }
+
+        if (role == NodeRole.WORKER && usesExplicitCommunities()) {
+            return Causes.cause("Explicit communities own worker capacity; change community.target_size").promise();
+        }
+
+        if (role == NodeRole.CORE) {
+            var aggregate = clusterConfigReader.get()
+                                               .map(current -> current.coreCount() - current.desiredCountFor(sourceName.value(),
+                                                                                                             role.value()) + count);
+
+            if (aggregate.filter(total -> total >= MINIMUM_CLUSTER_SIZE
+                                          && total <= ConsensusTierBounds.MAXIMUM_CORE_NODES
+                                          && total % 2 == 1)
+                         .isEmpty()) {
+                return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11").promise();
+            }
         }
 
         resetProvisioningCircuit("setDesiredCount " + sourceName + "/" + role.value() + "=" + count);
 
         return applyDesiredCount(clusterConfigReader,
-                                 commandApplier,
+                                 hierarchyWriter.get(),
                                  sourceName.value(),
                                  role.value(),
                                  count,
@@ -240,86 +389,43 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     static final int DESIRED_COUNT_CAS_ATTEMPTS = 3;
 
-    /// Fenced read-modify-write of one `(source, role)` desired count (RFC-0018, #570).
-    ///
-    /// The applier's successor fence rejects a `Put` built on a stale read, so a concurrent writer
-    /// (a scale racing an auto-heal) can no longer be silently overwritten — but the rejection is
-    /// invisible in the apply result: under batch merging every submitter receives the FULL merged
-    /// result list and cannot attribute an element to its own command. So this loop confirms
-    /// semantically instead — after the apply resolves, the local state machine has applied the
-    /// batch (the engine runs `process` before resolving the promise, and `setDesiredCount` is
-    /// leader-gated so the reader is the applying node), and a re-read tells us whether the count
-    /// we asked for landed. If it did not, we lost the race: recompute from the fresh committed
-    /// value and retry, bounded. If the reader lags the commit, a retry recomputes the same version
-    /// and loses again — burning an attempt but never lying.
-    ///
-    /// Static and collaborator-injected so the loop is testable without wiring the full CTM record.
+    /// Each retry re-reads desired intent and commits against that exact value and leader.
     static Promise<Unit> applyDesiredCount(Supplier<Option<ClusterConfigValue>> reader,
-                                           Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                           HierarchyStateWriter writer,
                                            String sourceName,
                                            String role,
                                            int count,
                                            int attemptsLeft) {
-        var existing = reader.get();
+        return reader.get()
+                     .fold(() -> Causes.cause("Cluster config must exist before scaling").promise(),
+                           current -> {
+                               var updated = current.withDesiredCount(sourceName, role, count);
 
-        if (existing.isEmpty()) {
-            return Causes.cause("ClusterConfigValue atom missing — bootstrap must seed it before scale operations are accepted").promise();
-        }
+                               if (count < 0 || role.equals(NodeRole.CORE.value()) && (updated.coreCount() < MINIMUM_CLUSTER_SIZE || updated.coreCount() > ConsensusTierBounds.MAXIMUM_CORE_NODES || updated.coreCount() % 2 == 0)) {
+                               return Causes.cause("Resulting aggregate core count must be odd and between 3 and 11; source counts cannot be negative").promise();
+                           }
+                               // #1564 (B1): a core scale changes the desired core count, which bounds the
+                               // cluster-events confirmation factor; an inadmissible result is refused, typed.
+                               var admissible = ClusterReplication.admissible(updated);
 
-        var updated = existing.unwrap().withDesiredCount(sourceName, role, count);
-        @SuppressWarnings("unchecked")
-        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                                     updated);
+                               if (admissible.isFailure()) {
+                               return admissible.async()
+                                                .mapToUnit();
+                           }
 
-        return applier.apply(List.of(command))
-                      .onFailure(cause -> log.warn("CTM: failed to write ClusterConfigValue {}/{}={}: {}",
-                                                   sourceName,
-                                                   role,
-                                                   count,
-                                                   cause.message()))
-                      .flatMap(_ -> confirmOrRetry(reader,
-                                                   applier,
-                                                   sourceName,
-                                                   role,
-                                                   count,
-                                                   attemptsLeft,
-                                                   updated.configVersion()));
-    }
-
-    private static Promise<Unit> confirmOrRetry(Supplier<Option<ClusterConfigValue>> reader,
-                                                Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                                String sourceName,
-                                                String role,
-                                                int count,
-                                                int attemptsLeft,
-                                                long intendedVersion) {
-        var landed = reader.get().map(fresh -> fresh.desiredCountFor(sourceName, role) == count).or(false);
-
-        if (landed) {
-            log.info("CTM: wrote ClusterConfigValue {}/{}={} (configVersion={})",
-                     sourceName,
-                     role,
-                     count,
-                     intendedVersion);
-
-            return Promise.unitPromise();
-        }
-
-        log.warn("CTM: desired-count CAS lost — {}/{}={} did not land at configVersion={}, {} attempt(s) left",
-                 sourceName,
-                 role,
-                 count,
-                 intendedVersion,
-                 attemptsLeft - 1);
-        if (attemptsLeft <= 1) {
-            return Causes.cause("Desired-count write for " + sourceName
-                               + "/" + role
-                               + "=" + count
-                               + " lost the version race " + DESIRED_COUNT_CAS_ATTEMPTS
-                               + " times — a concurrent writer keeps advancing the cluster config; re-issue the scale").promise();
-        }
-
-        return applyDesiredCount(reader, applier, sourceName, role, count, attemptsLeft - 1);
+                               return writer.put(ClusterConfigKey.CURRENT,
+                                                 Option.some(current),
+                                                 updated)
+                                            .fold(result -> result.fold(cause -> cause == HierarchyStateWriter.Refusal.CONFLICT && attemptsLeft > 1
+                                                                                 ? applyDesiredCount(reader,
+                                                                                                     writer,
+                                                                                                     sourceName,
+                                                                                                     role,
+                                                                                                     count,
+                                                                                                     attemptsLeft - 1)
+                                                                                 : cause.promise(),
+                                                                        _ -> Promise.unitPromise()));
+                           });
     }
 
     @Override
@@ -384,6 +490,25 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.warn("CTM: Self-shutdown observed for {}", selfShutdown.nodeId());
     }
 
+    /// #1050 (S1) — SWIM FAULTY is the death evidence that re-arms a PARKED reap of the same node — one
+    /// [#reapUnlessLive] abandoned, or one the activation replay parked ([#unprotectedOrParked]) — and nothing
+    /// else: a node with no parked reap is not touched here (its departure goes through `NodeRemoved`, its
+    /// death-after-grace through the activation replay). The re-armed reap is still evidence-gated — a node that
+    /// somehow shows life again is deferred, never terminated. Only the FAULTY edge re-arms: SWIM's UNKNOWN edge
+    /// (a suspicion window that expired WITHOUT co-confirmation — a transport hint or enough accusers) reads
+    /// not-alive to [MembershipLiveness#live] but is not positive death evidence (72e179cfe), so a parked reap
+    /// stays parked through it; a chain still running at that edge terminates on its own next re-check.
+    @Contract
+    @Override
+    public void onSwimFaulty(NodeId nodeId) {
+        if (!active.get() || !abandonedReaps.remove(nodeId)) {
+            return;
+        }
+
+        log.info("CTM: SWIM reported {} FAULTY — re-arming the abandoned reap", nodeId);
+        reapUnlessLive(nodeId, activationEpoch.get(), REAP_LIVENESS_RECHECKS);
+    }
+
     @Contract
     @Override
     public void onClusterPhaseChanged(ClusterPhase newPhase) {
@@ -413,7 +538,141 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void handleNodeJoined(NodeJoined joined) {
         log.info("CTM: Node {} joined", joined.nodeId());
+        // A rejoin under the same id ends the parked episode: the new incarnation's death, if it comes, arrives
+        // as its own `NodeRemoved` (verify-1057-r3 NIT-1 — a stale park would run a second chain beside it).
+        abandonedReaps.remove(joined.nodeId());
+        forgetIncarnation(joined.nodeId());
+        // #689: `NodeJoined` is the CORE channel and carries no role — read the role the FSM classified
+        // this join by (`MembershipFsm.memberDescriptor`), never the observer's frozen first sighting.
+        checkAdvertisedRole(joined.nodeId(),
+                            liveness.advertisedRole().apply(joined.nodeId()),
+                            "NodeJoined");
         onNodeReady(joined.nodeId());
+    }
+
+    /// #689 — the non-core join channel (#728), routed here in addition to the deployment manager so
+    /// a core-intended replacement that booted labelled `worker` is compared as well; such a node
+    /// never appears in `MembershipDecision`. The decision carries the role the projector classified
+    /// by. Leader-gated like every other decision receiver.
+    @Contract
+    @Override
+    public void onWorkerJoin(WorkerJoinDecision decision) {
+        if (!active.get()) {
+            return;
+        }
+
+        forgetIncarnation(decision.nodeId());
+        checkAdvertisedRole(decision.nodeId(),
+                            Option.some(decision.role()),
+                            "WorkerJoinDecision");
+    }
+
+    @Override
+    public List<RoleMismatch> roleMismatches() {
+        return List.copyOf(roleMismatchLedger.values());
+    }
+
+    /// #689 — compares the role this leader PROVISIONED `nodeId` with against the role the node
+    /// ADVERTISES, on EVERY join observation of that id: the intent is retained, not consumed, so an
+    /// in-place restart of a mislabelled node (crash, OOM, operator restart — same id, since a
+    /// replacement boots from a rendered config carrying `context.nodeId()`) is re-compared and
+    /// re-reported, and a rejoin that now carries the right label clears the entry (verify-1120
+    /// BLOCKING-1). The intent lives until [#handleNodeDecommissioned] forgets the id. No intent on
+    /// record — a bootstrap node, a node provisioned by an earlier leader, an operator's hand-started
+    /// node — is not a mismatch: absence of intent is silence by design, not a finding. No advertised
+    /// role at all (the FSM does not track the id — unreachable behind a decision the FSM itself
+    /// emitted, reachable for an unwired host) is not compared either: a fabricated blank would be a
+    /// fabricated finding.
+    ///
+    /// The classification is deliberately NOT touched. `MemberDescriptor.isCoreRole` counts a blank
+    /// or unknown label as core, and that is the right failure direction for the core tier (acting
+    /// on an unresolved view is the dangerous one); making blank mean worker would trade this
+    /// silent non-fence for a spurious fence on any node whose label is merely late. What was
+    /// missing is the signal: an intended worker that boots unlabelled joins the core set and every
+    /// community-tier mechanism gated on "positively not a core" — the #590 core-absence fence
+    /// first among them — is suppressed on it with nothing anywhere saying why. `classifiedAs` is
+    /// derived from that same predicate, so the ledger says what membership actually made of the label.
+    @Contract
+    private void checkAdvertisedRole(NodeId nodeId, Option<String> advertisedRole, String channel) {
+        var intended = Option.option(provisionedRoleIntents.get(nodeId));
+
+        if (intended.isEmpty()) {
+            log.debug("CTM: node {} observed on {} — no provisioning intent on record, role not compared",
+                      nodeId.id(),
+                      channel);
+
+            return;
+        }
+
+        if (advertisedRole.isEmpty()) {
+            log.debug("CTM: node {} observed on {} — no advertised role known to membership, role not compared",
+                      nodeId.id(),
+                      channel);
+
+            return;
+        }
+
+        compareRole(nodeId, intended.unwrap(), advertisedRole.unwrap());
+    }
+
+    @Contract
+    private void compareRole(NodeId nodeId, NodeRole intended, String advertisedRole) {
+        if (intended.value().equals(advertisedRole)) {
+            clearRoleMismatch(nodeId, advertisedRole);
+
+            return;
+        }
+
+        recordRoleMismatch(nodeId, intended, advertisedRole);
+    }
+
+    @Contract
+    private void clearRoleMismatch(NodeId nodeId, String advertisedRole) {
+        Option.option(roleMismatchLedger.remove(nodeId)).onPresent(cleared -> log.info("CTM: node {} now advertises role '{}' matching its provisioning intent — "
+                                                                                      + "role mismatch cleared (was advertised '{}')",
+                                                                                       nodeId.id(),
+                                                                                       advertisedRole,
+                                                                                       cleared.advertisedRole()));
+    }
+
+    @Contract
+    private void recordRoleMismatch(NodeId nodeId, NodeRole intended, String advertisedRole) {
+        var classifiedAs = NodeRole.nodeRole(advertisedRole.toLowerCase(java.util.Locale.ROOT))
+                                   .map(NodeRole::name)
+                                   .or("UNKNOWN");
+        var mismatch = new RoleMismatch(nodeId, intended.value(), advertisedRole, classifiedAs);
+
+        roleMismatchLedger.put(nodeId, mismatch);
+        log.warn("CTM: node {} was provisioned with intended role '{}' but joined with advertised role '{}'{} and is "
+                + "classified as {} — its role label never arrived or is wrong (AETHER_ROLE / aether-role label). "
+                + "Unknown roles are ineligible for admission; a known role is immutable for the node identity. "
+                + "Correct the provisioning identity and role before relaunching the node. "
+                + "Visible at GET /api/v1/cluster/topology/role-mismatches (aether cluster topology role-mismatches).",
+                 nodeId.id(),
+                 intended.value(),
+                 advertisedRole,
+                 advertisedRole.isEmpty()
+                 ? " (absent)"
+                 : "",
+                 classifiedAs);
+    }
+
+    /// #689 (verify-1120 SF-2) — a deposed CTM drops every decision at its `active` gate, so a node that
+    /// restarted with the right label (or without it) while this node was not leading was never
+    /// re-compared. Re-derive on activation from what membership holds NOW for every retained intent
+    /// whose node the FSM still tracks: a still-mismatched node is re-reported (the WARN re-fires on this
+    /// activation), a now-agreeing one is cleared. An untracked id keeps whatever the ledger held — its
+    /// departure, not this activation, is the event that owns it.
+    @Contract
+    private void rederiveRoleMismatches() {
+        var tracked = liveness.trackedMembers().get();
+
+        provisionedRoleIntents.keySet()
+                              .stream()
+                              .filter(tracked::contains)
+                              .forEach(nodeId -> checkAdvertisedRole(nodeId,
+                                                                     liveness.advertisedRole().apply(nodeId),
+                                                                     "activation replay"));
     }
 
     /// #166 — on confirmed membership-view removal the leader actively reaps the departed node's
@@ -429,6 +688,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void handleNodeRemoved(NodeRemoved removed) {
         log.info("CTM: Node {} removed — reaping container to prevent phantom resurrection", removed.nodeId());
+        // #689: intent and ledger entry deliberately survive removal — a restart in place rejoins under the
+        // SAME id and is re-compared by `handleNodeJoined`; only decommissioning forgets the id.
         reapDepartedNode(removed.nodeId());
     }
 
@@ -437,20 +698,25 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void handleNodeDecommissioned(NodeDecommissioned decommissioned) {
         log.warn("CTM: Node {} decommissioned — reaping container", decommissioned.nodeId());
+        // #689: decommissioning is the CTM's own forget point for a provisioned id — the node is retired for
+        // good, so its provisioning intent and any mismatch entry go with it.
+        provisionedRoleIntents.remove(decommissioned.nodeId());
+        recordedPlacements.remove(decommissioned.nodeId());
+        incarnations.remove(decommissioned.nodeId());
+        forgetAdmission(decommissioned.nodeId());
+        roleMismatchLedger.remove(decommissioned.nodeId());
         reapDepartedNode(decommissioned.nodeId());
     }
 
-    /// Idempotent best-effort container reap for a departed node. The `NodeLifecycleManager`
-    /// routes through the active `ComputeProvider`; when no provider is configured (non-cloud /
-    /// test) the terminate resolves as an unsupported-operation failure that is logged and
-    /// swallowed — the failure channel is owned here, never propagated, so this stays a pure
-    /// notification side effect of the membership-decision handler.
+    /// Idempotent best-effort container reap for a departed node, re-checked against independent evidence of
+    /// life first (#1062, [#reapUnlessLive]): a false DEAD verdict on a node the leader's transport still
+    /// reaches defers instead of destroying it. The `NodeLifecycleManager` routes through the active
+    /// `ComputeProvider`; when no provider is configured (non-cloud / test) the terminate resolves as an
+    /// unsupported-operation failure that is logged and swallowed — the failure channel is owned here, never
+    /// propagated, so this stays a pure notification side effect of the membership-decision handler.
     @Contract
     private void reapDepartedNode(NodeId departedNodeId) {
-        lifecycleManager.terminateNode(departedNodeId)
-                        .onFailure(cause -> log.debug("CTM: reap of departed node {} not actioned: {}",
-                                                      departedNodeId,
-                                                      cause.message()));
+        reapUnlessLive(departedNodeId, activationEpoch.get(), REAP_LIVENESS_RECHECKS);
     }
 
     @Contract
@@ -488,35 +754,42 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return prev;
     }
 
+    /// #685 — durable read-through. Absent key (fresh/empty KV, pre-#685 clusters) means enabled:
+    /// the operator has never disabled auto-heal, so the pre-#685 default holds. A read reflects the
+    /// log applied LOCALLY; the disable becomes visible on a node when that node applies the
+    /// committed Put — bounded by consensus latency, not zero; a node behind on apply answers the
+    /// previous value until then.
     @Override
     public boolean isAutoHealEnabled() {
-        return autoHealEnabled.get();
+        return autoHealStateReader.get()
+                                  .map(AutoHealStateValue::enabled)
+                                  .or(true);
     }
 
+    /// #685 — writes the operator's decision through the same consensus-backed KV channel as
+    /// [#setDesiredCount], so every node — including one that never received this call directly —
+    /// converges on it once it applies the committed Put. See [#isAutoHealEnabled] for the exact
+    /// visibility guarantee.
+    ///
+    /// #685 review round 1 SHOULD-FIX 2 — the write is UNCONDITIONAL, even when the locally-read
+    /// `prev` already equals `enabled`. `prev` comes from this node's own applied-log position, which
+    /// can lag the durable truth by up to consensus latency: a node behind on apply that is told
+    /// "enable" while its local view already (stale-ly) reads enabled must not skip the Put — the
+    /// durable record could still say disabled, and skipping the write would leave it that way forever
+    /// while telling the operator the no-op succeeded. The Put is idempotent and the value is a single
+    /// scalar with no contention, so the equality shortcut bought nothing and cost correctness. The
+    /// returned boolean is the prior value AS THIS NODE SAW IT — not a confirmation of what the durable
+    /// record previously held.
     @Override
-    public boolean setAutoHealEnabled(boolean enabled, String reason) {
-        var prev = autoHealEnabled.getAndSet(enabled);
+    public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
+        var previous = autoHealStateReader.get();
 
-        if (prev == enabled) {
-            log.info("CTM: auto-heal already {} (reason: {}) — no-op",
-                     enabled
-                     ? "enabled"
-                     : "disabled",
-                     reason);
-
-            return prev;
-        }
-
-        log.warn("CTM: auto-heal {} (operator: {}) — prior state was {}",
-                 enabled
-                 ? "ENABLED"
-                 : "DISABLED",
-                 reason,
-                 prev
-                 ? "enabled"
-                 : "disabled");
-
-        return prev;
+        return hierarchyWriter.get()
+                              .put(AetherKey.AutoHealStateKey.SINGLETON,
+                                   previous.map(value -> (AetherValue) value),
+                                   AutoHealStateValue.autoHealStateValue(enabled, reason))
+                              .map(_ -> previous.map(AutoHealStateValue::enabled)
+                                                .or(true));
     }
 
     /// Membership v2 / E2 — provision a replacement, PURE ACTUATOR.
@@ -562,11 +835,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// ACTUAL inventory with, so it MUST be the name the desired-topology entry was published
     /// under. The worker path passes `entry.sourceName()` verbatim; the core auto-heal path above
     /// resolves it from the persisted cluster config.
-    private Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
-                                                               Option<NodeId> failedPeer,
-                                                               Set<NodeId> clusterMembers,
-                                                               NodeRole intendedRole,
-                                                               SourceName sourceName) {
+    @Override
+    public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                              Option<NodeId> failedPeer,
+                                                              Set<NodeId> clusterMembers,
+                                                              NodeRole intendedRole,
+                                                              SourceName sourceName) {
+        if (intendedRole == NodeRole.CORE && (failedPeer.filter(newNodeId::equals).isPresent() || clusterMembers.contains(newNodeId) || genesisVoters.get()
+                                                                                                                                                     .get()
+                                                                                                                                                     .contains(newNodeId))) {
+            return Causes.cause("Core replacement requires a fresh voter identity; restore the original WAL for same-identity restart").promise();
+        }
+
         log.info("CTM v2: provisionReplacement requested (newNodeId={}, failedPeer={}, clusterMembers.size={}, intendedRole={}, source={})",
                  newNodeId,
                  failedPeer,
@@ -605,25 +885,142 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.NO_HEALTHY_PEERS));
         }
-
+        // #1111: the source this create goes to, kept so a drop of the replacement can look the instance up where it was (to be) made.
+        replacementSources.put(newNodeId, sourceName);
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
-                                                   roleInstanceType(intendedRole),
+                                                   roleInstanceType(intendedRole, sourceName),
                                                    intendedRole.value(),
                                                    contextSeeded)
                                     .unwrap();
-        var renderedSpec = renderReplacementUserData(contextSeeded, intendedRole).map(baseSpec::withUserData)
-                                                    .or(baseSpec);
 
-        return provisionWithZoneRotation(renderedSpec,
-                                         replacementZones(intendedRole)).onFailure(this::recordProvisioningFailure)
-                                        .map(ClusterTopologyManagerRecord::asDispatched);
+        return renderReplacementSpec(baseSpec, contextSeeded, intendedRole).async()
+                                    .flatMap(renderedSpec -> provisionWithZoneRotation(renderedSpec,
+                                                                                       replacementZones(intendedRole,
+                                                                                                        sourceName),
+                                                                                       sourceName))
+                                    .onFailure(this::recordProvisioningFailure)
+                                    .onSuccess(instance -> recordProvisionedReplacement(instance,
+                                                                                        newNodeId,
+                                                                                        intendedRole,
+                                                                                        sourceName))
+                                    .onSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
+                                    .map(ClusterTopologyManagerRecord::asDispatched);
+    }
+
+    /// #1022 — the leader has just created a BILLABLE server, and until this line it dropped the
+    /// provider's id for it on the floor: [#asDispatched] takes an [InstanceInfo] and ignores it.
+    ///
+    /// It cannot write the operator's cleanup ledger, and that is a boundary rather than an oversight.
+    /// The ledger is `~/.aether/clusters/<name>/bootstrap-state.json` on the OPERATOR'S machine, written
+    /// by `aether/cli`; this code runs in `aether-deployment` on a cloud VM, in a different process on a
+    /// different host, in the module `cli` depends ON. No wiring can reverse that. The operator-side half
+    /// of this fix is `BootstrapCleanup#recordSweptVms`, which appends the label-swept VMs to the ledger
+    /// at teardown.
+    ///
+    /// What the leader CAN do is state the id where it is still recoverable — its own journal. That is a
+    /// weaker record than the ledger (it is lost with the VM that holds it, and it is not what an
+    /// operator reads), and it is named as weaker here rather than counted as the fix.
+    ///
+    /// WARN rather than INFO, mirroring `BootstrapPhaseProvision.warnVmNotRecorded`: every line this
+    /// emits is a server that is already charging and that `aether cluster destroy` can find only by the
+    /// `aether-cluster` label sweep. Auto-heal is rare and each occurrence costs money, so one line per
+    /// created VM is proportionate, not noise.
+    @Contract
+    private static void recordProvisionedReplacement(InstanceInfo instance,
+                                                     NodeId newNodeId,
+                                                     NodeRole intendedRole,
+                                                     SourceName sourceName) {
+        log.warn("CTM: auto-heal PROVISIONED a billable instance the bootstrap ledger does NOT hold — "
+                + "instanceId={}, nodeId={}, role={}, source={}, status={}. Teardown reaches it only through "
+                + "the aether-cluster label sweep; if that sweep does not run, delete it by this instanceId.",
+                 instance.id().value(),
+                 newNodeId.id(),
+                 intendedRole.value(),
+                 sourceName,
+                 instance.status());
     }
 
     /// A successful boot is a real DISPATCH — a VM is genuinely coming, so the reconciler keeps its
     /// in-flight placeholder. A boot FAILURE stays in the `Promise` failure channel (handled by the
-    /// `onFailure(recordProvisioningFailure)` above plus the reconciler's placeholder removal).
+    /// `onFailure(recordProvisioningFailure)` above plus the reconciler's placeholder removal). The
+    /// [InstanceInfo] is deliberately discarded HERE and recorded in [#recordProvisionedReplacement]
+    /// instead — a disposition carries no provider identity, and inventing one would put a cloud id into
+    /// a type the reconciler compares by kind.
     private static ProvisionDisposition asDispatched(InstanceInfo instanceInfo) {
         return ProvisionDisposition.dispatched();
+    }
+
+    /// #1049 — classify the provider's listing for the replacement minted as `nodeId`. One listing per
+    /// call, by the node-id tag every provider stamps at create (translated to each provider's native
+    /// key at its boundary), so it answers identically for a replacement this leader dispatched and one
+    /// it inherited from a prior leader.
+    @Override
+    public Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId) {
+        return lifecycleManager.instancesForNode(nodeId)
+                               .map(ClusterTopologyManagerRecord::classifyReplacementInstances)
+                               .recover(cause -> unknownReplacementState(nodeId, cause));
+    }
+
+    /// Empty listing → ABSENT; any instance still provisioning or running → PRESENT (a replacement is
+    /// coming even if an earlier attempt under the same id left a stopped one behind); otherwise any
+    /// instance whose status the provider could not state → UNKNOWN, never FAILED (#1049: FAILED drops the
+    /// replacement at once, and that instance may still exist); otherwise every listed instance is stopping
+    /// or terminated → FAILED.
+    private static ReplacementInstanceState classifyReplacementInstances(List<InstanceInfo> instances) {
+        if (instances.isEmpty()) {
+            return ReplacementInstanceState.ABSENT;
+        }
+
+        if (anyInstanceIn(instances, ReplacementInstanceState.PRESENT)) {
+            return ReplacementInstanceState.PRESENT;
+        }
+
+        return anyInstanceIn(instances, ReplacementInstanceState.UNKNOWN)
+               ? ReplacementInstanceState.UNKNOWN
+               : ReplacementInstanceState.FAILED;
+    }
+
+    private static boolean anyInstanceIn(List<InstanceInfo> instances, ReplacementInstanceState state) {
+        return instances.stream()
+                        .anyMatch(instance -> instanceState(instance) == state);
+    }
+
+    private static ReplacementInstanceState instanceState(InstanceInfo instance) {
+        return switch (instance.status()) {
+            case InstanceStatus.Provisioning _, InstanceStatus.Running _ -> ReplacementInstanceState.PRESENT;
+            case InstanceStatus.Unknown _, InstanceStatus.unused _ -> ReplacementInstanceState.UNKNOWN;
+            case InstanceStatus.Stopping _, InstanceStatus.Terminated _ -> ReplacementInstanceState.FAILED;
+        };
+    }
+
+    /// FER (degrade forward): a listing that fails — provider API error, or no compute provider wired —
+    /// is absorbed into the explicit UNKNOWN answer rather than propagated. Guarantee earned: the
+    /// reconciler never reads an unanswerable query as "exists" (which would hold a slot forever) or as
+    /// "gone" (which would mint a duplicate); an UNKNOWN entry is bounded only by the per-source ceiling.
+    /// Mechanism: one listing per poll tick, no retry here — the next tick asks again.
+    private static ReplacementInstanceState unknownReplacementState(NodeId nodeId, Cause cause) {
+        log.warn("CTM v2: provider could not report the instance state of in-flight replacement {} — treating it as UNKNOWN (bounded by the replacement ceiling): {}",
+                 nodeId,
+                 cause.message());
+
+        return ReplacementInstanceState.UNKNOWN;
+    }
+
+    /// #1049 — the in-flight ceiling for a replacement of `intendedRole`, resolved through the SAME
+    /// [#cloudSourceFor] lookup as the replacement's zones, instance type and source name, so all four
+    /// ride one source profile. The ten-minute default applies when there is no committed TOML (the
+    /// bootstrap seed) or it is unparseable, or no cloud source backs the role (Docker / forge).
+    @Override
+    public TimeSpan replacementCeiling(NodeRole intendedRole) {
+        return persistedCloudSource(intendedRole).map(SourceProfile::effectiveReplacementCeiling)
+                                   .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
+    }
+
+    /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when there
+    /// is no committed TOML (the bootstrap seed) or it is unparseable or no cloud source declares the role.
+    private Option<SourceProfile> persistedCloudSource(NodeRole intendedRole) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> cloudSourceFor(config, intendedRole));
     }
 
     /// #334 — auto-heal zone rotation. Mirrors the bootstrap rotation (`BootstrapPhaseProvision`):
@@ -635,9 +1032,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// (backward-compatible — non-cloud Docker/forge providers ignore placement entirely). The
     /// `onFailure(recordProvisioningFailure)` in the caller fires only on the FINAL failure of this
     /// fold. Fully async — no blocking `await`.
-    private Promise<InstanceInfo> provisionWithZoneRotation(ProvisionSpec renderedSpec, List<String> zones) {
+    private Promise<InstanceInfo> provisionWithZoneRotation(ProvisionSpec renderedSpec,
+                                                            List<String> zones,
+                                                            SourceName sourceName) {
         if (zones.isEmpty()) {
-            var placedSpec = computePlacementHint().map(renderedSpec::withPlacement).or(renderedSpec);
+            var placedSpec = computePlacementHint(sourceName).map(renderedSpec::withPlacement).or(renderedSpec);
 
             return lifecycleManager.provisionNode(placedSpec);
         }
@@ -696,23 +1095,30 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.warn("CTM v2: provisionReplacement zone '{}' capacity-unavailable — rotating to '{}'", fromZone, toZone);
     }
 
+    /// Every zone refused for capacity, so no instance was created: typed as [EnvironmentError.CapacityUnavailable] so the leader's drop of the
+    /// replacement can tell it from a create that may have left an instance behind (#1111).
     private static Cause zonesExhausted(List<String> zones) {
-        return Causes.cause("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability: " + String.join(", ",
-                                                                                                                                     zones));
+        return EnvironmentError.capacityUnavailable(String.join(", ", zones),
+                                                    new RuntimeException("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability"));
     }
 
     /// #334 — the ordered zone list to rotate over for a replacement of `intendedRole`, reusing the
     /// SAME parse path as [#renderReplacementUserData]: the persisted cluster TOML re-parsed via
     /// [ClusterBootstrapConfigParser], the cloud [SourceProfile] backing the role, and its
-    /// [SourceProfile#effectiveZones]. Empty (single-attempt, no zone pin) when the persisted TOML
-    /// is blank/unparseable, no cloud source backs the role, or that source declares no zones.
-    private List<String> replacementZones(NodeRole intendedRole) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
-                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> cloudSourceFor(config, intendedRole))
-                     .map(SourceProfile::effectiveZones)
-                     .or(List.of());
+    /// [SourceProfile#effectiveZones]. Empty (single-attempt, no zone pin) when there is no committed
+    /// TOML (the bootstrap seed) or it is unparseable, no cloud source backs the role, or that source declares no zones.
+    private List<String> replacementZones(NodeRole intendedRole, SourceName sourceName) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> sourceFor(config, sourceName, intendedRole))
+                            .map(SourceProfile::effectiveZones)
+                            .or(List.of());
+    }
+
+    /// The operator's committed cluster TOML; empty for an absent config and for the bootstrap seed, which
+    /// declares no source (#1812: [ClusterConfigValue#tomlContent] is typed, so there is no blank sentinel).
+    private Option<String> committedToml() {
+        return clusterConfigReader.get()
+                                  .flatMap(ClusterConfigValue::tomlContent);
     }
 
     private static Option<ClusterBootstrapConfig> parseConfig(String toml) {
@@ -726,14 +1132,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// would have booted on the CORE's fallback size. Falls back to `"default"` (provider-level
     /// `[cloud.compute] server_type` then applies) when the TOML is unparseable or the role
     /// declares no instance type.
-    private String roleInstanceType(NodeRole intendedRole) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
-                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> cloudSourceFor(config, intendedRole))
-                     .flatMap(source -> Option.option(source.roles().get(intendedRole)))
-                     .flatMap(role -> role.instanceType())
-                     .or("default");
+    private String roleInstanceType(NodeRole intendedRole, SourceName sourceName) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> sourceFor(config, sourceName, intendedRole))
+                            .flatMap(source -> Option.option(source.roles().get(intendedRole)))
+                            .flatMap(role -> role.instanceType())
+                            .or("default");
     }
 
     /// RFC-0017 stage 5 — the source profile NAME backing a provision of `intendedRole`, resolved
@@ -742,19 +1146,49 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// what the provider stamps as `aether-source`.
     ///
     /// Falls back to [ProvisionContext#DEFAULT_SOURCE_NAME] when no cloud source backs the role —
-    /// the TOML is blank/unparseable (tests, forge) or the provider is non-cloud (Docker) and has
+    /// there is no committed TOML (the bootstrap seed: tests, forge) or it is unparseable or the provider is non-cloud (Docker) and has
     /// no source concept at all. That fallback is honest rather than convenient: there is no source
     /// name to round-trip, and nothing lists those instances by a source-scoped selector. The
     /// worker reconcile path never relies on it — it passes the topology entry's own source name,
     /// which is authoritative and, under multi-source topologies, the only correct answer
     /// (`cloudSourceFor` returns the FIRST cloud source declaring the role).
     private SourceName replacementSourceName(NodeRole intendedRole) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
-                     .flatMap(ClusterTopologyManagerRecord::parseConfig)
-                     .flatMap(config -> cloudSourceFor(config, intendedRole))
-                     .map(SourceProfile::name)
-                     .or(ProvisionContext.DEFAULT_SOURCE_NAME);
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> cloudSourceFor(config, intendedRole))
+                            .map(SourceProfile::name)
+                            .or(ProvisionContext.DEFAULT_SOURCE_NAME);
+    }
+
+    /// #1543 F2 -- the source of a node whose record carries NO source (a cluster bootstrapped from static PEERS: its peers' descriptors hold
+    /// no labels), resolved once by the replacement reconciler and committed into the record. Derived only when exactly ONE source, of any
+    /// type, declares the role: there is no preference between types, because replacing a docker node must never provision a cloud VM.
+    /// Zero or several declaring sources are a typed refusal naming the role and the candidates, never the source "default". Without any
+    /// committed source configuration (no config row, or the bootstrap seed, which declares no source) there is nothing to derive from and
+    /// the answer is "default", as before. A committed configuration that does not parse is a typed [ReplacementConfigUnparseable]: it is
+    /// never read as "no config", because the "default" answered here is committed into the record for good.
+    @Override
+    public Result<SourceName> sourceOfSourcelessNode(NodeRole intendedRole) {
+        return committedToml().fold(() -> Result.success(ProvisionContext.DEFAULT_SOURCE_NAME),
+                                    toml -> ClusterBootstrapConfigParser.parse(toml).fold(cause -> new ReplacementConfigUnparseable(cause.message()).<SourceName> result(),
+                                                                                          config -> soleSourceDeclaring(config,
+                                                                                                                        intendedRole).map(SourceProfile::name)));
+    }
+
+    private static Result<SourceProfile> soleSourceDeclaring(ClusterBootstrapConfig config, NodeRole role) {
+        var declaring = config.sources()
+                              .values()
+                              .stream()
+                              .filter(source -> source.roles()
+                                                      .containsKey(role))
+                              .sorted(java.util.Comparator.comparing(source -> source.name()
+                                                                                     .value()))
+                              .toList();
+
+        return declaring.size() == 1
+               ? Result.success(declaring.getFirst())
+               : new ReplacementSourceUnresolved(role.value(),
+                                                 declaring.stream().map(source -> source.name()
+                                                                                        .value()).toList()).result();
     }
 
     /// RFC-0017 stage 5 — reconcile ACTUAL worker/spot cloud inventory toward the desired
@@ -777,7 +1211,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// leader activation, matching the deferral semantics of [#provisionReplacement].
     @Contract
     @Override
-    public void reconcileWorkerTopology() {
+    public synchronized void reconcileWorkerTopology() {
         if (!active.get()) {
             return;
         }
@@ -791,7 +1225,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        runWorkerReconcilePass().onResult(_ -> completeWorkerReconcilePass());
+        var epoch = activationEpoch.get();
+
+        runWorkerReconcilePass(epoch).onFailure(cause -> log.warn("CTM: worker topology reconciliation failed: {}",
+                                                                  cause.message()))
+                              .onResult(_ -> completeWorkerReconcilePass(epoch));
     }
 
     /// Release the serialization flag FIRST, then replay a missed trigger. In that order a trigger
@@ -800,7 +1238,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// replay re-enters [#reconcileWorkerTopology], so it is leader-gated exactly like any other
     /// trigger.
     @Contract
-    private void completeWorkerReconcilePass() {
+    private synchronized void completeWorkerReconcilePass(long epoch) {
+        if (activationEpoch.get() != epoch) {
+            return;
+        }
+
         workerReconcileInFlight.set(false);
         if (workerReconcilePending.compareAndSet(true, false)) {
             log.debug("CTM: replaying worker reconcile trigger deferred during the previous pass");
@@ -808,24 +1250,121 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
     }
 
-    private Promise<Unit> runWorkerReconcilePass() {
-        return clusterConfigReader.get()
-                                  .fold(Promise::unitPromise, this::reconcileWorkerEntries);
+    @Override
+    public Option<CommunityPlacementReconciler> installedCommunityPlacement() {
+        return communityPlacement.get();
     }
 
-    private Promise<Unit> reconcileWorkerEntries(ClusterConfigValue config) {
+    @Override
+    @Contract
+    public synchronized void installCommunityPlacement(CommunityPlacementReconciler reconciler) {
+        communityPlacement.set(Option.some(reconciler));
+        startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
+    }
+
+    Unit startWorkerTopologyPolling(TimeSpan interval) {
+        if (active.get() && communityPlacement.get().isPresent()) {
+            var epoch = activationEpoch.get();
+
+            workerTopologyPolling.set(SharedScheduler.scheduleAtFixedRate(() -> pollWorkerTopology(epoch), interval));
+        }
+
+        return unit();
+    }
+
+    private synchronized Unit pollWorkerTopology(long epoch) {
+        if (active.get() && activationEpoch.get() == epoch) {
+            reconcileWorkerTopology();
+            lifecycleManager.reconcileRefusals()
+                            .onFailure(cause -> log.warn("Capacity refusal accounting deferred: {}",
+                                                         cause.message()));
+        }
+
+        return unit();
+    }
+
+    @Override
+    public Promise<Unit> provisionPlacementNode(AetherValue.CommunityPlacementOperationValue operation) {
+        if (!active.get()) {
+            return Causes.cause("Placement provisioning requires active core leader").promise();
+        }
+
+        var epoch = activationEpoch.get();
+        var source = SourceName.sourceNameOrDefault(operation.targetSource());
+        var context = buildProvisionContext(operation.targetNode(), NodeRole.WORKER, source);
+
+        if (context.peers().or("").isEmpty()) {
+            return Causes.cause("No ready core peers for placement provisioning").promise();
+        }
+
+        return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                           roleInstanceType(NodeRole.WORKER, source),
+                                           NodeRole.WORKER.value(),
+                                           context)
+                            .flatMap(spec -> renderReplacementSpec(spec, context, NodeRole.WORKER))
+                            .map(rendered -> operation.targetZone()
+                                                      .map(zone -> rendered.withPlacement(PlacementHint.zoneHint(zone)))
+                                                      .or(rendered))
+                            .async()
+                            .flatMap(spec -> lifecycleManager.provisionNode(spec,
+                                                                            operation.sourceBinding()))
+                            .flatMap(instance -> recordPlacementProvision(instance,
+                                                                          operation.targetNode(),
+                                                                          source,
+                                                                          epoch));
+    }
+
+    private Promise<Unit> recordPlacementProvision(InstanceInfo instance, NodeId node, SourceName source, long epoch) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            return HierarchyStateWriter.Refusal.INACTIVE.promise();
+        }
+
+        var writer = hierarchyWriter.get();
+        var key = new AetherKey.NodePlacementKey(node);
+        var observed = new AetherValue.NodePlacementValue(source.value(),
+                                                          instance.observedZone(),
+                                                          instance.id().value());
+
+        return writer.put(key,
+                          writer.read().apply(key),
+                          observed)
+                     .map(_ -> rememberPlacementProvision(instance, node, source));
+    }
+
+    private Unit rememberPlacementProvision(InstanceInfo instance, NodeId node, SourceName source) {
+        recordProvisionedReplacement(instance, node, NodeRole.WORKER, source);
+        provisionedRoleIntents.put(node, NodeRole.WORKER);
+
+        return unit();
+    }
+
+    private Promise<Unit> runWorkerReconcilePass(long epoch) {
+        return communityPlacement.get()
+                                 .fold(Promise::unitPromise, CommunityPlacementReconciler::reconcile)
+                                 .flatMap(_ -> clusterConfigReader.get()
+                                                                  .fold(Promise::unitPromise,
+                                                                        config -> reconcileWorkerEntries(config, epoch)));
+    }
+
+    private Promise<Unit> reconcileWorkerEntries(ClusterConfigValue config, long epoch) {
         var entries = config.desiredTopology().stream().filter(entry -> !entry.isCore()).toList();
         var pass = Promise.unitPromise();
 
         for (var entry : entries) {
             pass = pass.flatMap(_ -> reconcileWorkerEntry(ClusterName.maybeClusterName(config.clusterName()),
-                                                          entry));
+                                                          entry,
+                                                          epoch));
         }
 
         return pass;
     }
 
-    private Promise<Unit> reconcileWorkerEntry(Option<ClusterName> clusterName, AetherValue.TopologyEntry entry) {
+    private Promise<Unit> reconcileWorkerEntry(Option<ClusterName> clusterName,
+                                               AetherValue.TopologyEntry entry,
+                                               long epoch) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            return Promise.unitPromise();
+        }
         // Renders an unresolvable persisted name as the EMPTY selector value, byte-identical to the
         // historical `.or("")` — the KV `ClusterConfigValue.clusterName` is a `String` written by the
         // bootstrap parser (which validated it), so the empty case is unreachable in practice and is
@@ -838,7 +1377,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                             entry.role());
 
         return lifecycleManager.listInstances(filter)
-                               .flatMap(actual -> applyWorkerDelta(entry, actual))
+                               .flatMap(actual -> active.get() && activationEpoch.get() == epoch
+                                                  ? recordWorkerPlacement(entry, actual).flatMap(_ -> applyWorkerDelta(entry,
+                                                                                                                       actual,
+                                                                                                                       epoch))
+                                                  : Promise.unitPromise())
                                .onFailure(cause -> log.warn("CTM: worker reconcile for {}/{} failed: {}",
                                                             entry.sourceName(),
                                                             entry.role(),
@@ -846,7 +1389,62 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                .fold(_ -> Promise.unitPromise());
     }
 
-    private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual) {
+    private Promise<Unit> recordWorkerPlacement(AetherValue.TopologyEntry entry, List<InstanceInfo> actual) {
+        var observations = new java.util.HashMap<NodeId, AetherValue.NodePlacementValue>();
+
+        for (var instance : actual) {
+            instance.nodeId()
+                    .flatMap(id -> NodeId.nodeId(id).option())
+                    .onPresent(id -> observations.put(id,
+                                                      new AetherValue.NodePlacementValue(entry.sourceName(),
+                                                                                         instance.observedZone(),
+                                                                                         instance.id().value())));
+        }
+
+        observations.entrySet()
+                    .removeIf(entryValue -> entryValue.getValue()
+                                                      .equals(recordedPlacements.get(entryValue.getKey())));
+        var writer = hierarchyWriter.get();
+        var mutations = observations.entrySet()
+                                    .stream()
+                                    .map(observation -> {
+                                             AetherKey key = new AetherKey.NodePlacementKey(observation.getKey());
+
+                                             return new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                   writer.read()
+                                                                                                         .apply(key),
+                                                                                                   Option.some(observation.getValue()));
+                                         })
+                                    .toList();
+
+        return writer.commit(mutations,
+                             List.of())
+                     .map(_ -> rememberPlacements(observations));
+    }
+
+    private Unit rememberPlacements(Map<NodeId, AetherValue.NodePlacementValue> observations) {
+        recordedPlacements.putAll(observations);
+
+        return unit();
+    }
+
+    @Override
+    public boolean usesExplicitCommunities() {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .filter(config -> !config.communities()
+                                                     .isEmpty())
+                            .isPresent();
+    }
+
+    private Promise<Unit> applyWorkerDelta(AetherValue.TopologyEntry entry, List<InstanceInfo> actual, long epoch) {
+        if (entry.role().equals(NodeRole.WORKER.value()) && usesExplicitCommunities()) {
+            return Promise.unitPromise();
+        }
+
+        if (!active.get() || activationEpoch.get() != epoch) {
+            return Promise.unitPromise();
+        }
+
         var delta = entry.count() - actual.size();
 
         if (delta == 0) {
@@ -864,19 +1462,25 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  Math.abs(delta));
 
         return delta > 0
-               ? provisionWorkers(entry, delta)
-               : terminateSurplusWorkers(actual, -delta);
+               ? provisionWorkers(entry, delta, epoch)
+               : terminateSurplusWorkers(entry, actual, -delta, epoch);
     }
 
-    private Promise<Unit> provisionWorkers(AetherValue.TopologyEntry entry, int deficit) {
+    private Promise<Unit> provisionWorkers(AetherValue.TopologyEntry entry, int deficit, long epoch) {
         var role = NodeRole.nodeRole(entry.role()).option().or(NodeRole.WORKER);
-        var members = observer.coreNodes();
+        var members = liveInstalledVoters();
         var pass = Promise.unitPromise();
 
         for (int i = 0; i < deficit; i++) {
             var minted = mintWorkerNodeId(entry, i);
 
-            pass = pass.flatMap(_ -> provisionReplacement(minted, Option.none(), members, role, workerSourceName(entry)).mapToUnit());
+            pass = pass.flatMap(_ -> active.get() && activationEpoch.get() == epoch
+                                     ? provisionReplacement(minted,
+                                                            Option.none(),
+                                                            members,
+                                                            role,
+                                                            workerSourceName(entry)).mapToUnit()
+                                     : Promise.unitPromise());
         }
 
         return pass;
@@ -903,28 +1507,86 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                             + "-" + ordinal).unwrap();
     }
 
-    /// Newest first (REQ-SCALE-03 ordering by id: minted `-r<base36-clock>` ids sort after
-    /// bootstrap `-<index>` ids, and later mints sort after earlier ones). An instance without a
-    /// node-id label cannot be terminated through the node-id path and is skipped — pre-#579
-    /// orphans are the cloud reaper's job, not the reconciler's.
-    private Promise<Unit> terminateSurplusWorkers(List<InstanceInfo> actual, int surplus) {
-        var victims = actual.stream()
-                            .flatMap(instance -> instance.nodeId()
-                                                         .stream())
-                            .sorted(Comparator.<String> naturalOrder().reversed())
-                            .limit(surplus)
-                            .toList();
+    /// An instance without a node-id label cannot be terminated through the node-id path and is
+    /// skipped — pre-#579 orphans are the cloud reaper's job, not the reconciler's.
+    private Promise<Unit> terminateSurplusWorkers(AetherValue.TopologyEntry entry,
+                                                  List<InstanceInfo> actual,
+                                                  int surplus,
+                                                  long epoch) {
+        var victims = surplusWorkerVictims(actual.stream().flatMap(instance -> instance.nodeId()
+                                                                                       .stream()).toList(),
+                                           surplus,
+                                           nodeReplacements.get());
+
+        if (victims.size() < surplus) {
+            log.debug("CTM: worker topology {}/{} — {} of the surplus is an in-flight node replacement, not terminated",
+                      entry.sourceName(),
+                      entry.role(),
+                      surplus - victims.size());
+        }
+
         var pass = Promise.unitPromise();
 
         for (var victim : victims) {
-            pass = pass.flatMap(_ -> lifecycleManager.terminateNode(NodeId.nodeId(victim).unwrap())
-                                                     .onFailure(cause -> log.warn("CTM: worker termination of {} failed: {}",
-                                                                                  victim,
-                                                                                  cause.message()))
-                                                     .fold(_ -> Promise.unitPromise()));
+            pass = pass.flatMap(_ -> !active.get() || activationEpoch.get() != epoch
+                                     ? Promise.unitPromise()
+                                     : communityPlacement.get()
+                                                         .fold(() -> org.pragmatica.lang.utils.Causes.cause("Worker retirement workflow is unavailable")
+                                                                                                     .promise(),
+                                                               placement -> placement.requestRetirement(NodeId.nodeId(victim).unwrap(),
+                                                                                                        entry)));
         }
 
         return pass;
+    }
+
+    /// Newest first (REQ-SCALE-03 ordering by id: minted `-r<base36-clock>` ids sort after bootstrap
+    /// `-<index>` ids, and later mints sort after earlier ones). #1543: a live replacement before
+    /// `RETIRING_OLD` is surge, not surplus, so it shrinks the surplus instead of becoming its victim;
+    /// an original due for retirement is taken first; and no node a live pairing protects is chosen.
+    static List<String> surplusWorkerVictims(List<String> nodeIds, int surplus, NodeReplacementIndex replacements) {
+        var surge = ids(replacements.surgeReplacements());
+        var retiring = ids(replacements.retiringOriginals());
+        var protectedIds = ids(replacements.retirementProtected());
+        var counted = surplus - (int) nodeIds.stream().filter(surge::contains).count();
+        var retiringFirst = nodeIds.stream().filter(retiring::contains).sorted();
+        var newestFirst = nodeIds.stream()
+                                 .filter(id -> !retiring.contains(id) && !protectedIds.contains(id))
+                                 .sorted(Comparator.<String> naturalOrder().reversed());
+
+        return Stream.concat(retiringFirst, newestFirst)
+                     .limit(Math.max(0, counted))
+                     .toList();
+    }
+
+    private static Set<String> ids(Set<NodeId> nodes) {
+        return nodes.stream()
+                    .map(NodeId::id)
+                    .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// The replacement's spec with its rendered user-data (cloud sources) and its pinned image (docker sources) attached.
+    private Result<ProvisionSpec> renderReplacementSpec(ProvisionSpec spec,
+                                                        ProvisionContext context,
+                                                        NodeRole intendedRole) {
+        return renderReplacementUserData(context, intendedRole).map(userData -> userData.map(spec::withUserData)
+                                                                                        .or(spec))
+                                        .map(rendered -> pinnedDockerImage(context, intendedRole).map(rendered::withImage)
+                                                                          .or(rendered));
+    }
+
+    /// #1543 F2 (ruling 7f2f9d772): a DOCKER source's replacement boots the image its runtime profile pins at the committed
+    /// `[cluster] version` (`repo:{version}`), so an upgrade replaces a container with one of the TARGET image instead of the
+    /// provider's single configured image. Empty (the provider keeps its configured image) when there is no committed TOML, the
+    /// source is not DOCKER or the role pins no image; the upgrade is refused at its start for a docker source that pins none.
+    private Option<String> pinnedDockerImage(ProvisionContext context, NodeRole intendedRole) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> sourceFor(config,
+                                                         context.sourceName(),
+                                                         intendedRole).filter(source -> source.type() == SourceType.DOCKER)
+                                                        .flatMap(source -> NodeUserDataRenderer.pinnedImageFor(config,
+                                                                                                               source,
+                                                                                                               intendedRole)));
     }
 
     /// Render the replacement node's cloud-init user-data so a CTM-provisioned (cloud) replacement
@@ -943,31 +1605,29 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// as the renderer's `emitIdentityEnv` does, so it is not threaded here.
     ///
     /// Degrades to [Option#empty] (NO user-data → provider keeps its existing `config.userData()`
-    /// fallback) when the persisted TOML is blank/unparseable or no cloud source backs the role —
+    /// fallback) when there is no committed TOML (the bootstrap seed) or it is unparseable, or no cloud source backs the role —
     /// non-cloud (Docker/forge) providers inject identity from the [ProvisionContext] directly and
     /// never consult user-data, so an absent render is correct there.
-    private Option<String> renderReplacementUserData(ProvisionContext context, NodeRole intendedRole) {
-        return Option.option(clusterConfigReader.get().map(ClusterConfigValue::tomlContent).or(""))
-                     .filter(toml -> !toml.isBlank())
-                     .flatMap(toml -> renderFromToml(toml, context, intendedRole));
+    private Result<Option<String>> renderReplacementUserData(ProvisionContext context, NodeRole intendedRole) {
+        return committedToml().fold(() -> Result.success(Option.none()),
+                                    toml -> ClusterBootstrapConfigParser.parse(toml).flatMap(config -> renderFromConfig(config,
+                                                                                                                        context,
+                                                                                                                        intendedRole)));
     }
 
-    private Option<String> renderFromToml(String toml, ProvisionContext context, NodeRole intendedRole) {
-        return ClusterBootstrapConfigParser.parse(toml)
-                                           .option()
-                                           .flatMap(config -> renderFromConfig(config, context, intendedRole));
+    private Result<Option<String>> renderFromConfig(ClusterBootstrapConfig config,
+                                                    ProvisionContext context,
+                                                    NodeRole intendedRole) {
+        return sourceFor(config,
+                         context.sourceName(),
+                         intendedRole).toResult(Causes.cause("No configured source for replacement " + context.sourceName()
+                                                                                                              .value()))
+                        .flatMap(source -> source.type() == SourceType.CLOUD
+                                           ? renderFromSource(config, source, context, intendedRole).map(Option::some)
+                                           : Result.success(Option.none()));
     }
 
-    private Option<String> renderFromConfig(ClusterBootstrapConfig config,
-                                            ProvisionContext context,
-                                            NodeRole intendedRole) {
-        return cloudSourceFor(config, intendedRole).flatMap(source -> renderFromSource(config,
-                                                                                       source,
-                                                                                       context,
-                                                                                       intendedRole));
-    }
-
-    private Option<String> renderFromSource(ClusterBootstrapConfig config,
+    private Result<String> renderFromSource(ClusterBootstrapConfig config,
                                             SourceProfile source,
                                             ProvisionContext context,
                                             NodeRole intendedRole) {
@@ -975,9 +1635,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                      source,
                                                      intendedRole,
                                                      clusterSecretFromEnv(),
-                                                     leaderSshKeyIds())
-                                            .option()
-                                            .map(this::resolvePlaceholders)
+                                                     sourceSshKeyIds(source.name()))
+                                            .flatMap(composed -> resolvePlaceholders(composed,
+                                                                                     config,
+                                                                                     source.name(),
+                                                                                     intendedRole))
                                             .map(composed -> NodeUserDataRenderer.render(config,
                                                                                          source,
                                                                                          intendedRole,
@@ -990,16 +1652,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                          peersList(context)));
     }
 
-    /// #442 — the operator SSH key ids the LEADER itself was provisioned with, read from its OWN
-    /// resolved `[cloud.compute] ssh_key_ids` (the same `resolvedLocalConfig` the #336 placeholder
-    /// resolution uses). Threaded into the replacement's composed config so a replacement that later
-    /// becomes leader inherits the keys and provisions ITS replacements from config — extending the
-    /// bootstrap-seeded inheritance across replacement generations WITHOUT persisting the ids in the
-    /// KV cluster config (a stored-format change). Empty for non-cloud / tests where no resolved
-    /// local config is available, in which case the provider's name-prefix fallback still applies.
-    private List<Long> leaderSshKeyIds() {
+    private List<Long> sourceSshKeyIds(SourceName source) {
         return resolvedLocalConfig.get()
-                                  .flatMap(toml -> toml.getString("cloud.compute", "ssh_key_ids"))
+                                  .flatMap(toml -> SourceCloudBindings.read(toml, source))
+                                  .flatMap(binding -> Option.option(binding.compute().get("ssh_key_ids")))
                                   .map(ClusterTopologyManagerRecord::parseSshKeyIds)
                                   .or(List.of());
     }
@@ -1014,18 +1670,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      .toList();
     }
 
-    /// #336 — substitute the literal `${env:...}` / `${secrets:...}` placeholders the composed
-    /// overlay inherited from the deliberately-unresolved persisted KV TOML with the leader's OWN
-    /// resolved values at the same TOML path (via [PlaceholderConfigResolver]). The leader runs with
-    /// its per-node overlay RESOLVED to literals, so a CTM-provisioned replacement boots with real
-    /// credentials instead of crashing on placeholders. Passes `composed` through UNCHANGED when no
-    /// resolved local config is available (non-cloud / forge / tests) — preserving prior behavior —
-    /// or when the resolution itself reports a failure (best-effort: a partial render that still
-    /// carries a placeholder is no worse than the pre-fix behavior the renderer already handled).
-    private TomlDocument resolvePlaceholders(TomlDocument composed) {
+    /// Resolve account-specific fields from the target source binding. A failed cloud render is
+    /// a failed provision, never permission to reuse the leader's positional credentials/user-data.
+    private Result<TomlDocument> resolvePlaceholders(TomlDocument composed,
+                                                     ClusterBootstrapConfig config,
+                                                     SourceName source,
+                                                     NodeRole role) {
         return resolvedLocalConfig.get()
-                                  .map(resolvedSource -> PlaceholderConfigResolver.resolve(composed, resolvedSource).or(composed))
-                                  .or(composed);
+                                  .fold(() -> SourceCloudBindings.resolveOverlayFromConfig(composed,
+                                                                                           config,
+                                                                                           source,
+                                                                                           role),
+                                        local -> SourceCloudBindings.resolveOverlay(composed, local, source, role));
     }
 
     /// Operator SSH public keys persisted into the cluster config TOML at bootstrap formation
@@ -1045,21 +1701,35 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// The cloud [SourceProfile] backing the given role: the first `CLOUD`-type source whose role
     /// table declares the role. Only cloud replacements consume user-data, so non-cloud sources are
     /// skipped (the empty result degrades the render to a no-op above).
+    private static Option<SourceProfile> sourceFor(ClusterBootstrapConfig config,
+                                                   SourceName sourceName,
+                                                   NodeRole role) {
+        return Option.option(config.sources().get(sourceName.value())).filter(source -> source.roles()
+                                                                                              .containsKey(role));
+    }
+
     private static Option<SourceProfile> cloudSourceFor(ClusterBootstrapConfig config, NodeRole role) {
         return Option.from(config.sources()
                                  .values()
                                  .stream()
                                  .filter(source -> source.type() == SourceType.CLOUD)
+                                 .sorted(java.util.Comparator.comparing(source -> source.name()
+                                                                                        .value()))
                                  .filter(source -> source.roles()
                                                          .containsKey(role))
                                  .findFirst());
     }
 
     /// The cluster secret as the running (leader) node sees it in its own environment — the same
-    /// source the renderer's `emitIdentityEnv` reads it from, so the secret baked into the
+    /// source the renderer's `emitIdentityEnv` reads it from (`AETHER_CLUSTER_SECRET_FILE` included, #828), so the secret baked into the
     /// replacement's `AETHER_CLUSTER_SECRET` matches the live cluster's.
     private static Option<String> clusterSecretFromEnv() {
-        return Option.option(System.getenv(AETHER_CLUSTER_SECRET_ENV)).filter(s -> !s.isBlank());
+        return clusterSecretFrom(System::getenv);
+    }
+
+    /// The same with the leader's environment supplied (`AETHER_CLUSTER_SECRET` or the file `AETHER_CLUSTER_SECRET_FILE` names, #828).
+    static Option<String> clusterSecretFrom(Fn1<String, String> env) {
+        return ClusterSecretSource.resolve(env).fold(_ -> Option.<String> none(), value -> value);
     }
 
     private static List<String> peersList(ProvisionContext context) {
@@ -1084,6 +1754,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// phase-NORMAL / operator reset via [#resetProvisioningCircuit].
     @Contract
     private void recordProvisioningFailure(Cause cause) {
+        if (cause instanceof FleetInventoryInitializing) {
+            return;
+        }
+
         var failures = consecutiveProvisioningFailures.incrementAndGet();
 
         lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));
@@ -1099,6 +1773,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                      MAX_CONSECUTIVE_PROVISIONING_FAILURES,
                      cause.message());
         }
+    }
+
+    /// #1601: the live voters a new worker is seeded with — membership's counted core members (MEMBER + SUSPECT)
+    /// narrowed to the installed voter set, the same live set the core auto-heal path passes. The installed
+    /// voter set alone ([TopologyObserver#coreNodes] once voters are installed) carries no health, so a dead
+    /// voter stayed in a new worker's PEERS until membership pruned its NodeInfo. Empty when liveness is
+    /// unwired, which falls back to the liveness-filtered cold path in [#buildProvisionContext].
+    private Set<NodeId> liveInstalledVoters() {
+        var installed = observer.coreNodes();
+
+        return liveness.coreCountedMembers()
+                       .get()
+                       .stream()
+                       .filter(installed::contains)
+                       .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Build the PEERS string from the LIVE member set: `self` first (always present — the
@@ -1131,34 +1820,1473 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// which self-drains (finishes in-flight requests) via its `DrainProcedure`. A grace-terminate
     /// backstop is scheduled after `autoHealConfig.provisioningTimeout()`: it calls
     /// `lifecycleManager.terminateNode(target)` to reap the container (prevents Docker
-    /// restart-loop / cloud lingering when the target never self-exits) AND clears the target from
-    /// the registry (`drainCommandClear`). `reason` is observability-only. Returns on the enqueue
-    /// (the drain itself proceeds asynchronously via the heartbeat + backstop).
+    /// restart-loop / cloud lingering when the target never self-exits) — for a surplus-trim `reason`
+    /// only when [#graceReapVerdict] still allows it (#1050) — AND clears the target from the registry
+    /// (`drainCommandClear`). Returns on the enqueue (the drain itself proceeds asynchronously via the
+    /// heartbeat + backstop).
+    ///
+    /// #1543: a SURPLUS trim of a node a live replacement pairing protects is refused — the `LeaderReconciler`
+    /// surplus drain picks a fresh ephemeral core first, which is exactly the +1 replacement. Non-surplus
+    /// reasons are not gated by the pairing: a never-joined zombie (`JOIN_GRACE_REAP`) has no other reaper.
     @Override
-    public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+    public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+        if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
+            return org.pragmatica.lang.utils.Causes.cause("Node retirement awaits certified voter handoff")
+                                                   .promise();
+        }
+
+        if (reason.isSurplusTrim() && nodeReplacements.get().retirementProtected().contains(targetNodeId)) {
+            return org.pragmatica.lang.utils.Causes.cause("Node is paired in an in-flight node replacement")
+                                                   .promise();
+        }
+
+        var epoch = activationEpoch.get();
+
+        if (Option.option(pendingDrains.putIfAbsent(targetNodeId, epoch)).isPresent()) {
+            return Promise.unitPromise();
+        }
+
         log.info("CTM v2: drainNode requested (target={}, reason={}) — enqueuing DRAIN command", targetNodeId, reason);
         drainCommandSink.accept(targetNodeId);
-        scheduleGraceTerminate(targetNodeId);
+        scheduleGraceTerminate(targetNodeId, reason, epoch);
 
         return Promise.success(unit());
     }
 
-    /// Backstop reaper: after the grace period, terminate the container and clear the DRAIN
-    /// command. Idempotent — `terminateNode` is safe to call on an already-exited node, and
-    /// `drainCommandClear` no-ops on an absent target.
+    @Override
+    public Promise<Boolean> instanceListed(NodeId node, SourceName source) {
+        if (lifecycleManager.externalNode(node)) {
+            return Promise.success(false);
+        }
+
+        return lifecycleManager.instancesForNode(node, source)
+                               .map(listed -> !listed.isEmpty())
+                               .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    @Override
+    public Promise<Unit> reapRetired(NodeId node, SourceName source, boolean seenBefore) {
+        if (!active.get()) {
+            return Causes.cause("reap of " + node.id() + " needs the active topology manager").promise();
+        }
+
+        var refusal = retirementRefusal.get().apply(node);
+
+        if (refusal.isPresent()) {
+            return Causes.cause("reap of " + node.id() + " refused: " + refusal.unwrap()).promise();
+        }
+
+        if (lifecycleManager.externalNode(node)) {
+            // An operator started this node: there is no provider instance of ours to list or terminate, on ANY path. It is confirmed by its
+            // departure from the membership, and its capacity is then returned. Asked BEFORE the confirmed-reap memory: a committed EXTERNAL
+            // reservation is a new incarnation of the id (an earlier one's was released), whatever [#confirmedReaps] remembers.
+            return liveness.demonstrablyLive(node)
+                   ? Causes.cause("external node " + node.id() + " has not left the membership yet").promise()
+                   : lifecycleManager.releaseExternal(node)
+                                     .flatMap(_ -> confirmedByIncarnation(node));
+        }
+
+        if (confirmedReaps.contains(node)) {
+            return reapedAgain(node);
+        }
+
+        var seen = seenBefore || seenInstances.contains(node);
+        var generation = incarnation(node);
+
+        return lifecycleManager.instancesForNode(node, source)
+                               .flatMap(listed -> {
+                                            if (!sameIncarnation(node, generation)) {
+                                            return Causes.cause("reap of " + node.id()
+                                                               + " abandoned: the node joined again while it was listing").<Unit> promise();
+                                        }
+
+                                            if (!listed.isEmpty()) {
+                                            seenInstances.add(node);
+                                            knownInstanceIds.put(node,
+                                                                 instanceIds(listed));
+                                        } else if (!seen) {
+                                            listedAbsent.add(node);
+                                        }
+
+                                            return allTerminated(listed)
+                                                   ? confirmedAbsent(node, listed, seen)
+                                                   : terminateThenConfirm(node, source);
+                                        })
+                               .flatMap(_ -> sameIncarnation(node, generation)
+                                             ? confirmedByIncarnation(node)
+                                             : Causes.cause("reap of " + node.id()
+                                                           + " abandoned: the node joined again while it was terminating").<Unit> promise())
+                               .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    private Promise<Unit> confirmedByIncarnation(NodeId node) {
+        confirmedReaps.add(node);
+        reapConfirmed(node);
+
+        return Promise.unitPromise();
+    }
+
+    /// The incarnation of `node` the manager is on: bumped by every join ([#forgetIncarnation]). A chain, an attempt or a retry that began under an
+    /// earlier one does nothing to a later one, exactly as a chain of an earlier activation ([#activationEpoch]) does nothing to a later activation:
+    /// not terminate it, not confirm it, not re-arm against it, not mark it. The map is bounded by a leader tenure: it is emptied on activation,
+    /// when every chain of the earlier activation is dropped anyway, and a decommissioned id is removed.
+    private long incarnation(NodeId node) {
+        return Option.option(incarnations.get(node)).or(0L);
+    }
+
+    private boolean sameIncarnation(NodeId node, long generation) {
+        return incarnation(node) == generation;
+    }
+
+    /// #1111: an in-flight replacement the leader dropped is looked up by its node-id label and reaped. What was known of its instance decides what
+    /// an EMPTY lookup means: [DroppedInstance#LISTED] and [DroppedInstance#CREATED] are handed to the confirmed reap (an instance the provider
+    /// never listed stays unconfirmed, as for a retirement), [DroppedInstance#MAYBE] (a create that failed, so the instance may never have
+    /// existed) is confirmed absent only by [#ABSENT_LISTINGS_TO_CONFIRM] consecutive successful empty listings, and then quietly: no mark, no event.
+    /// A listing that fails goes to the confirmed reap, whose bounded retries end in the unconfirmed event, so a lookup that cannot be answered is
+    /// never read as "absent".
+    @Override
+    public Unit reapDroppedReplacement(NodeId node, String reason, DroppedInstance knowledge) {
+        if (!active.get()) {
+            log.warn("CTM: in-flight replacement {} dropped ({}) but this is not the active topology manager; nothing is terminated here, the next activation's orphan replay owns the instance",
+                     node,
+                     reason);
+
+            return unit();
+        }
+
+        if (knowledge == DroppedInstance.LISTED) {
+            seenInstances.add(node);
+        }
+
+        var epoch = activationEpoch.get();
+        var generation = incarnation(node);
+        var start = (Runnable)() -> reapUnlessLive(node, epoch, REAP_LIVENESS_RECHECKS);
+
+        Option.option(replacementSources.get(node))
+              .orElse(() -> lifecycleManager.sourceOf(node))
+              .fold(() -> {
+                        log.warn("CTM: in-flight replacement {} dropped ({}): no compute source is known for it, so its instance id cannot be listed; terminating by node id",
+                                 node,
+                                 reason);
+                        start.run();
+
+                        return unit();
+                    },
+                    source -> lookUpDropped(node, source, reason, knowledge, epoch, generation, 1, 0, start));
+
+        return unit();
+    }
+
+    /// Consecutive successful empty listings that confirm a failed create left no instance: the count of absent listings the reconciler needs
+    /// to drop an in-flight entry whose instance was never listed (#1049), and of reap retries ([#FAILED_REAP_RETRIES]).
+    static final int ABSENT_LISTINGS_TO_CONFIRM = FAILED_REAP_RETRIES;
+    /// Consecutive failed lookups of a dropped failed create after which the check stops waiting and hands the drop to the confirmed reap (which
+    /// ends in the unconfirmed event if the lookup still cannot be answered). Separate from the empty count: a failure is not an answer.
+    static final int LOOKUP_FAILURES_TO_GIVE_UP = FAILED_REAP_RETRIES;
+
+    /// One lookup of a dropped replacement. The WARN names source, node and instance id when the lookup finds the instance; it never says that no
+    /// instance exists until [#ABSENT_LISTINGS_TO_CONFIRM] listings have shown none.
+    private Unit lookUpDropped(NodeId node,
+                               SourceName source,
+                               String reason,
+                               DroppedInstance knowledge,
+                               long epoch,
+                               long generation,
+                               int absentListings,
+                               int failedLookups,
+                               Runnable start) {
+        lifecycleManager.instancesForNode(node, source)
+                        .onResult(result -> result.fold(cause -> lookupFailed(node,
+                                                                              source,
+                                                                              reason,
+                                                                              knowledge,
+                                                                              epoch,
+                                                                              generation,
+                                                                              absentListings,
+                                                                              failedLookups,
+                                                                              cause,
+                                                                              start),
+                                                        listed -> lookupAnswered(node,
+                                                                                 source,
+                                                                                 reason,
+                                                                                 knowledge,
+                                                                                 epoch,
+                                                                                 generation,
+                                                                                 absentListings,
+                                                                                 listed,
+                                                                                 start)));
+
+        return unit();
+    }
+
+    /// A lookup that fails is neither an answer of "absent" nor the end of the check. While the instance may never have existed, the check keeps asking:
+    /// a failure advances only the count of CONSECUTIVE failures (reset by any answer), and only when that count reaches
+    /// [#LOOKUP_FAILURES_TO_GIVE_UP] is the drop handed to the confirmed reap, whose own retries end in the unconfirmed event. The empty count is
+    /// neither advanced nor reset by a failure.
+    private Unit lookupFailed(NodeId node,
+                              SourceName source,
+                              String reason,
+                              DroppedInstance knowledge,
+                              long epoch,
+                              long generation,
+                              int absentListings,
+                              int failedLookups,
+                              Cause cause,
+                              Runnable start) {
+        var failures = failedLookups + 1;
+
+        if (knowledge == DroppedInstance.MAYBE && failures < LOOKUP_FAILURES_TO_GIVE_UP) {
+            log.warn("CTM: in-flight replacement {} dropped ({}); source={}, the lookup of its instance failed ({}), {} of {} consecutive failures; asking again",
+                     node,
+                     reason,
+                     source,
+                     cause.message(),
+                     failures,
+                     LOOKUP_FAILURES_TO_GIVE_UP);
+            SharedScheduler.schedule(() -> recheckAbsence(node,
+                                                          source,
+                                                          reason,
+                                                          epoch,
+                                                          generation,
+                                                          absentListings,
+                                                          failures,
+                                                          start),
+                                     failedReapInterval());
+
+            return unit();
+        }
+
+        log.warn("CTM: in-flight replacement {} dropped ({}); source={}, the lookup of its instance failed ({}), so whether it exists is not known; the confirmed reap retries the lookup",
+                 node,
+                 reason,
+                 source,
+                 cause.message());
+        start.run();
+
+        return unit();
+    }
+
+    private Unit lookupAnswered(NodeId node,
+                                SourceName source,
+                                String reason,
+                                DroppedInstance knowledge,
+                                long epoch,
+                                long generation,
+                                int absentListings,
+                                List<InstanceInfo> listed,
+                                Runnable start) {
+        if (!listed.isEmpty()) {
+            log.warn("CTM: in-flight replacement {} dropped ({}); source={}, instanceIds={}; terminating",
+                     node,
+                     reason,
+                     source,
+                     listed.stream().map(instance -> instance.id()
+                                                             .value()).toList());
+            start.run();
+
+            return unit();
+        }
+
+        if (knowledge != DroppedInstance.MAYBE) {
+            log.warn("CTM: in-flight replacement {} dropped ({}); source={}, the provider lists no instance of it yet; the confirmed reap decides",
+                     node,
+                     reason,
+                     source);
+            start.run();
+
+            return unit();
+        }
+
+        return confirmAbsence(node, source, reason, epoch, generation, absentListings, start);
+    }
+
+    private Unit confirmAbsence(NodeId node,
+                                SourceName source,
+                                String reason,
+                                long epoch,
+                                long generation,
+                                int absentListings,
+                                Runnable start) {
+        if (absentListings >= ABSENT_LISTINGS_TO_CONFIRM) {
+            replacementSources.remove(node);
+            log.info("CTM: in-flight replacement {} dropped ({}): {} consecutive listings of source={}, {} ms apart, show no instance of it; treated as absent, nothing to terminate (an instance that appears later is left to the next activation's orphan replay)",
+                     node,
+                     reason,
+                     absentListings,
+                     source,
+                     failedReapInterval().millis());
+
+            return unit();
+        }
+
+        SharedScheduler.schedule(() -> recheckAbsence(node,
+                                                      source,
+                                                      reason,
+                                                      epoch,
+                                                      generation,
+                                                      absentListings + 1,
+                                                      0,
+                                                      start),
+                                 failedReapInterval());
+
+        return unit();
+    }
+
+    private void recheckAbsence(NodeId node,
+                                SourceName source,
+                                String reason,
+                                long epoch,
+                                long generation,
+                                int absentListings,
+                                int failedLookups,
+                                Runnable start) {
+        if (!active.get() || activationEpoch.get() != epoch || !sameIncarnation(node, generation)) {
+            log.debug("CTM: absence check of dropped replacement {} stopped — deactivated, re-activated or joined since",
+                      node);
+
+            return;
+        }
+
+        lookUpDropped(node,
+                      source,
+                      reason,
+                      DroppedInstance.MAYBE,
+                      epoch,
+                      generation,
+                      absentListings,
+                      failedLookups,
+                      start);
+    }
+
+    /// Idempotent per node INCARNATION: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so cannot be
+    /// reported as unconfirmed by a listing that, correctly, no longer shows the instance). A node that shows life again is a new incarnation whose
+    /// join has not been seen yet ([#forgetIncarnation]): it is never confirmed gone.
+    private Promise<Unit> reapedAgain(NodeId node) {
+        if (liveness.demonstrablyLive(node)) {
+            return Causes.cause("node " + node.id() + " shows life again after a confirmed reap: not confirmed gone").promise();
+        }
+
+        reapConfirmed(node);
+
+        return Promise.unitPromise();
+    }
+
+    /// A listed instance that is not already TERMINATED (running, booting, or merely STOPPED: a stopped VM still bills and holds its slot)
+    /// is terminated and the listing taken again. The terminate having been accepted, an empty or terminated listing is now gone; an
+    /// instance still listed (a provider whose listing lags its delete) is a failure the caller retries, and the memory kept in
+    /// [#seenInstances] lets the retry call an empty listing gone.
+    private Promise<Unit> terminateThenConfirm(NodeId node, SourceName source) {
+        return lifecycleManager.terminateNode(node, source)
+                               .flatMap(_ -> lifecycleManager.instancesForNode(node, source))
+                               .flatMap(after -> allTerminated(after)
+                                                 ? Promise.unitPromise()
+                                                 : stillListed(after));
+    }
+
+    /// An empty listing is absence only for an instance seen before; a listing that shows only TERMINATED instances saw it just now.
+    private static Promise<Unit> confirmedAbsent(NodeId node, List<InstanceInfo> listed, boolean seen) {
+        return listed.isEmpty() && !seen
+               ? Causes.cause("the provider lists no instance of " + node.id()
+                             + " and has never listed one (an unlabelled or unattributable VM, or a lagging listing): not confirmed gone").promise()
+               : Promise.unitPromise();
+    }
+
+    /// Nothing listed, or every listed instance TERMINATED. Anything else is NOT gone: provisioning, running, a status the provider could
+    /// not state, and STOPPED/STOPPING (the providers map an off or exited machine to it, and it still bills).
+    private static boolean allTerminated(List<InstanceInfo> instances) {
+        return instances.stream()
+                        .allMatch(instance -> instance.status() instanceof InstanceStatus.Terminated);
+    }
+
+    private static Promise<Unit> stillListed(List<InstanceInfo> instances) {
+        return Causes.cause("still listed at the provider after terminate: " + instances.stream()
+                                                                                        .map(instance -> instance.id()
+                                                                                                                 .value()
+                                                                                                        + " " + instance.status())
+                                                                                        .toList()).promise();
+    }
+
+    /// Backstop reaper: after the grace period, decide the reap (for a surplus trim, through
+    /// [#graceReapVerdict]) and clear the DRAIN command. Idempotent — `terminateNode` treats an instance
+    /// that is already gone as done, and `drainCommandClear` no-ops on an absent target.
     @Contract
-    private void scheduleGraceTerminate(NodeId targetNodeId) {
-        SharedScheduler.schedule(() -> graceTerminate(targetNodeId), autoHealConfig.provisioningTimeout());
+    private void scheduleGraceTerminate(NodeId targetNodeId, DrainReason reason, long epoch) {
+        SharedScheduler.schedule(() -> graceTerminate(targetNodeId, reason, epoch), autoHealConfig.provisioningTimeout());
+    }
+
+    /// Grace expiry. A non-surplus drain (`JOIN_GRACE_REAP`, `OPERATOR_COMMAND`) reaps as issued and never
+    /// reads membership. A surplus trim is decided by [#surplusTrimGraceExpired]. The DRAIN command is
+    /// cleared in every branch and LAST: a deposed issuer must not re-deliver a stale DRAIN if it later
+    /// regains leadership, and clearing last makes the clear the completion signal of the whole backstop.
+    @Contract
+    private synchronized void graceTerminate(NodeId targetNodeId, DrainReason reason, long epoch) {
+        if (!pendingDrains.remove(targetNodeId, epoch)) {
+            return;
+        }
+
+        if (!active.get() || activationEpoch.get() != epoch) {
+            drainCommandClear.accept(targetNodeId);
+
+            return;
+        }
+
+        if (reason.isSurplusTrim()) {
+            surplusTrimGraceExpired(targetNodeId, reason);
+        } else {
+            reapDrainedNode(targetNodeId);
+        }
+
+        drainCommandClear.accept(targetNodeId);
     }
 
     @Contract
-    private void graceTerminate(NodeId targetNodeId) {
+    private void reapDrainedNode(NodeId targetNodeId) {
+        if (!active.get()) {
+            return;
+        }
+
+        retirementRefusal.get()
+                         .apply(targetNodeId)
+                         .onPresent(reason -> parkRefusedReap(targetNodeId, reason))
+                         .onEmpty(() -> terminateDrained(targetNodeId));
+    }
+
+    @Contract
+    private void terminateDrained(NodeId targetNodeId) {
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
-        drainCommandClear.accept(targetNodeId);
-        lifecycleManager.terminateNode(targetNodeId)
-                        .onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
-                                                     targetNodeId,
+        drainGraceChains.add(targetNodeId);
+        confirmedReap(targetNodeId, activationEpoch.get(), incarnation(targetNodeId), FAILED_REAP_RETRIES);
+    }
+
+    /// R1′ — a surplus trim at grace expiry keys on the TARGET first. The membership inputs are read ONCE, so
+    /// the decision and its log line cannot disagree (the #578-review Issue 9 discipline). A permitted reap
+    /// still goes through [#reapUnlessLive], so evidence of life appearing at the last moment defers it.
+    @Contract
+    private void surplusTrimGraceExpired(NodeId targetNodeId, DrainReason reason) {
+        var counted = liveness.coreCountedMembers().get();
+        var configured = liveness.configuredCoreCount().getAsInt();
+        var targetLive = liveness.live(targetNodeId);
+        var verdict = graceReapVerdict(active.get(), targetLive, counted, configured, targetNodeId);
+
+        if (verdict == GraceReapVerdict.REAP) {
+            log.info("CTM v2: drain grace expired for {} (reason={}) — target not live, reaping container + clearing DRAIN command",
+                     targetNodeId,
+                     reason);
+            reapUnlessLive(targetNodeId, activationEpoch.get(), REAP_LIVENESS_RECHECKS);
+        } else {
+            logReapSkipped(targetNodeId, reason, verdict, remainingCoreMembers(counted, targetNodeId), configured);
+        }
+    }
+
+    /// A refused surplus reap is dropped here, not retried — design-out, not recovery:
+    /// - `TARGET_LIVE` keeps a live node; the DRAIN is withdrawn and the reconciler re-decides.
+    /// - `NOT_LEADER` / `NOT_QUORUM_SAFE` leave a target that is not live to the activation replay
+    ///   ([#scheduleActivationReplay]) of whichever CTM next activates. A deposed or minority view is never
+    ///   trusted to reap, and the departure path (`NodeRemoved`) is not relied upon either, because the
+    ///   projector can deliver it while every CTM is inactive.
+    @Contract
+    private void logReapSkipped(NodeId targetNodeId,
+                                DrainReason reason,
+                                GraceReapVerdict verdict,
+                                int remaining,
+                                int configured) {
+        log.warn("CTM v2: drain grace expired for {} (reason={}) — reap SKIPPED: {} (issuerActive={}, coreCountedOtherThanTarget={}, configuredCoreCount={}); clearing DRAIN command only",
+                 targetNodeId,
+                 reason,
+                 verdict,
+                 active.get(),
+                 remaining,
+                 configured);
+    }
+
+    /// #1050 — the outcome of re-checking a surplus drain at grace expiry. Everything but [#REAP] keeps
+    /// the target.
+    enum GraceReapVerdict {
+        REAP,
+        TARGET_LIVE,
+        NOT_LEADER,
+        NOT_QUORUM_SAFE
+    }
+
+    /// #1050 (R1′) — may a SURPLUS drain's grace-expiry reap still proceed? The drain was decided when the
+    /// cluster had a surplus; by expiry nodes may have died, the target may have returned to service, or
+    /// leadership may have moved. Checks, in order:
+    /// 1. **Target live** — by liveness evidence ([MembershipLiveness#live]: raw SWIM HEALTHY/SUSPECTED, or the
+    ///    active leader's transport connected), never by membership projection: never reaped, whoever is leader.
+    ///    A DEPARTING target whose DRAIN was never delivered is live. A surplus trim never abruptly kills a live node.
+    /// 2. **Leadership** — a deposed issuer never reaps.
+    /// 3. **Quorum safety** — the counted members other than the target must hold `configured / 2 + 1` of a
+    ///    KNOWN configured core size. An unknown size (`configured < 1`) is NOT quorum-safe (fail-closed).
+    ///
+    /// A deficit no longer blocks the reap: terminating a node that is not live removes no capacity.
+    ///
+    /// **Which count.** `coreCountedMembers` is the COUNTED projection (`MembershipFsm.coreCountedMembers`:
+    /// role-scoped MEMBER + SUSPECT), not the strict MEMBER-only set and not the observed-reachability
+    /// projection. It is the exact denominator the `LeaderReconciler` used to decide the drain and logs as
+    /// `clusterMembershipCount` / `quorumSafe`, so a refused reap always agrees with the reconciler's own pass
+    /// log at the same instant. Trade-off: a SUSPECT member that is really dying still counts toward quorum
+    /// safety until its eviction backstop fires.
+    /// Pure — the caller supplies the inputs it read once.
+    static GraceReapVerdict graceReapVerdict(boolean issuerActive,
+                                             boolean targetLive,
+                                             Set<NodeId> coreCountedMembers,
+                                             int configuredCoreCount,
+                                             NodeId target) {
+        if (targetLive) {
+            return GraceReapVerdict.TARGET_LIVE;
+        }
+
+        if (!issuerActive) {
+            return GraceReapVerdict.NOT_LEADER;
+        }
+
+        if (!quorumSafe(remainingCoreMembers(coreCountedMembers, target), configuredCoreCount)) {
+            return GraceReapVerdict.NOT_QUORUM_SAFE;
+        }
+
+        return GraceReapVerdict.REAP;
+    }
+
+    private static int remainingCoreMembers(Set<NodeId> coreCountedMembers, NodeId target) {
+        return (int) coreCountedMembers.stream()
+                                       .filter(id -> !id.equals(target))
+                                       .count();
+    }
+
+    /// Quorum safety of `members` against a KNOWN configured core size: `configured / 2 + 1`, the same
+    /// simple-majority formula as `LeaderReconciler` and `QuorumLossDetector`. An unknown size
+    /// (`configured < 1`) is never quorum-safe, so a missing or mis-wired configured count refuses every reap
+    /// instead of permitting it.
+    static boolean quorumSafe(int members, int configuredCoreCount) {
+        return configuredCoreCount >= 1 && members >= configuredCoreCount / 2 + 1;
+    }
+
+    /// #1062 — bounded liveness re-checks before a reap. The interval is `provisioningTimeout /
+    /// REAP_LIVENESS_RECHECKS` (5s at the 60s default), and the whole deferral is bounded by
+    /// `provisioningTimeout`. Derived for the transport term only: a genuinely dead peer loses the leader's
+    /// transport link within the zombie-link TTL (`pingInterval × 8`, 8s at defaults) or at SWIM's FAULTY
+    /// disconnect. The SWIM term is NOT bounded by this window: a dead peer stays SUSPECTED for SWIM's
+    /// suspicion window, `suspectTimeout × min(lhm + 1, 8) × min(max(1, ln(N + 1)), 3)` (`SwimProtocol`), which at
+    /// LHM 4 and four alive peers is ~80s and at LHM 7 ~129s — past both the grace and the whole re-check budget.
+    /// A reap that runs out of re-checks on SWIM life alone is therefore ABANDONED but not forgotten: the FAULTY
+    /// edge that ends the suspicion window re-arms it ([#onSwimFaulty]). A node still SUSPECTED forever is never
+    /// terminated — "not live" needs positive evidence.
+    static final int REAP_LIVENESS_RECHECKS = 12;
+    /// R4 — the activation replay only touches instances labelled with this role. Worker and spot
+    /// instances are the worker reconcile's inventory, never this replay's.
+    static final String CORE_ROLE_LABEL = "core";
+
+    /// #1062 / R5 — reap `nodeId` only while it shows NO independent evidence of life
+    /// ([MembershipLiveness#demonstrablyLive]). A genuinely departed node is reaped on the first check, adding
+    /// no delay to a real death whose evidence has already cleared. Evidence of life defers the reap (WARN,
+    /// with the evidence) and re-checks it, bounded by [#REAP_LIVENESS_RECHECKS]. A node still live when the
+    /// re-checks run out is left alone — ABANDONED, and parked in `abandonedReaps` so the next SWIM FAULTY for it
+    /// ([#onSwimFaulty]) re-arms the reap; a live node is never terminated. `epoch` is the activation the chain
+    /// belongs to; a re-check finding another activation drops out ([#recheckDeferredReap]).
+    @Contract
+    private void reapUnlessLive(NodeId nodeId, long epoch, int rechecksLeft) {
+        abandonedReaps.remove(nodeId);
+        if (!liveness.demonstrablyLive(nodeId)) {
+            terminateDeparted(nodeId);
+
+            return;
+        }
+
+        if (rechecksLeft <= 0) {
+            abandonedReaps.add(nodeId);
+            log.warn("CTM: reap of {} ABANDONED — still showing life after {} re-checks ({}); a live node is never terminated; re-armed by the next SWIM FAULTY for it",
+                     nodeId,
+                     REAP_LIVENESS_RECHECKS,
+                     liveness.evidence(nodeId));
+
+            return;
+        }
+
+        log.warn("CTM: reap of {} DEFERRED — contradicting evidence of life ({}); re-checking in {}ms",
+                 nodeId,
+                 liveness.evidence(nodeId),
+                 reapRecheckInterval().millis());
+        SharedScheduler.schedule(() -> recheckDeferredReap(nodeId, epoch, rechecksLeft - 1), reapRecheckInterval());
+    }
+
+    /// A deferred re-check stops once this CTM is deactivated, or re-activated since the chain began (N2 of
+    /// verify-1057-r2: a deferral must not survive deactivate→activate and run beside the new activation's replay).
+    /// A deposed view never reaps; the next activation's replay ([#scheduleActivationReplay]) owns the instance.
+    @Contract
+    private void recheckDeferredReap(NodeId nodeId, long epoch, int rechecksLeft) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            log.debug("CTM: deferred reap of {} dropped — deactivated or re-activated since; the current activation's replay owns the instance",
+                      nodeId);
+
+            return;
+        }
+
+        reapUnlessLive(nodeId, epoch, rechecksLeft);
+    }
+
+    private TimeSpan reapRecheckInterval() {
+        return TimeSpan.timeSpan(Math.max(1L,
+                                          autoHealConfig.provisioningTimeout().millis() / REAP_LIVENESS_RECHECKS)).millis();
+    }
+
+    /// #1804 — a refused reap is parked and retried ([#parkRefusedReap]), never dropped: the refusal is a point-in-time
+    /// verdict (a voter is refused only until it is voted out), so a silent return here left the VM running and billing.
+    @Contract
+    private void terminateDeparted(NodeId nodeId) {
+        if (!active.get()) {
+            return;
+        }
+
+        retirementRefusal.get()
+                         .apply(nodeId)
+                         .onPresent(reason -> parkRefusedReap(nodeId, reason))
+                         .onEmpty(() -> terminateRetired(nodeId));
+    }
+
+    /// Every retirement reap is a CONFIRMED reap ([#confirmedReap]): a failed or refused attempt is retried, bounded, and the bound being spent ends in
+    /// the operator event ([#markUnconfirmed]) rather than a log line. The activation replay stays the backstop for a leader that dies mid-chain.
+    /// Guarantee earned: the failure is visible and the VM is terminated only once a listing shows it gone, not that every reap succeeds.
+    @Contract
+    private void terminateRetired(NodeId nodeId) {
+        abandonedReaps.remove(nodeId);
+        refusedReaps.remove(nodeId);
+        failedReaps.remove(nodeId);
+        drainGraceChains.remove(nodeId);
+        confirmedReap(nodeId, activationEpoch.get(), incarnation(nodeId), FAILED_REAP_RETRIES);
+    }
+
+    /// #2062: every retirement reap is a CONFIRMED reap ([#reapRetired]): list (which commits a bootstrap node's missing reservation),
+    /// terminate, re-list. A failed or refused attempt is retried, bounded, and when the bound is spent an operator event names the node
+    /// and the cause: an instance that may still be running is never dropped silently.
+    ///
+    /// A node that shows life while the chain runs is never terminated by it: the chain stops and parks the reap for the next SWIM FAULTY,
+    /// exactly as [#reapUnlessLive] abandons (the first attempt was checked by it; the retries, up to two minutes later, are checked here).
+    ///
+    /// `generation` is the incarnation the chain began under: [#reapRetired] drops its effects, and [#reapUnconfirmed] and [#retryConfirmedReap] drop the
+    /// chain, once the node has joined again. (The `terminateNode(nodeId)` branch below has no inner guard; see the next paragraph.)
+    ///
+    /// The `terminateNode(nodeId)` branch is unreachable with the production lifecycle, whose [NodeLifecycleManager#sourceOf] is total; it serves a
+    /// lifecycle on the interface default (a test double), which cannot name a source.
+    @Contract
+    private void confirmedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            log.debug("CTM: confirmed reap of {} dropped — deactivated or re-activated since; the current activation's replay owns the instance",
+                      nodeId);
+
+            return;
+        }
+
+        lifecycleManager.sourceOf(nodeId)
+                        .fold(() -> lifecycleManager.terminateNode(nodeId),
+                              source -> reapRetired(nodeId, source, false))
+                        .onSuccess(_ -> reapConfirmed(nodeId))
+                        .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
+    }
+
+    /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once, and the
+    /// mark persisted in the replicated store so that the next leader inherits it (without raising the event again: the warning stays open until a
+    /// confirmation closes it, by whichever leader makes it).
+    @Override
+    public Unit markUnconfirmed(NodeId nodeId, String cause) {
+        if (unconfirmedReaps.add(nodeId)) {
+            var seen = seenInstances.contains(nodeId);
+            var absent = !seen && listedAbsent.contains(nodeId);
+
+            raiseUnconfirmedEvent(nodeId, cause, seen, absent);
+            writeMark(nodeId,
+                      Option.some(new AetherValue.UnconfirmedTerminationValue(cause, seen, absent)));
+        }
+
+        return unit();
+    }
+
+    /// Three marks. One whose instance the provider has listed is re-checked by listing and closes itself. One whose instance the provider has
+    /// NEVER listed although a listing succeeded (an unlabelled VM) cannot be confirmed by listing, so it is not re-checked: it stays an operator
+    /// warning, and says so. One that only ever met FAILED listings proves nothing about the instance: it is re-checked, and says that listing is failing.
+    private void raiseUnconfirmedEvent(NodeId nodeId, String cause, boolean seen, boolean absent) {
+        var template = absent
+                       ? "The cluster cannot confirm the termination of the instance of retired node {} ({}): a listing succeeded and has never shown an instance of it, and the cluster will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand" + CLEAR_HINT
+                       : seen
+                         ? "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing; if you terminated it yourself instead" + CLEAR_HINT
+                         : "The termination of the instance of retired node {} is not confirmed ({}): no successful listing has shown the instance, so it is not known whether it exists (a failing listing proves nothing); it may still be running at the provider and billing; the cluster keeps re-checking and confirms it once a listing shows the instance and it is terminated, and cannot confirm an instance you terminate yourself" + CLEAR_HINT;
+
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
+                                                              nodeId.id(),
+                                                              template,
+                                                              nodeId.id(),
+                                                              cause,
+                                                              nodeId.id());
+    }
+
+    @Override
+    public Promise<Unit> clearUnconfirmed(NodeId nodeId, String operator, String attestedInstance, boolean force) {
+        if (!active.get()) {
+            return new UnconfirmedClearRefusal.NotActive().promise();
+        }
+
+        var persisted = Option.option(persistedMarks.get().get().get(nodeId));
+
+        if (persisted.isEmpty() && !unconfirmedReaps.contains(nodeId)) {
+            return new UnconfirmedClearRefusal.NotMarked(nodeId).promise();
+        }
+
+        if (liveness.demonstrablyLive(nodeId)) {
+            return new UnconfirmedClearRefusal.NodeLive(nodeId).promise();
+        }
+
+        var generation = incarnation(nodeId);
+        var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("mark not persisted");
+        var known = Option.option(knownInstanceIds.get(nodeId)).or("never listed");
+
+        return providerState(nodeId, attestedInstance, force).flatMap(seen -> stillClearable(nodeId, generation).flatMap(_ -> deleteExactMark(nodeId,
+                                                                                                                                              persisted))
+                                                                                            .flatMap(_ -> afterClear(nodeId,
+                                                                                                                     generation,
+                                                                                                                     new Cleared(operator,
+                                                                                                                                 attestedInstance,
+                                                                                                                                 force,
+                                                                                                                                 seen.state(),
+                                                                                                                                 known,
+                                                                                                                                 cause),
+                                                                                                                     seen)));
+    }
+
+    /// The provider reads took time: a node that rejoined while they ran is a new incarnation (nothing to clear), and one that shows life now is never cleared.
+    /// Asked again at the commit, after the reads, fenced by the incarnation read before them.
+    private Promise<Unit> stillClearable(NodeId nodeId, long generation) {
+        if (!sameIncarnation(nodeId, generation)) {
+            return new UnconfirmedClearRefusal.Changed(nodeId).promise();
+        }
+
+        return liveness.demonstrablyLive(nodeId)
+               ? new UnconfirmedClearRefusal.NodeLive(nodeId).promise()
+               : Promise.unitPromise();
+    }
+
+    /// What the operator's clear is audited with: who, what they attest, whether they overrode the provider check and what the provider showed.
+    private record Cleared(String operator,
+                           String attested,
+                           boolean forced,
+                           String providerState,
+                           String known,
+                           String cause) {}
+
+    /// Looks the instance up at the node's source provider two ways, and refuses on either: by the node's LABELS (a wrong or `unknown` attested id cannot
+    /// hide a listed instance) and, when the operator names an id, by that ID (an instance the operator names that the provider shows without the node's
+    /// labels is refused too). A listed instance that is not terminated, or a read that fails (a not-found for the id is an answer, not a failure), refuses
+    /// the clear unless forced; the state seen is returned for the event. An EXTERNAL node has no provider of ours to ask: refused unless forced.
+    private Promise<ProviderSeen> providerState(NodeId nodeId, String attested, boolean force) {
+        if (lifecycleManager.externalNode(nodeId)) {
+            return force
+                   ? Promise.success(new ProviderSeen(EXTERNAL_STATE, false, true))
+                   : new UnconfirmedClearRefusal.ExternalNodeUnchecked(nodeId).promise();
+        }
+
+        var source = lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT);
+
+        return lifecycleManager.readInstancesForNode(nodeId, source)
+                               .fold(labelled -> readById(attested, source).flatMap(byId -> judge(nodeId,
+                                                                                                  labelled,
+                                                                                                  byId,
+                                                                                                  force)));
+    }
+
+    /// What the provider reads showed: the state for the event, and whether NO read showed the instance live or failed (only then may the clear return the capacity).
+    private record ProviderSeen(String state, boolean nothingLive, boolean external) {}
+
+    private static final String EXTERNAL_STATE = "external node: no provider to check";
+    private static final String UNKNOWN_INSTANCE = "unknown";
+
+    /// What the by-id read answered. `Skipped`: the operator attested `unknown`, there is no id to read.
+    private sealed interface ByIdRead {
+        record Skipped() implements ByIdRead {}
+
+        record NotFound(String id) implements ByIdRead {}
+
+        record Found(org.pragmatica.aether.environment.InstanceInfo info) implements ByIdRead {}
+
+        record Failed(String id, Cause cause) implements ByIdRead {}
+    }
+
+    private Promise<ByIdRead> readById(String attested, SourceName source) {
+        if (attested.equals(UNKNOWN_INSTANCE)) {
+            return Promise.success(new ByIdRead.Skipped());
+        }
+
+        return lifecycleManager.instanceStatus(new org.pragmatica.aether.environment.InstanceId(attested),
+                                               source)
+                               .fold(result -> Promise.success(result.fold(cause -> byIdFailure(attested, cause),
+                                                                           ByIdRead.Found::new)));
+    }
+
+    private static ByIdRead byIdFailure(String attested, Cause cause) {
+        return cause instanceof org.pragmatica.aether.environment.EnvironmentError.InstanceNotFound
+               ? new ByIdRead.NotFound(attested)
+               : new ByIdRead.Failed(attested, cause);
+    }
+
+    private static Promise<ProviderSeen> judge(NodeId nodeId,
+                                               org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                               ByIdRead byId,
+                                               boolean force) {
+        var labelledInstances = labelled.fold(_ -> List.<org.pragmatica.aether.environment.InstanceInfo> of(),
+                                              listed -> listed);
+        var found = byId instanceof ByIdRead.Found(var info)
+                    ? List.of(info)
+                    : List.<org.pragmatica.aether.environment.InstanceInfo> of();
+        var running = java.util.stream.Stream.concat(found.stream(),
+                                                     labelledInstances.stream())
+                                             .filter(instance -> !(instance.status() instanceof InstanceStatus.Terminated))
+                                             .toList();
+        var unreachable = unreachableCause(labelled, byId);
+
+        if (!running.isEmpty() && !force) {
+            var first = running.getFirst();
+
+            return new UnconfirmedClearRefusal.InstanceStillListed(nodeId,
+                                                                   first.id().value(),
+                                                                   statusName(first)).promise();
+        }
+
+        if (unreachable.isPresent() && !force) {
+            return new UnconfirmedClearRefusal.ProviderUnreachable(nodeId, unreachable.unwrap()).promise();
+        }
+
+        return Promise.success(new ProviderSeen(stateSeen(labelled, byId),
+                                                running.isEmpty() && unreachable.isEmpty(),
+                                                false));
+    }
+
+    private static Option<String> unreachableCause(org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                                   ByIdRead byId) {
+        var labelFailure = labelled.fold(cause -> Option.some(cause.message()),
+                                         _ -> Option.<String> none());
+
+        if (labelFailure.isPresent()) {
+            return labelFailure;
+        }
+
+        return byId instanceof ByIdRead.Failed(var id, var cause)
+               ? Option.some("instance " + id + ": " + cause.message())
+               : Option.none();
+    }
+
+    private static String stateSeen(org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                    ByIdRead byId) {
+        var byLabels = labelled.fold(cause -> "provider unreachable: " + cause.message(),
+                                     listed -> listed.isEmpty()
+                                               ? "no instance listed"
+                                               : describe(listed));
+
+        return switch (byId) {
+            case ByIdRead.Skipped _ -> byLabels;
+            case ByIdRead.NotFound(var id) -> byLabels + "; by id " + id + ": not found";
+            case ByIdRead.Found(var info) -> byLabels + "; by id " + info.id().value() + ": " + statusName(info);
+            case ByIdRead.Failed(var id, var cause) -> byLabels + "; by id " + id + ": unreachable: " + cause.message();
+        };
+    }
+
+    private static String describe(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
+        return listed.stream()
+                     .map(instance -> instance.id()
+                                              .value() + "=" + statusName(instance))
+                     .collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private static String statusName(org.pragmatica.aether.environment.InstanceInfo instance) {
+        return instance.status()
+                       .getClass()
+                       .getSimpleName()
+                       .toUpperCase();
+    }
+
+    /// The delete carries the exact value read, so a mark replaced since (a later incarnation's) fails the commit and survives.
+    private Promise<Unit> deleteExactMark(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
+        return persisted.fold(Promise::unitPromise,
+                              mark -> hierarchyWriter.get()
+                                                     .commit(List.of(new KVCommand.Mutation<AetherKey, AetherValue>(new AetherKey.UnconfirmedTerminationKey(nodeId),
+                                                                                                                    Option.some((AetherValue) mark),
+                                                                                                                    Option.none())),
+                                                             List.of())
+                                                     .mapError(_ -> new UnconfirmedClearRefusal.Changed(nodeId)));
+    }
+
+    private Promise<Unit> afterClear(NodeId nodeId, long generation, Cleared cleared, ProviderSeen seen) {
+        if (sameIncarnation(nodeId, generation)) {
+            unconfirmedReaps.remove(nodeId);
+        }
+
+        returnCapacity(nodeId, generation, seen);
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
+                                                              nodeId.id(),
+                                                              "Operator {} cleared the unconfirmed termination of retired node {}: the operator attests instance {} was verified and terminated by hand (forced={}; provider state: {}; the cluster knew instance: {}; the mark said: {})",
+                                                              cleared.operator(),
+                                                              nodeId.id(),
+                                                              cleared.attested(),
+                                                              cleared.forced(),
+                                                              cleared.providerState(),
+                                                              cleared.known(),
+                                                              cleared.cause());
+
+        return Promise.unitPromise();
+    }
+
+    /// Only a clear that committed returns capacity, and only what Aether itself reserved for the node. A node with a provider instance gets its confirmed
+    /// reservation back when every read showed no instance live (and none failed). An EXTERNAL node (the operator started it, no provider of ours behind it)
+    /// gets its external reservation back through the fenced external release, which is nothing when the release is refused or there is none. A node that
+    /// shows life again, or a new incarnation, keeps what it holds.
+    private void returnCapacity(NodeId nodeId, long generation, ProviderSeen seen) {
+        if (!sameIncarnation(nodeId, generation) || liveness.demonstrablyLive(nodeId)) {
+            return;
+        }
+
+        var returned = seen.external()
+                       ? lifecycleManager.releaseExternal(nodeId)
+                       : seen.nothingLive()
+                         ? lifecycleManager.releaseAfterOperatorClear(nodeId,
+                                                                      lifecycleManager.sourceOf(nodeId)
+                                                                                      .or(SourceName.DEFAULT))
+                         : Promise.unitPromise();
+
+        returned.onFailure(cause -> log.warn("CTM: the capacity of cleared node {} was not returned: {}",
+                                             nodeId,
+                                             cause.message()));
+    }
+
+    private static String instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
+        return listed.stream()
+                     .map(info -> info.id()
+                                      .value())
+                     .collect(java.util.stream.Collectors.joining(","));
+    }
+
+    /// Writes (or, with an empty value, removes) the replicated mark for `nodeId`. A failed write is logged: the in-memory mark and the event stand,
+    /// and the next leader simply does not inherit it.
+    private void writeMark(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> value) {
+        writeMark(nodeId,
+                  Option.option(persistedMarks.get().get().get(nodeId)).map(mark -> (AetherValue) mark),
+                  value);
+    }
+
+    /// The write carries the value the caller READ as its expected previous value: a mark cleared (or replaced) since fails the commit instead of being
+    /// re-created or overwritten by a decision made on a stale read.
+    private void writeMark(NodeId nodeId,
+                           Option<AetherValue> existing,
+                           Option<AetherValue.UnconfirmedTerminationValue> value) {
+        var key = new AetherKey.UnconfirmedTerminationKey(nodeId);
+
+        hierarchyWriter.get()
+                       .commit(List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                      existing,
+                                                                                      value.map(mark -> (AetherValue) mark))),
+                               List.of())
+                       .onFailure(cause -> log.warn("CTM: the unconfirmed-termination mark of {} was not persisted: {}",
+                                                    nodeId,
+                                                    cause.message()));
+    }
+
+    /// While active, every marked node whose instance the provider has listed is re-checked at a low bounded rate (one confirmed-reap attempt per node per
+    /// interval, five provisioning windows, five minutes at the default): a confirmation raises the recovery. A node that shows life is left alone, and a
+    /// mark whose instance was never listed is not re-checked at all ([#raiseUnconfirmedEvent]); an EXTERNAL node is re-checked by membership, not listing.
+    private void startUnconfirmedRecheck() {
+        var epoch = activationEpoch.get();
+        var interval = TimeSpan.timeSpan(Math.max(1L,
+                                                  autoHealConfig.provisioningTimeout().millis() * 5)).millis();
+
+        unconfirmedRecheck.set(SharedScheduler.scheduleAtFixedRate(() -> recheckUnconfirmed(epoch), interval));
+    }
+
+    private void recheckUnconfirmed(long epoch) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            return;
+        }
+
+        var persisted = persistedMarks.get().get();
+        var nodes = new java.util.HashSet<>(unconfirmedReaps);
+
+        nodes.addAll(persisted.keySet());
+        nodes.forEach(nodeId -> recheckMarked(nodeId,
+                                              Option.option(persisted.get(nodeId))));
+    }
+
+    private void recheckMarked(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
+        if (liveness.demonstrablyLive(nodeId)) {
+            log.debug("CTM: unconfirmed mark of {} not re-checked — it shows life; a live node is never terminated",
+                      nodeId);
+
+            return;
+        }
+
+        var seen = persisted.map(AetherValue.UnconfirmedTerminationValue::seen).or(false) || seenInstances.contains(nodeId);
+        var absent = persisted.map(AetherValue.UnconfirmedTerminationValue::absent).or(false) || listedAbsent.contains(nodeId);
+
+        if (!seen && absent) {
+            return;
+        }
+
+        var generation = incarnation(nodeId);
+
+        reapRetired(nodeId,
+                    lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
+                    seen).onFailure(_ -> operatorOnlyOnceAbsent(nodeId, persisted, generation));
+    }
+
+    /// A mark that met only failed listings is re-checked; the first re-check whose listing SUCCEEDS and shows no instance turns it into the operator
+    /// warning it would have been had that listing come first: the mark is rewritten and the event raised again, with the text that asks for a hand.
+    private void operatorOnlyOnceAbsent(NodeId nodeId,
+                                        Option<AetherValue.UnconfirmedTerminationValue> persisted,
+                                        long generation) {
+        if (!unconfirmedReaps.contains(nodeId) || !sameIncarnation(nodeId, generation)) {
+            return;
+        }
+
+        var wasAbsent = persisted.map(AetherValue.UnconfirmedTerminationValue::absent).or(false);
+
+        if (wasAbsent || seenInstances.contains(nodeId) || !listedAbsent.contains(nodeId)) {
+            return;
+        }
+
+        var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause)
+                             .or("a listing succeeded and showed no instance");
+
+        raiseUnconfirmedEvent(nodeId, cause, false, true);
+        writeMark(nodeId,
+                  persisted.map(mark -> (AetherValue) mark),
+                  Option.some(new AetherValue.UnconfirmedTerminationValue(cause, false, true)));
+    }
+
+    /// A manager that has just become leader inherits the replicated marks: each is adopted without announcing it again (the warning the previous
+    /// leader raised is still open, and a confirmation by any leader closes it) and re-checked at once, so a mark whose instance is already gone is
+    /// closed now.
+    private void adoptPersistedMarks() {
+        var epoch = activationEpoch.get();
+
+        persistedMarks.get()
+                      .get()
+                      .forEach((nodeId, mark) -> {
+                                   unconfirmedReaps.add(nodeId);
+                                   if (mark.seen()) {
+                                   seenInstances.add(nodeId);
+                               }
+
+                                   if (mark.absent()) {
+                                   listedAbsent.add(nodeId);
+                               }
+                               });
+        SharedScheduler.schedule(() -> recheckUnconfirmed(epoch),
+                                 TimeSpan.timeSpan(1).millis());
+    }
+
+    @Override
+    public Unit supersedeAdmission(NodeId nodeId, NodeId replacement) {
+        lifecycleManager.supersedeAdmission(nodeId, replacement)
+                        .onFailure(cause -> log.warn("CTM: the retirement tombstone of {} was not written: {}",
+                                                     nodeId,
                                                      cause.message()));
+
+        return unit();
+    }
+
+    @Override
+    public Unit forgetAdmission(NodeId nodeId) {
+        lifecycleManager.forgetAdmission(nodeId)
+                        .onFailure(cause -> log.warn("CTM: the admission marker of {} was not deleted: {}",
+                                                     nodeId,
+                                                     cause.message()));
+
+        return unit();
+    }
+
+    /// The rejoin of an EXTERNAL node could not be reconciled with its capacity reservation: never log-only. The operator is told; a node the ledger cannot count
+    /// again is refused and evicted (the DRAIN command, with no reap - it is the operator's node), any other failure leaves it a member whose reservation is not
+    /// known to be in step with the ledger.
+    private void rejoinNotReconciled(NodeId nodeId, org.pragmatica.lang.Cause cause) {
+        if (cause instanceof NodeLifecycleManager.RetiredIdentityRejoined retired) {
+            refuseSupersededIdentity(nodeId, retired);
+
+            return;
+        }
+
+        if (cause instanceof NodeLifecycleManager.NoReservationOnJoin && !knownExternal(nodeId)) {
+            return;
+        }
+
+        var refused = cause instanceof NodeLifecycleManager.ReadmissionRefused;
+
+        if (refused) {
+            drainCommandSink.accept(nodeId);
+        }
+
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED,
+                                                              nodeId.id(),
+                                                              refused
+                                                              ? "External node {} joined again but its capacity reservation had been released meanwhile and cannot be admitted again ({}): the node is refused and is being drained; admit it again once capacity allows"
+                                                              : "External node {} joined again but its capacity reservation could not be reconciled with the ledger ({}): check the reservation and the ledger",
+                                                              nodeId.id(),
+                                                              cause.message());
+    }
+
+    /// A node is known to be EXTERNAL (started by an operator, not provisioned or admitted by the cluster) only through what the cluster committed about it: an
+    /// admission ticket or a tombstone (handled before this), or a replacement record of EXTERNAL mode that names it as the replacement - the only way an operator's
+    /// node is admitted, and a record that outlives the replacement. A join with no reservation by any other node - a configured core joining after formation, a
+    /// locally admitted worker, a provider-provisioned node - is routine and raises nothing.
+    private boolean knownExternal(NodeId nodeId) {
+        return nodeReplacements.get()
+                               .all()
+                               .values()
+                               .stream()
+                               .anyMatch(record -> AetherValue.NodeReplacementValue.MODE_EXTERNAL.equals(record.mode()) && record.replacement()
+                                                                                                                                 .equals(nodeId));
+    }
+
+    /// A node a replacement retired joined again: its identity is superseded. It is refused and evicted (the DRAIN command, no reap), never admitted again, and the
+    /// operator is told which node replaced it.
+    private void refuseSupersededIdentity(NodeId nodeId, NodeLifecycleManager.RetiredIdentityRejoined retired) {
+        drainCommandSink.accept(nodeId);
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED,
+                                                              nodeId.id(),
+                                                              "Node {} joined again but it was retired by a replacement ({}): its identity is superseded, so it is refused and is being drained; it is not admitted beside its replacement",
+                                                              nodeId.id(),
+                                                              retired.replacement());
+    }
+
+    /// A drain was issued to the previous incarnation: it does not apply to the one that has just joined. The pending entry is removed, so the grace expiry
+    /// finds nothing to reap, the DRAIN command is cleared, and the operator is told to re-issue it if it is still intended.
+    private void cancelPendingDrain(NodeId nodeId) {
+        if (Option.option(pendingDrains.remove(nodeId)).isEmpty()) {
+            return;
+        }
+
+        drainCommandClear.accept(nodeId);
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.NODE_DRAIN_CANCELLED_REJOINED,
+                                                              nodeId.id(),
+                                                              "The pending drain of node {} was cancelled: the node joined the cluster again, a new incarnation; re-issue the drain if it is still intended",
+                                                              nodeId.id());
+    }
+
+    /// A node that has joined (or been re-admitted) is a new incarnation of its id: what was remembered of the previous one - that its reap was
+    /// confirmed, that its instance was seen, that its termination was unconfirmed - does not describe it, and is dropped. Without this a reused
+    /// id would be "confirmed gone" while it is a member, and its instance and slot would leak.
+    private void forgetIncarnation(NodeId nodeId) {
+        incarnations.merge(nodeId, 1L, Long::sum);
+        cancelPendingDrain(nodeId);
+        lifecycleManager.readmitExternal(nodeId).onFailure(cause -> rejoinNotReconciled(nodeId, cause));
+        replacementSources.remove(nodeId);
+        confirmedReaps.remove(nodeId);
+        seenInstances.remove(nodeId);
+        knownInstanceIds.remove(nodeId);
+        listedAbsent.remove(nodeId);
+        failedReaps.remove(nodeId);
+        var marked = unconfirmedReaps.remove(nodeId);
+        var persisted = persistedMarks.get().get().containsKey(nodeId);
+
+        if (persisted) {
+            writeMark(nodeId, Option.none());
+        }
+
+        if (marked || persisted) {
+            closeAsRejoined(nodeId);
+        }
+    }
+
+    /// The warning about the previous incarnation is closed, cluster-wide, with the REJOINED resolution: nothing was terminated, so it is not a confirmation.
+    private void closeAsRejoined(NodeId nodeId) {
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
+                                                              nodeId.id(),
+                                                              "Retired node {} joined the cluster again: the unconfirmed termination of its previous incarnation no longer applies (nothing was terminated)",
+                                                              nodeId.id());
+    }
+
+    private void reapConfirmed(NodeId nodeId) {
+        replacementSources.remove(nodeId);
+        failedReaps.remove(nodeId);
+        var marked = unconfirmedReaps.remove(nodeId);
+        var persisted = persistedMarks.get().get().containsKey(nodeId);
+
+        if (persisted) {
+            writeMark(nodeId, Option.none());
+        }
+
+        if (marked || persisted) {
+            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                                  warningSink.get(),
+                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                                                                  nodeId.id(),
+                                                                  "Termination of the instance of retired node {} is now confirmed",
+                                                                  nodeId.id());
+        }
+    }
+
+    private void reapUnconfirmed(NodeId nodeId,
+                                 long epoch,
+                                 long generation,
+                                 int retriesLeft,
+                                 org.pragmatica.lang.Cause cause) {
+        if (!sameIncarnation(nodeId, generation)) {
+            log.debug("CTM: failed reap of {} ignored — the node joined again while the attempt was in flight", nodeId);
+
+            return;
+        }
+
+        if (retriesLeft <= 0) {
+            markUnconfirmed(nodeId, "after " + FAILED_REAP_RETRIES + " attempts: " + cause.message());
+
+            return;
+        }
+
+        log.warn("CTM: reap of retired node {} not confirmed — {}; {} retries left",
+                 nodeId,
+                 cause.message(),
+                 retriesLeft);
+        failedReaps.put(nodeId, epoch);
+        SharedScheduler.schedule(() -> retryConfirmedReap(nodeId, epoch, generation, retriesLeft - 1),
+                                 failedReapInterval());
+    }
+
+    private void retryConfirmedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
+        // The incarnation is asked FIRST: a retry of an earlier incarnation must not consume the entry of the chain that replaced it.
+        if (!sameIncarnation(nodeId, generation) || !failedReaps.remove(nodeId, epoch)) {
+            return;
+        }
+
+        if (!drainGraceChains.contains(nodeId) && liveness.demonstrablyLive(nodeId)) {
+            parkAndMarkLive(nodeId);
+
+            return;
+        }
+
+        confirmedReap(nodeId, epoch, generation, retriesLeft);
+    }
+
+    /// (The drain-grace mark is cleared only where a chain STARTS ([#terminateRetired]): every gated chain starts there, and a retry consults the mark
+    /// only for the chain it belongs to.)
+    /// A gated retry found life: a live node is not terminated by a retry, but it is not dropped in silence either. It is parked for the next SWIM
+    /// FAULTY and marked unconfirmed, so the operator is told; a later confirmation, or the node's rejoin, closes the warning. The drain-grace chain
+    /// is never here: its node is a drained node that did not exit, alive by definition, and its retries are not gated.
+    private void parkAndMarkLive(NodeId nodeId) {
+        abandonedReaps.add(nodeId);
+        log.warn("CTM: retry of the confirmed reap of {} stopped — it shows life ({}); a live node is never terminated by a retry; re-armed by the next SWIM FAULTY for it",
+                 nodeId,
+                 liveness.evidence(nodeId));
+        markUnconfirmed(nodeId,
+                        "the node shows life (" + liveness.evidence(nodeId)
+                       + ") after a failed reap; a live node is not terminated by a retry");
+    }
+
+    private TimeSpan failedReapInterval() {
+        return TimeSpan.timeSpan(Math.max(1L,
+                                          autoHealConfig.provisioningTimeout().millis() / 6)).millis();
+    }
+
+    /// #1804 — WARN the refusal with its reason and, unless a chain of this activation is already pending for
+    /// `nodeId`, start one. The chain is level-triggered: each tick re-reads the retirement verdict and the
+    /// liveness evidence, and ends when the node is terminated, becomes protected (live, tracked or in flight — the
+    /// activation replay's own protection, [MembershipLiveness#replayProtected]), the activation ends, or
+    /// [#REFUSED_REAP_RETRIES] ticks are spent. A refusal arriving while a chain is pending only logs.
+    @Contract
+    private void parkRefusedReap(NodeId nodeId, String reason) {
+        var epoch = activationEpoch.get();
+
+        log.warn("CTM: reap of {} REFUSED — {}; retrying every {}ms", nodeId, reason, activationReplayGrace().millis());
+        if (Option.option(refusedReaps.put(nodeId, epoch)).filter(pending -> pending == epoch).isEmpty()) {
+            scheduleRefusedReapRetry(nodeId, epoch, REFUSED_REAP_RETRIES);
+        }
+    }
+
+    @Contract
+    private void scheduleRefusedReapRetry(NodeId nodeId, long epoch, int retriesLeft) {
+        SharedScheduler.schedule(() -> retryRefusedReap(nodeId, epoch, retriesLeft), activationReplayGrace());
+    }
+
+    /// One tick of a refused-reap chain. A chain whose entry is gone (terminated meanwhile) or belongs to another
+    /// activation stops; a deposed view never reaps, the next activation's replay owns the instance. Evidence of
+    /// life stops the chain and parks the reap for the next SWIM FAULTY, exactly as [#reapUnlessLive] abandons.
+    @Contract
+    private void retryRefusedReap(NodeId nodeId, long epoch, int retriesLeft) {
+        if (!refusedReaps.remove(nodeId, epoch)) {
+            return;
+        }
+
+        if (!active.get() || activationEpoch.get() != epoch) {
+            log.debug("CTM: refused reap of {} dropped — deactivated or re-activated since; the current activation's replay owns the instance",
+                      nodeId);
+
+            return;
+        }
+
+        if (liveness.replayProtected(nodeId)) {
+            abandonRefusedReap(nodeId);
+
+            return;
+        }
+
+        retirementRefusal.get()
+                         .apply(nodeId)
+                         .onPresent(reason -> continueRefusedReap(nodeId, epoch, retriesLeft, reason))
+                         .onEmpty(() -> terminateRetired(nodeId));
+    }
+
+    @Contract
+    private void continueRefusedReap(NodeId nodeId, long epoch, int retriesLeft, String reason) {
+        if (retriesLeft <= 0) {
+            markUnconfirmed(nodeId, "after " + REFUSED_REAP_RETRIES + " attempts, refused: " + reason);
+
+            return;
+        }
+
+        log.warn("CTM: reap of {} still REFUSED — {}; {} retries left", nodeId, reason, retriesLeft);
+        refusedReaps.put(nodeId, epoch);
+        scheduleRefusedReapRetry(nodeId, epoch, retriesLeft - 1);
+    }
+
+    @Contract
+    private void abandonRefusedReap(NodeId nodeId) {
+        abandonedReaps.add(nodeId);
+        log.warn("CTM: refused reap of {} stopped — it is protected ({}, tracked={}, inFlight={}); a live, tracked or booting node is never terminated; re-armed by the next SWIM FAULTY for it",
+                 nodeId,
+                 liveness.evidence(nodeId),
+                 liveness.trackedMembers().get().contains(nodeId),
+                 liveness.inFlightProvisioning().get().contains(nodeId));
+    }
+
+    /// R4 — ACTIVATION REPLAY. `activate()` runs a one-shot reconciliation of this cluster's core instances,
+    /// because nothing else replays reaps a previous leader skipped or never received. A queued `NodeRemoved`
+    /// can be delivered while every CTM is inactive and is then dropped, and a refused grace reap is not
+    /// retried. Two inventory reads are taken [#activationReplayGrace] apart. An instance is terminated only
+    /// when, at BOTH reads, its node is neither tracked by the FSM, nor showing independent evidence of life,
+    /// nor a replacement still in flight ([MembershipLiveness#replayProtected]). Each read, and the terminate
+    /// once the second read resolves, acts only while this activation is still current, active and quorum-safe;
+    /// otherwise it yields nothing.
+    @Contract
+    private void scheduleActivationReplay() {
+        var epoch = activationEpoch.get();
+
+        replayCandidates(epoch).onSuccess(firstRead -> scheduleReplayConfirmation(epoch, firstRead));
+    }
+
+    /// R4 grace — `provisioningTimeout` (60s default). Derived: it is the window the CTM already grants a
+    /// dispatched node to boot and join, and the drain grace itself. An instance unprotected at two reads that
+    /// far apart has been absent for a whole provisioning window.
+    private TimeSpan activationReplayGrace() {
+        return autoHealConfig.provisioningTimeout();
+    }
+
+    @Contract
+    private void scheduleReplayConfirmation(long epoch, Set<NodeId> firstRead) {
+        if (firstRead.isEmpty()) {
+            return;
+        }
+
+        SharedScheduler.schedule(() -> confirmActivationReplay(epoch, firstRead), activationReplayGrace());
+    }
+
+    @Contract
+    private void confirmActivationReplay(long epoch, Set<NodeId> firstRead) {
+        replayCandidates(epoch).onSuccess(secondRead -> terminateOrphans(epoch, firstRead, secondRead));
+    }
+
+    /// The listing is asynchronous, so the activation that was current when the second read was ISSUED can be
+    /// deposed or superseded by the time it RESOLVES (verify-1057-r2 S2). The terminate re-checks
+    /// [#replayMayAct] at resolution; a deposed view terminates nothing.
+    @Contract
+    private void terminateOrphans(long epoch, Set<NodeId> firstRead, Set<NodeId> secondRead) {
+        if (!replayMayAct(epoch)) {
+            log.debug("CTM: activation replay — second read resolved after this activation ended; terminating nothing");
+
+            return;
+        }
+
+        firstRead.stream().filter(secondRead::contains).forEach(this::terminateOrphan);
+    }
+
+    @Contract
+    private void terminateOrphan(NodeId nodeId) {
+        log.warn("CTM: activation replay — instance of {} was untracked, not live and not in flight at two reads {}ms apart; terminating",
+                 nodeId,
+                 activationReplayGrace().millis());
+        // UNCONFIRMED means "tried and not confirmed": the orphan is marked only if its terminate attempts fail ([#confirmedReap]); a mark a previous
+        // leader left is inherited ([#adoptPersistedMarks]) and closed by whichever leader confirms.
+        terminateDeparted(nodeId);
+    }
+
+    /// The unprotected core instances of THIS cluster, or none when the read must not act: a stale activation,
+    /// an inactive CTM, a view that is not quorum-safe, or no cluster name to scope the listing. A failed listing
+    /// is logged and yields none — degrade forward: this activation replays nothing, and the next activation
+    /// reads again.
+    private Promise<Set<NodeId>> replayCandidates(long epoch) {
+        return replayMayAct(epoch)
+               ? resolveClusterName().fold(() -> Promise.success(Set.<NodeId> of()), this::unprotectedCoreInstances)
+               : Promise.success(Set.of());
+    }
+
+    private boolean replayMayAct(long epoch) {
+        return active.get()
+               && activationEpoch.get() == epoch
+               && quorumSafe(liveness.coreCountedMembers().get().size(),
+                             liveness.configuredCoreCount().getAsInt());
+    }
+
+    private Promise<Set<NodeId>> unprotectedCoreInstances(ClusterName clusterName) {
+        return lifecycleManager.listInstances(Map.of("aether-cluster",
+                                                     clusterName.value(),
+                                                     "aether-role",
+                                                     CORE_ROLE_LABEL))
+                               .map(this::unprotectedNodeIds)
+                               .onFailure(cause -> log.warn("CTM: activation replay inventory listing failed — nothing replayed this activation: {}",
+                                                            cause.message()))
+                               .fold(result -> Promise.success(result.or(Set.of())));
+    }
+
+    private Set<NodeId> unprotectedNodeIds(List<InstanceInfo> instances) {
+        var pairedAndLive = nodeReplacements.get().retirementProtected();
+
+        return nodeIdsOf(instances).filter(nodeId -> !nodeId.equals(observer.self().id()))
+                        // #1543 E: a live pairing protects its replacement (possibly still booting on a new leader) and its original
+                        .filter(nodeId -> !pairedAndLive.contains(nodeId))
+                        .filter(this::unprotectedOrParked)
+                        .collect(Collectors.toSet());
+    }
+
+    /// SF-1 (verify-1057-r3) — a listed instance the replay skips ONLY because raw SWIM still reports its node alive
+    /// ([MembershipLiveness#swimOnlyProtected]) is PARKED, not forgotten: a parked reap dies with the activation that
+    /// parked it (`deactivate()`), and the new leader's own SWIM can still hold the dead node SUSPECTED at its first
+    /// read, so the FAULTY edge that follows would otherwise re-arm nothing until the next activation. Parking here
+    /// closes that window; the reap it re-arms is still evidence-gated. Nothing else is parked.
+    private boolean unprotectedOrParked(NodeId nodeId) {
+        if (!liveness.replayProtected(nodeId)) {
+            return true;
+        }
+
+        if (liveness.swimOnlyProtected(nodeId) && abandonedReaps.add(nodeId)) {
+            log.info("CTM: activation replay — instance of {} is protected only by SWIM life ({}); parked, re-armed by the next SWIM FAULTY for it",
+                     nodeId,
+                     liveness.evidence(nodeId));
+        }
+
+        return false;
+    }
+
+    /// The parseable node ids carried by listed instances. An instance without a node-id label cannot be
+    /// terminated through the node-id path and is skipped, as in the worker reconcile.
+    private static Stream<NodeId> nodeIdsOf(List<InstanceInfo> instances) {
+        return instances.stream()
+                        .flatMap(instance -> instance.nodeId()
+                                                     .stream())
+                        .flatMap(raw -> NodeId.nodeId(raw)
+                                              .option()
+                                              .stream());
     }
 
     /// Membership v2 / E2 — public reconcile. CTM no longer drives a slot loop; the
@@ -1173,11 +3301,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     @Override
-    public void activate() {
+    public synchronized void activate() {
         if (!active.compareAndSet(false, true)) {
             return;
         }
-
+        // The activation epoch is bumped FIRST: every deferred reap and replay read started under this
+        // activation carries it, and a re-check or resolution that finds another epoch drops out.
+        activationEpoch.incrementAndGet();
+        incarnations.clear();
+        workerReconcileInFlight.set(false);
+        workerReconcilePending.set(false);
+        recordedPlacements.clear();
         resetProvisioningCircuit("activate (leader handoff)");
         formationAnchorMs.set(nowMs());
         // CTM v2: the internal slot-reconcile loop is OFF. The LeaderReconciler (spec §7) owns
@@ -1188,6 +3322,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // RFC-0017 stage 5 — leader gain is a worker-convergence point: a scale committed under the
         // previous leader may have died mid-provisioning, and only the active CTM acts on it.
         reconcileWorkerTopology();
+        startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
+        startUnconfirmedRecheck();
+        adoptPersistedMarks();
+        // #1050 R4 — one-shot activation replay: reap orphaned core instances that nothing else replays.
+        scheduleActivationReplay();
+        // #689 — re-compare every retained provisioning intent against what membership holds now.
+        rederiveRoleMismatches();
     }
 
     @Contract
@@ -1242,12 +3383,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Contract
     @Override
-    public void deactivate() {
+    public synchronized void deactivate() {
         if (!active.compareAndSet(true, false)) {
             return;
         }
 
         transitionTo(new NodeReconcilerState.Inactive("deactivated (not leader)"));
+        // A deposed view never reaps: parked (abandoned) reaps die with the activation. The next activation's
+        // replay re-parks any such instance its own SWIM still reports alive (SF-1) and reaps the rest.
+        abandonedReaps.clear();
+        workerTopologyPolling.cancel();
+        unconfirmedRecheck.cancel();
+        pendingDrains.keySet().forEach(drainCommandClear);
+        pendingDrains.clear();
         log.info("CTM: Deactivated");
     }
 
@@ -1459,9 +3607,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                       .port();
     }
 
-    private Option<PlacementHint> computePlacementHint() {
+    /// #1650 F1: zones are balanced WITHIN the source being provisioned. A zone is a provider location, so
+    /// another source's zone names a place this source's provider may not have -- Hetzner would put the node
+    /// there, AWS and GCP would fail the create. Counting across sources only stayed harmless while zone labels
+    /// were rarely populated; stamped labels made it steer a zoneless source into another source's zone.
+    private Option<PlacementHint> computePlacementHint(SourceName sourceName) {
         var zoneCounts = observer.topology()
                                  .stream()
+                                 .filter(nodeId -> sourceLabel(nodeId).equals(sourceName))
                                  .map(this::zoneLabel)
                                  .filter(z -> !z.isEmpty())
                                  .collect(Collectors.groupingBy(z -> z,
@@ -1493,6 +3646,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         return Option.some(PlacementHint.antiAffinityHint(overRepresented));
+    }
+
+    /// A node without a source label belongs to [SourceName#DEFAULT], as it does everywhere a source is derived.
+    private SourceName sourceLabel(NodeId nodeId) {
+        return observer.get(nodeId)
+                       .map(info -> SourceName.sourceNameOrDefault(info.labels().getOrDefault(LABEL_SOURCE, "")))
+                       .or(SourceName.DEFAULT);
     }
 
     private String zoneLabel(NodeId nodeId) {

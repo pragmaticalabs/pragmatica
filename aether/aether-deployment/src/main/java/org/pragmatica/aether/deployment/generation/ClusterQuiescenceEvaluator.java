@@ -67,8 +67,10 @@ public sealed interface ClusterQuiescenceEvaluator {
             if (hint == HealthHint.FAULTY) {
                 faulty++;
             }
-
-            if (hint == HealthHint.SUSPECTED) {
+            // #964: UNKNOWN counts as suspected, never as healthy. A hint this node cannot read is
+            // absence of evidence about the member, and quiescence is a claim that there is nothing
+            // outstanding -- which an unreadable member contradicts.
+            if (hint == HealthHint.SUSPECTED || hint == HealthHint.UNKNOWN) {
                 suspected++;
             }
         }
@@ -87,6 +89,9 @@ public sealed interface ClusterQuiescenceEvaluator {
                 case CONVERGING -> converging++;
                 case DISSOLVING -> dissolving++;
                 case QUIESCED -> {}
+                // #964: counted as degraded, not ignored. An empty arm here would make a community
+                // this node cannot read indistinguishable from a quiesced one.
+                case UNKNOWN -> degraded++;
             }
         }
 

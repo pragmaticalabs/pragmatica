@@ -95,6 +95,11 @@ class PresenceGenerationSnapshotSourceTest {
                 .as("nothing promoted yet — bootstrap fallback governs")
                 .isFalse();
 
+        for (var id : Set.of(N1, N2, N3)) {
+            fsm.onMemberDescriptor(org.pragmatica.consensus.net.NodeInfo.nodeInfo(id,
+                new org.pragmatica.net.tcp.NodeAddress(id.id(), 6000),
+                java.util.Map.of(org.pragmatica.consensus.net.NodeInfo.LABEL_ROLE, "core")));
+        }
         fsm.onSwimHealthy(N1, 1L);
         fsm.onSwimHealthy(N2, 1L);
         assertThat(source.currentMembershipView().isPresent())

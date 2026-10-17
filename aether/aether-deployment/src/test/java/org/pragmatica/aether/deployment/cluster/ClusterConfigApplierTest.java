@@ -13,6 +13,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.consensus.NodeId;
@@ -59,22 +60,22 @@ class ClusterConfigApplierTest {
     @Nested
     class CoreScale {
         @Test
-        void apply_coreScaleUp_appliesDesiredSize() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 5, 7))).await();
+        void validate_coreScaleUp_hasNoPartialEffects() {
+            var result = applier.validate(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 5, 7))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
                     .as("the source and role must survive the applier — the scalar surface discarded them")
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 7));
+                    .isEmpty();
         }
 
         @Test
-        void apply_coreScaleDown_appliesDesiredSize() {
-            var result = applier.apply(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.CORE, 7, 5))).await();
+        void validate_coreScaleDown_hasNoPartialEffects() {
+            var result = applier.validate(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.CORE, 7, 5))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 5));
+                    .isEmpty();
         }
     }
 
@@ -82,30 +83,30 @@ class ClusterConfigApplierTest {
     class NonCoreScaleRoutes {
         @Test
         void apply_workerScaleUp_writesTheWorkerDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3))).await();
+            var result = applier.validate(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
                     .as("a WORKER scale writes the WORKER pair — the typed topology makes this safe")
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 3));
+                    .isEmpty();
         }
 
         @Test
         void apply_workerScaleDown_writesTheWorkerDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.WORKER, 3, 1))).await();
+            var result = applier.validate(List.of(new DiffAction.ScaleDown(sourceNameOrDefault("default"), NodeRole.WORKER, 3, 1))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 1));
+                    .isEmpty();
         }
 
         @Test
         void apply_spotScaleUp_writesTheSpotDesiredCount() {
-            var result = applier.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.SPOT, 0, 2))).await();
+            var result = applier.validate(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.SPOT, 0, 2))).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.SPOT, 2));
+                    .isEmpty();
         }
 
         /// A mixed diff applies BOTH actions in order — each role's count lands on its own
@@ -115,12 +116,11 @@ class ClusterConfigApplierTest {
             var actions = List.<DiffAction> of(new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.CORE, 5, 6),
                                                new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3));
 
-            var result = applier.apply(actions).await();
+            var result = applier.validate(actions).await();
 
             assertThat(result.isSuccess()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
-                    .containsExactly(new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.CORE, 6),
-                                     new RecordingTopologyManager.ScaleCall(sourceNameOrDefault("default"), NodeRole.WORKER, 3));
+                    .isEmpty();
         }
     }
 
@@ -146,10 +146,26 @@ class ClusterConfigApplierTest {
                              Arguments.of(new DiffAction.ClusterLevelChange("distribution.strategy", "balanced", "manual")));
         }
 
+        /// #1543 part C: a changed `[cluster] version` is not "unsupported, escalate" — it has one writer, the upgrade
+        /// route, and the refusal names it. Other cluster-level fields keep the generic refusal (pinned in the
+        /// parameterized test above, whose `distribution.strategy` case must NOT become this one).
+        @Test
+        void apply_clusterVersionChange_isRefusedWith409_pointingAtUpgrade() {
+            var result = applier.validate(List.of(new DiffAction.ClusterLevelChange("version", "1.0.0", "1.1.0"))).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ClusterConfigError.VersionChangeViaApply.class);
+                assertThat(((ClusterConfigError) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                assertThat(cause.message()).contains("aether cluster upgrade --version 1.1.0");
+            });
+            assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
+        }
+
         @ParameterizedTest
         @MethodSource("theSevenGenericallyUnsupportedKinds")
         void apply_eachGenericallyUnsupportedKind_failsWithUnsupportedApplyAction_noTopologyWrite(DiffAction action) {
-            var result = applier.apply(List.of(action)).await();
+            var result = applier.validate(List.of(action)).await();
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(ClusterConfigError.UnsupportedApplyAction.class,
@@ -168,7 +184,7 @@ class ClusterConfigApplierTest {
         /// rejected plan must have zero side effects, same as the mixed-plan test below).
         @Test
         void apply_immutableFieldChange_failsWithConflictStatus() {
-            var result = applier.apply(List.of(new DiffAction.ImmutableFieldChange("cluster.name"))).await();
+            var result = applier.validate(List.of(new DiffAction.ImmutableFieldChange("cluster.name"))).await();
 
             assertThat(result.isFailure()).isTrue();
             result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(ClusterConfigError.ImmutableFieldChange.class,
@@ -190,7 +206,7 @@ class ClusterConfigApplierTest {
                                                new DiffAction.RemoveRole(sourceNameOrDefault("default"), NodeRole.WORKER, 2),
                                                new DiffAction.ScaleUp(sourceNameOrDefault("default"), NodeRole.WORKER, 0, 3));
 
-            var result = applier.apply(actions).await();
+            var result = applier.validate(actions).await();
 
             assertThat(result.isFailure()).isTrue();
             assertThat(topologyManager.setDesiredCountCalls())
@@ -207,7 +223,7 @@ class ClusterConfigApplierTest {
     class NoTopologyManagerFallback {
         @Test
         void apply_withNoTopologyManager_failsWithServiceUnavailable() {
-            var result = ClusterConfigApplier.NoTopologyManager.INSTANCE.apply(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"),
+            var result = ClusterConfigApplier.NoTopologyManager.INSTANCE.validate(List.of(new DiffAction.ScaleUp(sourceNameOrDefault("default"),
                                                                                                               NodeRole.CORE,
                                                                                                               5,
                                                                                                               7)))
@@ -222,6 +238,15 @@ class ClusterConfigApplierTest {
     /// Recording `ClusterTopologyManager` stub — only `setDesiredCount` matters for the applier;
     /// the rest is inert surface (same shape as `LeaderReconcilerTest.RecordingCtm`).
     private static final class RecordingTopologyManager implements ClusterTopologyManager {
+        @Override public org.pragmatica.lang.Result<SourceName> sourceOfSourcelessNode(NodeRole intendedRole) {
+            return org.pragmatica.lang.Result.success(SourceName.DEFAULT);
+        }
+        @Override public boolean usesExplicitCommunities() { return false; }
+        @Override public void installCommunityPlacement(org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler reconciler) {}
+        @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation) {
+            return org.pragmatica.lang.Promise.unitPromise();
+        }
+
         record ScaleCall(SourceName sourceName, NodeRole role, int count) {}
 
         private final List<ScaleCall> setDesiredCountCalls = new CopyOnWriteArrayList<>();
@@ -247,6 +272,16 @@ class ClusterConfigApplierTest {
         @Override
         public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
             return Promise.success(unit());
+        }
+
+        @Override
+        public Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId) {
+            return Promise.success(ReplacementInstanceState.UNKNOWN);
+        }
+
+        @Override
+        public TimeSpan replacementCeiling(NodeRole intendedRole) {
+            return SourceProfile.DEFAULT_REPLACEMENT_CEILING;
         }
 
         @Override
@@ -324,8 +359,8 @@ class ClusterConfigApplierTest {
         }
 
         @Override
-        public boolean setAutoHealEnabled(boolean enabled, String reason) {
-            return true;
+        public Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason) {
+            return Promise.success(true);
         }
 
         @Override

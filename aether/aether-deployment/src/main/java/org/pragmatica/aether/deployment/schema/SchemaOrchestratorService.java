@@ -6,6 +6,8 @@ package org.pragmatica.aether.deployment.schema;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.AuditLog;
@@ -28,19 +30,24 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
-import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
+import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
@@ -57,6 +64,17 @@ public interface SchemaOrchestratorService {
     Promise<Unit> migrateIfNeeded(String datasourceName);
     Promise<Unit> undoTo(String datasourceName, int targetVersion);
     Promise<Unit> baseline(String datasourceName, int version);
+
+    /// #217: `force` lets the baseline proceed over an in-flight migration (audited). Implementations that
+    /// do not re-check under a fence ignore it.
+    default Promise<Unit> baseline(String datasourceName, int version, boolean force) {
+        return baseline(datasourceName, version);
+    }
+
+    /// #806: the LEASE length, not a bound on the migration. The holder renews it every third of this
+    /// while its attempt is in flight, so the lock lasts exactly as long as the operation does — no
+    /// relation to `SchemaPolicy#migrationTimeout` is needed — and a holder that dies stops renewing and
+    /// loses the lock within this long.
     long LOCK_TTL_MS = 5 * 60 * 1000L;
     int MAX_RETRIES = 3;
     long BACKOFF_BASE_MS = 5000;
@@ -100,6 +118,8 @@ public interface SchemaOrchestratorService {
 @SuppressWarnings({"JBCT-SEQ-01", "JBCT-UTIL-02"})
 class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private static final Logger log = LoggerFactory.getLogger(SchemaOrchestratorServiceInstance.class);
+    /// The audit logger `AetherNode`'s `AuditLog` writes to; a fence-level forced baseline is recorded there too.
+    private static final Logger AUDIT = LoggerFactory.getLogger("org.pragmatica.aether.audit");
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> kvStore;
@@ -109,6 +129,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     private final DatasourceConnectionProvider connectionProvider;
     private final NodeId self;
     private final Option<MessageRouter> router;
+    private final LeaseTiming timing;
 
     SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                                       KVStore<AetherKey, AetherValue> kvStore,
@@ -129,6 +150,27 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                       DatasourceConnectionProvider connectionProvider,
                                       NodeId self,
                                       Option<MessageRouter> router) {
+        this(cluster,
+             kvStore,
+             artifactStore,
+             repository,
+             schemaManager,
+             connectionProvider,
+             self,
+             router,
+             LeaseTiming.standard());
+    }
+
+    SchemaOrchestratorServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
+                                      KVStore<AetherKey, AetherValue> kvStore,
+                                      ArtifactStore artifactStore,
+                                      Repository repository,
+                                      AetherSchemaManager schemaManager,
+                                      DatasourceConnectionProvider connectionProvider,
+                                      NodeId self,
+                                      Option<MessageRouter> router,
+                                      LeaseTiming timing) {
+        this.timing = timing;
         this.cluster = cluster;
         this.kvStore = kvStore;
         this.artifactStore = artifactStore;
@@ -151,40 +193,363 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                       .or(Promise.success(unit()));
     }
 
+    /// #543 ("schema undo is unreachable"): this used to just write a bare KV status — PENDING —
+    /// and report success, never calling [AetherSchemaManager#undo]. That was actively wrong, not
+    /// merely inert: [#migrateIfNeeded]'s own reconciler tick picks up ANY PENDING record and
+    /// dispatches [#executeMigrationFlow], which calls `schemaManager.migrate(...)` FORWARD from
+    /// the full script list — so an "undone" datasource was migrated straight back past the target
+    /// version on the very next tick, silently undoing the undo it claimed to have performed.
     @Override
     public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
-        log.info("Undo to version {} requested for datasource: {} (not yet implemented)", targetVersion, datasourceName);
+        return executeUndoOrBaseline(datasourceName,
+                                     targetVersion,
+                                     "undo",
+                                     _ -> Promise.success(unit()),
+                                     (connector, scripts, owner) -> schemaManager.undo(datasourceName,
+                                                                                       targetVersion,
+                                                                                       scripts,
+                                                                                       connector,
+                                                                                       self.id(),
+                                                                                       owner));
+    }
+
+    /// #543: the prior version wrote a fabricated COMPLETED status directly, with a synthetic
+    /// `lastMigration` marker built from the caller's raw request parameter — no call to
+    /// [AetherSchemaManager#baseline], no real database interaction of any kind. The 409/422
+    /// conflicts baseline can genuinely raise ([SchemaError.BaselineConflict],
+    /// [SchemaError.ChecksumMismatch]) were unreachable because nothing ever asked the manager.
+    @Override
+    public Promise<Unit> baseline(String datasourceName, int version) {
+        return baseline(datasourceName, version, false);
+    }
+
+    @Override
+    public Promise<Unit> baseline(String datasourceName, int version, boolean force) {
+        return executeUndoOrBaseline(datasourceName,
+                                     version,
+                                     "baseline",
+                                     stage -> baselineFenceCheck(datasourceName, version, force, stage),
+                                     (connector, scripts, owner) -> schemaManager.baseline(datasourceName,
+                                                                                           version,
+                                                                                           scripts,
+                                                                                           connector,
+                                                                                           self.id(),
+                                                                                           owner));
+    }
+
+    /// Shared undo/baseline execution. Calls the real manager operation SYNCHRONOUSLY, before any
+    /// KV write — the antithesis of "write a status, let a later reconciler tick do the work" that
+    /// [#undoTo]'s header describes. The final write is always `SchemaStatus.COMPLETED`, never
+    /// `PENDING`: [#migrateIfNeeded]'s own `status == PENDING` filter is what then keeps the
+    /// reconciler from ever revisiting this record on its own [mechanism: the reconciler's
+    /// PENDING-only guard structurally excludes a COMPLETED record — #543 condition 1, no
+    /// additional guard needed beyond writing the correct terminal status].
+    ///
+    /// Shares [#executeMigrationFlow]'s single-flight fence (`inFlightMigrations`, keyed by
+    /// `datasourceName`) so a `/migrate` dispatch and an `/undo` or `/baseline` call against the
+    /// SAME datasource can never run concurrently on this node [mechanism: `ConcurrentHashMap
+    /// .putIfAbsent` — #543 condition 2's in-process half]. That fence is per-JVM, not
+    /// KV-transactional — it does nothing for a second cluster node reading and writing the same
+    /// schema row at the same time. The route layer closes that cross-node gap by binding both
+    /// operations to the leader ([SchemaRouteError.SchemaNotLeader]) rather than by widening this
+    /// fence into a distributed lock.
+    private Promise<Unit> executeUndoOrBaseline(String datasourceName,
+                                                int requestedVersion,
+                                                String operation,
+                                                Fn1<Promise<Unit>, String> fenceCheck,
+                                                Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
+        var versionKey = SchemaVersionKey.schemaVersionKey(datasourceName);
+
+        return kvStore.get(versionKey)
+                      .filter(SchemaOrchestratorServiceInstance::isSchemaVersionValue)
+                      .map(SchemaVersionValue.class::cast)
+                      .map(value -> runUndoOrBaseline(datasourceName,
+                                                      requestedVersion,
+                                                      operation,
+                                                      value,
+                                                      fenceCheck,
+                                                      terminalOp))
+                      .or(() -> schemaRecordVanished(datasourceName, operation));
+    }
+
+    /// The route layer (`SchemaRoutes.undoToVersion`/`baselineAtVersion`) already confirms the
+    /// record exists — the same [SchemaRouteError.SchemaRecordNotFound] 404 check `/status` and
+    /// `/history` use — before ever dispatching here, so this covers a narrow, disclosed race (the
+    /// record deleted between that check and this call) rather than a path any route drives today;
+    /// no route deletes a schema version record. A bare [Cause] (500) is deliberate here, unlike
+    /// every genuine failure below: this one has no semantic status of its own to carry.
+    private static Promise<Unit> schemaRecordVanished(String datasourceName, String operation) {
+        return Causes.cause("Schema version record for '" + datasourceName
+                           + "' disappeared between the route's existence check and " + operation
+                           + " dispatch").promise();
+    }
+
+    private Promise<Unit> runUndoOrBaseline(String datasourceName,
+                                            int requestedVersion,
+                                            String operation,
+                                            SchemaVersionValue value,
+                                            Fn1<Promise<Unit>, String> fenceCheck,
+                                            Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
+        var attemptToken = new Object();
+
+        return acquireLock(datasourceName, attemptToken).flatMap(_ -> fenceCheck.apply("under the fence, before the database is touched"))
+                          .flatMap(_ -> resolveMigrationScripts(datasourceName, value).flatMap(scripts -> provisionAndRun(datasourceName,
+                                                                                                                          scripts,
+                                                                                                                          value.owningBlueprint(),
+                                                                                                                          terminalOp).mapError(cause -> handleUndoOrBaselineTimeout(datasourceName,
+                                                                                                                                                                                    requestedVersion,
+                                                                                                                                                                                    operation,
+                                                                                                                                                                                    value,
+                                                                                                                                                                                    cause)))
+                                                               .flatMap(result -> fenceCheck.apply("under the fence, before COMPLETED is written; the database baseline already ran")
+                                                                                            .map(_ -> result))
+                                                               .flatMap(result -> recordOutcome(datasourceName,
+                                                                                                operation,
+                                                                                                value,
+                                                                                                result))
+                                                               .flatMap(_ -> releaseLock(attemptToken))
+                                                               .replaceResult(result -> finalizeAttempt(datasourceName,
+                                                                                                        attemptToken,
+                                                                                                        result)));
+    }
+
+    /// #217 (v1617): the route checks the record's status BEFORE this fence, so a deploy that arms a migration
+    /// (writes PENDING) after that check was overwritten by `recordOutcome`'s COMPLETED, and the migration never
+    /// ran. The status is therefore re-read under the fence twice: before the database is touched, and
+    /// immediately before the COMPLETED write. The Put itself is not a compare-and-set, so a write landing
+    /// between the second read and the Put is still possible; the window is the Put's own latency.
+    ///
+    /// `force` proceeds anyway and writes the audit line the route writes for its own override.
+    private Promise<Unit> baselineFenceCheck(String datasourceName, int version, boolean force, String stage) {
+        var status = kvStore.get(SchemaVersionKey.schemaVersionKey(datasourceName))
+                            .filter(SchemaOrchestratorServiceInstance::isSchemaVersionValue)
+                            .map(SchemaVersionValue.class::cast)
+                            .map(SchemaVersionValue::status);
+
+        return status.filter(s -> s == SchemaStatus.PENDING || s == SchemaStatus.MIGRATING || s == SchemaStatus.UNKNOWN)
+                     .fold(() -> Promise.success(unit()),
+                           inFlight -> force
+                                       ? forcedBaseline(datasourceName, version, inFlight, stage)
+                                       : SchemaError.BaselineOverInFlightMigration.baselineOverInFlightMigration(datasourceName,
+                                                                                                                 inFlight,
+                                                                                                                 stage).promise());
+    }
+
+    private static Promise<Unit> forcedBaseline(String datasourceName,
+                                                int version,
+                                                SchemaStatus overridden,
+                                                String stage) {
+        AUDIT.warn("SCHEMA_BASELINE_FORCED datasource={} version={} overriddenStatus={} stage={}",
+                   datasourceName,
+                   version,
+                   overridden,
+                   stage);
 
         return Promise.success(unit());
     }
 
-    @Override
-    public Promise<Unit> baseline(String datasourceName, int version) {
-        log.info("Baseline version {} requested for datasource: {} (not yet implemented)", version, datasourceName);
+    /// #543/#832 review round 1 BLOCKING 3: `provisionAndRun`'s manager call had no bound, unlike
+    /// migrate's own [#runMigration] (`resolveAndParseMigrations(...).timeout(...)`, same placement
+    /// rationale — as close to the low-level `schemaManager.undo`/`.baseline` call as this call site
+    /// allows, before any further `.flatMap`/`.mapError` is chained onto it, per `Promise.timeout()`'s
+    /// own placement warning). A wedged connection or a runaway down/baseline script previously held
+    /// [#inFlightMigrations]'s fence AND the KV migration lock forever: the KV lock's own TTL expires,
+    /// but nothing releases the in-process fence, because [#finalizeAttempt] — the only release site —
+    /// never runs while the promise it is chained onto never settles.
+    private Promise<AetherSchemaManager.SchemaResult> provisionAndRun(String datasourceName,
+                                                                      List<MigrationEntry> scripts,
+                                                                      BlueprintId owner,
+                                                                      Fn3<Promise<AetherSchemaManager.SchemaResult>, SqlConnector, List<MigrationEntry>, BlueprintId> terminalOp) {
+        return provisionConnector(datasourceName).flatMap(connector -> terminalOp.apply(connector, scripts, owner)
+                                                                                 .timeout(schemaManager.policy()
+                                                                                                       .migrationTimeout())
+                                                                                 .onResultRun(() -> releaseConnectorSilently(datasourceName)));
+    }
 
-        return Promise.success(unit());
+    /// Converts a manager-call timeout into a named, `HttpStatusAware` terminal failure. Every OTHER
+    /// failure reaching this point (a genuine [SchemaError] the manager itself raised, or a
+    /// [#provisionConnector] failure) passes through unchanged — those already carry their own status
+    /// and their own KV disposition is the caller's concern, not a timeout-specific one.
+    ///
+    /// On timeout, [#finalizeAttempt] already releases both the fence and the KV lock
+    /// unconditionally once THIS failed promise settles — no additional release code is needed here,
+    /// only making the promise settle at all (via [#provisionAndRun]'s new timeout bound) was missing.
+    /// What IS missing without this method: nothing else records that the attempt failed, so the
+    /// existing KV record would sit at whatever status it held before the call (typically `COMPLETED`
+    /// from a PRIOR operation) with no sign this one ever ran or failed. Writing `FAILED` here —
+    /// fire-and-forget via `updateStatus`, the same DEPENDENT-vs-INDEPENDENT split
+    /// [#handleMigrationFailure] uses for its own status write, since the chain's own failure must not
+    /// wait on this write to become observable to the caller — gives the operator a named cause
+    /// (`UndoTimedOut`/`BaselineTimedOut`, 504 through the route) instead of a bare 500, and a `FAILED`
+    /// record that a retried undo/baseline or a redeploy can move past.
+    private Cause handleUndoOrBaselineTimeout(String datasourceName,
+                                              int requestedVersion,
+                                              String operation,
+                                              SchemaVersionValue value,
+                                              Cause cause) {
+        if (! (cause instanceof CoreError.Timeout)) {
+            return cause;
+        }
+
+        log.error("Schema {} for '{}' targeting version {} timed out — releasing lock and marking FAILED",
+                  operation,
+                  datasourceName,
+                  requestedVersion);
+        updateStatus(datasourceName, value, SchemaStatus.FAILED).onFailure(c -> log.error("Failed to record FAILED status for '{}' after {} timeout: {}",
+                                                                                          datasourceName,
+                                                                                          operation,
+                                                                                          c.message()));
+
+        return "undo".equals(operation)
+               ? SchemaError.UndoTimedOut.undoTimedOut(datasourceName, requestedVersion)
+               : SchemaError.BaselineTimedOut.baselineTimedOut(datasourceName, requestedVersion);
+    }
+
+    /// #543 condition 3: writes `result.currentVersion()` — the value [AetherSchemaManager]
+    /// actually reports for what it just did to the database — never `value.currentVersion()`
+    /// (the pre-existing record, unchanged by this operation) and never a version re-derived
+    /// independently from the request. A future change to how the manager computes the
+    /// post-operation version therefore cannot silently desync this KV record from the schema
+    /// history table it is supposed to describe. `attemptCount` resets to 0: a completed undo or
+    /// baseline is a fresh terminal state, not a retry of anything.
+    private Promise<Unit> recordOutcome(String datasourceName,
+                                        String operation,
+                                        SchemaVersionValue value,
+                                        AetherSchemaManager.SchemaResult result) {
+        log.info("Schema {} for '{}' complete: {} script(s) applied, now at version {}",
+                 operation,
+                 datasourceName,
+                 result.appliedCount(),
+                 result.currentVersion());
+        var key = SchemaVersionKey.schemaVersionKey(datasourceName);
+        var updated = SchemaVersionValue.schemaVersionValue(datasourceName,
+                                                            result.currentVersion(),
+                                                            lastMigrationFor(operation, result),
+                                                            SchemaStatus.COMPLETED,
+                                                            value.artifactCoords(),
+                                                            value.owningBlueprint(),
+                                                            0);
+        KVCommand<AetherKey> command = new Put<>(key, updated);
+
+        return cluster.apply(List.of(command))
+                      .mapToUnit();
+    }
+
+    /// A synthetic marker, not a claim about which real script file ran: `appliedCount` can be
+    /// greater than one (undo or baseline can step through several scripts to reach the target),
+    /// so there is no single "the applied filename" to report honestly without duplicating
+    /// [AetherSchemaManager]'s own script-selection logic here. `"V<version>__baseline"` keeps the
+    /// convention [SchemaRoutes] used inline before this fix (pinned by
+    /// `SchemaRoutesBaselineTest`), now built from the REAL applied version instead of the
+    /// caller's raw request parameter; `"U<version>__undo"` is the analogous marker for undo, new
+    /// with this fix since undo previously never reached a real completion at all.
+    private static String lastMigrationFor(String operation, AetherSchemaManager.SchemaResult result) {
+        var version = String.format("%03d", result.currentVersion());
+
+        return "baseline".equals(operation)
+               ? "V" + version + "__baseline"
+               : "U" + version + "__undo";
+    }
+
+    /// The route layer's existence check guarantees a schema version RECORD, but not one that
+    /// still declares a resolvable migration set. Unlike [#resolveAndParseMigrations] (forward
+    /// migrate's resolution chain, where [#noDeclaredMigrations] treats an empty set as legitimate
+    /// — a background reconciliation pass finding nothing pending is fine), an absent-coordinates
+    /// or empty-scripts outcome is a genuine, reportable failure here: undo and baseline are
+    /// operator requests to perform one specific action against one specific artifact, so "there
+    /// is nothing to act on" is always an error, never a quiet no-op.
+    private Promise<List<MigrationEntry>> resolveMigrationScripts(String datasourceName, SchemaVersionValue value) {
+        return Option.option(value.artifactCoords())
+                     .filter(Verify.Is::present)
+                     .map(coords -> resolveDeclaredScripts(datasourceName, value, coords))
+                     .or(() -> SchemaError.MigrationArtifactUnresolved.migrationArtifactUnresolved(datasourceName,
+                                                                                                   value.currentVersion(),
+                                                                                                   declaredMigration(value))
+                                                                      .promise());
+    }
+
+    private Promise<List<MigrationEntry>> resolveDeclaredScripts(String datasourceName,
+                                                                 SchemaVersionValue value,
+                                                                 String artifactCoords) {
+        return Artifact.artifact(artifactCoords)
+                       .async()
+                       .flatMap(this::resolveArtifactBytes)
+                       .flatMap(jarBytes -> BlueprintArtifactParser.parse(jarBytes).async())
+                       .flatMap(artifact -> scriptsFor(datasourceName, value, artifact));
+    }
+
+    private static Promise<List<MigrationEntry>> scriptsFor(String datasourceName,
+                                                            SchemaVersionValue value,
+                                                            BlueprintArtifact artifact) {
+        return Option.option(artifact.schemaMigrations().get(datasourceName))
+                     .filter(list -> !list.isEmpty())
+                     .map(Promise::success)
+                     .or(() -> SchemaError.MigrationSetUnavailable.migrationSetUnavailable(datasourceName,
+                                                                                           value.artifactCoords(),
+                                                                                           value.currentVersion())
+                                                                  .promise());
     }
 
     private static boolean isSchemaVersionValue(AetherValue value) {
         return value instanceof SchemaVersionValue;
     }
 
+    // #760/#724 review BLOCKING 2: cleanup runs via `replaceResult` (DEPENDENT), not
+    // `onFailure`/`onResultRun` (INDEPENDENT — dispatched onto AsyncExecutor, not ordered before
+    // this promise's result reaches a caller). The in-flight fence must be cleared, and a failed
+    // attempt's lock released, before a caller reacting to this promise's outcome (a manual
+    // retry route, in particular) can observe it.
+    //
+    // #760/#724 review round 2 item c: `finalizeAttempt` is nested INSIDE `acquireLock`'s success
+    // branch, not chained after the whole flow. A second dispatch that arrives while a first
+    // attempt is genuinely in flight has its own `acquireLock` fail fast (the fence add returns
+    // `false`) — with `replaceResult` wrapping the ENTIRE chain, that failure used to still run
+    // `finalizeAttempt`, unconditionally removing the FIRST attempt's fence entry and, because the
+    // result was a failure, releasing the FIRST attempt's still-held KV lock out from under it.
+    // Nesting means `finalizeAttempt` runs only for the attempt whose OWN `acquireLock` succeeded —
+    // no owner token needed, the call-site scoping is the ownership proof.
     private Promise<Unit> executeMigrationFlow(String datasourceName, SchemaVersionValue value) {
-        return acquireLock(datasourceName).flatMap(_ -> runMigration(datasourceName, value))
-                          .flatMap(_ -> releaseLock(datasourceName))
-                          .onFailure(_ -> releaseLockSilently(datasourceName))
-                          .onResultRun(() -> inFlightMigrations.remove(datasourceName));
+        var attemptToken = new Object();
+
+        return acquireLock(datasourceName, attemptToken).flatMap(_ -> runMigration(datasourceName, value).flatMap(_ -> releaseLock(attemptToken))
+                                                                                  .replaceResult(result -> finalizeAttempt(datasourceName,
+                                                                                                                           attemptToken,
+                                                                                                                           result)));
     }
 
+    private Result<Unit> finalizeAttempt(String datasourceName, Object attemptToken, Result<Unit> result) {
+        inFlightMigrations.remove(datasourceName, attemptToken);
+        if (result.isFailure()) {
+            releaseLockSilently(datasourceName, attemptToken);
+        }
+
+        return result;
+    }
+
+    // #760/#724 review BLOCKING 2: uses `mapError` (DEPENDENT), not `onFailure` (INDEPENDENT —
+    // dispatched onto AsyncExecutor, explicitly NOT ordered before the promise's resolution
+    // reaches `.await()` or any downstream caller). `handleMigrationFailure` registers the retry
+    // (`scheduledRetries.put`); that registration must complete before this failure becomes
+    // observable, or a caller that reacts immediately (a manual retry) can run
+    // `cancelScheduledRetry` before the put lands, orphaning an uncancelled timer that later
+    // fires a redundant, uncoordinated migration attempt.
+    // #760/#724 review round 2 item c: `.timeout()` is placed directly on `resolveAndParseMigrations`'s
+    // returned promise, before any further `.flatMap` is chained onto it — per `Promise.timeout()`'s
+    // own placement warning, a forced failure only protects transformations chained AFTER the call,
+    // so it must sit as close to the low-level operation (`schemaManager.migrate`, reached inside
+    // `resolveAndParseMigrations`) as this call site allows. Without a bound, a wedged connection or a
+    // runaway script holds the migration lock and the in-flight fence indefinitely, and no external
+    // caller (manual retry, rebuild recovery) can ever get back in.
     private Promise<Unit> runMigration(String datasourceName, SchemaVersionValue value) {
         var startTime = System.currentTimeMillis();
 
         emitMigrationStarted(datasourceName, value);
 
         return updateStatus(datasourceName, value, SchemaStatus.MIGRATING).flatMap(_ -> resolveAndParseMigrations(datasourceName,
-                                                                                                                  value))
+                                                                                                                  value).timeout(schemaManager.policy()
+                                                                                                                                              .migrationTimeout()))
                            .flatMap(_ -> markCompleted(datasourceName, value, startTime))
-                           .onFailure(cause -> handleMigrationFailure(datasourceName, value, cause));
+                           .mapError(cause -> handleMigrationFailure(datasourceName, value, cause));
     }
 
     private void emitMigrationStarted(String datasourceName, SchemaVersionValue value) {
@@ -210,7 +575,7 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
                                                                             self)));
     }
 
-    private void handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
+    private Cause handleMigrationFailure(String datasourceName, SchemaVersionValue value, Cause cause) {
         var classification = classifyFailure(cause);
         var attemptNumber = value.attemptCount() + 1;
         var artifactCoords = Option.option(value.artifactCoords()).or("");
@@ -220,6 +585,8 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         } else {
             emitPermanentFailure(datasourceName, value, cause, classification, attemptNumber, artifactCoords);
         }
+
+        return cause;
     }
 
     private void scheduleRetry(String datasourceName,
@@ -258,7 +625,9 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         updateStatusWithAttempt(datasourceName, value, SchemaStatus.PENDING, attemptNumber).onFailure(c -> log.error("Failed to update retry status for '{}': {}",
                                                                                                                      datasourceName,
                                                                                                                      c.message()));
-        SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
+        var future = SharedScheduler.schedule(() -> migrateIfNeeded(datasourceName), timeSpan(nextRetryMs).millis());
+
+        scheduledRetries.put(datasourceName, future);
     }
 
     private void emitPermanentFailure(String datasourceName,
@@ -299,6 +668,12 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         if (cause instanceof SchemaError.LockAcquisitionFailed) {
             return FailureClassification.TRANSIENT;
         }
+        // #1927: resolution no longer falls through to the next source when a configured repository merely could not answer; it
+        // ends as ArtifactUnavailable, which is an outage, not an absence, so the existing backoff retries it (a genuine
+        // ArtifactNotFound stays unclassified, i.e. permanent).
+        if (cause instanceof SliceLoadingFailure.Intermittent.ArtifactUnavailable) {
+            return FailureClassification.TRANSIENT;
+        }
 
         if (cause instanceof SchemaError.MigrationFailed) {
             return FailureClassification.PERMANENT;
@@ -315,6 +690,14 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         if (cause instanceof SchemaError.MigrationSetUnavailable) {
             return FailureClassification.PERMANENT;
         }
+        // #760/#724 review round 2 item c: a timed-out attempt (Promise.timeout() on
+        // resolveAndParseMigrations, bounded by SchemaPolicy#migrationTimeout) is classified explicitly
+        // rather than left to the UNKNOWN fallthrough below — both already skip retry and reach
+        // emitPermanentFailure/SchemaStatus.FAILED, but naming it PERMANENT here makes the timeout path
+        // directly unit-testable and self-documenting instead of relying on fallthrough behavior.
+        if (cause instanceof CoreError.Timeout) {
+            return FailureClassification.PERMANENT;
+        }
 
         return FailureClassification.UNKNOWN;
     }
@@ -329,47 +712,251 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         return BACKOFF_BASE_MS * multiplier;
     }
 
-    private void releaseLockSilently(String datasourceName) {
-        releaseLock(datasourceName).onFailure(c -> log.error("Failed to release lock for '{}': {}",
-                                                             datasourceName,
-                                                             c.message()));
+    private void releaseLockSilently(String datasourceName, Object attemptToken) {
+        releaseLock(attemptToken).onFailure(c -> log.error("Failed to release lock for '{}': {}",
+                                                           datasourceName,
+                                                           c.message()));
     }
 
-    private static final Cause LOCK_HELD = Causes.cause("Schema migration lock held — skipping duplicate");
+    private final ConcurrentHashMap<String, Object> inFlightMigrations = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ScheduledFuture<?>> scheduledRetries = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Object, Lease> leases = new ConcurrentHashMap<>();
 
-    private final java.util.Set<String> inFlightMigrations = ConcurrentHashMap.newKeySet();
-
-    private Promise<Unit> acquireLock(String datasourceName) {
-        if (!inFlightMigrations.add(datasourceName)) {
-            return LOCK_HELD.promise();
+    /// Single-flight fence across BOTH dispatch paths (the backoff timer in [#scheduleRetry] and any
+    /// external re-dispatch — manual retry route, rebuild recovery). `inFlightMigrations` alone only
+    /// covers the window an attempt is actually running; once a failed attempt releases it, a stale,
+    /// already-scheduled backoff timer and a fresh external dispatch can both later acquire it in
+    /// sequence, redundantly re-running the same migration scripts (#760/#724 review, BLOCKING 2).
+    /// Cancelling only AFTER the fence is claimed — not on every call — matters: `scheduleRetry`'s own
+    /// KV status write can re-enter here while attempt N is still fenced, and that re-entrant call must
+    /// fail fast on the fence without ever touching the retry it is itself part of.
+    ///
+    /// #766: the KV claim is a compare-and-put, not a read-then-write. The fence above is per
+    /// orchestrator INSTANCE and serialises nothing across nodes, and two nodes that both read the lock
+    /// free (absent or expired) before either write commits used to both proceed and duplicate-key
+    /// `aether_schema_history`. `SchemaMigrationLockValue` is [VersionFenced]: the claim carries the
+    /// committed value's successor version (`FIRST_VERSION` against an absent key), the applier
+    /// rejects any other, and — because a rejected write is silent — the acquirer confirms by
+    /// re-reading the committed value after its apply resolves and comparing it to what it wrote.
+    /// Exactly one of two racing claims survives that comparison.
+    ///
+    /// #760/#724 review round 3 BLOCKING 1: `inFlightMigrations` maps to a per-attempt token, not a
+    /// bare presence marker, so every release (`finalizeAttempt`, the held-lock short-circuit below,
+    /// and [#releaseFenceOnLockFailure]) is a `remove(key, token)` compare-and-remove — an attempt can
+    /// only ever clear the ONE fence entry it itself claimed, never a later attempt's. That matters here
+    /// specifically because the lock Put below is now bounded by a timeout: a lock write that fails or
+    /// never settles must still release the fence, and doing so unconditionally (bare `remove(key)`)
+    /// would risk tearing down a fresh attempt's fence if that cleanup ever ran late.
+    private Promise<Unit> acquireLock(String datasourceName, Object attemptToken) {
+        if (inFlightMigrations.putIfAbsent(datasourceName, attemptToken) != null) {
+            return SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise();
         }
 
+        cancelScheduledRetry(datasourceName);
         var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
+        var committed = committedLock(lockKey);
 
-        if (isLockHeld(lockKey)) {
-            inFlightMigrations.remove(datasourceName);
+        if (committed.filter(lock -> lock.expiresAt() > timing.clock()
+                                                              .getAsLong()).isPresent()) {
+            inFlightMigrations.remove(datasourceName, attemptToken);
 
-            return LOCK_HELD.promise();
+            return SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise();
         }
 
-        var lockValue = SchemaMigrationLockValue.schemaMigrationLockValue(datasourceName, self, LOCK_TTL_MS);
+        var now = timing.clock().getAsLong();
+        var lockValue = new SchemaMigrationLockValue(datasourceName,
+                                                     self,
+                                                     now,
+                                                     now + timing.ttlMs(),
+                                                     committed.map(SchemaMigrationLockValue::nextVersion)
+                                                              .or(SchemaMigrationLockValue.FIRST_VERSION));
         KVCommand<AetherKey> command = new Put<>(lockKey, lockValue);
-
+        // #760/#724 review round 3 BLOCKING 1: bounded the same way as the migration itself
+        // (schemaManager.policy().migrationTimeout(), read once per attempt) — before this, a lock Put
+        // that failed or never settled left `inFlightMigrations` claimed forever, since `finalizeAttempt`
+        // (the only release site) is nested inside THIS call's success branch and never runs on its
+        // failure. `mapError` is used, not `onFailure`/`onResultRun`, for the same DEPENDENT-ordering
+        // reason as `handleMigrationFailure` above: an immediate external retry reacting to this
+        // failure must see the fence already released, not race an async cleanup callback.
         return cluster.apply(List.of(command))
-                      .mapToUnit();
+                      .timeout(schemaManager.policy().migrationTimeout())
+                      .flatMap(_ -> confirmLockClaim(datasourceName, lockKey, lockValue))
+                      .map(_ -> startLease(attemptToken, lockKey, lockValue))
+                      .mapError(cause -> releaseFenceOnLockFailure(datasourceName, attemptToken, cause));
     }
 
-    private boolean isLockHeld(SchemaMigrationLockKey lockKey) {
+    /// The claim landed iff the committed value IS the one this attempt wrote (the applier drops a
+    /// fenced-out write without a result the submitter can attribute — see [VersionFenced]). An
+    /// absent key also fails here: the winner may already have released by the time the loser reads.
+    private Promise<Unit> confirmLockClaim(String datasourceName,
+                                           SchemaMigrationLockKey lockKey,
+                                           SchemaMigrationLockValue lockValue) {
+        return committedLock(lockKey).filter(lockValue::equals)
+                            .map(_ -> Promise.unitPromise())
+                            .or(() -> SchemaError.LockAcquisitionFailed.lockAcquisitionFailed(datasourceName).promise());
+    }
+
+    private Cause releaseFenceOnLockFailure(String datasourceName, Object attemptToken, Cause cause) {
+        inFlightMigrations.remove(datasourceName, attemptToken);
+
+        return cause;
+    }
+
+    private void cancelScheduledRetry(String datasourceName) {
+        Option.option(scheduledRetries.remove(datasourceName)).onPresent(SchemaOrchestratorServiceInstance::cancelFuture);
+    }
+
+    private static void cancelFuture(ScheduledFuture<?> future) {
+        future.cancel(false);
+    }
+
+    private Option<SchemaMigrationLockValue> committedLock(SchemaMigrationLockKey lockKey) {
         return kvStore.get(lockKey)
                       .filter(SchemaMigrationLockValue.class::isInstance)
-                      .map(SchemaMigrationLockValue.class::cast)
-                      .filter(lock -> !lock.isExpired())
-                      .isPresent();
+                      .map(SchemaMigrationLockValue.class::cast);
     }
 
-    private Promise<Unit> releaseLock(String datasourceName) {
-        var lockKey = SchemaMigrationLockKey.schemaMigrationLockKey(datasourceName);
-        KVCommand<AetherKey> command = new Remove<>(lockKey);
+    /// #806: the lease of ONE attempt, keyed by its token (never by datasource: a late `finalizeAttempt`
+    /// of a failed attempt must not stop the renewal of a later attempt that has since claimed the same
+    /// datasource). The lock's version chain NEVER restarts — release is a tombstone write, not a Remove,
+    /// and a bare Remove is refused ([WitnessedRemoval]) — so every value this attempt ever writes carries
+    /// its claim's `heldBy` and `acquiredAt` and a version at or above the claim's, and no other claim can
+    /// match all three. That makes ownership a property of the committed value alone: a renewal Put that
+    /// timed out and lands late is still recognised, and one landing after a successor's claim is fenced
+    /// out by version. The monitor serialises renewal start against release so a release never reads
+    /// `renewing` between a renewal's check of `released` and its publication of the Put.
+    private static final class Lease {
+        final SchemaMigrationLockKey key;
+        final SchemaMigrationLockValue claimed;
+        boolean released;
+        boolean lost;
+        Runnable next;
+        Promise<Unit> renewing = Promise.unitPromise();
+
+        Lease(SchemaMigrationLockKey key, SchemaMigrationLockValue claimed) {
+            this.key = key;
+            this.claimed = claimed;
+        }
+
+        boolean owns(SchemaMigrationLockValue committed) {
+            return committed.heldBy()
+                            .equals(claimed.heldBy())
+                   && committed.acquiredAt() == claimed.acquiredAt()
+                   && committed.lockVersion() >= claimed.lockVersion();
+        }
+    }
+
+    private Unit startLease(Object attemptToken, SchemaMigrationLockKey lockKey, SchemaMigrationLockValue claimed) {
+        var lease = new Lease(lockKey, claimed);
+
+        leases.put(attemptToken, lease);
+        scheduleRenewal(lease);
+
+        return unit();
+    }
+
+    private void scheduleRenewal(Lease lease) {
+        synchronized (lease) {
+            if (!lease.released && !lease.lost) {
+                lease.next = timing.scheduler().schedule(() -> renew(lease), timing.ttlMs() / 3);
+            }
+        }
+    }
+
+    private void renew(Lease lease) {
+        synchronized (lease) {
+            if (lease.released) {
+                return;
+            }
+
+            lease.renewing = renewalPut(lease).fold(_ -> rescheduleRenewal(lease));
+        }
+    }
+
+    /// DEPENDENT, not `onResultRun`: the next tick is registered before the renewal's promise settles, so
+    /// a release waiting on that promise never races a tick that is about to be scheduled.
+    private Promise<Unit> rescheduleRenewal(Lease lease) {
+        scheduleRenewal(lease);
+
+        return Promise.unitPromise();
+    }
+
+    /// One owner-fenced renewal: a Put of the next version in the chain, built on the committed value and
+    /// sent only while that value is this attempt's own. Never fails — a Put that errors or times out is
+    /// retried from whatever is committed at the next tick. A committed value this attempt did not write
+    /// means a successor took the lock after the lease lapsed: the attempt keeps running — a script cannot
+    /// be recalled from the database — but stops renewing, says so, and writes no release.
+    private Promise<Unit> renewalPut(Lease lease) {
+        var committed = committedLock(lease.key).filter(lease::owns);
+
+        if (committed.isEmpty()) {
+            markLost(lease, committedLock(lease.key));
+
+            return Promise.unitPromise();
+        }
+
+        var renewed = committed.map(current -> successor(current,
+                                                         timing.clock().getAsLong() + timing.ttlMs()))
+                               .unwrap();
+        KVCommand<AetherKey> command = new Put<>(lease.key, renewed);
+
+        return cluster.apply(List.of(command))
+                      .timeout(timeSpan(timing.renewalTimeoutMs()).millis())
+                      .fold(_ -> Promise.unitPromise());
+    }
+
+    private SchemaMigrationLockValue successor(SchemaMigrationLockValue current, long expiresAt) {
+        return new SchemaMigrationLockValue(current.datasourceName(),
+                                            self,
+                                            current.acquiredAt(),
+                                            expiresAt,
+                                            current.nextVersion());
+    }
+
+    private void markLost(Lease lease, Option<SchemaMigrationLockValue> committed) {
+        synchronized (lease) {
+            lease.lost = true;
+        }
+
+        log.error("Schema migration lease for '{}' was lost: committed lock is {} — this attempt keeps running but no longer holds the lock",
+                  lease.key.datasourceName(),
+                  committed.map(Object::toString).or("absent"));
+    }
+
+    /// Release is a fenced TOMBSTONE: the next version in the chain with `expiresAt = 0`, written only
+    /// while the committed value is this attempt's own. Never a Remove: a removed key restarts its chain
+    /// at `FIRST_VERSION`, and a renewal of this attempt still in flight would then land as the successor
+    /// of the NEXT holder's first claim and overwrite it. It waits for an in-flight renewal first, so that
+    /// renewal cannot land after the tombstone and leave a live lock nobody renews. The attempt's lease is
+    /// looked up by token; an absent lease (already released, or the claim never confirmed) is a no-op,
+    /// which also makes a second release harmless.
+    private Promise<Unit> releaseLock(Object attemptToken) {
+        return Option.option(leases.remove(attemptToken))
+                     .map(this::releaseLease)
+                     .or(Promise::unitPromise);
+    }
+
+    private Promise<Unit> releaseLease(Lease lease) {
+        Promise<Unit> inFlight;
+
+        synchronized (lease) {
+            lease.released = true;
+            Option.option(lease.next).onPresent(Runnable::run);
+            inFlight = lease.renewing;
+        }
+
+        return inFlight.fold(_ -> writeTombstone(lease));
+    }
+
+    private Promise<Unit> writeTombstone(Lease lease) {
+        return committedLock(lease.key).filter(lease::owns)
+                            .map(current -> putLock(lease.key,
+                                                    successor(current, 0L)))
+                            .or(Promise::unitPromise);
+    }
+
+    private Promise<Unit> putLock(SchemaMigrationLockKey lockKey, SchemaMigrationLockValue value) {
+        KVCommand<AetherKey> command = new Put<>(lockKey, value);
 
         return cluster.apply(List.of(command))
                       .mapToUnit();
@@ -426,11 +1013,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
-        return repository.locate(artifact, "blueprint")
-                         .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)
-                         .orElse(() -> repository.locate(artifact)
-                                                 .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes))
-                         .orElse(() -> artifactStore.resolve(artifact));
+        return Repository.orElseWhenAbsent(Repository.orElseWhenAbsent(repository.locate(artifact, "blueprint")
+                                                                                 .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes),
+                                                                       () -> repository.locate(artifact)
+                                                                                       .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)),
+                                           () -> artifactStore.resolve(artifact));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -546,4 +1133,28 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
 
         return updateStatus(datasourceName, value, SchemaStatus.COMPLETED);
     }
+}
+
+/// #806: the lease's sources of time, injectable so a test steps them by hand instead of sleeping.
+/// `renewalTimeoutMs` bounds one renewal Put; a renewal that exceeds it is abandoned by its submitter but
+/// may still be decided later, which the ownership rule on [SchemaOrchestratorServiceInstance] tolerates.
+record LeaseTiming(long ttlMs, long renewalTimeoutMs, LongSupplier clock, LeaseScheduler scheduler) {
+    static LeaseTiming standard() {
+        return withTtl(SchemaOrchestratorService.LOCK_TTL_MS);
+    }
+
+    static LeaseTiming withTtl(long ttlMs) {
+        return new LeaseTiming(ttlMs, ttlMs, System::currentTimeMillis, LeaseTiming::schedule);
+    }
+
+    private static Runnable schedule(Runnable task, long delayMs) {
+        var future = SharedScheduler.schedule(task, timeSpan(delayMs).millis());
+
+        return () -> future.cancel(false);
+    }
+}
+
+/// Runs `task` once after `delayMs`; the returned handle cancels it.
+interface LeaseScheduler {
+    Runnable schedule(Runnable task, long delayMs);
 }

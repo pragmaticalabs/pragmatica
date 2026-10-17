@@ -27,9 +27,11 @@ import org.pragmatica.lang.Contract;
 ///   `onAllDrained` callback (if any) fires exactly once. This is the signal the
 ///   `SelfDrainCoordinator` uses to short-circuit the `inflightGrace` timeout and exit
 ///   the JVM as soon as quiescence is reached.
-public final class InFlightRequestTracker {
-    private final AtomicInteger counter = new AtomicInteger(0);
-    private final AtomicBoolean acceptingNewWork = new AtomicBoolean(true);
+public final class InFlightRequestTracker implements org.pragmatica.aether.invoke.InvocationAdmission {
+    private static final int CLOSED = Integer.MIN_VALUE;
+    private static final int COUNT = Integer.MAX_VALUE;
+
+    private final AtomicInteger state = new AtomicInteger();
     private final AtomicBoolean drainCallbackFired = new AtomicBoolean(false);
     private final AtomicReference<Runnable> onAllDrained = new AtomicReference<>();
 
@@ -45,43 +47,45 @@ public final class InFlightRequestTracker {
     /// was admitted should call `tryEnter()` instead.
     @Contract
     public void enter() {
-        if (!acceptingNewWork.get()) {
-            return;
-        }
-
-        counter.incrementAndGet();
+        tryEnter();
     }
 
     /// Gate-aware entry: returns `true` if the request was admitted and the counter
     /// incremented; returns `false` if the node has begun self-draining and the
     /// caller MUST reject the request (HTTP 503, abort handler).
     public boolean tryEnter() {
-        if (!acceptingNewWork.get()) {
-            return false;
+        while (true) {
+            var current = state.get();
+
+            if ((current & CLOSED) != 0 || (current & COUNT) == COUNT) {
+                return false;
+            }
+
+            if (state.compareAndSet(current, current + 1)) {
+                return true;
+            }
         }
-
-        counter.incrementAndGet();
-
-        return true;
     }
 
     @Contract
     public void exit() {
-        var updated = counter.updateAndGet(v -> Math.max(0, v - 1));
+        var updated = state.updateAndGet(value -> (value & COUNT) == 0
+                                                  ? value
+                                                  : value - 1);
 
-        if (updated == 0 && !acceptingNewWork.get()) {
+        if (updated == CLOSED) {
             fireDrainCallbackIfPending();
         }
     }
 
     public int count() {
-        return counter.get();
+        return state.get() & COUNT;
     }
 
     /// Returns `true` when the node is admitting new requests; `false` after
     /// `setAcceptingNewWork(false)` has been called by the self-drain coordinator.
     public boolean isAcceptingNewWork() {
-        return acceptingNewWork.get();
+        return (state.get() & CLOSED) == 0;
     }
 
     /// Flip the gate. `false` is one-way for self-drain (the coordinator never re-opens
@@ -89,8 +93,10 @@ public final class InFlightRequestTracker {
     /// for tests and operator-initiated graceful drain flows that may want to abort.
     @Contract
     public void setAcceptingNewWork(boolean accepting) {
-        acceptingNewWork.set(accepting);
-        if (!accepting && counter.get() == 0) {
+        state.updateAndGet(value -> accepting
+                                    ? value & COUNT
+                                    : value | CLOSED);
+        if (!accepting && count() == 0) {
             fireDrainCallbackIfPending();
         }
     }
@@ -101,7 +107,7 @@ public final class InFlightRequestTracker {
     @Contract
     public void onAllDrained(Runnable callback) {
         onAllDrained.set(callback);
-        if (!acceptingNewWork.get() && counter.get() == 0) {
+        if (!isAcceptingNewWork() && count() == 0) {
             fireDrainCallbackIfPending();
         }
     }

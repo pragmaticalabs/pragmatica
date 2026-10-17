@@ -33,6 +33,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -84,6 +85,7 @@ class ClusterTopologyManagerZoneRotationTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
             zones = ["fsn1", "nbg1", "hel1"]
 
@@ -108,13 +110,7 @@ class ClusterTopologyManagerZoneRotationTest {
         observer = TopologyObserver.topologyObserver(config, quietRouter(), snapshotSource).unwrap();
         lifecycleManager = new RecordingLifecycleManager();
         clusterStore = new RecordingClusterStore();
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                     timeSpan(1).millis(),
-                                                     AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                     AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                     AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                                     timeSpan(0).millis())
-                                     .unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap();
         ctm = ClusterTopologyManager.clusterTopologyManager(observer,
                                                             lifecycleManager,
                                                             autoHeal,
@@ -123,6 +119,77 @@ class ClusterTopologyManagerZoneRotationTest {
                                                             clusterStore::current,
                                                             clusterStore::apply,
                                                             () -> ClusterPhase.NORMAL);
+    }
+
+    @Test
+    void realSourceAndCapacityChainRotatesOnlyAfterExplicitCapacityRefusal() {
+        verifyRealSourceFallback(false);
+    }
+
+    @Test
+    void realSourceAndCapacityChainRetainsAmbiguousCreateWithoutFallback() {
+        verifyRealSourceFallback(true);
+    }
+
+    private void verifyRealSourceFallback(boolean ambiguous) {
+        var attempts = new java.util.ArrayList<org.pragmatica.aether.environment.ProvisionRequest>();
+        var kv = new org.pragmatica.cluster.state.kvstore.KVStore<org.pragmatica.cluster.state.kvstore.StructuredKey, Object>(quietRouter(),
+            new org.pragmatica.serialization.Serializer() {
+                @Override public <T> void write(io.netty.buffer.ByteBuf buffer, T value) {}
+            }, new org.pragmatica.serialization.Deserializer() {
+                @Override public <T> T read(io.netty.buffer.ByteBuf buffer) { return null; }
+            });
+        var authority = new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1);
+        kv.process(kv.createBatch(List.of(new KVCommand.Put<>(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, authority))));
+        var provider = new org.pragmatica.aether.environment.ComputeProvider() {
+            @Override public Promise<InstanceInfo> createFrom(org.pragmatica.aether.environment.ProvisionRequest request) {
+                attempts.add(request);
+                var ledger = kv.getTyped(org.pragmatica.aether.slice.kvstore.AetherKey.CapacityLedgerKey.INSTANCE,
+                    org.pragmatica.aether.slice.kvstore.AetherValue.CapacityLedgerValue.class).unwrap();
+                assertThat(ledger.allocated()).isEqualTo(1);
+                assertThat(request.context().sourceName().value()).isEqualTo("eu-1");
+                if (request.zone().equals("fsn1")) {
+                    return ambiguous ? org.pragmatica.lang.utils.Causes.cause("create timed out after dispatch").promise()
+                        : EnvironmentError.capacityUnavailable("fsn1", new IllegalStateException("known capacity refusal")).promise();
+                }
+                return Promise.success(new InstanceInfo(InstanceId.instanceId("native-nbg1").unwrap(), InstanceStatus.RUNNING,
+                    List.of("127.0.0.1"), InstanceType.ON_DEMAND, Map.of(), request.context().nodeId(), Option.some(request.zone())));
+            }
+            @Override public Promise<Unit> terminate(InstanceId id) { return Promise.unitPromise(); }
+            @Override public Promise<List<InstanceInfo>> listInstances() { return Promise.success(List.of()); }
+            @Override public Promise<InstanceInfo> instanceStatus(InstanceId id) { return org.pragmatica.lang.utils.Causes.cause("unused").promise(); }
+        };
+        clusterStore.seedToml(MULTI_ZONE_TOML
+            .replace("count = 3", "count = 3\ninstance_type = \"small\"\nimage = \"test-image\""));
+        kv.process(kv.createBatch(List.of(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, clusterStore.current().unwrap()))));
+        var registry = SourceComputeRegistry.sourceComputeRegistry(clusterStore::current,
+            config -> org.pragmatica.lang.Result.success(org.pragmatica.aether.environment.EnvironmentIntegration.withCompute(provider)));
+        var delegate = NodeLifecycleManager.nodeLifecycleManager(registry,
+            _ -> org.pragmatica.lang.Result.success(org.pragmatica.aether.environment.SourceName.sourceName("eu-1").unwrap()),
+            Option.none(), Option.none());
+        // The generic store contains framework LeaderKey alongside AetherKey values.
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        var typed = (org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>) (Object) kv;
+        var capacity = CapacityControlledLifecycle.capacityControlledLifecycle(delegate, SELF, typed,
+            commands -> Promise.success(typed.process(typed.createBatch(commands))), () -> true, () -> 1);
+        var manager = ClusterTopologyManager.clusterTopologyManager(observer, capacity,
+            AutoHealConfig.autoHealConfig(timeSpan(1).millis(), AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT).unwrap(),
+            DeploymentMap.deploymentMap(), snapshotSource, clusterStore::current, clusterStore::apply, () -> ClusterPhase.NORMAL);
+        manager.activate();
+        var target = nodeId("real-fallback-target").unwrap();
+        var outcome = manager.provisionReplacement(target, Option.some(DEAD_PEER), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertThat(attempts.stream().map(org.pragmatica.aether.environment.ProvisionRequest::zone).toList())
+            .as("actual provisioning result: %s", outcome)
+            .containsExactlyElementsOf(ambiguous ? List.of("fsn1") : List.of("fsn1", "nbg1"));
+        var reservation = typed.getTyped(new AetherKey.CapacityReservationKey(target),
+            org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue.class).unwrap();
+        assertThat(reservation.sourceName()).isEqualTo("eu-1");
+        assertThat(reservation.phase()).isEqualTo(ambiguous
+            ? org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase.DISPATCHED
+            : org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase.OBSERVED);
+        assertThat(outcome.isSuccess()).isEqualTo(!ambiguous);
+        outcome.onSuccess(disposition -> assertThat(disposition).isInstanceOf(ProvisionDisposition.Dispatched.class));
+        manager.deactivate();
     }
 
     @Nested
@@ -196,6 +263,9 @@ class ClusterTopologyManagerZoneRotationTest {
             result.onFailure(cause -> assertThat(cause.message())
                     .as("the exhaustion cause names the zones that were tried")
                     .contains("fsn1", "nbg1", "hel1"));
+            result.onFailure(cause -> assertThat(cause)
+                    .as("#1111: every zone refused for capacity, so the leader can tell that no instance was made")
+                    .isInstanceOf(EnvironmentError.CapacityUnavailable.class));
             assertThat(lifecycleManager.attemptedZones())
                     .as("each zone attempted exactly once in order, then bail (no infinite loop)")
                     .containsExactly("fsn1", "nbg1", "hel1");
@@ -225,8 +295,8 @@ class ClusterTopologyManagerZoneRotationTest {
         }
 
         @Test
-        void provisionReplacement_blankToml_attemptsOnce() {
-            clusterStore.seedToml("");
+        void provisionReplacement_bootstrapSeed_attemptsOnce() {
+            clusterStore.seedBootstrapSeed();
             ctm.activate();
 
             var result = ctm.provisionReplacement(nodeId("node-r5").unwrap(),
@@ -259,6 +329,7 @@ class ClusterTopologyManagerZoneRotationTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
@@ -287,6 +358,14 @@ class ClusterTopologyManagerZoneRotationTest {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
 
         void seedToml(String toml) {
+            seed(Option.some(toml));
+        }
+
+        void seedBootstrapSeed() {
+            seed(Option.none());
+        }
+
+        private void seed(Option<String> toml) {
             current.set(Option.some(new ClusterConfigValue(toml, "prod-cluster", "1.0.0", coreTopology(5), 3, 9, "cloud", 1L, System.currentTimeMillis())));
         }
 
@@ -355,10 +434,6 @@ class ClusterTopologyManagerZoneRotationTest {
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
-            return Promise.success(Unit.unit());
-        }
-
-        @Override public Promise<Unit> restartNode(NodeId nodeId) {
             return Promise.success(Unit.unit());
         }
 

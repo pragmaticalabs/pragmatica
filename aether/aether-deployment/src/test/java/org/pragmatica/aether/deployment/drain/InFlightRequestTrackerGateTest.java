@@ -5,6 +5,8 @@
 package org.pragmatica.aether.deployment.drain;
 
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.pragmatica.aether.invoke.InvocationAdmission;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -22,6 +24,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///   * Toggle-back to `accepting=true` (operator abort) re-opens the gate but does NOT
 ///     re-arm the drained callback.
 class InFlightRequestTrackerGateTest {
+    @Test
+    void projectionFreshnessCannotReopenDrainingTrackerOrLoseAdmittedCalls() {
+        var tracker = InFlightRequestTracker.inFlightRequestTracker();
+        var fresh = new AtomicBoolean(false);
+        var admission = InvocationAdmission.gated(tracker, fresh::get);
+        assertThat(admission.tryEnter()).isFalse();
+        assertThat(tracker.count()).isZero();
+        fresh.set(true);
+        assertThat(admission.tryEnter()).isTrue();
+        fresh.set(false);
+        assertThat(admission.tryEnter()).isFalse();
+        assertThat(tracker.count()).isEqualTo(1);
+        tracker.setAcceptingNewWork(false);
+        fresh.set(true);
+        assertThat(admission.tryEnter()).isFalse();
+        admission.exit();
+        assertThat(tracker.count()).isZero();
+        assertThat(tracker.isAcceptingNewWork()).isFalse();
+    }
+
     @Nested class GateSemantics {
         @Test
         void newTracker_acceptsWork() {

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.environment.azure;
 
@@ -22,14 +21,14 @@ import java.util.Queue;
 /// Test stub for AzureClient that returns canned responses and captures arguments.
 final class TestAzureClient implements AzureClient {
     Promise<VirtualMachine> createVmResponse = Promise.success(
-        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null)));
+        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null), java.util.List.of()));
     Promise<Unit> deleteVmResponse = Promise.success(Unit.unit());
     Promise<VirtualMachine> getVmResponse = Promise.success(
-        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null)));
+        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null), java.util.List.of()));
     Promise<List<VirtualMachine>> listVmsResponse = Promise.success(List.of());
     Promise<Unit> restartVmResponse = Promise.success(Unit.unit());
     Promise<VirtualMachine> updateTagsResponse = Promise.success(
-        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null)));
+        new VirtualMachine("id", "default", "eastus", Map.of(), new VmProperties("vmid", "Succeeded", null), java.util.List.of()));
     Promise<AzureLoadBalancer> getLbResponse = Promise.success(
         new AzureLoadBalancer("lb-id", "test-lb", new AzureLoadBalancer.LbProperties(List.of())));
     Promise<AzureLoadBalancer> updateLbBackendPoolResponse = Promise.success(

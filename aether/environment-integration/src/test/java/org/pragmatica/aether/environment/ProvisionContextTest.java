@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import org.junit.jupiter.api.Nested;
@@ -167,5 +166,17 @@ class ProvisionContextTest {
 
             assertThat(a).isNotEqualTo(b);
         }
+    }
+
+    /// #1027: a context that carries a node id is honoured as is; only an empty context mints. Killing "resolveNodeId ignores the context id" here, in the
+    /// module that owns it, instead of only in a provider suite.
+    @Test
+    void resolveNodeId_honoursTheContextId_andMintsOnlyWhenAbsent() {
+        var withId = ProvisionContext.forBootstrap(clusterName("dock").unwrap(), "core", sourceNameOrDefault("s"), "aether-dock-node-planned");
+        var withoutId = ProvisionContext.provisionContext(maybeClusterName("dock"), "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+
+        assertThat(withId.resolveNodeId()).isEqualTo("aether-dock-node-planned");
+        assertThat(withoutId.resolveNodeId()).startsWith("aether-dock-node-");
+        assertThat(withoutId.resolveNodeId()).as("a minted id is fresh each time").isNotEqualTo(withoutId.resolveNodeId());
     }
 }

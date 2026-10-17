@@ -13,7 +13,8 @@ package org.pragmatica.aether.deployment.cluster;
 /// boots). That accounting is only correct when a VM is genuinely coming. Three outcomes exist:
 ///
 /// - [`#dispatched`] — a real boot was initiated; a VM is coming, so the reconciler KEEPS the
-///   in-flight placeholder until membership presence (or the TTL sweep) clears it.
+///   in-flight placeholder until membership presence clears it — or the provider reports the instance
+///   failed or deleted, or its per-source ceiling passes (#1049).
 /// - [`Deferred`] — NO boot happened (the provisioning circuit is open, or no healthy peers were
 ///   visible to seed PEERS). Nothing is coming, so the reconciler must REMOVE the placeholder to
 ///   keep the raw deficit visible — otherwise a phantom placeholder masks the deficit and wedges

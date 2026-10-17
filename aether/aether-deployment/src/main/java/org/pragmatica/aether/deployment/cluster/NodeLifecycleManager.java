@@ -6,16 +6,21 @@ package org.pragmatica.aether.deployment.cluster;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionSpec;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import org.slf4j.Logger;
@@ -26,8 +31,12 @@ public interface NodeLifecycleManager {
     Promise<ActionResult> executeAction(NodeAction action);
     Promise<InstanceInfo> provisionNode(ProvisionSpec spec);
     Promise<Unit> terminateNode(NodeId nodeId);
-    Promise<Unit> restartNode(NodeId nodeId);
     boolean isCloudManaged();
+
+    /// Retry accounting for durable no-create evidence after its placement operation consumed it.
+    default Promise<Unit> reconcileRefusals() {
+        return Promise.unitPromise();
+    }
 
     /// RFC-0017 stage 5 — the worker reconciler's ACTUAL-inventory read: instances matching the
     /// upper-layer tag filter (providers translate key conventions at their boundary, see
@@ -38,8 +47,133 @@ public interface NodeLifecycleManager {
         return EnvironmentError.operationNotSupported("listInstances: no ComputeProvider").promise();
     }
 
+    /// #1049 — the instances the provider lists for `nodeId` (selected by the node-id tag every provider
+    /// stamps at create). Default refusal for the same reason as [#listInstances]: a fake that answered
+    /// an empty list would read as "the replacement was deleted" and trigger a duplicate mint.
+    default Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
+        return EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise();
+    }
+
+    default Promise<List<InstanceInfo>> listInstances(Map<String, String> filter,
+                                                      SourceName source,
+                                                      String expectedBinding) {
+        return EnvironmentError.operationNotSupported("Bound source fleet inventory unavailable").promise();
+    }
+
+    default Promise<InstanceInfo> provisionNode(ProvisionSpec spec, String expectedBinding) {
+        return EnvironmentError.operationNotSupported("Bound source provision unavailable").promise();
+    }
+
+    default Promise<Unit> terminateNode(NodeId node, SourceName source, String expectedBinding) {
+        return EnvironmentError.operationNotSupported("Bound source termination unavailable").promise();
+    }
+
+    default Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source, String expectedBinding) {
+        return EnvironmentError.operationNotSupported("Bound source inventory unavailable").promise();
+    }
+
+    /// The compute source that owns `nodeId`'s instance, when it is known without a committed reservation (a bootstrap node is placed
+    /// by its membership descriptor). Used by retirement reaps that start from a node id alone (#2062).
+    default Option<SourceName> sourceOf(NodeId nodeId) {
+        return Option.none();
+    }
+
+    /// True when `nodeId` was admitted by an EXTERNAL admission (#1543): an operator started it, so there is no provider instance of ours
+    /// to list or terminate and its capacity reservation carries no provider binding.
+    default boolean externalNode(NodeId nodeId) {
+        return false;
+    }
+
+    /// Returns the capacity an EXTERNAL node held (slot and reservation) once it has left the cluster. Idempotent; a node with no
+    /// reservation succeeds. Never a provider call.
+    default Promise<Unit> releaseExternal(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
+    /// A node that joins again while its EXTERNAL reservation is present is a new incarnation: its admission marker is bumped, so a [#releaseExternal] of
+    /// the previous incarnation that read the marker earlier cannot commit and delete what the new incarnation holds. If that release committed first, the
+    /// reservation is gone and the node is admitted again, as a new admission (an expected-absent reservation and, when counted, its slot); a node the
+    /// ledger cannot count again fails with [ReadmissionRefused]. A node with no EXTERNAL reservation succeeds. Never a provider call.
+    default Promise<Unit> readmitExternal(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
+    /// Deletes the admission marker of a node that is gone for good (decommissioned, or retired by a replacement): it holds the reservation the last EXTERNAL
+    /// release deleted, so that a rejoin could be admitted again from it. Kept until then, deleted when the node can no longer rejoin, so that a node that never
+    /// returns leaves nothing behind and a reused id cannot be admitted from a stale ticket. Idempotent; never a provider call.
+    default Promise<Unit> forgetAdmission(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
+    /// The node was retired by a replacement: its admission marker becomes a retirement tombstone naming the node that replaced it, so a later join of the same
+    /// identity is refused ([RetiredIdentityRejoined]) instead of being admitted again. Replaces the marker's ticket; idempotent; never a provider call.
+    default Promise<Unit> supersedeAdmission(NodeId nodeId, NodeId replacement) {
+        return Promise.unitPromise();
+    }
+
+    /// A superseded identity joined: it is refused and evicted, never admitted again.
+    record RetiredIdentityRejoined(String node, String replacement) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "node " + node + " was retired by a replacement (" + replacement + ") and its identity is superseded";
+        }
+    }
+
+    /// A node joined with no capacity reservation, no ticket and no tombstone: nothing is known to restore or to refuse. The manager decides whether that is
+    /// expected (a configured voter of the first formation) or an operator event.
+    record NoReservationOnJoin(String node) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "node " + node
+                 + " joined with no capacity reservation, no admission ticket and no retirement tombstone";
+        }
+    }
+
+    /// The re-admission of a node that joined again was refused (the ledger cannot count its slot): the node is not admitted and is to be evicted.
+    record ReadmissionRefused(String message) implements org.pragmatica.lang.Cause {}
+
+    default Result<String> sourceBinding(SourceName source) {
+        return EnvironmentError.operationNotSupported("Source identity binding unavailable").result();
+    }
+
     @Contract
     default void resetProvisionerState(Option<ClusterName> clusterName) {}
+
+    /// Source-aware construction. Node identity resolves only through authoritative placement,
+    /// while provisioning keeps the exact operation context supplied by the reconciler.
+    static NodeLifecycleManager nodeLifecycleManager(SourceComputeRegistry registry,
+                                                     Function<NodeId, Result<SourceName>> sourceForNode,
+                                                     Option<ClusterName> clusterName,
+                                                     Option<Integer> maxNodes) {
+        return new SourceNodeLifecycleManager(registry, sourceForNode, clusterName, maxNodes);
+    }
+
+    default Promise<Unit> terminateNode(NodeId nodeId, SourceName source) {
+        return terminateNode(nodeId);
+    }
+
+    default Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId, SourceName source) {
+        return instancesForNode(nodeId);
+    }
+
+    /// The instances the provider lists for `nodeId`, as a PURE READ (#2062: the operator clear asks before it commits, and a refused clear must leave
+    /// every reservation and the ledger exactly as they were). Unlike [#instancesForNode], an empty listing releases nothing and a non-empty one
+    /// observes nothing. Default: the same read, for a manager whose reads have no effects.
+    default Promise<List<InstanceInfo>> readInstancesForNode(NodeId nodeId, SourceName source) {
+        return instancesForNode(nodeId, source);
+    }
+
+    /// Returns the capacity the node's CONFIRMED reservation holds, after an operator's clear committed and every provider read showed no live instance of
+    /// the node. Idempotent; a node with no matching reservation succeeds. Never a provider call. Default: nothing to release.
+    default Promise<Unit> releaseAfterOperatorClear(NodeId nodeId, SourceName source) {
+        return Promise.unitPromise();
+    }
+
+    /// The provider's own read of ONE instance by its id (#2062: the operator clear checks the instance the operator names, as well as the node's labelled
+    /// instances). A read only: no reservation is observed or released. Default refusal, for the reason [#instancesForNode] has one.
+    default Promise<InstanceInfo> instanceStatus(InstanceId instanceId, SourceName source) {
+        return EnvironmentError.operationNotSupported("instanceStatus: no ComputeProvider").promise();
+    }
 
     /// Cap-less construction — no fleet bound is enforced. Retained for callers that provision
     /// against a non-cloud provider (Docker/forge), where an unbounded fleet is not a cost hazard.
@@ -74,13 +208,15 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     // (HetznerComputeProvider.labelsFor stamps `aether-cluster`). Counting on this tag is what
     // scopes the fleet cap to THIS cluster rather than everything in the cloud account.
     private static final String CLUSTER_TAG = "aether.cluster";
+    // The native spelling Hetzner, AWS, Azure and GCP stamp; Docker stamps the dotted CLUSTER_TAG. A lookup by node
+    // id returns instances carrying whichever the provider uses, so the ownership check reads both.
+    private static final String NATIVE_CLUSTER_TAG = "aether-cluster";
 
     @Override
     public Promise<ActionResult> executeAction(NodeAction action) {
         return switch (action) {
             case NodeAction.StartNode startNode -> provisionNode(startNode.spec()).map(ActionResult.NodeStarted::new);
             case NodeAction.StopNode stopNode -> terminateNode(stopNode.nodeId()).map(_ -> new ActionResult.NodeStopped(stopNode.nodeId()));
-            case NodeAction.RestartNode restartNode -> restartNode(restartNode.nodeId()).map(_ -> new ActionResult.NodeRestarted(restartNode.nodeId()));
             case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices").promise();
         };
     }
@@ -166,15 +302,23 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     }
 
     @Override
-    public Promise<Unit> terminateNode(NodeId nodeId) {
-        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("terminateNode: no ComputeProvider").promise(),
-                                    provider -> lookupAndTerminate(provider, nodeId));
+    public Promise<InstanceInfo> instanceStatus(InstanceId instanceId, SourceName source) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("instanceStatus: no ComputeProvider").promise(),
+                                    provider -> provider.instanceStatus(instanceId));
     }
 
     @Override
-    public Promise<Unit> restartNode(NodeId nodeId) {
-        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("restartNode: no ComputeProvider").promise(),
-                                    provider -> lookupAndRestart(provider, nodeId));
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("instancesForNode: no ComputeProvider").promise(),
+                                    provider -> provider.listInstances(Map.of(NODE_ID_TAG,
+                                                                              nodeId.id()))
+                                                        .map(this::ownInstances));
+    }
+
+    @Override
+    public Promise<Unit> terminateNode(NodeId nodeId) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("terminateNode: no ComputeProvider").promise(),
+                                    provider -> lookupAndTerminate(provider, nodeId));
     }
 
     @Override
@@ -191,19 +335,28 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     private Promise<Unit> lookupAndTerminate(ComputeProvider provider, NodeId nodeId) {
         return provider.listInstances(Map.of(NODE_ID_TAG,
                                              nodeId.id()))
+                       .map(this::ownInstances)
                        .flatMap(instances -> terminateMatchedInstance(provider, nodeId, instances))
                        .onFailure(cause -> log.warn("Failed to look up cloud instance for node {}: {}",
                                                     nodeId,
                                                     cause.message()));
     }
 
-    private Promise<Unit> lookupAndRestart(ComputeProvider provider, NodeId nodeId) {
-        return provider.listInstances(Map.of(NODE_ID_TAG,
-                                             nodeId.id()))
-                       .flatMap(instances -> restartMatchedInstance(provider, nodeId, instances))
-                       .onFailure(cause -> log.warn("Failed to look up cloud instance for restart of node {}: {}",
-                                                    nodeId,
-                                                    cause.message()));
+    /// #1804 — node ids such as `hetzner-eu-core-1` repeat across clusters in one cloud account, and every lookup by
+    /// node id (terminate, restart, instancesForNode) is by node id alone. Once this cluster's instance is gone, the only match left is another cluster's VM,
+    /// and the lookup would terminate it. An instance labelled for a DIFFERENT cluster is never this cluster's node;
+    /// one carrying no cluster label still matches, as before. Unscoped without a cluster name.
+    private List<InstanceInfo> ownInstances(List<InstanceInfo> instances) {
+        return clusterName.fold(() -> instances,
+                                name -> instances.stream()
+                                                 .filter(instance -> !labelledForOtherCluster(instance, name))
+                                                 .toList());
+    }
+
+    private static boolean labelledForOtherCluster(InstanceInfo instance, ClusterName name) {
+        return Stream.of(CLUSTER_TAG, NATIVE_CLUSTER_TAG)
+                     .flatMap(key -> Option.option(instance.tags().get(key)).stream())
+                     .anyMatch(label -> !label.equals(name.value()));
     }
 
     private Promise<Unit> terminateMatchedInstance(ComputeProvider provider,
@@ -219,23 +372,18 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
                                                     instanceId.value()));
         }
 
-        return logMismatch("terminate", nodeId, instances.size());
-    }
+        if (instances.isEmpty()) {
+            // Terminate is idempotent (#1050 R4 / S1): an instance that is already gone is the requested end
+            // state, so a repeat reap, or a replay racing a departure reap, completes quietly.
+            log.debug("terminate of {}: no cloud instance with tag {}={} — already gone, treated as done",
+                      nodeId.id(),
+                      NODE_ID_TAG,
+                      nodeId.id());
 
-    private Promise<Unit> restartMatchedInstance(ComputeProvider provider,
-                                                 NodeId nodeId,
-                                                 List<InstanceInfo> instances) {
-        if (instances.size() == 1) {
-            var instanceId = instances.getFirst().id();
-
-            log.info("Restarting cloud instance {} for node {}", instanceId.value(), nodeId);
-
-            return provider.restart(instanceId)
-                           .onSuccess(_ -> log.info("Cloud instance {} restarted successfully",
-                                                    instanceId.value()));
+            return Promise.unitPromise();
         }
 
-        return logMismatch("restart", nodeId, instances.size());
+        return logMismatch("terminate", nodeId, instances.size());
     }
 
     private static Promise<Unit> logMismatch(String operation, NodeId nodeId, int count) {
@@ -246,5 +394,171 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
         log.warn("{} of {} skipped: {}", operation, nodeId.id(), reason);
 
         return EnvironmentError.operationNotSupported(operation + ": " + reason).promise();
+    }
+}
+
+/// Explicit source routing never probes other providers to locate an instance. A missing binding is
+/// a typed failure, not permission to act through the local node's account.
+record SourceNodeLifecycleManager(SourceComputeRegistry registry,
+                                  Function<NodeId, Result<SourceName>> sourceForNode,
+                                  Option<ClusterName> clusterName,
+                                  Option<Integer> maxNodes) implements NodeLifecycleManager {
+    @Override
+    public Result<String> sourceBinding(SourceName source) {
+        return registry.binding(source);
+    }
+
+    @Override
+    public Option<SourceName> sourceOf(NodeId nodeId) {
+        // A node with no authoritative placement or descriptor source (a bootstrap node of the local harness) is reaped in the default
+        // source; the registry resolves that only for an explicitly local provider, so in a cloud it fails loudly (retried, then the
+        // unconfirmed-termination event) instead of acting through an account nobody named.
+        return Option.some(sourceForNode.apply(nodeId).or(SourceName.DEFAULT));
+    }
+
+    @Override
+    public Promise<InstanceInfo> provisionNode(ProvisionSpec spec, String expectedBinding) {
+        return forSource(spec.context().sourceName(),
+                         expectedBinding).async()
+                        .flatMap(manager -> manager.provisionNode(spec));
+    }
+
+    @Override
+    public Promise<Unit> terminateNode(NodeId node, SourceName source, String expectedBinding) {
+        return forSource(source, expectedBinding).async()
+                        .flatMap(manager -> manager.terminateNode(node));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source, String expectedBinding) {
+        return forSource(source, expectedBinding).async()
+                        .flatMap(manager -> manager.instancesForNode(node));
+    }
+
+    private Result<NodeLifecycleManager> forSource(SourceName source, String expectedBinding) {
+        return registry.resolve(source, expectedBinding)
+                       .map(provider -> NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
+                                                                                  clusterName,
+                                                                                  maxNodes));
+    }
+
+    private Result<NodeLifecycleManager> forSource(SourceName source) {
+        return registry.resolve(source)
+                       .map(provider -> NodeLifecycleManager.nodeLifecycleManager(Option.some(provider),
+                                                                                  clusterName,
+                                                                                  maxNodes));
+    }
+
+    private Result<NodeLifecycleManager> forNode(NodeId nodeId) {
+        return sourceForNode.apply(nodeId)
+                            .flatMap(this::forSource);
+    }
+
+    @Override
+    public Promise<ActionResult> executeAction(NodeAction action) {
+        return switch (action) {
+            case NodeAction.StartNode start -> provisionNode(start.spec()).map(ActionResult.NodeStarted::new);
+            case NodeAction.StopNode stop -> terminateNode(stop.nodeId()).map(_ -> new ActionResult.NodeStopped(stop.nodeId()));
+            case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices").promise();
+        };
+    }
+
+    @Override
+    public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
+        return forSource(spec.context().sourceName()).async()
+                        .flatMap(manager -> manager.provisionNode(spec));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+        return Option.option(tagFilter.get("aether.source"))
+                     .orElse(() -> Option.option(tagFilter.get("aether-source")))
+                     .fold(() -> listFleet(tagFilter),
+                           source -> SourceName.sourceName(source)
+                                               .async()
+                                               .flatMap(name -> listSource(name, tagFilter)));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter,
+                                                     SourceName source,
+                                                     String expectedBinding) {
+        return forSource(source, expectedBinding).async()
+                        .flatMap(manager -> manager.listInstances(scopedFilter(source, filter)));
+    }
+
+    private Promise<List<InstanceInfo>> listSource(SourceName source, Map<String, String> tagFilter) {
+        return forSource(source).async()
+                        .flatMap(manager -> manager.listInstances(scopedFilter(source, tagFilter)));
+    }
+
+    private Map<String, String> scopedFilter(SourceName source, Map<String, String> tagFilter) {
+        var scoped = new java.util.HashMap<>(tagFilter);
+        var key = tagFilter.keySet().stream().anyMatch(name -> name.startsWith("aether-"))
+                  ? "aether-source"
+                  : "aether.source";
+
+        scoped.put(key, source.value());
+
+        return Map.copyOf(scoped);
+    }
+
+    private Promise<List<InstanceInfo>> listFleet(Map<String, String> tagFilter) {
+        if (!tagFilter.containsKey("aether.cluster") && !tagFilter.containsKey("aether-cluster")) {
+            return EnvironmentError.operationNotSupported("Fleet inventory requires explicit cluster scope").promise();
+        }
+
+        return registry.sources(tagFilter)
+                       .async()
+                       .flatMap(sources -> collectFleet(sources, tagFilter));
+    }
+
+    private Promise<List<InstanceInfo>> collectFleet(List<SourceName> sources, Map<String, String> tagFilter) {
+        return Promise.allOf(sources.stream().map(source -> listSource(source, tagFilter)).toList())
+                      .flatMap(results -> Result.allOf(results).async())
+                      .map(listings -> listings.stream()
+                                               .flatMap(List::stream)
+                                               .toList());
+    }
+
+    @Override
+    @org.pragmatica.lang.Contract
+    public void resetProvisionerState(Option<ClusterName> clusterName) {
+        registry.resetProvisionerState(clusterName);
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId) {
+        return forNode(nodeId).async()
+                      .flatMap(manager -> manager.instancesForNode(nodeId));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId, SourceName source) {
+        return forSource(source).async()
+                        .flatMap(manager -> manager.instancesForNode(nodeId));
+    }
+
+    @Override
+    public Promise<InstanceInfo> instanceStatus(InstanceId instanceId, SourceName source) {
+        return forSource(source).async()
+                        .flatMap(manager -> manager.instanceStatus(instanceId, source));
+    }
+
+    @Override
+    public Promise<Unit> terminateNode(NodeId nodeId) {
+        return forNode(nodeId).async()
+                      .flatMap(manager -> manager.terminateNode(nodeId));
+    }
+
+    @Override
+    public Promise<Unit> terminateNode(NodeId nodeId, SourceName source) {
+        return forSource(source).async()
+                        .flatMap(manager -> manager.terminateNode(nodeId));
+    }
+
+    @Override
+    public boolean isCloudManaged() {
+        return registry.isAvailable();
     }
 }

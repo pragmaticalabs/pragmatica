@@ -4,17 +4,24 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AutoHealStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ProvisioningSlotKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ProvisioningSlotValue;
@@ -28,26 +35,50 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.statemachine.FsmObserver;
 
+import java.io.Serializable;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.Filter;
+import org.apache.logging.log4j.core.Layout;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configuration;
+import org.apache.logging.log4j.core.config.LoggerConfig;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.deployment.membership.fsm.MembershipDeltaProjector.membershipDeltaProjector;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -83,6 +114,25 @@ class ClusterTopologyManagerActuatorTest {
     private RecordingClusterStore clusterStore;
     private ClusterTopologyManager ctm;
     private final CopyOnWriteArrayList<NodeId> drainCommandSinkCalls = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<NodeId> drainCommandClearCalls = new CopyOnWriteArrayList<>();
+    private static final NodeId PEER_E = nodeId("node-e").unwrap();
+    private static final Set<NodeId> SPARE_FIVE = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_E);
+    private static final Set<NodeId> ALL_SIX = Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D, PEER_E);
+    private static final String CLUSTER = "c1050";
+    private static final TimeSpan HOUR = timeSpan(1).hours();
+    private static final HlcTimestamp HLC = new HlcTimestamp(HlcTimestamp.pack(1L, 0), SELF);
+    /// #1050 / #1062 — the membership and liveness evidence the CTM consults before an irreversible reap.
+    /// Mutable, so a test can move the cluster between a drain and its expiry, which is the defect's shape.
+    private final AtomicReference<Set<NodeId>> coreCountedMembers = new AtomicReference<>(Set.of());
+    private final AtomicReference<Set<NodeId>> trackedMembers = new AtomicReference<>(Set.of());
+    private final AtomicReference<Set<NodeId>> swimAliveNodes = new AtomicReference<>(Set.of());
+    private final AtomicReference<Set<NodeId>> transportConnectedNodes = new AtomicReference<>(Set.of());
+    private final AtomicReference<Set<NodeId>> inFlightNodes = new AtomicReference<>(Set.of());
+    private final AtomicInteger configuredCoreCount = new AtomicInteger(5);
+    /// Counts reads of the transport evidence, so a test can prove a deferral's re-checks STOP.
+    private final AtomicInteger transportReads = new AtomicInteger();
+    /// Same for the raw-SWIM evidence: a reap that stopped reading it was ABANDONED, not merely deferred.
+    private final AtomicInteger swimReads = new AtomicInteger();
 
     @BeforeEach
     void setUp() {
@@ -96,23 +146,81 @@ class ClusterTopologyManagerActuatorTest {
         lifecycleManager = new RecordingLifecycleManager();
         clusterStore = new RecordingClusterStore();
         clusterStore.seed(5);
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(60).seconds(),
-                                                      timeSpan(1).millis(),
-                                                      AutoHealConfig.DEFAULT_STALE_OBSERVATION_TTL,
-                                                      AutoHealConfig.DEFAULT_QUIC_MISS_PROMOTION_THRESHOLD,
-                                                      AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT,
-                                                      timeSpan(0).millis())
-                                            .unwrap();
-        ctm = ClusterTopologyManager.clusterTopologyManager(observer,
-                                                            lifecycleManager,
-                                                            autoHeal,
-                                                            DeploymentMap.deploymentMap(),
-                                                            snapshotSource,
-                                                            clusterStore::current,
-                                                            clusterStore::apply,
-                                                            () -> ClusterPhase.NORMAL,
-                                                            drainCommandSinkCalls::add,
-                                                            _ -> {});
+        ctm = ctmWithDrainGrace(AutoHealConfig.DEFAULT_PROVISIONING_TIMEOUT);
+    }
+
+    /// The production-wired CTM with a chosen drain grace (`provisioningTimeout` schedules the grace-terminate
+    /// backstop, and also derives the activation-replay grace and the reap re-check interval). Reads the stub
+    /// evidence in the mutable fields above.
+    private ClusterTopologyManager ctmWithDrainGrace(TimeSpan drainGrace) {
+        return ctmWithDrainGrace(drainGrace, drainCommandSinkCalls::add, stubLiveness());
+    }
+
+    private MembershipLiveness stubLiveness() {
+        return MembershipLiveness.membershipLiveness(coreCountedMembers::get,
+                                                     trackedMembers::get,
+                                                     this::swimAlive,
+                                                     this::transportConnected,
+                                                     inFlightNodes::get,
+                                                     configuredCoreCount::get,
+                                                     _ -> Option.none());
+    }
+
+    private boolean transportConnected(NodeId nodeId) {
+        transportReads.incrementAndGet();
+
+        return transportConnectedNodes.get().contains(nodeId);
+    }
+
+    private boolean swimAlive(NodeId nodeId) {
+        swimReads.incrementAndGet();
+
+        return swimAliveNodes.get().contains(nodeId);
+    }
+
+    /// Variant whose DRAIN sink and evidence are supplied by the caller — the real-membership tests route the
+    /// drain through a real `MembershipFsm` and read its projections, as `AetherNode` does.
+    private ClusterTopologyManager ctmWithDrainGrace(TimeSpan drainGrace,
+                                                     Consumer<NodeId> drainSink,
+                                                     MembershipLiveness liveness) {
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), drainGrace).unwrap();
+
+        var manager = ClusterTopologyManager.clusterTopologyManager(observer,
+                                                             lifecycleManager,
+                                                             autoHeal,
+                                                             DeploymentMap.deploymentMap(),
+                                                             snapshotSource,
+                                                             clusterStore::current,
+                                                             clusterStore::apply,
+                                                             () -> ClusterPhase.NORMAL,
+                                                             drainSink,
+                                                             drainCommandClearCalls::add,
+                                                             Option::none,
+                                                             clusterStore::autoHealState,
+                                                             liveness);
+        // This actuator fixture models a completed voter handoff. Tests below independently
+        // vary transport/SWIM/counting evidence; none may bypass those retirement checks.
+        manager.setRetirementRefusal(node -> node.equals(SELF) ? Option.some("self is never retired") : Option.none());
+        manager.setHierarchyStateWriter(HierarchyStateWriter.hierarchyStateWriter(
+            () -> Option.some(new org.pragmatica.cluster.state.kvstore.LeaderValue(SELF, 1)),
+            key -> key instanceof AutoHealStateKey ? clusterStore.autoHealState().map(value -> (AetherValue) value)
+                : clusterStore.current().map(value -> (AetherValue) value), clusterStore::apply));
+        return manager;
+    }
+
+    /// Lets scheduled work run for `window` before an ABSENCE is asserted. Used only where no positive signal
+    /// exists; each such test states the margin it relies on.
+    private static void settleFor(Duration window) {
+        await().pollDelay(window)
+               .atMost(window.plusSeconds(5))
+               .until(() -> true);
+    }
+
+    private void awaitClearedExactlyOnce(NodeId target) {
+        await().atMost(Duration.ofSeconds(5))
+               .until(() -> drainCommandClearCalls.contains(target));
+        assertThat(drainCommandClearCalls).as("the backstop clears the DRAIN command exactly once, in every branch")
+                                          .containsExactly(target);
     }
 
     @Test
@@ -183,6 +291,143 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.lastSpec().context().role())
                 .as("ProvisionContext carries the caller's intended worker role")
                 .isEqualTo("worker");
+    }
+
+    @Test
+    void scheduledWorkerReconciliationRetriesFailureAndStopsAcrossDeactivation() {
+        var calls = new AtomicInteger();
+        var placement = new CommunityPlacementReconciler() {
+            public Promise<Unit> reconcile() {
+                return calls.incrementAndGet() == 1
+                    ? org.pragmatica.lang.utils.Causes.cause("transient provider observation").promise()
+                    : Promise.unitPromise();
+            }
+            public Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) { return Promise.unitPromise(); }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+        };
+        ctm.installCommunityPlacement(placement);
+        ctm.activate();
+        var manager = (ClusterTopologyManagerRecord) ctm;
+        manager.startWorkerTopologyPolling(timeSpan(20).millis());
+        await().atMost(Duration.ofSeconds(5)).until(() -> calls.get() >= 3);
+        ctm.deactivate();
+        var stopped = calls.get();
+        settleFor(Duration.ofMillis(100));
+        assertThat(calls.get()).isEqualTo(stopped);
+        ctm.activate();
+        manager.startWorkerTopologyPolling(timeSpan(20).millis());
+        await().atMost(Duration.ofSeconds(5)).until(() -> calls.get() > stopped + 1);
+        ctm.deactivate();
+    }
+
+    @Test
+    void scheduledTicksCoalesceWhileProviderPassIsOutstanding() {
+        var calls = new AtomicInteger();
+        var held = Promise.<Unit>promise();
+        ctm.installCommunityPlacement(new CommunityPlacementReconciler() {
+            public Promise<Unit> reconcile() { return calls.incrementAndGet() == 1 ? held : Promise.unitPromise(); }
+            public Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) { return Promise.unitPromise(); }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+        });
+        ctm.activate();
+        ((ClusterTopologyManagerRecord) ctm).startWorkerTopologyPolling(timeSpan(20).millis());
+        settleFor(Duration.ofMillis(100));
+        assertThat(calls.get()).isEqualTo(1);
+        held.succeed(Unit.unit());
+        await().atMost(Duration.ofSeconds(5)).until(() -> calls.get() >= 2);
+        ctm.deactivate();
+    }
+
+    @Test
+    void stalePassCompletionCannotReleaseNewActivationPass() {
+        var calls = new AtomicInteger();
+        var oldPass = Promise.<Unit>promise();
+        var newPass = Promise.<Unit>promise();
+        ctm.installCommunityPlacement(new CommunityPlacementReconciler() {
+            public Promise<Unit> reconcile() { return calls.incrementAndGet() == 1 ? oldPass : newPass; }
+            public Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry entry) { return Promise.unitPromise(); }
+            public Promise<Boolean> onDrainCompleted(NodeId node, String operation) { return Promise.success(false); }
+        });
+        ctm.activate();
+        ctm.deactivate();
+        ctm.activate();
+        assertThat(calls.get()).isEqualTo(2);
+        oldPass.succeed(Unit.unit());
+        ctm.reconcileWorkerTopology();
+        assertThat(calls.get()).isEqualTo(2);
+        ctm.deactivate();
+        newPass.succeed(Unit.unit());
+    }
+
+    @Test
+    void duplicateDrainHasOneCommandAndOneGraceEffect() {
+        var manager = ctmWithDrainGrace(timeSpan(200).millis());
+        manager.activate();
+        for (int index = 0; index < 20; index++) {
+            assertThat(manager.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().isSuccess()).isTrue();
+        }
+        assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
+        awaitClearedExactlyOnce(PEER_D);
+        settleFor(Duration.ofMillis(300));
+        assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
+        assertThat(drainCommandClearCalls).containsExactly(PEER_D);
+    }
+
+    @Test
+    void oldActivationTimerCannotReapOrClearNewDrain() {
+        var manager = ctmWithDrainGrace(timeSpan(200).millis());
+        manager.activate();
+        manager.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().unwrap();
+        manager.deactivate();
+        assertThat(drainCommandClearCalls).containsExactly(PEER_D);
+        manager.activate();
+        manager.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().unwrap();
+        await().atMost(Duration.ofSeconds(5)).until(() -> drainCommandClearCalls.size() == 2);
+        settleFor(Duration.ofMillis(300));
+        assertThat(lifecycleManager.terminateCount.get()).isEqualTo(1);
+        assertThat(drainCommandSinkCalls).containsExactly(PEER_D, PEER_D);
+        assertThat(drainCommandClearCalls).containsExactly(PEER_D, PEER_D);
+    }
+
+    @Test
+    void missingRetirementProofRefusesDrainEvenWhenLeaderIsActive() {
+        ctm.setRetirementRefusal(_ -> Option.some("awaiting certified voter handoff"));
+        ctm.activate();
+        assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
+        assertThat(drainCommandSinkCalls).isEmpty();
+        assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    /// #1543: the LeaderReconciler surplus drain picks a fresh ephemeral core first — the +1 replacement. While
+    /// paired it is refused for every surplus reason; a join-grace reap of a never-joined zombie is not gated.
+    @Test
+    void drainNode_pairedReplacement_surplusTrimRefused_joinGraceReapProceeds() {
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                     new AetherValue.NodeReplacementValue(PEER_D, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+        ctm.setNodeReplacements(pairings);
+        ctm.activate();
+
+        assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await().isFailure()).isTrue();
+        assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
+        assertThat(ctm.drainNode(PEER_C, DrainReason.OVERPROVISION_PARTITION_HEAL).await().isFailure()).isTrue();
+        assertThat(drainCommandSinkCalls).isEmpty();
+
+        assertThat(ctm.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().isSuccess()).isTrue();
+        assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
+    }
+
+    /// Control: a terminal pairing gates nothing.
+    @Test
+    void drainNode_terminalPairing_surplusTrimProceeds() {
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                     new AetherValue.NodeReplacementValue(PEER_D, "core", AetherValue.NodeReplacementPhase.ROLLED_BACK, 0L));
+        ctm.setNodeReplacements(pairings);
+        ctm.activate();
+
+        assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await().isSuccess()).isTrue();
+        assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
     }
 
     @Test
@@ -381,6 +626,23 @@ class ClusterTopologyManagerActuatorTest {
                 .isEqualTo(failuresAfterTrip);
     }
 
+    /// #2098: a provision refused only because the fleet inventory is being initialized is a wait, not a provider failure, so however many
+    /// ticks hit it, it never counts toward the breaker; control: an ordinary failure does (see the test above).
+    @Test
+    void provisionReplacement_inventoryInitializing_neverTripsTheCircuit() {
+        ctm.activate();
+        lifecycleManager.failProvisionsWith(new FleetInventoryInitializing());
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 5; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+
+        assertThat(ctm.circuitBreakerState().tripped()).isFalse();
+        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
+        assertThat(lifecycleManager.provisionCount.get()).as("every tick really reached the provider seam").isEqualTo(5);
+    }
+
     /// Auto-heal-wedge fix — a real boot resolves to a success-valued `Dispatched` disposition (a VM is
     /// coming), which is what the `LeaderReconciler` keys on to KEEP its in-flight placeholder.
     @Test
@@ -450,13 +712,1546 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(clusterStore.currentVersion()).isEqualTo(before);
     }
 
+    /// #1019 — pins this floor at exactly 3, which the case above cannot do: 2 is refused by a floor
+    /// of 3 AND by a floor of 5, so it stays green if someone raises the constant. Three is the
+    /// discriminating value.
+    ///
+    /// It is deliberately ACCEPTED. This is the runtime actuator on a LIVE cluster, so it carries the
+    /// STRUCTURAL floor (below three there is no majority quorum), not the 2026-09-12 policy minimum
+    /// of 5 — that is enforced where configs are created (`CoreWorkerSplit`). Raising this to 5 would
+    /// refuse an existing 3-node cluster's own topology.
+    @Test
+    void setDesiredSize_three_acceptedSinceThisFloorIsStructural() {
+        ctm.activate();
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 3).await();
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(clusterStore.current().unwrap().coreCount()).isEqualTo(3);
+    }
+
+    /// #1019 round-1 review, S2 — this actuator had a floor and NO CEILING, so a scale could grow the
+    /// consensus tier past the size `aether cluster init` refuses to author. That made the cap an
+    /// authoring convention rather than a property of the cluster: the shipped maximum was reachable
+    /// by anyone who could POST a scale.
+    ///
+    /// The write must not happen either. Asserting only the failed `Result` would leave a
+    /// reject-after-write ordering passing, and this is a fenced compare-and-put against the live
+    /// cluster config — the store version is the observable that distinguishes the two.
+    @Test
+    void setDesiredSize_aboveConsensusMaximum_rejectedWithoutAtomWrite() {
+        ctm.activate();
+
+        var before = clusterStore.currentVersion();
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 11).await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(clusterStore.currentVersion()).isEqualTo(before);
+    }
+
+    /// The discriminating boundary: 9 is accepted, 11 is not. Without the accepted half, a cap set too
+    /// low passes the refusal test above.
+    @Test
+    void setDesiredSize_nine_acceptedAtTheConsensusMaximum() {
+        ctm.activate();
+
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.CORE, 9).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(clusterStore.current().unwrap().coreCount()).isEqualTo(9);
+    }
+
+    /// The ceiling is the CORE tier's only. Workers are where capacity beyond the consensus maximum is
+    /// meant to go, so a worker scale well past it has to succeed — otherwise the remedy every #1019
+    /// error message names does not exist.
+    @Test
+    void setDesiredSize_workerRoleAboveConsensusMaximum_isAccepted() {
+        ctm.activate();
+
+        var result = ctm.setDesiredCount(sourceNameOrDefault("primary"), NodeRole.WORKER, 40).await();
+
+        assertThat(result.isSuccess()).isTrue();
+    }
+
     @Test
     void setAutoHealEnabled_toggleReturnsPriorState() {
+        ctm.activate();
         assertThat(ctm.isAutoHealEnabled()).isTrue();
-        assertThat(ctm.setAutoHealEnabled(false, "test-disable")).isTrue();
+        assertThat(ctm.setAutoHealEnabled(false, "test-disable").await().unwrap()).isTrue();
         assertThat(ctm.isAutoHealEnabled()).isFalse();
-        assertThat(ctm.setAutoHealEnabled(true, "test-enable")).isFalse();
+        assertThat(ctm.setAutoHealEnabled(true, "test-enable").await().unwrap()).isFalse();
         assertThat(ctm.isAutoHealEnabled()).isTrue();
+    }
+
+    /// #1022 — auto-heal creates a BILLABLE server that the operator's cleanup ledger structurally
+    /// cannot hold: the ledger is `~/.aether/clusters/<name>/bootstrap-state.json` on the operator's
+    /// machine, written by `aether/cli`, while this code runs in `aether-deployment` on a cloud VM in a
+    /// module `cli` depends ON. The leader's own journal is the only record it can make, so the
+    /// provider's instance id has to appear there — until this fix `asDispatched` took the
+    /// `InstanceInfo` and ignored it, and the id of every replacement was dropped on the floor.
+    ///
+    /// This drives the REAL `provisionReplacement` and captures what the production logger emits. It
+    /// deliberately does NOT hand the logger the expected line itself: a fixture that feeds in the
+    /// string it then asserts states the intended behaviour rather than probing the actual one, and
+    /// would stay green with the production call deleted.
+    @Nested
+    class ProvisionedInstanceRecording {
+        private static final String LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.ClusterTopologyManager";
+
+        private CapturingAppender appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void attachAppender() {
+            appender = CapturingAppender.create("CtmProvisionRecordCapture");
+            appender.start();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            loggerConfig = getOrCreateLoggerConfig(ctx.getConfiguration());
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            loggerConfig.setLevel(Level.WARN);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void detachAppender() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        private LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
+            var existing = configuration.getLoggerConfig(LOGGER_NAME);
+
+            if (LOGGER_NAME.equals(existing.getName())) {
+                return existing;
+            }
+
+            var created = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
+
+            configuration.addLogger(LOGGER_NAME, created);
+
+            return created;
+        }
+
+        /// The stub provisioner mints `stub-1` as the provider instance id; that id, the new node id and
+        /// the role must all reach the journal, because an operator reconciling a bill against a cluster
+        /// has only the id to act on.
+        @Test
+        void provisionReplacement_success_recordsTheProviderInstanceId_withNodeIdAndRole() {
+            ctm.activate();
+            var newNodeId = NodeId.randomNodeId();
+
+            var result = ctm.provisionReplacement(newNodeId,
+                                                  Option.some(PEER_C),
+                                                  Set.of(SELF, PEER_A, PEER_B),
+                                                  NodeRole.CORE)
+                            .await();
+
+            assertThat(result.isSuccess()).as("the stub provisioner succeeds: %s", result).isTrue();
+            assertThat(appender.capturedWarns())
+                    .as("the provider instance id of a billable auto-heal VM must reach the leader's journal")
+                    .anyMatch(msg -> msg.contains("instanceId=stub-1")
+                                     && msg.contains("nodeId=" + newNodeId.id())
+                                     && msg.contains("role=core"));
+        }
+
+        /// A provisioning attempt that FAILED created nothing, so recording an instance for it would put
+        /// a phantom server in front of an operator. Nothing was billed and nothing may be claimed.
+        @Test
+        void provisionReplacement_failure_recordsNoInstance() {
+            ctm.activate();
+            lifecycleManager.failProvisions();
+
+            var result = ctm.provisionReplacement(NodeId.randomNodeId(),
+                                                  Option.some(PEER_C),
+                                                  Set.of(SELF, PEER_A, PEER_B),
+                                                  NodeRole.CORE)
+                            .await();
+
+            assertThat(result.isFailure()).as("the stub was told to fail: %s", result).isTrue();
+            assertThat(appender.capturedWarns())
+                    .as("a failed provision created no server, so it must claim no instance id")
+                    .noneMatch(msg -> msg.contains("instanceId="));
+        }
+    }
+
+    /// #1050 R1′ — a surplus drain's grace-terminate reap fires `provisioningTimeout` after the drain, by which
+    /// time nodes may have died, leadership may have moved, or the target may have returned to service. Every
+    /// drive-level test here goes through the REAL path: `drainNode` schedules the backstop on the shared
+    /// scheduler with a short grace. The DRAIN-command clear is the backstop's LAST action, so awaiting it
+    /// proves the expiry ran before a "not reaped" assertion is read.
+    @Nested
+    class DrainGraceRecheck {
+        private ClusterTopologyManager shortGraceCtm;
+
+        @BeforeEach
+        void activateShortGraceCtm() {
+            shortGraceCtm = ctmWithDrainGrace(timeSpan(150).millis());
+            shortGraceCtm.activate();
+        }
+
+        /// No regression: the drained target is DEPARTING or gone (uncounted, not SWIM-alive), the issuer is
+        /// active, and the members that remain are quorum-safe, so the surplus trim reaps.
+        @Test
+        void surplusDrain_graceExpiry_reapsNonLiveTarget_whenActiveAndQuorumSafe() {
+            coreCountedMembers.set(SPARE_FIVE);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// R1′(b): a deficit no longer blocks the reap of a node that is NOT live — terminating it removes no
+        /// capacity. Four of five remain, which is quorum-safe.
+        @Test
+        void surplusDrain_graceExpiry_reapsNonLiveTarget_evenInDeficit() {
+            coreCountedMembers.set(SPARE_FIVE);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            coreCountedMembers.set(Set.of(SELF, PEER_A, PEER_B, PEER_C));
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// R1′(a): a live, counted target is never reaped — here with the issuer active and spare capacity, the
+        /// case in which the round-2 verdict still reaped.
+        @Test
+        void surplusDrain_graceExpiry_keepsLiveCountedTarget_evenWhenActiveAndQuorumSafe() {
+            coreCountedMembers.set(ALL_SIX);
+            swimAliveNodes.set(Set.of(PEER_D));
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a surplus trim never kills a live, counted node")
+                                                            .isEmpty();
+        }
+
+        /// A counted target that raw SWIM no longer sees alive is NOT a live counted member, so the verdict permits
+        /// the reap. The reap itself still defers while the node is counted (evidence of life), and completes once
+        /// the FSM stops counting it.
+        @Test
+        void surplusDrain_graceExpiry_countedButSwimDeadTarget_reapedOnceUncounted() {
+            var slowCtm = ctmWithDrainGrace(timeSpan(1200).millis());
+
+            slowCtm.activate();
+            coreCountedMembers.set(ALL_SIX);
+            swimAliveNodes.set(SPARE_FIVE);
+            slowCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("still counted: the reap is deferred, not executed")
+                                                            .isEmpty();
+
+            coreCountedMembers.set(SPARE_FIVE);
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// R1′(a) ordering: a target that is live at expiry is skipped outright, and the grace path schedules no
+        /// deferred reap. If it dies moments later, the backstop does not reap it; its death goes through the
+        /// departure path or the activation replay, like any other death. The margin is five re-check intervals.
+        @Test
+        void surplusDrain_graceExpiry_liveTargetAtExpiry_isNotReapedByTheBackstopEvenIfItDiesLater() {
+            var slowCtm = ctmWithDrainGrace(timeSpan(1200).millis());
+
+            slowCtm.activate();
+            coreCountedMembers.set(ALL_SIX);
+            swimAliveNodes.set(ALL_SIX);
+            slowCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+            coreCountedMembers.set(SPARE_FIVE);
+            swimAliveNodes.set(SPARE_FIVE);
+            settleFor(Duration.ofMillis(500));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// R1′(a) refined (verify-1058): LIVE means liveness evidence, not counted membership. The target is DEPARTING
+        /// (uncounted) but still SWIM-alive and reachable by the leader's transport, as a target whose DRAIN was never
+        /// delivered is. It is never reaped by the backstop, even once it dies afterwards. A verdict keyed on counted
+        /// membership would call it not live, defer the reap on its evidence, and reap it when the evidence cleared.
+        @Test
+        void surplusDrain_graceExpiry_departingButAliveTarget_isNeverReapedByTheBackstop() {
+            var slowCtm = ctmWithDrainGrace(timeSpan(1200).millis());
+
+            slowCtm.activate();
+            coreCountedMembers.set(SPARE_FIVE);
+            swimAliveNodes.set(ALL_SIX);
+            transportConnectedNodes.set(Set.of(PEER_D));
+            slowCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+            swimAliveNodes.set(SPARE_FIVE);
+            transportConnectedNodes.set(Set.of());
+            settleFor(Duration.ofMillis(500));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a DEPARTING-but-alive target is live: the backstop skips it outright")
+                                                            .isEmpty();
+        }
+
+        /// R1′(b): a deposed issuer never reaps, even a target that is not live.
+        @Test
+        void surplusDrain_graceExpiry_keepsTarget_whenIssuerNoLongerLeader() {
+            coreCountedMembers.set(SPARE_FIVE);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            shortGraceCtm.deactivate();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// R1′(b): a minority view never reaps.
+        @Test
+        void surplusDrain_graceExpiry_keepsTarget_whenNotQuorumSafe() {
+            coreCountedMembers.set(SPARE_FIVE);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            coreCountedMembers.set(Set.of(SELF, PEER_A));
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// S2: an unknown configured core size (a count read as 0) is NOT quorum-safe — fail-closed, where the
+        /// round-2 formula floored it to 1 and reaped.
+        @Test
+        void surplusDrain_graceExpiry_keepsTarget_whenConfiguredCoreCountUnknown() {
+            coreCountedMembers.set(SPARE_FIVE);
+            configuredCoreCount.set(0);
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// The scope guard: a join-grace zombie is reaped DURING the deficit its replacement was meant to fill,
+        /// and nothing else reaps it, so the re-check must not apply to it.
+        @Test
+        void joinGraceReapDrain_graceExpiry_reapsZombie_evenDuringDeficit() {
+            coreCountedMembers.set(Set.of(SELF, PEER_A, PEER_B));
+
+            shortGraceCtm.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// N4: the zombie path never reads membership, so no membership read can delay or break it. Driven on a
+        /// active leader; activation reads are excluded from the measured drain phase.
+        @Test
+        void joinGraceReapDrain_graceExpiry_neverReadsMembership() {
+            var membershipReads = new AtomicInteger();
+            var countingLiveness = MembershipLiveness.membershipLiveness(() -> countRead(membershipReads),
+                                                                         () -> countRead(membershipReads),
+                                                                         _ -> false,
+                                                                         _ -> false,
+                                                                         Set::of,
+                                                                         () -> countRead(membershipReads).size(),
+                                                                         _ -> Option.none());
+            var zombieCtm = ctmWithDrainGrace(timeSpan(150).millis(), drainCommandSinkCalls::add, countingLiveness);
+
+            zombieCtm.activate();
+            membershipReads.set(0);
+            assertThat(zombieCtm.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().isSuccess()).isTrue();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+            assertThat(membershipReads.get()).as("a JOIN_GRACE_REAP reap must not depend on any membership read")
+                                             .isZero();
+        }
+
+        private Set<NodeId> countRead(AtomicInteger reads) {
+            reads.incrementAndGet();
+
+            return Set.of();
+        }
+
+        @Test
+        void graceReapVerdict_nonLiveTarget_activeAndQuorumSafe_reaps() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(true, false, SPARE_FIVE, 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.REAP);
+        }
+
+        @Test
+        void graceReapVerdict_liveCountedTarget_isTargetLive_evenWhenDeposed() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(false, true, ALL_SIX, 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.TARGET_LIVE);
+        }
+
+        @Test
+        void graceReapVerdict_deposedIssuer_isNotLeader() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(false, false, SPARE_FIVE, 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.NOT_LEADER);
+        }
+
+        @Test
+        void graceReapVerdict_belowQuorum_isNotQuorumSafe() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(true, false, Set.of(SELF, PEER_A), 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.NOT_QUORUM_SAFE);
+        }
+
+        @Test
+        void graceReapVerdict_unknownConfiguredCount_isNotQuorumSafe() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(true, false, SPARE_FIVE, 0, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.NOT_QUORUM_SAFE);
+        }
+
+        /// The target never counts toward the quorum that permits its own removal: three counted including the
+        /// target would be quorum-safe for five, two without it is not.
+        @Test
+        void graceReapVerdict_targetExcludedFromItsOwnQuorumCount() {
+            assertThat(ClusterTopologyManagerRecord.graceReapVerdict(true, false, Set.of(SELF, PEER_A, PEER_D), 5, PEER_D))
+                    .isEqualTo(ClusterTopologyManagerRecord.GraceReapVerdict.NOT_QUORUM_SAFE);
+        }
+
+        @Test
+        void quorumSafe_isAStrictMajorityOfAKnownConfiguredSize() {
+            assertThat(ClusterTopologyManagerRecord.quorumSafe(3, 5)).isTrue();
+            assertThat(ClusterTopologyManagerRecord.quorumSafe(2, 5)).isFalse();
+            assertThat(ClusterTopologyManagerRecord.quorumSafe(2, 3)).isTrue();
+            assertThat(ClusterTopologyManagerRecord.quorumSafe(1, 3)).isFalse();
+            assertThat(ClusterTopologyManagerRecord.quorumSafe(9, 0)).as("an unknown size is never quorum-safe")
+                                                                      .isFalse();
+        }
+    }
+
+    /// The same grace path over REAL producers: a boot-seeded [MembershipFsm] whose DRAIN routing mirrors
+    /// `AetherNode.requestDrainThroughFsm`, read through its counted and tracked projections as
+    /// `AetherNode.drainGraceLiveness` reads them, and a synchronous `MembershipDeltaProjector` feeding
+    /// `onMembershipDecision`. Raw SWIM liveness is the `swimAliveNodes` field, since no SWIM detector runs
+    /// here. The FSM's own DEPARTING timeout (#1054) is set to an hour, so it cannot reap inside a test and mask
+    /// what the backstop did.
+    @Nested
+    class DrainGraceWithRealMembership {
+        private MembershipFsm fsm;
+
+        @BeforeEach
+        void createFsm() {
+            fsm = MembershipFsm.membershipFsm(FsmObserver.noop(), System::currentTimeMillis, Long.MAX_VALUE, HOUR, HOUR, HOUR);
+        }
+
+        @Test
+        void surplusDrain_realMembership_stableCluster_reapsNonLiveTargetAtGraceExpiry() {
+            var issuer = issuerCtm();
+
+            swimAliveNodes.set(SPARE_FIVE);
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// R1′(a) with the target RETURNED to MEMBER (the #1058 interaction: an unacknowledged drain withdrawn
+        /// back into the counted set). Spare capacity beside it and an active issuer — the round-2 verdict
+        /// reaped here — but a live counted node is never killed by a surplus trim.
+        @Test
+        void surplusDrain_realMembership_targetReturnedToMember_isNeverReaped_evenWithSpareCapacity() {
+            var issuer = issuerCtm();
+
+            swimAliveNodes.set(ALL_SIX);
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            fsm.onSwimHealthy(PEER_D, 5L);
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(fsm.coreCountedMembers()).as("arming: the target is back in the counted set, beside spare capacity")
+                                                .containsExactlyInAnyOrderElementsOf(ALL_SIX);
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a surplus trim never abruptly kills a live node")
+                                                            .isEmpty();
+        }
+
+        /// A peer died during the grace AND the target refuted its drain: live and counted, so never reaped.
+        @Test
+        void surplusDrain_realMembership_targetStillLiveCountedMember_clusterNeedsIt_notReaped() {
+            var issuer = issuerCtm();
+
+            swimAliveNodes.set(Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D));
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            fsm.onSwimDeparted(PEER_E, 1L);
+            fsm.onSwimHealthy(PEER_D, 5L);
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(fsm.coreCountedMembers()).as("arming: the target is a live counted member again")
+                                                .containsExactlyInAnyOrder(SELF, PEER_A, PEER_B, PEER_C, PEER_D);
+            assertThat(lifecycleManager.terminatedNodeIds()).as("only the dead peer is reaped; the live target is kept")
+                                                            .containsExactly(PEER_E);
+        }
+
+        /// R1′(b): a peer died during the grace and the target is NOT live. Four of five remain (quorum-safe), so
+        /// the target is reaped — a deficit does not keep a halted node's instance alive.
+        @Test
+        void surplusDrain_realMembership_deficitAtExpiry_nonLiveTargetStillReaped() {
+            var issuer = issuerCtm();
+
+            swimAliveNodes.set(Set.of(SELF, PEER_A, PEER_B, PEER_C));
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            fsm.onSwimDeparted(PEER_E, 1L);
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_E, PEER_D);
+        }
+
+        /// The deposed issuer refuses; the target departs AFTER the new leader activated, so `NodeRemoved` finds
+        /// an active CTM and it reaps once.
+        @Test
+        void surplusDrain_realMembership_skippedByDeposedIssuer_targetDeparts_reapedOnceByNewLeader() {
+            var issuer = issuerCtm();
+            var newLeader = ctmWithDrainGrace(timeSpan(150).millis(), _ -> {}, fsmLiveness());
+
+            swimAliveNodes.set(SPARE_FIVE);
+            wireAndSeed(((Consumer<MembershipDecision>) issuer::onMembershipDecision).andThen(newLeader::onMembershipDecision));
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            issuer.deactivate();
+            newLeader.activate();
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a deposed issuer's backstop refused")
+                                                            .isEmpty();
+
+            fsm.onSwimDeparted(PEER_D, 2L);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// The CTO-required case on REAL membership (verify-1058). The drained target is withdrawn to MEMBER, as #1058's
+        /// DrainUnacknowledged does, and the reconciler re-drains it, so it is DEPARTING at grace expiry. It is still
+        /// SWIM-alive, and the leader's transport to it is connected. It is NOT reaped, and the backstop leaves it alone
+        /// even after it halts. A verdict keyed on counted membership reddens this test.
+        @Test
+        void surplusDrain_realMembership_reDrainedDepartingTarget_swimAliveAndConnected_isNotReaped() {
+            var issuer = ctmWithDrainGrace(timeSpan(1200).millis(), fsmRoutedDrainSink(), fsmLiveness());
+
+            swimAliveNodes.set(ALL_SIX);
+            transportConnectedNodes.set(Set.of(PEER_D));
+            wireAndSeed(issuer::onMembershipDecision);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            fsm.onSwimHealthy(PEER_D, 5L);
+            fsm.onDrainRequested(PEER_D);
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(fsm.memberStates().get(PEER_D)).as("arming: the re-drained target is DEPARTING at expiry")
+                                                      .isEqualTo("Departing");
+            assertThat(fsm.coreCountedMembers()).as("arming: DEPARTING is not counted")
+                                                .doesNotContain(PEER_D);
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+
+            swimAliveNodes.set(SPARE_FIVE);
+            transportConnectedNodes.set(Set.of());
+            settleFor(Duration.ofMillis(500));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("live at expiry: the backstop never schedules a reap of it")
+                                                            .isEmpty();
+        }
+
+        private ClusterTopologyManager issuerCtm() {
+            return ctmWithDrainGrace(timeSpan(150).millis(), fsmRoutedDrainSink(), fsmLiveness());
+        }
+
+        private MembershipLiveness fsmLiveness() {
+            return realMembershipLiveness(fsm);
+        }
+
+        private Consumer<NodeId> fsmRoutedDrainSink() {
+            return ((Consumer<NodeId>) drainCommandSinkCalls::add).andThen(fsm::onDrainRequested);
+        }
+
+        /// Attach the projector BEFORE seeding: the seed's JOINED edges must be announced, because an unannounced
+        /// member's death emits no `NodeRemoved`. Seeds six cores for a configured five.
+        private void wireAndSeed(Consumer<MembershipDecision> decisionSink) {
+            var projector = membershipDeltaProjector(() -> true,
+                                                     () -> 1L,
+                                                     () -> HLC,
+                                                     decisionSink,
+                                                     _ -> {},
+                                                     _ -> {},
+                                                     _ -> {},
+                                                     Runnable::run,
+                                                     SharedScheduler::schedule);
+
+            fsm.onMembershipDelta(projector::onDelta);
+            fsm.seed(ALL_SIX);
+        }
+    }
+
+    /// The evidence as `AetherNode.drainGraceLiveness` builds it over a real FSM; raw SWIM and transport come
+    /// from the stub fields.
+    private MembershipLiveness realMembershipLiveness(MembershipFsm membershipFsm) {
+        return MembershipLiveness.membershipLiveness(membershipFsm::coreCountedMembers,
+                                                     membershipFsm::broadcastEligibleMembers,
+                                                     id -> swimAliveNodes.get().contains(id),
+                                                     id -> transportConnectedNodes.get().contains(id),
+                                                     inFlightNodes::get,
+                                                     configuredCoreCount::get,
+                                                     id -> membershipFsm.memberDescriptor(id)
+                                                                        .map(MemberDescriptor::role));
+    }
+
+    /// verify-1057 B1, committed. A refused surplus reap must never leave a billed orphan, even when leadership or
+    /// quorum moves before `NodeRemoved` reaches an active CTM. Both tests are the reviewer's orphan probes with
+    /// the assertion inverted: at `c974cb3f4` the instance was terminated by nobody. The instance is now reaped
+    /// exactly once, by the successor's activation replay (R4).
+    @Nested
+    class OrphanFreeAcrossLeadershipAndQuorum {
+        private static final TimeSpan GRACE = timeSpan(600).millis();
+
+        /// Real FSM and projector with quorum toggled. The issuer loses quorum and deactivates. The halted target
+        /// departs while non-quorate, so its REMOVED edge queues. The grace fires on the deposed issuer (refused).
+        /// Quorum returns and the projector delivers `NodeRemoved` while EVERY CTM is inactive, so it is dropped.
+        /// Only then does the successor activate.
+        @Test
+        void refusedReap_quorumLostThenRestored_removalDroppedByInactiveCtms_reapedOnceByActivationReplay() {
+            var quorate = new AtomicBoolean(true);
+            var fsm = MembershipFsm.membershipFsm(FsmObserver.noop(), System::currentTimeMillis, Long.MAX_VALUE, HOUR, HOUR, HOUR);
+            var removedDelivered = new CopyOnWriteArrayList<NodeId>();
+            var issuer = ctmWithDrainGrace(GRACE,
+                                           ((Consumer<NodeId>) drainCommandSinkCalls::add).andThen(fsm::onDrainRequested),
+                                           realMembershipLiveness(fsm));
+            var successor = ctmWithDrainGrace(GRACE, _ -> {}, realMembershipLiveness(fsm));
+            var projector = membershipDeltaProjector(quorate::get,
+                                                     () -> 1L,
+                                                     () -> HLC,
+                                                     decision -> deliver(decision, issuer, successor, removedDelivered),
+                                                     _ -> {},
+                                                     _ -> {},
+                                                     _ -> {},
+                                                     Runnable::run,
+                                                     SharedScheduler::schedule);
+
+            clusterStore.seedNamed(5, CLUSTER);
+            ALL_SIX.forEach(id -> lifecycleManager.addInstance(id, CLUSTER, "core"));
+            swimAliveNodes.set(ALL_SIX);
+            fsm.onMembershipDelta(projector::onDelta);
+            fsm.seed(ALL_SIX);
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+
+            quorate.set(false);
+            issuer.deactivate();
+            swimAliveNodes.set(SPARE_FIVE);
+            fsm.onSwimDeparted(PEER_D, 2L);
+            awaitClearedExactlyOnce(PEER_D);
+
+            assertThat(removedDelivered).as("arming: the REMOVED edge is still queued while non-quorate")
+                                        .isEmpty();
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: the deposed issuer's backstop refused")
+                                                            .isEmpty();
+
+            quorate.set(true);
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> removedDelivered.contains(PEER_D));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: NodeRemoved reached only inactive CTMs and was dropped")
+                                                            .isEmpty();
+
+            successor.activate();
+            await().atMost(Duration.ofSeconds(10))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("the successor's activation replay reaps the orphan exactly once")
+                                                            .containsExactly(PEER_D);
+        }
+
+        /// Stub membership, no quorum loss: the successor processed the death while inactive, then the issuer was
+        /// deposed and the successor activated.
+        @Test
+        void refusedReap_successorSawDeathWhileInactive_reapedOnceByActivationReplay() {
+            clusterStore.seedNamed(5, CLUSTER);
+            ALL_SIX.forEach(id -> lifecycleManager.addInstance(id, CLUSTER, "core"));
+            coreCountedMembers.set(SPARE_FIVE);
+            trackedMembers.set(ALL_SIX);
+            swimAliveNodes.set(ALL_SIX);
+
+            var issuer = ctmWithDrainGrace(GRACE);
+            var successor = ctmWithDrainGrace(GRACE);
+
+            issuer.activate();
+            issuer.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await();
+            trackedMembers.set(SPARE_FIVE);
+            swimAliveNodes.set(SPARE_FIVE);
+            successor.onMembershipDecision(MembershipDecision.nodeRemoved(PEER_D, List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_E)));
+            issuer.deactivate();
+            successor.activate();
+            awaitClearedExactlyOnce(PEER_D);
+            await().atMost(Duration.ofSeconds(10))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("the successor's activation replay reaps the orphan exactly once")
+                                                            .containsExactly(PEER_D);
+        }
+
+        private void deliver(MembershipDecision decision,
+                             ClusterTopologyManager issuer,
+                             ClusterTopologyManager successor,
+                             List<NodeId> removedDelivered) {
+            issuer.onMembershipDecision(decision);
+            successor.onMembershipDecision(decision);
+            if (decision instanceof MembershipDecision.NodeRemoved removed) {
+                removedDelivered.add(removed.nodeId());
+            }
+        }
+    }
+
+    /// #1050 R4 — the one-shot activation replay over the labelled provider inventory. Quorum-safe stub evidence:
+    /// five counted for a configured five.
+    @Nested
+    class ActivationReplay {
+        private static final TimeSpan GRACE = timeSpan(150).millis();
+        private static final NodeId DEAD = nodeId("node-dead").unwrap();
+        private static final NodeId BOOTING = nodeId("node-booting").unwrap();
+        private static final NodeId WORKER = nodeId("node-worker").unwrap();
+        /// Quorum-safe for a configured five, and deliberately disjoint from every node that owns an instance below
+        /// except PEER_E, so each protection in `terminatesOnlyTheUnprotectedCoreInstance` is the ONLY thing guarding
+        /// its node. An overlap would let the counted set mask the tracked, SWIM, transport and self checks.
+        private static final Set<NodeId> QUORUM_THREE = Set.of(PEER_E, nodeId("node-f").unwrap(), nodeId("node-g").unwrap());
+
+        @BeforeEach
+        void quorumSafeNamedCluster() {
+            clusterStore.seedNamed(5, CLUSTER);
+            coreCountedMembers.set(QUORUM_THREE);
+        }
+
+        /// Each protected node carries exactly ONE protection: tracked only (A), alive only by raw SWIM (B), reachable
+        /// only by the leader's transport (C), counted only (E), in flight only (BOOTING), and self with no evidence at
+        /// all. Also present: a worker instance, and a node with no protection (DEAD). Only DEAD's instance is
+        /// terminated, exactly once. Because every protection is individually load-bearing here, dropping any one of
+        /// them reddens this test.
+        @Test
+        void activationReplay_terminatesOnlyTheUnprotectedCoreInstance() {
+            Set.of(SELF, PEER_A, PEER_B, PEER_C, PEER_E, BOOTING, DEAD).forEach(id -> lifecycleManager.addInstance(id, CLUSTER, "core"));
+            lifecycleManager.addInstance(WORKER, CLUSTER, "worker");
+            trackedMembers.set(Set.of(PEER_A));
+            swimAliveNodes.set(Set.of(PEER_B));
+            transportConnectedNodes.set(Set.of(PEER_C));
+            inFlightNodes.set(Set.of(BOOTING));
+
+            ctmWithDrainGrace(GRACE).activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+            assertThat(lifecycleManager.lastListFilter()).as("the listing is scoped to THIS cluster's core instances")
+                                                         .isEqualTo(Map.of("aether-cluster", CLUSTER, "aether-role", "core"));
+        }
+
+        /// #1543 E (v-1970 gap): a replacement still booting across a leader change is not tracked, not in flight on the NEW
+        /// leader and not alive to SWIM yet, so the replay would reap it as an orphan. A live pairing protects it.
+        @Test
+        void activationReplay_pairedReplacementThatIsStillBooting_isNotReaped() {
+            var pairings = NodeReplacementIndex.nodeReplacementIndex();
+
+            pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                         new AetherValue.NodeReplacementValue(DEAD, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            var paired = ctmWithDrainGrace(GRACE);
+
+            paired.setNodeReplacements(pairings);
+            paired.activate();
+            assertThat(lifecycleManager.listCalls.get()).as("control: the inventory read happened").isEqualTo(1);
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a booting paired replacement is not an orphan").isEmpty();
+        }
+
+        /// Control for the test above: the same instance under a TERMINAL pairing is an orphan and is reaped.
+        @Test
+        void activationReplay_replacementOfATerminalPairing_isAnOrphanAgain() {
+            var pairings = NodeReplacementIndex.nodeReplacementIndex();
+
+            pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                         new AetherValue.NodeReplacementValue(DEAD, "core", AetherValue.NodeReplacementPhase.ROLLED_BACK, 0L));
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            var ended = ctmWithDrainGrace(GRACE);
+
+            ended.setNodeReplacements(pairings);
+            ended.activate();
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
+
+        /// "Absent past a short grace": a node unprotected at the first read that becomes tracked before the second
+        /// read is never terminated.
+        @Test
+        void activationReplay_nodeTrackedBeforeSecondRead_isNotTerminated() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+
+            ctmWithDrainGrace(GRACE).activate();
+
+            assertThat(lifecycleManager.listCalls.get()).as("arming: the first read ran at activation").isEqualTo(1);
+
+            trackedMembers.set(Set.of(DEAD));
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.listCalls.get() >= 2);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A minority view never lists or terminates. Checked synchronously: the first read happens inside
+        /// `activate()`.
+        @Test
+        void activationReplay_notQuorumSafe_listsAndTerminatesNothing() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            coreCountedMembers.set(Set.of(SELF, PEER_A));
+
+            ctmWithDrainGrace(GRACE).activate();
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.listCalls.get()).isZero();
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// Without a committed cluster name there is no safe scope, so nothing is listed.
+        @Test
+        void activationReplay_noClusterName_listsNothing() {
+            clusterStore.seed(5);
+            lifecycleManager.addInstance(DEAD, "", "core");
+
+            ctmWithDrainGrace(GRACE).activate();
+
+            assertThat(lifecycleManager.listCalls.get()).isZero();
+        }
+
+        /// A CTM deactivated between the two reads terminates nothing: a deposed view never reaps. The margin is
+        /// four times the grace.
+        @Test
+        void activationReplay_deactivatedBeforeSecondRead_terminatesNothing() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            var replayCtm = ctmWithDrainGrace(GRACE);
+
+            replayCtm.activate();
+            replayCtm.deactivate();
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A re-activation invalidates the first activation's pending second read, so the orphan is terminated
+        /// once, by the current activation, not twice.
+        @Test
+        void activationReplay_reactivatedBeforeSecondRead_terminatesExactlyOnce() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            var replayCtm = ctmWithDrainGrace(GRACE);
+
+            replayCtm.activate();
+            replayCtm.deactivate();
+            replayCtm.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
+
+        /// S2 (verify-1057-r2): the second listing is ISSUED while the activation is current but RESOLVES after
+        /// `deactivate()`. The terminate re-checks the activation at resolution, so a deposed view terminates
+        /// nothing. At `ff50a3274` this terminated `DEAD`.
+        @Test
+        void replay_secondListingResolvesAfterDeactivation_terminatesNothing() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            lifecycleManager.holdListingsAfter(1);
+            var replayCtm = ctmWithDrainGrace(GRACE);
+
+            replayCtm.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(lifecycleManager::listingHeld);
+
+            assertThat(lifecycleManager.listCalls.get()).as("arming: the second read was issued while active").isEqualTo(2);
+
+            replayCtm.deactivate();
+            lifecycleManager.releaseHeldListing();
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a listing that resolves on a deposed CTM terminates nothing")
+                                                            .isEmpty();
+        }
+
+        /// Control for the held-listing fixture: released with the activation still current, the same second
+        /// read terminates the orphan. Proves the hold itself does not suppress the terminate.
+        @Test
+        void replay_secondListingResolvesWhileStillActive_terminatesTheOrphan() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            lifecycleManager.holdListingsAfter(1);
+            var replayCtm = ctmWithDrainGrace(GRACE);
+
+            replayCtm.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(lifecycleManager::listingHeld);
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: nothing terminated while the read is pending").isEmpty();
+
+            lifecycleManager.releaseHeldListing();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
+
+        /// SF-1 (verify-1057-r3, the reviewer's probeB): the old leader abandoned and parked the reap of `DEAD`, then
+        /// lost leadership — its park died with it. The new leader's own SWIM still holds `DEAD` SUSPECTED at its
+        /// replay's first read, so the instance is protected and would have been forgotten until the next activation.
+        /// The replay parks it instead, and the FAULTY edge that ends the suspicion window reaps it, exactly once. At
+        /// `93e7dd349` the FAULTY edge re-armed nothing.
+        @Test
+        void replay_leadershipChangeInsideSuspicionWindow_parkedOrphanReapedAtTheFaultyEdge() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            swimAliveNodes.set(Set.of(DEAD));
+            var oldLeader = ctmWithDrainGrace(GRACE);
+
+            oldLeader.activate();
+            oldLeader.onMembershipDecision(MembershipDecision.nodeRemoved(DEAD, List.of(SELF, PEER_A, PEER_B)));
+            settleFor(Duration.ofMillis(600));
+            oldLeader.deactivate();
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: the old leader abandoned the reap").isEmpty();
+
+            var newLeader = ctmWithDrainGrace(GRACE);
+
+            newLeader.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.listCalls.get() >= 2);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: still SUSPECTED at the new leader's reads — protected, not terminated")
+                                                            .isEmpty();
+
+            swimAliveNodes.set(Set.of());
+            newLeader.onSwimFaulty(DEAD);
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
+
+        /// The replay parks ONLY a node protected by nothing but SWIM life. A node the FSM still tracks is the FSM's
+        /// to depart; a FAULTY edge for it re-arms nothing here — otherwise a tracked, uncounted node would be reaped
+        /// on SWIM's say-so alone.
+        @Test
+        void replay_trackedAndSwimAliveInstance_isNotParked() {
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            swimAliveNodes.set(Set.of(DEAD));
+            trackedMembers.set(Set.of(DEAD));
+            var replayCtm = ctmWithDrainGrace(GRACE);
+
+            replayCtm.activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.listCalls.get() >= 1);
+
+            swimAliveNodes.set(Set.of());
+            replayCtm.onSwimFaulty(DEAD);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+    }
+
+    /// #1062 / R5 — `reapDepartedNode` re-checks liveness before an irreversible terminate. A DEAD verdict on a node
+    /// that still shows independent evidence of life is DEFERRED, with bounded re-checks every
+    /// `provisioningTimeout / 12`; a genuinely departed node is reaped at once, exactly once.
+    @Nested
+    class DepartedReapLivenessRecheck {
+        private static final TimeSpan SLOW_GRACE = timeSpan(1200).millis();
+        private static final TimeSpan FAST_GRACE = timeSpan(150).millis();
+
+        private ClusterTopologyManager activeCtm(TimeSpan grace) {
+            var reaper = ctmWithDrainGrace(grace);
+
+            reaper.activate();
+
+            return reaper;
+        }
+
+        private static MembershipDecision removedD() {
+            return MembershipDecision.nodeRemoved(PEER_D, List.of(SELF, PEER_A, PEER_B));
+        }
+
+        /// The #1062 acceptance: a DEAD verdict while the leader's transport is still connected is not terminated
+        /// within the deferral, then terminated exactly once after the connection drops.
+        @Test
+        void nodeRemoved_transportStillConnected_deferred_thenReapedOnceWhenLinkDrops() {
+            transportConnectedNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(SLOW_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a node the leader still reaches is not reaped on a DEAD verdict")
+                                                            .isEmpty();
+
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("still deferred across several re-checks").isEmpty();
+
+            transportConnectedNodes.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// Raw SWIM life defers the reap the same way.
+        @Test
+        void nodeRemoved_swimStillAlive_deferred_thenReapedWhenSwimGivesUp() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(SLOW_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            settleFor(Duration.ofMillis(250));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+
+            swimAliveNodes.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+        }
+
+        /// A counted membership defers the reap the same way.
+        @Test
+        void nodeRemoved_stillCounted_deferred_thenReapedWhenUncounted() {
+            coreCountedMembers.set(Set.of(PEER_D));
+            var reaper = activeCtm(SLOW_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            settleFor(Duration.ofMillis(250));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+
+            coreCountedMembers.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+        }
+
+        /// A genuinely departed node — no evidence of life — is reaped at once, with no added delay, and once.
+        @Test
+        void nodeRemoved_genuinelyDeparted_reapedImmediatelyOnce() {
+            var reaper = activeCtm(SLOW_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// Bounded: a node still live after every re-check is never terminated. Margin: the 12 re-checks span the
+        /// 150ms grace; the test waits four times that.
+        @Test
+        void nodeRemoved_liveThroughoutDeferral_isNeverTerminated() {
+            transportConnectedNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+
+            var readsAfterBound = transportReads.get();
+
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(transportReads.get()).as("the re-checks stop once exhausted; the deferral is bounded")
+                                            .isEqualTo(readsAfterBound);
+        }
+
+        /// A CTM deactivated during the deferral drops the reap — a deposed view never reaps — even once the
+        /// evidence of life clears.
+        @Test
+        void nodeRemoved_deactivatedDuringDeferral_reapDropped() {
+            transportConnectedNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(SLOW_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            reaper.deactivate();
+            transportConnectedNodes.set(Set.of());
+            settleFor(Duration.ofMillis(400));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// N2 (verify-1057-r2): a deferral started under one activation does not survive deactivate→activate. The
+        /// stale chain drops out at its next re-check even though the CTM is active again; the new activation's
+        /// replay owns the instance (here it lists nothing — the cluster is unnamed). At `ff50a3274` the stale chain
+        /// terminated `PEER_D` once the evidence cleared.
+        @Test
+        void nodeRemoved_reactivatedDuringDeferral_staleDeferralDropped() {
+            transportConnectedNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(SLOW_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            reaper.deactivate();
+            reaper.activate();
+            transportConnectedNodes.set(Set.of());
+            settleFor(Duration.ofMillis(400));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// Waits until the reap of `PEER_D` has been ABANDONED: the re-checks stop reading the evidence. Margin: the
+        /// 12 re-checks span the 150ms grace; the wait is four times that, then a quiet interval twice the grace.
+        private void awaitAbandoned() {
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: still live at every re-check, never terminated")
+                                                            .isEmpty();
+
+            var readsAfterBound = swimReads.get();
+
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(swimReads.get()).as("arming: the re-checks have stopped — the reap is ABANDONED, not deferred")
+                                       .isEqualTo(readsAfterBound);
+        }
+
+        /// S1 (verify-1057-r2): SWIM's suspicion window is LHM-scaled and can outlast both the 60s grace and the
+        /// whole re-check budget, so a dead node can still read SUSPECTED when the last re-check runs. The reap is
+        /// abandoned — and re-armed by the FAULTY edge that ends the window. Terminated exactly once. At `ff50a3274`
+        /// nothing retried and the instance stayed billed until an unrelated leadership change.
+        @Test
+        void nodeRemoved_swimSuspectedPastEveryRecheck_reapedOnceWhenSwimReportsFaulty() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+
+            swimAliveNodes.set(Set.of());
+            reaper.onSwimFaulty(PEER_D);
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// The control (72e179cfe: "not live" needs POSITIVE evidence): a node SWIM keeps reporting SUSPECTED, with no
+        /// FAULTY edge ever, is never terminated — the abandoned reap stays parked.
+        @Test
+        void nodeRemoved_swimSuspectedForever_isNeverTerminated() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// FAULTY re-arms only a reap that was abandoned. A FAULTY edge for a node whose reap was never abandoned — a
+        /// live member SWIM condemns and later refutes — reads no evidence and terminates nothing; its death, if
+        /// real, arrives as `NodeRemoved`.
+        @Test
+        void swimFaulty_forANodeWhoseReapWasNeverAbandoned_terminatesNothing() {
+            var reaper = activeCtm(FAST_GRACE);
+            var readsBefore = swimReads.get() + transportReads.get();
+
+            reaper.onSwimFaulty(PEER_D);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+            assertThat(swimReads.get() + transportReads.get()).as("no reap chain was started").isEqualTo(readsBefore);
+        }
+
+        /// The re-armed reap is still evidence-gated: FAULTY with the leader's transport link still up defers, and
+        /// the terminate follows the link dropping — never the FAULTY edge alone.
+        @Test
+        void swimFaulty_reArmedReap_stillDefersWhileTransportConnected() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+
+            swimAliveNodes.set(Set.of());
+            transportConnectedNodes.set(Set.of(PEER_D));
+            reaper.onSwimFaulty(PEER_D);
+            settleFor(Duration.ofMillis(100));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("FAULTY alone, link still up: deferred").isEmpty();
+
+            transportConnectedNodes.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+
+        /// A parked reap dies with its activation: after deactivate→activate the FAULTY edge re-arms nothing, because
+        /// the new activation's replay owns the instance (here it lists nothing — the cluster is unnamed).
+        @Test
+        void swimFaulty_afterReactivation_doesNotReviveTheAbandonedReap() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+
+            reaper.deactivate();
+            reaper.activate();
+            swimAliveNodes.set(Set.of());
+            reaper.onSwimFaulty(PEER_D);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// NIT-1 (verify-1057-r3): a rejoin under the same id ends the parked episode. The new incarnation's death
+        /// arrives as its own `NodeRemoved`; the stale park must not run a second chain beside it.
+        @Test
+        void nodeJoined_clearsTheParkedReap_faultyAfterRejoinReArmsNothing() {
+            swimAliveNodes.set(Set.of(PEER_D));
+            var reaper = activeCtm(FAST_GRACE);
+
+            reaper.onMembershipDecision(removedD());
+            awaitAbandoned();
+
+            reaper.onMembershipDecision(MembershipDecision.nodeJoined(PEER_D, List.of(SELF, PEER_A, PEER_B, PEER_D)));
+            swimAliveNodes.set(Set.of());
+            reaper.onSwimFaulty(PEER_D);
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// NIT-4 (verify-1057-r3): the activation epoch is bumped FIRST in `activate()`. A `NodeRemoved` delivered
+        /// while `activate()` is still running (here through the lifecycle manager's `resetProvisionerState`, which
+        /// `activate()` calls synchronously) starts a deferral under the NEW epoch, so it survives and reaps once the
+        /// evidence clears. With the bump inside `scheduleActivationReplay` the chain carries the old epoch and is
+        /// dropped at its first re-check.
+        @Test
+        void nodeRemoved_deliveredInsideActivate_deferralBelongsToThatActivation() {
+            transportConnectedNodes.set(Set.of(PEER_D));
+            var reaper = ctmWithDrainGrace(SLOW_GRACE);
+
+            lifecycleManager.onResetProvisionerState(() -> reaper.onMembershipDecision(removedD()));
+            reaper.activate();
+            lifecycleManager.onResetProvisionerState(() -> {});
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: deferred on the live link").isEmpty();
+
+            transportConnectedNodes.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(PEER_D));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(PEER_D);
+        }
+    }
+
+    /// #1804 — a reap the retirement check refuses is neither silent nor final. Production reached this with a
+    /// departing core still an installed voter at its first reap (refused), after which nothing re-armed the reap
+    /// once it was voted out, so its VM kept running and billing. The retirement verdict here is a mutable voter
+    /// set, the real shape of that refusal, and WARNs are read from the production logger rather than fed to it.
+    @Nested
+    class RefusedReapRetry {
+        private static final String LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.ClusterTopologyManager";
+        private static final TimeSpan GRACE = timeSpan(100).millis();
+        private static final NodeId DEAD = nodeId("node-dead").unwrap();
+        private static final List<NodeId> REMAINING = List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_E);
+        private final AtomicReference<Set<NodeId>> voters = new AtomicReference<>(Set.of());
+        /// Every CTM a test activates is deactivated afterwards: a refused-reap chain outlives its test otherwise and
+        /// logs into the next test's appender, which reads the shared logger.
+        private final List<ClusterTopologyManager> activated = new CopyOnWriteArrayList<>();
+        private CapturingAppender appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void attachAppender() {
+            appender = CapturingAppender.create("CtmRefusedReapCapture");
+            appender.start();
+            var ctx = (LoggerContext) LogManager.getContext(false);
+            var existing = ctx.getConfiguration().getLoggerConfig(LOGGER_NAME);
+
+            loggerConfig = LOGGER_NAME.equals(existing.getName()) ? existing : createLoggerConfig(ctx.getConfiguration());
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            loggerConfig.setLevel(Level.WARN);
+            ctx.updateLoggers();
+        }
+
+        @AfterEach
+        void detachAppender() {
+            var ctx = (LoggerContext) LogManager.getContext(false);
+
+            activated.forEach(ClusterTopologyManager::deactivate);
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            ctx.updateLoggers();
+            appender.stop();
+        }
+
+        private static LoggerConfig createLoggerConfig(Configuration configuration) {
+            var created = new LoggerConfig(LOGGER_NAME, Level.WARN, false);
+
+            configuration.addLogger(LOGGER_NAME, created);
+
+            return created;
+        }
+
+        private ClusterTopologyManager voterAwareCtm(TimeSpan grace) {
+            var manager = ctmWithDrainGrace(grace);
+
+            manager.setRetirementRefusal(node -> voters.get().contains(node)
+                                                 ? Option.some("still an installed voter")
+                                                 : Option.none());
+            activated.add(manager);
+
+            return manager;
+        }
+
+        private void removed(ClusterTopologyManager manager, NodeId node) {
+            manager.onMembershipDecision(MembershipDecision.nodeRemoved(node, REMAINING));
+        }
+
+        /// The defect: refused while voting, never retried. Both arms of the same node inside one run: the refusal
+        /// provably held while it voted (nothing terminated across several ticks), and it is terminated, exactly
+        /// once, after being voted out.
+        @Test
+        void nodeRemoved_refusedWhileVoter_isTerminatedOnceVotedOut() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: still a voter, so the reap is refused")
+                                                            .isEmpty();
+
+            voters.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("terminated once voted out, and only once")
+                                                            .containsExactly(DEAD);
+        }
+
+        @Test
+        void nodeRemoved_refusal_isLoggedAtWarnWithTheReason() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+
+            assertThat(appender.capturedWarns()).as("the refusal names the node, that it was refused, and why")
+                                                .anyMatch(msg -> msg.contains(DEAD.id())
+                                                                 && msg.contains("REFUSED")
+                                                                 && msg.contains("still an installed voter"));
+        }
+
+        /// Control: a node that stays a voter is never terminated, however many retries pass.
+        @Test
+        void nodeRemoved_currentVoter_isNeverTerminated() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(900));
+
+            assertThat(appender.capturedWarns()).as("arming: the retries ran and re-read the verdict")
+                                                .anyMatch(msg -> msg.contains("still REFUSED"));
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// Control: a refused reap whose node shows life while the chain waits is dropped, not executed — even once
+        /// the node is later voted out, a live node is never terminated.
+        @Test
+        void nodeRemoved_refusedThenShowsLife_isNeverTerminated() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            swimAliveNodes.set(Set.of(DEAD));
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("stopped")));
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// The retry is bounded: a node that never becomes retirable ends in an operator-visible WARN, and the chain
+        /// stops — a later change of verdict terminates nothing, because nothing is still watching.
+        @Test
+        void nodeRemoved_neverRetirable_givesUpWithAWarn() {
+            var manager = voterAwareCtm(timeSpan(5).millis());
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            await().atMost(Duration.ofSeconds(10))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("instance-termination-unconfirmed") && msg.contains("refused:")));
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(300));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A node that is only TRACKED (not live, not counted) when the chain ticks is protected exactly as the
+        /// replay protects it, and is never terminated, even once voted out. Both protections are separate tests so
+        /// each is load-bearing.
+        @Test
+        void nodeRemoved_refusedThenTracked_isNeverTerminated() {
+            assertProtectedAfterRefusal(() -> trackedMembers.set(Set.of(DEAD)));
+        }
+
+        @Test
+        void nodeRemoved_refusedThenInFlight_isNeverTerminated() {
+            assertProtectedAfterRefusal(() -> inFlightNodes.set(Set.of(DEAD)));
+        }
+
+        private void assertProtectedAfterRefusal(Runnable protect) {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            protect.run();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("stopped")));
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A chain does not outlive its activation: deactivated, its next tick terminates nothing even though the
+        /// verdict has cleared. The successor's replay owns the instance.
+        @Test
+        void nodeRemoved_chainStopsWhenCtmDeactivates() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            manager.deactivate();
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// A chain of an earlier activation is dropped even after the same CTM is activated again: the new
+        /// activation's own refusal path (here, none was raised) owns the node.
+        @Test
+        void nodeRemoved_chainOfEarlierActivationIsDroppedAfterReactivation() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            manager.deactivate();
+            manager.activate();
+            voters.set(Set.of());
+            settleFor(Duration.ofMillis(450));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+        }
+
+        /// Two refusals of one node within one activation, half a window apart, start ONE chain. A second chain would
+        /// tick half a window out of step with the first, and each would log the same "retries left" figure.
+        @Test
+        void nodeRemoved_refusedTwiceInOneActivation_runsOneChain() {
+            var manager = voterAwareCtm(GRACE);
+
+            voters.set(Set.of(DEAD));
+            manager.activate();
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(50));
+            removed(manager, DEAD);
+            settleFor(Duration.ofMillis(650));
+
+            var ticks = appender.capturedWarns().stream()
+                                .filter(msg -> msg.contains("still REFUSED"))
+                                .toList();
+
+            assertThat(ticks).as("arming: the chain ticked").hasSizeGreaterThan(2);
+            assertThat(ticks).as("one chain logs each retries-left figure once").doesNotHaveDuplicates();
+        }
+
+        /// A provider failure at terminate is visible at WARN with the provider's error and is RETRIED (#2062: no longer log-and-drop).
+        @Test
+        void terminateFailure_isLoggedAtWarnWithTheProviderError() {
+            var manager = voterAwareCtm(GRACE);
+
+            lifecycleManager.failTerminates();
+            manager.activate();
+            removed(manager, DEAD);
+
+            assertThat(appender.capturedWarns()).anyMatch(msg -> msg.contains(DEAD.id())
+                                                                 && msg.contains("not confirmed")
+                                                                 && msg.contains("retries left")
+                                                                 && msg.contains("stub provider refused terminate"));
+        }
+
+        /// The new-leader shape: the activation replay selects an untracked, labelled instance of this cluster, the
+        /// first verdict refuses it (a voter), and it is terminated once the verdict clears.
+        @Test
+        void activationReplay_untrackedLabelledInstance_refusedThenRetirable_isTerminated() {
+            clusterStore.seedNamed(5, CLUSTER);
+            coreCountedMembers.set(Set.of(PEER_E, nodeId("node-f").unwrap(), nodeId("node-g").unwrap()));
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            voters.set(Set.of(DEAD));
+
+            voterAwareCtm(GRACE).activate();
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("REFUSED")));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("arming: refused while it is a voter")
+                                                            .isEmpty();
+
+            voters.set(Set.of());
+            await().atMost(Duration.ofSeconds(5))
+                   .until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
+    }
+
+    /// Collects WARN messages so a test can assert on what production actually emitted. Mirrors the
+    /// appender in `ClusterTopologyManagerCasLossLoggingTest`.
+    static final class CapturingAppender extends AbstractAppender {
+        private final List<String> messages = new CopyOnWriteArrayList<>();
+
+        private CapturingAppender(String name, Filter filter, Layout<? extends Serializable> layout) {
+            super(name, filter, layout, true, Property.EMPTY_ARRAY);
+        }
+
+        static CapturingAppender create(String name) {
+            return new CapturingAppender(name, null, PatternLayout.createDefaultLayout());
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLevel().isMoreSpecificThan(Level.WARN)) {
+                messages.add(event.getMessage().getFormattedMessage());
+            }
+        }
+
+        List<String> capturedWarns() {
+            return List.copyOf(messages);
+        }
     }
 
     private static MessageRouter.MutableRouter quietRouter() {
@@ -501,16 +2296,28 @@ class ClusterTopologyManagerActuatorTest {
 
     private static final class RecordingClusterStore {
         private final AtomicReference<Option<ClusterConfigValue>> current = new AtomicReference<>(Option.none());
+        private final AtomicReference<Option<AutoHealStateValue>> autoHealState = new AtomicReference<>(Option.none());
         private final ConcurrentHashMap<ProvisioningSlotKey, ProvisioningSlotValue> slotKv = new ConcurrentHashMap<>();
 
         void seed(int coreCount) {
-            current.set(Option.some(new ClusterConfigValue("", "", "1.0.0", coreTopology(coreCount), 3, 9, "test",
+            current.set(Option.some(new ClusterConfigValue(Option.none(), "", "1.0.0", coreTopology(coreCount), 3, 9, "test",
+                                                           current.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
+                                                           System.currentTimeMillis())));
+        }
+
+        /// #1050 R4 — the activation replay scopes its listing by the committed cluster name, so its tests need one.
+        void seedNamed(int coreCount, String clusterName) {
+            current.set(Option.some(new ClusterConfigValue(Option.none(), clusterName, "1.0.0", coreTopology(coreCount), 3, 9, "test",
                                                            current.get().map(ClusterConfigValue::configVersion).or(0L) + 1L,
                                                            System.currentTimeMillis())));
         }
 
         Option<ClusterConfigValue> current() {
             return current.get();
+        }
+
+        Option<AutoHealStateValue> autoHealState() {
+            return autoHealState.get();
         }
 
         long currentVersion() {
@@ -522,8 +2329,15 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands) {
-            for (var command : commands) {applyOne(command);}
-            return Promise.success(List.of());
+            var outcomes = new java.util.ArrayList<Object>();
+            for (var command : commands) {
+                if (command instanceof KVCommand.LeaderTransaction<?, ?> transaction) {
+                    transaction.mutations().forEach(mutation -> mutation.replacement().onPresent(value ->
+                        applyOne(new KVCommand.Put<>((AetherKey) mutation.key(), value))));
+                    outcomes.add(new KVCommand.TransactionResult(transaction.transactionId(), true));
+                } else { applyOne(command); }
+            }
+            return Promise.success(outcomes);
         }
 
         private void applyOne(KVCommand<AetherKey> command) {
@@ -539,6 +2353,8 @@ class ClusterTopologyManagerActuatorTest {
                 slotKv.put(psk, psv);
             } else if (put.key() instanceof ClusterConfigKey && put.value() instanceof ClusterConfigValue cv) {
                 current.set(Option.some(cv));
+            } else if (put.key() instanceof AutoHealStateKey && put.value() instanceof AutoHealStateValue ahv) {
+                autoHealState.set(Option.some(ahv));
             }
         }
 
@@ -553,6 +2369,65 @@ class ClusterTopologyManagerActuatorTest {
         private final CopyOnWriteArrayList<NodeId> terminatedIds = new CopyOnWriteArrayList<>();
         private final AtomicReference<ProvisionSpec> lastSpec = new AtomicReference<>();
         private final java.util.concurrent.atomic.AtomicBoolean failProvision = new java.util.concurrent.atomic.AtomicBoolean(false);
+        /// #1050 R4 — the labelled provider inventory the activation replay lists. `terminateNode` removes from it.
+        private final ConcurrentHashMap<NodeId, InstanceInfo> inventory = new ConcurrentHashMap<>();
+        final AtomicInteger listCalls = new AtomicInteger();
+        private final AtomicReference<Map<String, String>> lastListFilter = new AtomicReference<>(Map.of());
+        /// S2 (verify-1057-r2): listings after the `holdListingsAfter` count stay PENDING until released, so a test
+        /// can change the CTM's state between a listing being issued and its resolution — the provider latency window.
+        private final AtomicInteger holdListingsAfter = new AtomicInteger(Integer.MAX_VALUE);
+        private final AtomicReference<Promise<List<InstanceInfo>>> heldListing = new AtomicReference<>();
+        private final AtomicReference<Map<String, String>> heldFilter = new AtomicReference<>(Map.of());
+
+        void holdListingsAfter(int completedListings) {
+            holdListingsAfter.set(completedListings);
+        }
+
+        /// NIT-4 (verify-1057-r3): `resetProvisionerState` is called synchronously INSIDE `activate()`, after the CTM
+        /// is active and before its replay is scheduled — the only seam through which a test can deliver a
+        /// membership decision at that instant.
+        private final AtomicReference<Runnable> onResetProvisionerState = new AtomicReference<>(() -> {});
+
+        void onResetProvisionerState(Runnable hook) {
+            onResetProvisionerState.set(hook);
+        }
+
+        @Override public void resetProvisionerState(Option<ClusterName> clusterName) {
+            onResetProvisionerState.get().run();
+        }
+
+        boolean listingHeld() {
+            return heldListing.get() != null;
+        }
+
+        /// Resolves the held listing with the inventory as it stands NOW.
+        void releaseHeldListing() {
+            var held = heldListing.getAndSet(null);
+
+            held.succeed(matching(heldFilter.get()));
+        }
+
+        private List<InstanceInfo> matching(Map<String, String> tagFilter) {
+            return inventory.values()
+                            .stream()
+                            .filter(instance -> instance.tags().entrySet().containsAll(tagFilter.entrySet()))
+                            .toList();
+        }
+
+        void addInstance(NodeId nodeId, String cluster, String role) {
+            inventory.put(nodeId,
+                          InstanceInfo.instanceInfo(InstanceId.instanceId("i-" + nodeId.id()).unwrap(),
+                                                    InstanceStatus.RUNNING,
+                                                    List.of("127.0.0.1"),
+                                                    InstanceType.ON_DEMAND,
+                                                    Map.of("aether-cluster", cluster, "aether-role", role),
+                                                    Option.some(nodeId.id()))
+                                      .unwrap());
+        }
+
+        Map<String, String> lastListFilter() {
+            return lastListFilter.get();
+        }
 
         List<NodeId> terminatedNodeIds() {
             return List.copyOf(terminatedIds);
@@ -564,6 +2439,19 @@ class ClusterTopologyManagerActuatorTest {
 
         void failProvisions() {
             failProvision.set(true);
+        }
+
+        private volatile org.pragmatica.lang.Cause provisionFailure = org.pragmatica.lang.utils.Causes.cause("stub provision failure");
+
+        void failProvisionsWith(org.pragmatica.lang.Cause cause) {
+            provisionFailure = cause;
+            failProvision.set(true);
+        }
+
+        private final java.util.concurrent.atomic.AtomicBoolean failTerminates = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        void failTerminates() {
+            failTerminates.set(true);
         }
 
         void allowProvisions() {
@@ -581,7 +2469,7 @@ class ClusterTopologyManagerActuatorTest {
             var count = provisionCount.incrementAndGet();
             lastSpec.set(spec);
             if (failProvision.get()) {
-                return org.pragmatica.lang.utils.Causes.cause("stub provision failure").promise();
+                return provisionFailure.promise();
             }
             return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + count).unwrap(),
                                                              InstanceStatus.RUNNING,
@@ -590,13 +2478,25 @@ class ClusterTopologyManagerActuatorTest {
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
+            if (failTerminates.get()) {
+                return org.pragmatica.lang.utils.Causes.cause("stub provider refused terminate").promise();
+            }
             terminateCount.incrementAndGet();
             terminatedIds.add(nodeId);
+            inventory.remove(nodeId);
             return Promise.success(Unit.unit());
         }
 
-        @Override public Promise<Unit> restartNode(NodeId nodeId) {
-            return Promise.success(Unit.unit());
+        @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+            var call = listCalls.incrementAndGet();
+            lastListFilter.set(Map.copyOf(tagFilter));
+            if (call > holdListingsAfter.get()) {
+                var pending = Promise.<List<InstanceInfo>> promise();
+                heldFilter.set(Map.copyOf(tagFilter));
+                heldListing.set(pending);
+                return pending;
+            }
+            return Promise.success(matching(tagFilter));
         }
 
         @Override public boolean isCloudManaged() {

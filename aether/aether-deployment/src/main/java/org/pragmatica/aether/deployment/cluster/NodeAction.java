@@ -15,7 +15,5 @@ public sealed interface NodeAction {
 
     record StopNode(NodeId nodeId) implements NodeAction {}
 
-    record RestartNode(NodeId nodeId) implements NodeAction {}
-
     record MigrateSlices(NodeId sourceNode, Option<NodeId> targetNode) implements NodeAction {}
 }

@@ -15,12 +15,14 @@ import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AutoHealStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -28,6 +30,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 @SuppressWarnings("JBCT-RET-01")
@@ -53,6 +56,35 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// untouched.
     default void reconcileWorkerTopology() {}
 
+    /// #689 — the non-core join channel (#728), delivered so the leader can compare the role it
+    /// PROVISIONED a node with against the role the node ADVERTISES. Workers never appear in
+    /// `MembershipDecision`, so without this a core-intended replacement that boots labelled
+    /// `worker` would be invisible to the comparison. Default no-op so test fakes are untouched.
+    default void onWorkerJoin(WorkerJoinDecision decision) {}
+
+    /// #689 — every provisioned node whose LAST observed join advertised a role other than the one it
+    /// was provisioned with (including none), leader-scoped: intents live with the leader that minted
+    /// the node id, so a new leader reports none — absence of intent is not a mismatch. The intent is
+    /// retained for the id until the node is decommissioned, so every rejoin under that id is
+    /// re-compared: a still-mislabelled restart re-reports, a correctly relabelled one clears the
+    /// entry. A departed node's entry stays listed until decommission or leader change. The
+    /// classification is explicit; absent or unrecognized role labels are reported as UNKNOWN.
+    default List<RoleMismatch> roleMismatches() {
+        return List.of();
+    }
+
+    /// One provisioned node whose advertised role label disagrees with its provisioning intent.
+    /// `advertisedRole` is the role the membership FSM holds for the node (`MemberDescriptor.role`,
+    /// `""` when no label ever arrived); `classifiedAs` is what `MemberDescriptor.isCoreRole` made of it.
+    record RoleMismatch(NodeId nodeId, String intendedRole, String advertisedRole, String classifiedAs) {}
+
+    /// #1050 (verify-1057-r2 S1) — raw SWIM declared `nodeId` FAULTY: positive death evidence, delivered by the
+    /// SWIM observation listener at the FAULTY edge. A departed-node reap that ran out of liveness re-checks while
+    /// SWIM still reported the node SUSPECTED (the suspicion window is LHM-scaled and can outlast the whole re-check
+    /// budget) is re-armed by this evidence; nothing else is. Default no-op so test fakes and non-provisioning
+    /// implementations are untouched.
+    default void onSwimFaulty(NodeId nodeId) {}
+
     void onClusterPhaseChanged(ClusterPhase newPhase);
     void activate();
     void deactivate();
@@ -68,8 +100,17 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     Option<LastProvisionFailure> lastProvisionFailure();
     int resetCircuitBreaker(String reason);
+    /// #685 — the operator's auto-heal disable/enable is a durable cluster fact stored in consensus
+    /// KV (`AetherKey.AutoHealStateKey`), never a leader's in-memory mood: a read reflects the log
+    /// applied LOCALLY, so the flag becomes visible on a node when that node applies the committed
+    /// Put — bounded by consensus latency, not zero; a node behind on apply answers the previous
+    /// value until then. Absent key means enabled (the pre-#685 default).
     boolean isAutoHealEnabled();
-    boolean setAutoHealEnabled(boolean enabled, String reason);
+    /// #685 — writes the durable KV record via the existing `commandApplier` channel and returns the
+    /// PRIOR state once the write is applied. Same visibility caveat as [#isAutoHealEnabled]: other
+    /// nodes (including a newly-elected leader) observe the change only after they apply the
+    /// committed Put, not synchronously with this call's resolution.
+    Promise<Boolean> setAutoHealEnabled(boolean enabled, String reason);
 
     /// Membership v2 / E2 — provision a replacement for a departed peer under the
     /// leader-supplied identity `newNodeId`.
@@ -110,14 +151,238 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                        Set<NodeId> clusterMembers,
                                                        NodeRole intendedRole);
 
+    /// The source a node WITHOUT a source label is addressed by at the provider (its retirement, its listing): the sole source of the committed
+    /// config declaring the role, else a typed [ReplacementSourceUnresolved] (or [ReplacementConfigUnparseable]). Abstract on purpose: an
+    /// implementation that knows no config must say so itself, because the answer is committed into the replacement record for good.
+    org.pragmatica.lang.Result<org.pragmatica.aether.environment.SourceName> sourceOfSourcelessNode(NodeRole intendedRole);
+
+    /// The source-explicit form: the replacement is stamped with `sourceName`, the source the node it replaces came from
+    /// (#1543 worker replacement). Implementations that do not distinguish sources ignore it.
+    default Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                               Option<NodeId> failedPeer,
+                                                               Set<NodeId> clusterMembers,
+                                                               NodeRole intendedRole,
+                                                               org.pragmatica.aether.environment.SourceName sourceName) {
+        return provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
+    }
+
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
-    /// flow or the overprovision-drain path. `reason` is observability-only at this layer.
+    /// flow or the overprovision-drain path. `reason` is observability-only at this layer except for
+    /// [`DrainReason#isSurplusTrim`], which makes the grace-terminate backstop re-check before reaping
+    /// (#1050).
     /// Returns a `Promise<Unit>` resolving once the drain has been initiated (the target node
     /// observes the `DRAIN` command on the leader↔node heartbeat and self-drains per spec §8).
     ///
     /// Drain is delivered as a heartbeat command (spec §7.5.4) and is heartbeat-reported /
     /// leader-cached — there is no KV drain record and no node-state KV write on this path.
+    boolean usesExplicitCommunities();
+    void installCommunityPlacement(CommunityPlacementReconciler reconciler);
+
+    /// The community placement reconciler installed on this manager, if any. Read-only, for the boot test that pins the node's wiring.
+    default org.pragmatica.lang.Option<CommunityPlacementReconciler> installedCommunityPlacement() {
+        return org.pragmatica.lang.Option.none();
+    }
+
+    default org.pragmatica.lang.Unit setHierarchyStateWriter(HierarchyStateWriter writer) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Verified genesis voter IDs, independent of current discovery peers or desired capacity.
+    default org.pragmatica.lang.Unit setGenesisVoters(java.util.function.Supplier<java.util.List<NodeId>> supplier) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Core retirement requires a durable successor installation certificate. `none()` means the node is
+    /// retirable now; otherwise the reason it is not. A refused reap is logged with that reason and retried (#1804).
+    default org.pragmatica.lang.Unit setRetirementRefusal(Function<NodeId, Option<String>> refusal) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: the manager owns the unconfirmed-termination lifecycle. Marks `node` as retired with an instance whose termination is NOT confirmed and
+    /// raises `instance-termination-unconfirmed` (once per node). While this manager is the active leader it re-checks every marked node at a low
+    /// bounded rate and raises `instance-termination-confirmed` on a real confirmation. Every raiser goes through here; nothing raises the pair
+    /// directly. Default: nothing (a manager that cannot confirm).
+    default org.pragmatica.lang.Unit markUnconfirmed(NodeId node, String cause) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062 (owner ruling 28992d91b): an OPERATOR clears ONE mark, by node id, after verifying at the provider and terminating the instance by hand.
+    /// `attestedInstance` is the provider instance id the operator terminated (or `unknown`). Before it clears, the manager asks the node's source provider
+    /// twice: for the node's LABELLED instances (so a wrong or `unknown` id does not hide a listed instance) and, when an id is given, for that INSTANCE by
+    /// id (so an instance the provider shows without the node's labels is not missed). Either showing an instance that is not terminated, or either read
+    /// failing (a not-found for the id is an answer), REFUSES the clear (fail closed) unless `force`, which overrides both and is recorded in the event
+    /// with the provider state seen. An EXTERNAL node has no provider of ours to ask: refused unless `force`. Also refused, with nothing cleared: no mark, a
+    /// node that shows life, a mark that changed since it was read, a manager that is not the active leader. A clear writes the exact mark it read, so a mark
+    /// of a later incarnation survives it, and closes the open warning cluster-wide. Default: not the active leader.
+    default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance, boolean force) {
+        return new UnconfirmedClearRefusal.NotActive().promise();
+    }
+
+    default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance) {
+        return clearUnconfirmed(node, operator, attestedInstance, false);
+    }
+
+    /// Why [#clearUnconfirmed] cleared nothing.
+    sealed interface UnconfirmedClearRefusal extends org.pragmatica.lang.Cause {
+        record NotActive() implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Only the active leader clears an unconfirmed-termination mark";
+            }
+        }
+
+        record NotMarked(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Node " + node.id() + " has no unconfirmed-termination mark";
+            }
+        }
+
+        record NodeLive(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Node " + node.id()
+                     + " shows life in the membership; a live node is never cleared, and its instance must not be terminated";
+            }
+        }
+
+        /// The provider still lists an instance of the node that is not terminated: clearing would hide a paid orphan.
+        record InstanceStillListed(NodeId node, String instance, String state) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The provider still lists instance " + instance
+                     + " of " + node.id()
+                     + " (" + state
+                     + "); terminate it first, or clear with force if you accept that it stays running";
+            }
+        }
+
+        /// An EXTERNAL node (the operator started it): there is no provider of ours to ask, so the clear cannot be checked.
+        record ExternalNodeUnchecked(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "External node " + node.id()
+                     + ": no provider to check this external node; use --force after confirming it is gone";
+            }
+        }
+
+        /// The provider could not be asked: the clear fails closed.
+        record ProviderUnreachable(NodeId node, String cause) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The provider could not be asked about the instance of " + node.id()
+                     + " (" + cause
+                     + "); nothing was cleared, retry, or clear with force if you verified it yourself";
+            }
+        }
+
+        record Changed(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The unconfirmed-termination mark of " + node.id()
+                     + " changed or the clear was not confirmed committed; read the mark again before retrying";
+            }
+        }
+    }
+
+    /// #2062: where the persisted "termination not confirmed" marks are read from (the replicated store), so that a new leader inherits every
+    /// open mark. Default: none.
+    default org.pragmatica.lang.Unit setUnconfirmedMarks(java.util.function.Supplier<java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue>> reader) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// The replicated marks this manager reads (readable so that the node's wiring can be pinned).
+    default java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue> unconfirmedMarks() {
+        return java.util.Map.of();
+    }
+
+    /// The sink the unconfirmed-termination events go to (readable so that the node's wiring can be pinned).
+    default org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
+        return org.pragmatica.utility.warning.OperatorWarningSink.logOnly();
+    }
+
+    /// #2062: where the unconfirmed-termination operator events go (default: nowhere, the log line stands).
+    default org.pragmatica.lang.Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: the node was retired by `replacement`: its admission marker becomes a retirement tombstone, so its identity, if it rejoins, is refused. Default: nothing.
+    default org.pragmatica.lang.Unit supersedeAdmission(NodeId node, NodeId replacement) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: the node is gone for good (retired by a replacement): its admission marker is deleted ([NodeLifecycleManager#forgetAdmission]). Default: nothing.
+    default org.pragmatica.lang.Unit forgetAdmission(NodeId node) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// What the leader knows of the instance behind a dropped in-flight replacement (#1111).
+    enum DroppedInstance {
+        /// The provider has listed the instance: an empty listing later means it is gone.
+        LISTED,
+        /// A create returned an instance, but no listing has shown it: an empty listing proves nothing yet (listings lag creation).
+        CREATED,
+        /// The create FAILED, so the instance may never have existed: only repeated successful empty listings confirm it absent.
+        MAYBE
+    }
+
+    /// #1111: the leader dropped the in-flight auto-heal replacement minted as `node` (the per-source ceiling, a FAILED or repeatedly absent
+    /// listing, or a failed create) without it joining. Whatever the provider holds under that identity is looked up by its node-id label and
+    /// terminated through the confirmed reap, with a WARN naming the source, node and instance id; a failed termination ends in the same
+    /// unconfirmed mark and event as a retirement. A [DroppedInstance#MAYBE] drop whose instance is confirmed absent ends quietly. A node that
+    /// shows life is never terminated. Default: nothing.
+    default org.pragmatica.lang.Unit reapDroppedReplacement(NodeId node, String reason, DroppedInstance knowledge) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #1543: the committed replacement pairings, read by worker surplus selection.
+    default org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
+
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
+
+    /// #1543: terminate the provider instance of a retired node and CONFIRM it is gone. Succeeds only when a provider listing shows no
+    /// instance of `node` that is provisioning, running or in a state the provider cannot state; every other outcome is a failure
+    /// carrying why (the refusal, the provider error, the instance still listed). A failed listing is a failure, never "gone".
+    ///
+    /// An EMPTY listing proves absence only for an instance the provider has listed before (`seenBefore`, see [#instanceListed]) or
+    /// one this call listed and terminated: providers' listings lag creation and omit what they cannot attribute (an unlabelled
+    /// VM), so an instance never listed stays unconfirmed, with a failure that names the node. Idempotent: a repeat finds the
+    /// listing empty after the terminate it already did only if it saw the instance, so a new leader that never saw it re-asks.
+    /// Honours the retirement refusal of [#drainNode] (a voter is not reaped). Reusable by any retirement path.
+    default Promise<Unit> reapRetired(NodeId node,
+                                      org.pragmatica.aether.environment.SourceName source,
+                                      boolean seenBefore) {
+        return org.pragmatica.lang.utils.Causes.cause("reap of " + node.id()
+                                                     + ": this topology manager cannot confirm termination")
+                                               .promise();
+    }
+
+    /// #1543: whether the provider lists at least one instance (in any status) of `node`: the observation that lets a later empty
+    /// listing count as "gone". A failed listing is a failure.
+    default Promise<Boolean> instanceListed(NodeId node, org.pragmatica.aether.environment.SourceName source) {
+        return org.pragmatica.lang.utils.Causes.cause("listing of " + node.id()
+                                                     + ": this topology manager cannot list instances")
+                                               .promise();
+    }
+
+    /// #1049 — what the compute provider reports about the instance behind the auto-heal replacement
+    /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,
+    /// [ReplacementInstanceState#FAILED] once every listed instance is stopping or terminated,
+    /// [ReplacementInstanceState#ABSENT] when the provider lists none, and
+    /// [ReplacementInstanceState#UNKNOWN] when it cannot answer or reports only statuses it cannot state
+    /// (and none provisioning or running). The returned `Promise` does not fail:
+    /// an unanswerable query IS the `UNKNOWN` answer, so the caller never has to guess what a failure
+    /// meant. One provider listing per call — the caller owns the cadence.
+    Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId);
+    /// #1049 — the hard ceiling on how long an auto-heal replacement of `intendedRole` may stay in-flight
+    /// while its provider still reports it existing or booting (or cannot report at all). Resolved from
+    /// the `replacement_ceiling` of the cloud source backing the role in the persisted cluster config,
+    /// else the ten-minute `SourceProfile.DEFAULT_REPLACEMENT_CEILING`.
+    TimeSpan replacementCeiling(NodeRole intendedRole);
     /// Membership v2 / E2 — reconcile current cluster membership against configured size
     /// (spec §7.4). Derives action from the SWIM-converged member count plus the KV
     /// configured count: shortfall → `provisionReplacement` per missing slot; surplus →
@@ -149,9 +414,14 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// Membership v2 / B5b production factory. Wires the leader's DRAIN command channel:
     /// `drainCommandSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
     /// cluster-sync ping carries the target in its global `drainNodes` set, and the target self-drains via its
-    /// `DrainProcedure`); `drainCommandClear` removes the target after the CTM grace-terminate
-    /// backstop reaps the container. `AetherNode` wires these to
+    /// `DrainProcedure`); `drainCommandClear` removes the target when the CTM grace-terminate
+    /// backstop fires, whether or not it reaps (#1050). `AetherNode` wires these to
     /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.
+    ///
+    /// #685 review round 1 NOTE 4 — `autoHealStateReader` is REQUIRED here, not defaulted: a
+    /// production wiring site that omitted it would silently get permanently-enabled auto-heal with
+    /// no compile error. Only the 8-param overload above (no plausible production use — it also lacks
+    /// drain-command wiring) defaults it, explicitly, at its own call site.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -161,7 +431,9 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          Consumer<NodeId> drainCommandSink,
-                                                         Consumer<NodeId> drainCommandClear) {
+                                                         Consumer<NodeId> drainCommandClear,
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                         MembershipLiveness liveness) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -172,7 +444,9 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          phaseSupplier,
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
-                                                                         drainCommandClear);
+                                                                         drainCommandClear,
+                                                                         autoHealStateReader,
+                                                                         liveness);
     }
 
     /// #336 production factory — additionally wires the leader's OWN RESOLVED config as
@@ -185,6 +459,14 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// non-cloud / forge / tests, in which case the composed overlay passes through unchanged
     /// (prior behavior). `AetherNode` supplies a memoized supplier that parses the node's own config
     /// file once via `TomlParser.parseFile`.
+    ///
+    /// `autoHealStateReader` (#685) is the durable KV read for the operator's auto-heal
+    /// enable/disable flag — a direct local lookup against `AetherKey.AutoHealStateKey.SINGLETON`,
+    /// never a separately-maintained cache. `AetherNode` wires it to the production `KVStore`.
+    ///
+    /// `liveness` (#1050 / #1062) is the membership and liveness evidence consulted before every irreversible
+    /// reap — the drain-grace backstop, the departed-node reap and the activation replay
+    /// ([MembershipLiveness]). REQUIRED for the same fail-open reason as `autoHealStateReader`.
     static ClusterTopologyManager clusterTopologyManager(TopologyObserver observer,
                                                          NodeLifecycleManager lifecycleManager,
                                                          AutoHealConfig config,
@@ -195,7 +477,9 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<ClusterPhase> phaseSupplier,
                                                          Consumer<NodeId> drainCommandSink,
                                                          Consumer<NodeId> drainCommandClear,
-                                                         Supplier<Option<TomlDocument>> resolvedLocalConfig) {
+                                                         Supplier<Option<TomlDocument>> resolvedLocalConfig,
+                                                         Supplier<Option<AutoHealStateValue>> autoHealStateReader,
+                                                         MembershipLiveness liveness) {
         return ClusterTopologyManagerRecord.clusterTopologyManagerRecord(observer,
                                                                          lifecycleManager,
                                                                          config,
@@ -207,6 +491,8 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          System::currentTimeMillis,
                                                                          drainCommandSink,
                                                                          drainCommandClear,
-                                                                         resolvedLocalConfig);
+                                                                         resolvedLocalConfig,
+                                                                         autoHealStateReader,
+                                                                         liveness);
     }
 }

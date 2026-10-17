@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.environment.aws;
 
@@ -112,7 +111,7 @@ class AwsDiscoveryProviderTest {
             var stoppedInstance = new Instance("i-2", "t3.medium", "ami-12345",
                                                "10.0.0.2", null,
                                                new Instance.InstanceState("stopped", 80),
-                                               tagSet(Map.of("aether-cluster", "test-cluster")));
+                                               tagSet(Map.of("aether-cluster", "test-cluster")), null);
             var runningInstance = instanceWithTags("i-1", "10.0.0.1", null,
                                                    Map.of("aether-cluster", "test-cluster"));
 
@@ -181,7 +180,7 @@ class AwsDiscoveryProviderTest {
         return new Instance(instanceId, "t3.medium", "ami-12345",
                             privateIp, publicIp,
                             new Instance.InstanceState("running", 16),
-                            tagSet(tags));
+                            tagSet(tags), null);
     }
 
     private static Instance.TagSet tagSet(Map<String, String> tags) {

@@ -35,7 +35,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -83,7 +82,7 @@ class BootstrapModuleTest {
             assertThat(ownership.ownerNodeId()).isEqualTo(SELF);
             assertThat(ownership.ownerEpoch())
                 .as("the initial core-partition ownerEpoch couples rabiaTerm with the initial ownershipTerm 1")
-                .isEqualTo(Epoch.epoch(FIXTURE_RABIA_TERM, 1L));
+                .isEqualTo(Epoch.epoch(0L, FIXTURE_RABIA_TERM, 1L));
             assertThat(ownership.ownershipTerm()).isEqualTo(1L);
         }
 
@@ -96,7 +95,7 @@ class BootstrapModuleTest {
             var deposed = new NodeId("node-deposed");
             var existing = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(deposed,
                                                                                  BootstrapModule.CORE_COMMUNITY_ID,
-                                                                                 Epoch.epoch(FIXTURE_RABIA_TERM, 1L),
+                                                                                 Epoch.epoch(0L, FIXTURE_RABIA_TERM, 1L),
                                                                                  1L,
                                                                                  HlcTimestamp.ZERO);
             var fixture = newFixture(/* initialCoreSize */ 1);
@@ -110,7 +109,7 @@ class BootstrapModuleTest {
                 .isEqualTo(SELF);
             assertThat(ownership.ownerEpoch())
                 .as("same-term stale-owner takeover advances the epoch via the ownershipTerm local counter")
-                .isEqualTo(Epoch.epoch(FIXTURE_RABIA_TERM, 2L));
+                .isEqualTo(Epoch.epoch(0L, FIXTURE_RABIA_TERM, 2L));
             assertThat(ownership.ownerEpoch().isStrictlyAfter(existing.ownerEpoch()))
                 .as("(rabiaTerm, 2) strictly dominates the deposed owner's (rabiaTerm, 1) at the SAME term — fence holds")
                 .isTrue();
@@ -147,6 +146,33 @@ class BootstrapModuleTest {
             assertThat(clusterConfigPuts).hasSize(1);
             var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
             assertThat(seeded.coreCount()).isEqualTo(3);
+            // #1812: the seed carries NO source configuration, typed, never a blank TOML a reader could parse.
+            assertThat(seeded.tomlContent().isEmpty()).as("the bootstrap seed has no source TOML").isTrue();
+        }
+
+        /// #1019 — pins `SEED_CORE_MIN`, which nothing else reaches. It is the floor applied to the
+        /// `coreMin` written into the seeded `ClusterConfigValue`
+        /// (`Math.max(SEED_CORE_MIN, baseline.coreMin())`), and that value is what a later scale-down
+        /// is checked against.
+        ///
+        /// The existing coreMin assertion uses a baseline of 5, where `max(3, 5)` and `max(5, 5)` are
+        /// both 5 — so raising the constant leaves it green. A baseline BELOW the floor is the only
+        /// shape that can discriminate: a mutation probe found this unpinned and this test is the fix.
+        @Test
+        void seedCoreMin_isFlooredAtTheSeedMinimum_whenBaselineIsLower() {
+            var baseline = new BootstrapModule.ClusterConfigBaseline(/* coreCount */ 3, /* coreMin */ 1, /* coreMax */ 0);
+            var fixture = newFixture(baseline);
+            fixture.module.onLeaderGained();
+
+            var clusterConfigPuts = collectPuts(fixture.cluster.batches).stream()
+                                                                          .filter(p -> p.key() instanceof ClusterConfigKey)
+                                                                          .toList();
+            assertThat(clusterConfigPuts).hasSize(1);
+            var seeded = (ClusterConfigValue) clusterConfigPuts.getFirst().value();
+            assertThat(seeded.coreMin())
+                    .as("a baseline coreMin below the seed floor is raised to it, and the floor is the "
+                       + "STRUCTURAL 3 rather than the authoring minimum of 5")
+                    .isEqualTo(3);
         }
 
         @Test
@@ -190,8 +216,7 @@ class BootstrapModuleTest {
         void onLeaderGained_existingClusterConfig_notOverwritten() {
             // Idempotency / single-writer safety: when ClusterConfigKey.CURRENT already exists,
             // leader-gain must NOT re-seed or overwrite it, regardless of the static baseline.
-            var existingConfig = ClusterConfigValue.clusterConfigValue("",
-                                                                        "existing-cluster",
+            var existingConfig = ClusterConfigValue.bootstrapSeed("existing-cluster",
                                                                         "1.0.0",
                                                                         coreTopology(7),
                                                                         7,
@@ -211,52 +236,6 @@ class BootstrapModuleTest {
         }
     }
 
-    @Nested
-    class BootstrapCommittedCallback {
-        @Test
-        void onLeaderGained_firesCallbackOnceBatchCommits() {
-            var fixture = newFixture(/* initialCoreSize */ 1);
-            var fired = new AtomicInteger(0);
-            fixture.module.onBootstrapCommitted(fired::incrementAndGet);
-
-            fixture.module.onLeaderGained();
-
-            // A core-partition apply happened — completion callback must have fired exactly once.
-            assertThat(fired.get()).isEqualTo(1);
-        }
-
-        @Test
-        void onLeaderGained_emptyBatch_firesCallbackImmediately() {
-            // Pre-seed an existing core partition + cluster config so the planner produces no work.
-            var existingConfig = ClusterConfigValue.clusterConfigValue("",
-                                                                        "",
-                                                                        "1.0.0",
-                                                                        coreTopology(1),
-                                                                        3,
-                                                                        15,
-                                                                        "test",
-                                                                        1L);
-            var fixture = newFixture(/* initialCoreSize */ 1);
-            fixture.kv.put(ClusterConfigKey.CURRENT, existingConfig);
-
-            // Pre-seed a core partition owned by self so planCoreBootstrap returns none.
-            var ownerEpoch = Epoch.epoch(0L, 0L);
-            var existingOwnership = DhtPartitionOwnershipValue.dhtPartitionOwnershipValue(SELF,
-                                                                                         BootstrapModule.CORE_COMMUNITY_ID,
-                                                                                         ownerEpoch,
-                                                                                         1L,
-                                                                                         HlcTimestamp.ZERO);
-            fixture.kv.put(DhtPartitionOwnershipKey.dhtPartitionOwnershipKey(BootstrapModule.CORE_PARTITION_ID), existingOwnership);
-
-            var fired = new AtomicInteger(0);
-            fixture.module.onBootstrapCommitted(fired::incrementAndGet);
-
-            fixture.module.onLeaderGained();
-
-            // Empty batch path — callback fires immediately without going through cluster.apply.
-            assertThat(fired.get()).isEqualTo(1);
-        }
-    }
 
     @Nested
     class LeaderLossResetsBootstrapState {
@@ -306,7 +285,7 @@ class BootstrapModuleTest {
         var isLeader = new AtomicBoolean(true);
         var cluster = new RecordingClusterNode();
         var module = BootstrapModule.bootstrapModule(isLeader::get,
-                                                      () -> FIXTURE_RABIA_TERM,
+                                                      () -> Epoch.epoch(0L, FIXTURE_RABIA_TERM, 0L),
                                                       () -> Option.<Long>none(),
                                                       hlcClock,
                                                       () -> Set.<NodeId>of(),

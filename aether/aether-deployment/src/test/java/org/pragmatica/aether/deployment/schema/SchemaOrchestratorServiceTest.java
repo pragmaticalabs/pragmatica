@@ -17,6 +17,17 @@ class SchemaOrchestratorServiceTest {
     @Nested
     class FailureClassificationTests {
 
+        /// #1931: a configured repository that could not answer now ends resolution as `ArtifactUnavailable` (no fall-through to
+        /// the next source on a transient failure). It must be TRANSIENT so the existing backoff retries it; unclassified it was
+        /// permanently FAILED with a manual retry.
+        @Test
+        void classifyFailure_artifactUnavailable_isTransient() {
+            var cause = new org.pragmatica.aether.slice.SliceLoadingFailure.Intermittent.ArtifactUnavailable(
+                "org.example:app:1.0.0", java.util.List.of("repository #0 unavailable: connect timed out"));
+
+            assertThat(SchemaOrchestratorServiceInstance.classifyFailure(cause)).isEqualTo(TRANSIENT);
+        }
+
         @Test
         void classifyFailure_transient_forDatasourceUnreachable() {
             var cause = SchemaError.DatasourceUnreachable.datasourceUnreachable("mydb", "timeout");

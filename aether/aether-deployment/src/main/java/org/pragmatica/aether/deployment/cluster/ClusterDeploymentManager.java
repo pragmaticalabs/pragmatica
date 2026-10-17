@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.CommunitySizing;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentContext;
+import org.pragmatica.aether.deployment.cluster.fsm.CommunityLiveMembers;
 import org.pragmatica.aether.deployment.cluster.fsm.CommunityLivenessView;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectivePutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.ActivationDirectiveRemoveReceived;
@@ -23,20 +24,25 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Deac
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.GovernorAnnouncementPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.MembershipDecisionReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerJoinReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeDrainingReported;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.WorkerLeaveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SelfShutdownReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.VersionRoutingRemoveReceived;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentState;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerLeaveDecision;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
@@ -44,6 +50,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
@@ -72,6 +79,7 @@ import org.pragmatica.statemachine.Fsm;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
@@ -86,6 +94,20 @@ public interface ClusterDeploymentManager {
     /// collector exists; unwired deployments keep the pre-#590 behaviour.
     @Contract
     void setCommunityLiveness(CommunityLivenessView view);
+
+    /// #1652 — the leader's instantaneous live-member count for `communityId`: the same count the
+    /// per-community FSM compares against the viability floor ([CommunityLiveMembers]). It is an
+    /// OBSERVATION, not committed state. [Option#none] on a node whose deployment FSM is not active
+    /// (not the leader), while the liveness view is unwired, or when the community has no committed
+    /// roster — never a fabricated `0`.
+    Option<Integer> communityLiveMembers(String communityId);
+
+    /// #731 round 3 — inject the leader's local SWIM-derived alive-member view, read by
+    /// `sweepDeadRestoredWorkers` alongside the committed announcement roster. Narrow on purpose,
+    /// same rationale as `setCommunityLiveness`. Wired in `AetherNode` from the node's `MembershipFsm`;
+    /// unwired deployments keep the pre-round-3 behaviour (empty set, no effect on the sweep).
+    @Contract
+    void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier);
 
     @Contract
     @MessageReceiver
@@ -122,6 +144,25 @@ public interface ClusterDeploymentManager {
     void onWorkerJoin(WorkerJoinDecision decision);
 
     @Contract
+    default void onNodePlacementPut(ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> valuePut) {
+        onWorkerJoin(WorkerJoinDecision.workerJoinDecision(valuePut.cause().key().nodeId(),
+                                                           "worker",
+                                                           org.pragmatica.hlc.HlcTimestamp.ZERO));
+    }
+
+    /// The non-core leave channel (#731), symmetric to [`#onWorkerJoin`] — a departed worker's
+    /// REMOVED edge never travels on the core `MembershipDecision` stream either.
+    @Contract
+    @MessageReceiver
+    void onWorkerLeave(WorkerLeaveDecision decision);
+
+    /// #688 — the leader recorded a DRAINING readiness report from `nodeId`; the leader-side drain
+    /// eviction (replacement elsewhere, then unload) starts from here. Fed by the same pong-fan
+    /// callback that acknowledges the drain to the membership FSM. Default no-op for test fakes.
+    @Contract
+    default void onNodeDraining(NodeId nodeId) {}
+
+    @Contract
     @MessageReceiver
     void onSelfShutdown(TransportObservation.SelfShutdown selfShutdown);
 
@@ -144,6 +185,24 @@ public interface ClusterDeploymentManager {
     @Contract
     @MessageReceiver
     void onSchemaVersionPut(ValuePut<SchemaVersionKey, SchemaVersionValue> valuePut);
+
+    /// #543 — `SchemaRoutes` needs to call `undoTo`/`baseline` directly rather than writing a status
+    /// record and hoping a reconciler tick acts on it; this is a plain accessor onto the same
+    /// orchestrator instance every static factory method below already threads to
+    /// `ClusterDeploymentContext`, not a new contract.
+    SchemaOrchestratorService schemaOrchestrator();
+
+    /// #1109: binds the sink the leader raises its operator warnings to (a LOAD the committed-target gate has refused past the bound).
+    /// Log-only until bound; never a process-wide sink.
+    @Contract
+    void setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink);
+
+    /// #731 round 3: re-runs the dead-worker sweep as soon as a governor's reannouncement commits,
+    /// instead of relying solely on the one-shot `deferredTopologyRecheck` timer to catch a worker
+    /// that was absent from every roster only transiently.
+    @Contract
+    @MessageReceiver
+    void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut);
 
     record ReconciliationAdjustment(Artifact artifact, int currentInstances, int desiredInstances) implements Message.Local {
         public static ReconciliationAdjustment reconciliationAdjustment(Artifact artifact,
@@ -451,10 +510,22 @@ public interface ClusterDeploymentManager {
             return ctx;
         }
 
+        @Contract
+        @Override
+        public void setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+            ctx.setOperatorWarningSink(sink);
+        }
+
         @Override
         @Contract
         public void setCommunityLiveness(CommunityLivenessView view) {
             ctx.setCommunityLiveness(view);
+        }
+
+        @Override
+        @Contract
+        public void setLocalAliveMembersSupplier(Supplier<Set<NodeId>> supplier) {
+            ctx.setLocalAliveMembersSupplier(supplier);
         }
 
         @Override
@@ -476,6 +547,13 @@ public interface ClusterDeploymentManager {
         @Override
         public boolean isActive() {
             return ctx.isActive();
+        }
+
+        @Override
+        public Option<Integer> communityLiveMembers(String communityId) {
+            return ctx.isActive() && ctx.hasCommunityLiveness()
+                   ? CommunityLiveMembers.communityLiveMembers(ctx.kvStore(), ctx.communityLiveness(), communityId)
+                   : none();
         }
 
         @Contract
@@ -544,6 +622,17 @@ public interface ClusterDeploymentManager {
             ctx.dispatch(new SchemaVersionPutReceived(valuePut));
         }
 
+        @Override
+        public SchemaOrchestratorService schemaOrchestrator() {
+            return ctx.schemaOrchestrator();
+        }
+
+        @Contract
+        @Override
+        public void onGovernorAnnouncementPut(ValuePut<GovernorAnnouncementKey, GovernorAnnouncementValue> valuePut) {
+            ctx.dispatch(new GovernorAnnouncementPutReceived(valuePut));
+        }
+
         @Contract
         @Override
         public void onMembershipDecision(MembershipDecision decision) {
@@ -554,6 +643,18 @@ public interface ClusterDeploymentManager {
         @Override
         public void onWorkerJoin(WorkerJoinDecision decision) {
             ctx.dispatch(new WorkerJoinReceived(decision));
+        }
+
+        @Contract
+        @Override
+        public void onWorkerLeave(WorkerLeaveDecision decision) {
+            ctx.dispatch(new WorkerLeaveReceived(decision));
+        }
+
+        @Contract
+        @Override
+        public void onNodeDraining(NodeId nodeId) {
+            ctx.dispatch(new NodeDrainingReported(nodeId));
         }
 
         @Contract

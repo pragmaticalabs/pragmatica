@@ -10,21 +10,29 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.DeploymentAtomicity;
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.Activate;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SliceTargetPutReceived;
+import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.SchemaVersionPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SchemaVersionKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -109,6 +117,38 @@ class ClusterDeploymentStateActiveTest {
                     SliceTargetValue.sliceTargetValue(version, 1));
         kvStore.put(NodeArtifactKey.nodeArtifactKey(nodeId, ARTIFACT),
                     NodeArtifactValue.nodeArtifactValue(state, transitionedAt));
+    }
+
+    @Test
+    void placementChangeLoadsReplacementBeforeUnloadingDisplacedInstance() {
+        seedNodeArtifact(NODE_A, SliceState.ACTIVE, 0);
+        harness.dispatch(new Activate());
+        activeState().sliceStates().clear();
+        var oldKey = SliceNodeKey.sliceNodeKey(ARTIFACT, NODE_A);
+        var newKey = SliceNodeKey.sliceNodeKey(ARTIFACT, SELF);
+        activeState().sliceStates().put(oldKey, SliceState.ACTIVE);
+        cluster.commands.clear();
+        var allocation = new SliceAllocationEngine(activeState(), List.of(SELF));
+
+        allocation.issueAllocationCommands(ARTIFACT, 1);
+        assertThat(statesWrittenForNode(SELF)).contains(SliceState.LOAD);
+        assertThat(statesWrittenForNode(NODE_A)).doesNotContain(SliceState.UNLOAD);
+        cluster.commands.clear();
+        activeState().sliceStates().put(newKey, SliceState.LOADING);
+        allocation.issueAllocationCommands(ARTIFACT, 1);
+        assertThat(statesWrittenForNode(NODE_A)).doesNotContain(SliceState.UNLOAD);
+
+        activeState().sliceStates().put(newKey, SliceState.ACTIVE);
+        allocation.issueAllocationCommands(ARTIFACT, 1);
+        assertThat(statesWrittenForNode(NODE_A)).contains(SliceState.UNLOAD);
+    }
+
+    private List<SliceState> statesWrittenForNode(NodeId node) {
+        return cluster.commands.stream()
+                      .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                          && put.key().equals(NodeArtifactKey.nodeArtifactKey(node, ARTIFACT)))
+                      .map(command -> ((NodeArtifactValue) ((KVCommand.Put<AetherKey, ?>) command).value()).state())
+                      .toList();
     }
 
     @Nested
@@ -263,11 +303,14 @@ class ClusterDeploymentStateActiveTest {
             seedNodeArtifact(NODE_A, SliceState.ACTIVE, injectedClock.get());
             harness.dispatch(new Activate());
 
-            // A DIFFERENT artifact, never seeded: absent from the projection AND absent from the KV, so
-            // it is genuinely orphaned rather than merely unseen by a stale view.
+            // A DIFFERENT artifact with no SliceTarget: its NodeArtifactKey is committed (#1068 — the
+            // sweep reads the committed store, not the projection) but nothing targets it, so it is
+            // genuinely orphaned rather than merely unseen by a stale view.
             var strayArtifact = Artifact.artifact("org.example:slice-stray:1.0.0").unwrap();
             var strayKey = SliceNodeKey.sliceNodeKey(strayArtifact, NODE_A);
 
+            kvStore.put(NodeArtifactKey.nodeArtifactKey(NODE_A, strayArtifact),
+                        NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE, 0L));
             activeState().sliceStates().put(strayKey, SliceState.ACTIVE);
             cluster.commands.clear();
 
@@ -279,6 +322,223 @@ class ClusterDeploymentStateActiveTest {
             assertThat(activeState().sliceStates())
                     .as("a genuinely orphaned entry is dropped from the view")
                     .doesNotContainKey(strayKey);
+        }
+    }
+
+    /// #1068 — the orphan sweep is the leader's half of the rollback guarantee: a `NodeArtifactKey`
+    /// whose version no committed `SliceTargetKey` (or rolling-update `VersionRoutingKey`) names is
+    /// UNLOADed again on every sweep until the key is gone from the committed store. The old sweep
+    /// walked the leader's `sliceStates` projection and dropped the entry BEFORE issuing the UNLOAD,
+    /// so one consensus timeout (measured: 30s, during the rollback in CI run 34772700962) meant the
+    /// key was never looked at again. Removal is not time-bounded: it happens only while this node is
+    /// the leader with membership resolved and its consensus writes land.
+    @Nested
+    class RollbackOrphanSweep {
+        private final Artifact orphan = Artifact.artifact("org.example:slice-orphan:1.0.0").unwrap();
+        private final NodeArtifactKey orphanKey = NodeArtifactKey.nodeArtifactKey(NODE_A, orphan);
+
+        private void seedOrphanInStore(SliceState state) {
+            kvStore.put(orphanKey, NodeArtifactValue.nodeArtifactValue(state, 0L));
+        }
+
+        private List<KVCommand<AetherKey>> unloadsOf(NodeArtifactKey key) {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                      && put.key().equals(key)
+                                                      && put.value() instanceof NodeArtifactValue value
+                                                      && value.state() == SliceState.UNLOAD)
+                                   .toList();
+        }
+
+        private List<KVCommand<AetherKey>> removalsOf(NodeArtifactKey key) {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Remove<AetherKey> remove
+                                                      && remove.key().equals(key))
+                                   .toList();
+        }
+
+        @Test
+        void orphanedKeyInStore_isUnloadedOnEverySweepUntilGone() {
+            seedOrphanInStore(SliceState.ACTIVE);
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            // Sweep 1 issues the UNLOAD. Nothing applies it to the store (the recording cluster
+            // commits nothing), which is exactly the timed-out rollback: the key is still there.
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            assertThat(unloadsOf(orphanKey)).as("first sweep unloads the orphan").hasSize(1);
+
+            // Sweep 2 must look at the committed store again and re-issue — the projection having
+            // forgotten the key is not evidence the key is gone.
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            assertThat(unloadsOf(orphanKey)).as("second sweep re-issues while the key is still committed").hasSize(2);
+
+            // The node acts on the UNLOAD and removes its key: only now does the sweep stop.
+            kvStore.remove(orphanKey);
+            cluster.commands.clear();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            assertThat(cluster.commands).as("an absent key is not re-issued").isEmpty();
+        }
+
+        @Test
+        void orphanedKeyStillAtUnload_isRemovedUntilGone() {
+            seedOrphanInStore(SliceState.UNLOAD);
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(removalsOf(orphanKey)).as("an UNLOAD nobody acted on is removed, and re-removed while it persists").hasSize(2);
+        }
+
+        /// A key stuck at UNLOADING is the ticket's own shape (CI run 34788864919: the node's own key removal
+        /// spent its consensus retries and nothing else re-issued): the sweep removes it until it is gone.
+        @Test
+        void orphanedKeyAlreadyUnloading_isRemovedUntilGone() {
+            seedOrphanInStore(SliceState.UNLOADING);
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(removalsOf(orphanKey)).as("an orphan already unloading is removed, and re-removed while it persists").hasSize(2);
+        }
+
+        @Test
+        void committedTargetNamesTheVersion_isNotSwept() {
+            seedNodeArtifact(NODE_A, SliceState.ACTIVE, injectedClock.get());
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(cluster.commands).as("a targeted version is not an orphan").isEmpty();
+        }
+
+        @Test
+        void oldVersionNamedByRolling_updateRouting_isNotSwept() {
+            var artifactBase = ArtifactBase.artifactBase("org.example:slice-a").unwrap();
+
+            kvStore.put(SliceTargetKey.sliceTargetKey(artifactBase),
+                        SliceTargetValue.sliceTargetValue(Version.version("2.0.0").unwrap(), 1));
+            kvStore.put(AetherKey.VersionRoutingKey.versionRoutingKey(artifactBase),
+                        AetherValue.VersionRoutingValue.versionRoutingValue(Version.version("1.0.0").unwrap(),
+                                                                            Version.version("2.0.0").unwrap()));
+            kvStore.put(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT),
+                        NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE, 0L));
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(unloadsOf(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT)))
+                    .as("the old version of a rolling update is still routed, so it is not an orphan")
+                    .isEmpty();
+        }
+
+        /// CONTROL: no resolved leader membership, no sweep. The sweep exists only inside `Active`
+        /// (this node is the leader) and refuses to act until the core membership is wired, so a
+        /// cluster without a quorate leader issues nothing — the orphan simply persists.
+        @Test
+        void membershipNotResolved_sweepIssuesNothing() {
+            var router = MessageRouter.mutable();
+            var localKv = new InMemoryKvStore(router);
+            var localCluster = new RecordingClusterNode(SELF);
+
+            localKv.put(orphanKey, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE, 0L));
+            Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
+                    fsm -> new ClusterDeploymentContext(fsm,
+                                                        SELF,
+                                                        localCluster,
+                                                        localKv,
+                                                        router,
+                                                        stubTopologyManager(SELF),
+                                                        stubSchemaOrchestrator(),
+                                                        () -> MembershipFsm.MEMBERSHIP_NOT_WIRED,
+                                                        () -> Set.of(SELF),
+                                                        Set::of,
+                                                        Set.of(SELF),
+                                                        DeploymentAtomicity.ALL_OR_NOTHING,
+                                                        3,
+                                                        timeSpan(300).seconds(),
+                                                        injectedClock::get).dormant();
+            var localHarness = FsmTestHarness.harness("orphan-unwired-" + SELF.id() + "-" + System.nanoTime(), factory);
+
+            localHarness.dispatch(new Activate());
+            ((ClusterDeploymentState.Active) localHarness.state()).staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(localCluster.commands.stream()
+                                            .filter(c -> c instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(orphanKey))
+                                            .toList())
+                    .as("without resolved leader membership the orphan is left alone")
+                    .isEmpty();
+        }
+
+        /// CONTROL: consensus not progressing. The UNLOAD write fails (no quorum to commit it); the
+        /// key stays committed and the next sweep re-issues rather than giving up — removal happens
+        /// only when a write lands, which is why no time bound is claimed.
+        @Test
+        void consensusWriteFails_keyPersistsAndNextSweepReissues() {
+            seedOrphanInStore(SliceState.ACTIVE);
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+            cluster.failApplies = true;
+
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+            activeState().staleEntryCleaner().cleanupOrphanedSliceEntries();
+
+            assertThat(unloadsOf(orphanKey)).as("each sweep re-issues against a store that still holds the key").hasSize(2);
+            assertThat(kvStore.get(orphanKey).isPresent()).as("nothing landed, so the key is still committed").isTrue();
+        }
+    }
+
+    /// #1068 — the leader's half of "a rolled-back version never starts again": ACTIVATE for a LOADED
+    /// slice is substituted with UNLOAD when no committed target names that version.
+    @Nested
+    class RollbackActivateSubstitution {
+        private void dispatchLoaded(NodeId node, Artifact artifact) {
+            var key = NodeArtifactKey.nodeArtifactKey(node, artifact);
+            var value = NodeArtifactValue.nodeArtifactValue(SliceState.LOADED, 0L);
+
+            kvStore.put(key, value);
+            harness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none())));
+        }
+
+        private List<SliceState> statesWrittenFor(NodeArtifactKey key) {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put && put.key().equals(key))
+                                   .map(command -> ((NodeArtifactValue) ((KVCommand.Put<AetherKey, ?>) command).value()).state())
+                                   .toList();
+        }
+
+        @Test
+        void loadedWithNoCommittedTarget_isUnloadedNotActivated() {
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            dispatchLoaded(NODE_A, ARTIFACT);
+
+            var written = statesWrittenFor(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT));
+
+            assertThat(written).as("no ACTIVATE may be issued for a version nothing targets").doesNotContain(SliceState.ACTIVATE);
+            assertThat(written).as("the leader substitutes UNLOAD").contains(SliceState.UNLOAD);
+        }
+
+        /// Positive control: the same LOADED report with the target committed IS activated.
+        @Test
+        void loadedWithCommittedTarget_isActivated() {
+            seedNodeArtifact(NODE_A, SliceState.LOAD, injectedClock.get());
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            dispatchLoaded(NODE_A, ARTIFACT);
+
+            var written = statesWrittenFor(NodeArtifactKey.nodeArtifactKey(NODE_A, ARTIFACT));
+
+            assertThat(written).contains(SliceState.ACTIVATE);
+            assertThat(written).doesNotContain(SliceState.UNLOAD);
         }
     }
 
@@ -397,6 +657,127 @@ class ClusterDeploymentStateActiveTest {
         }
     }
 
+    /// #543 condition 1: the pre-fix `undoToVersion`/`baselineAtVersion` wrote a bare PENDING
+    /// status and reported success without ever running the schema manager. This FSM's own stalled-
+    /// migration recovery (`recoverStalledSchemaMigrations`, run from `onEntry` on every leader
+    /// activation) treats any PENDING record as an interrupted migration and re-dispatches it via
+    /// `handleSchemaPending` → `schemaOrchestrator().migrateIfNeeded(...)` — a FORWARD migration.
+    /// Applied to an undo's leftover PENDING record, that silently re-ran the very migrations the
+    /// operator had just undone. Undo/baseline now write `SchemaStatus.COMPLETED`, never PENDING,
+    /// which routes `collectSchemaRecovery`'s `status == PENDING` filter around the record entirely
+    /// — not merely "usually skips it", structurally cannot match. `pendingRecord_isStillReDispatched`
+    /// is the control: without it, an orchestrator that is never called for ANY reason would pass
+    /// `completedRecord...` too, proving nothing.
+    @Nested
+    class SchemaRecoveryDispatch {
+        private static final String DATASOURCE = "database.orders";
+        private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
+
+        private ClusterDeploymentState.Active activeWithSchemaRecord(SchemaStatus status, RecordingSchemaOrchestrator orchestrator) {
+            return (ClusterDeploymentState.Active) activatedHarness(Option.some(status), orchestrator).state();
+        }
+
+        private static SchemaVersionValue schemaRecord(SchemaStatus status) {
+            return SchemaVersionValue.schemaVersionValue(DATASOURCE,
+                                                         7,
+                                                         "V007__baseline",
+                                                         status,
+                                                         "org.example:orders-app:1.0.0",
+                                                         OWNER);
+        }
+
+        private FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> activatedHarness(Option<SchemaStatus> seeded,
+                                                                                          RecordingSchemaOrchestrator orchestrator) {
+            var router = MessageRouter.mutable();
+            var localKv = new InMemoryKvStore(router);
+            var localCluster = new RecordingClusterNode(SELF);
+
+            seeded.onPresent(status -> localKv.put(SchemaVersionKey.schemaVersionKey(DATASOURCE), schemaRecord(status)));
+
+            Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
+                    fsm -> new ClusterDeploymentContext(fsm,
+                                                        SELF,
+                                                        localCluster,
+                                                        localKv,
+                                                        router,
+                                                        stubTopologyManager(SELF),
+                                                        orchestrator,
+                                                        () -> Set.of(SELF),
+                                                        () -> Set.of(SELF),
+                                                        Set::of,
+                                                        Set.of(SELF),
+                                                        DeploymentAtomicity.ALL_OR_NOTHING,
+                                                        3,
+                                                        timeSpan(300).seconds(),
+                                                        injectedClock::get).dormant();
+            var localHarness = FsmTestHarness.harness("schema-recovery-" + seeded + "-" + System.nanoTime(), factory);
+            localHarness.dispatch(new Activate());
+            return localHarness;
+        }
+
+        /// #1533: on a fresh cluster this FSM activates on an EMPTY KV, so its once-only
+        /// `recoverStalledSchemaMigrations` finds nothing. The restored schema record arrives LATER, as an
+        /// ordinary put. The restore normalises MIGRATING to PENDING
+        /// (`BackupRestoreCoordinator.normalised`, pinned in node by
+        /// `BackupRestoreCoordinatorTest$Restore#normalised_resetsRuntimeObservations_andKeepsDeclaredIntent`)
+        /// because only a PENDING put re-drives the migration. These two tests are this FSM's half of that
+        /// chain.
+        private void deliverRestoredRecord(FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> activated,
+                                           SchemaStatus status) {
+            activated.dispatch(new SchemaVersionPutReceived(new ValuePut<>(new KVCommand.Put<>(SchemaVersionKey.schemaVersionKey(DATASOURCE),
+                                                                                              schemaRecord(status)),
+                                                                          Option.none())));
+        }
+
+        @Test
+        void restoredPendingRecord_arrivingAfterActivation_reDrivesTheMigration() {
+            var orchestrator = new RecordingSchemaOrchestrator();
+            var activated = activatedHarness(Option.none(), orchestrator);
+
+            assertThat(orchestrator.migrateIfNeededCalls).as("activation on an empty KV dispatches nothing").isEmpty();
+
+            deliverRestoredRecord(activated, SchemaStatus.PENDING);
+
+            assertThat(orchestrator.migrateIfNeededCalls).as("the restored PENDING record re-drives the migration")
+                                                         .containsExactly(DATASOURCE);
+        }
+
+        /// What an un-normalised restore would leave behind: a MIGRATING put after activation reaches only a
+        /// debug log, and the once-only recovery has already run, so nothing ever re-drives it.
+        @Test
+        void restoredMigratingRecord_arrivingAfterActivation_isStuck() {
+            var orchestrator = new RecordingSchemaOrchestrator();
+            var activated = activatedHarness(Option.none(), orchestrator);
+
+            deliverRestoredRecord(activated, SchemaStatus.MIGRATING);
+
+            assertThat(orchestrator.migrateIfNeededCalls).as("MIGRATING after activation is never re-driven — hence the restore's rewrite")
+                                                         .isEmpty();
+        }
+
+        @Test
+        void completedRecord_fromUndo_isNeverReDispatchedAsPending() {
+            var orchestrator = new RecordingSchemaOrchestrator();
+
+            activeWithSchemaRecord(SchemaStatus.COMPLETED, orchestrator);
+
+            assertThat(orchestrator.migrateIfNeededCalls)
+                    .as("a COMPLETED record — what undo/baseline now write — must never be treated as a stalled PENDING migration")
+                    .isEmpty();
+        }
+
+        @Test
+        void pendingRecord_isStillReDispatched_provingTheTestCanTellTheDifference() {
+            var orchestrator = new RecordingSchemaOrchestrator();
+
+            activeWithSchemaRecord(SchemaStatus.PENDING, orchestrator);
+
+            assertThat(orchestrator.migrateIfNeededCalls)
+                    .as("control: a genuinely PENDING record must still be re-dispatched on activation — otherwise this test proves nothing")
+                    .containsExactly(DATASOURCE);
+        }
+    }
+
     /// #325 fix 2a: a slice stuck in ROUTING past 3× its 30s timeout must join the force-unload
     /// remediation arm (issuing UNLOAD), and the relocated `transitionalStateTimestamps.remove()`
     /// must fire only inside the handled arm — a fresh (non-stuck) transitional entry is left
@@ -451,6 +832,304 @@ class ClusterDeploymentStateActiveTest {
         }
     }
 
+    /// #1109 H1 (fixed): the leader writes the blueprint mirror and only QUEUES the target put, then `reconcile()` allocates
+    /// from the mirror. The recording cluster double never applies, so the target put stays pending exactly as it
+    /// does while another batch outranks it in the slot ordering.
+    @Nested
+    class LeaderLoadWaitsForCommittedTarget {
+        private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
+        private static final SliceTargetKey TARGET_KEY = SliceTargetKey.sliceTargetKey(ARTIFACT.base());
+
+        @Test
+        void reconcileWhileTargetPutIsPending_issuesNoLoad_thenExactlyOneLoadOnceItApplies() {
+            var queuedTarget = queueBlueprintLeavingTargetPending();
+
+            activeState().reconcile();
+
+            assertThat(loadPuts()).as("no LOAD may be issued while the target put is pending (mirror is not the committed target)")
+                                  .isEmpty();
+
+            kvStore.put(TARGET_KEY, queuedTarget.getFirst());
+            harness.dispatch(new SliceTargetPutReceived(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, queuedTarget.getFirst()),
+                                                                       Option.none())));
+            activeState().reconcile();
+
+            assertThat(loadPuts()).as("exactly one LOAD after the target put applies").hasSize(1);
+        }
+
+        /// Activates, handles the blueprint put (mirror written, target put queued on the non-applying cluster
+        /// double) and returns the queued target. The applied store holds no target.
+        private List<SliceTargetValue> queueBlueprintLeavingTargetPending() {
+            harness.dispatch(new Activate());
+            cluster.commands.clear();
+
+            var slice = org.pragmatica.aether.slice.blueprint.ResolvedSlice.resolvedSlice(ARTIFACT, 1, 1, false, Set.of()).unwrap();
+            var blueprintKey = AetherKey.AppBlueprintKey.appBlueprintKey(OWNER);
+            var blueprintValue = AetherValue.AppBlueprintValue.appBlueprintValue(
+                    org.pragmatica.aether.slice.blueprint.ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice), Option.none()));
+
+            harness.dispatch(new ClusterDeploymentEvents.AppBlueprintPutReceived(
+                    new ValuePut<>(new KVCommand.Put<>(blueprintKey, blueprintValue), Option.none())));
+            var queuedTarget = cluster.commands.stream()
+                                               .filter(KVCommand.Put.class::isInstance)
+                                               .map(KVCommand.Put.class::cast)
+                                               .filter(put -> TARGET_KEY.equals(put.key()))
+                                               .map(put -> (SliceTargetValue) put.value())
+                                               .toList();
+
+            assertThat(queuedTarget).as("control: the target put is queued but not applied").hasSize(1);
+            assertThat(kvStore.get(TARGET_KEY).isPresent()).as("control: target absent from the applied store").isFalse();
+
+            return queuedTarget;
+        }
+
+        private List<KVCommand<AetherKey>> loadPuts() {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                      && put.key() instanceof NodeArtifactKey
+                                                      && put.value() instanceof NodeArtifactValue value
+                                                      && value.state() == SliceState.LOAD)
+                                   .toList();
+        }
+    }
+
+    /// #1109 (round 2): the gate moved the stall from the node to the leader. A target put that is LOST (never applied, never notified) left the
+    /// leader refusing LOAD forever with nothing to say about it (probe v-2128 P2: 360 ticks, 0 LOADs, 1 queued put, no signal). Past the bound the
+    /// leader now raises `slice-start-awaiting-target` and re-submits the put, each at most once per bound; the commit ends it with the recovery.
+    @Nested
+    class LostTargetPut {
+        private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
+        private static final SliceTargetKey TARGET_KEY = SliceTargetKey.sliceTargetKey(ARTIFACT.base());
+        private final List<org.pragmatica.utility.warning.OperatorWarning> warnings = Collections.synchronizedList(new ArrayList<>());
+        private org.pragmatica.utility.warning.OperatorWarningSink sink;
+
+        @org.junit.jupiter.api.BeforeEach
+        void bindSink() {
+            harness.dispatch(new Activate());
+            sink = org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warnings::add);
+            activeState().ctx().setOperatorWarningSink(sink);
+            cluster.commands.clear();
+            var slice = org.pragmatica.aether.slice.blueprint.ResolvedSlice.resolvedSlice(ARTIFACT, 1, 1, false, Set.of()).unwrap();
+            var blueprintValue = AetherValue.AppBlueprintValue.appBlueprintValue(
+                    org.pragmatica.aether.slice.blueprint.ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice), Option.none()));
+
+            harness.dispatch(new ClusterDeploymentEvents.AppBlueprintPutReceived(
+                    new ValuePut<>(new KVCommand.Put<>(AetherKey.AppBlueprintKey.appBlueprintKey(OWNER), blueprintValue), Option.none())));
+            assertThat(targetPuts()).as("control: the target put is queued once and lost (the double never applies it)").hasSize(1);
+        }
+
+        private long bound() {
+            return activeState().ctx().awaitedTargetBound().millis();
+        }
+
+        private List<SliceTargetValue> targetPuts() {
+            return cluster.commands.stream()
+                                   .filter(KVCommand.Put.class::isInstance)
+                                   .map(KVCommand.Put.class::cast)
+                                   .filter(put -> TARGET_KEY.equals(put.key()))
+                                   .map(put -> (SliceTargetValue) put.value())
+                                   .toList();
+        }
+
+        private List<String> codes() {
+            synchronized (warnings) {
+                return warnings.stream().map(w -> w.code().code()).toList();
+            }
+        }
+
+        /// Everything the sink was handed before this call has been delivered once the sentinel is: the sink drains FIFO.
+        private void drainSink() {
+            var sentinel = org.pragmatica.utility.warning.OperatorWarning.operatorWarning(
+                    org.pragmatica.utility.warning.OperatorWarningCode.DEPLOY_WARNING, "sentinel", "sentinel");
+
+            sink.accept(sentinel);
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.contains(sentinel));
+            warnings.remove(sentinel);
+        }
+
+        private void tick(long advanceMs) {
+            injectedClock.addAndGet(advanceMs);
+            activeState().reconcile();
+        }
+
+        private List<KVCommand<AetherKey>> loadPuts() {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                      && put.key() instanceof NodeArtifactKey
+                                                      && put.value() instanceof NodeArtifactValue value
+                                                      && value.state() == SliceState.LOAD)
+                                   .toList();
+        }
+
+        private void commitTheTarget() {
+            var value = targetPuts().getFirst();
+
+            kvStore.put(TARGET_KEY, value);
+            harness.dispatch(new SliceTargetPutReceived(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, value), Option.none())));
+        }
+
+        @Test
+        void defaultBoundIsTwoMinutes() {
+            assertThat(activeState().ctx().awaitedTargetBound().millis()).isEqualTo(120_000L);
+        }
+
+        @Test
+        void lostPut_isReportedAndResubmittedPastTheBound_thenExactlyOneLoadAndTheRecoveryOnceItCommits() {
+            tick(0);
+            tick(bound() - 1);
+            drainSink();
+            assertThat(codes()).as("one millisecond short of the bound: silent").isEmpty();
+            assertThat(targetPuts()).as("and no re-submission yet").hasSize(1);
+
+            tick(1);
+            drainSink();
+            assertThat(codes()).as("at the bound: one warning").containsExactly("slice-start-awaiting-target");
+            assertThat(warnings.getFirst().subject()).isEqualTo(ARTIFACT + "@leader");
+            assertThat(warnings.getFirst().message()).contains(ARTIFACT.toString()).contains(ARTIFACT.version().toString()).contains(Long.toString(bound()));
+            assertThat(targetPuts()).as("at the bound: the target put is re-submitted, the same value").hasSize(2);
+            assertThat(targetPuts().get(1)).isEqualTo(targetPuts().get(0));
+            assertThat(loadPuts()).as("still no LOAD: nothing committed").isEmpty();
+
+            tick(bound() - 1);
+            drainSink();
+            assertThat(codes()).as("within the next bound: no second warning").hasSize(1);
+            assertThat(targetPuts()).as("within the next bound: no second re-submission").hasSize(2);
+
+            tick(1);
+            assertThat(targetPuts()).as("a lost put is re-submitted once per bound, not per tick").hasSize(3);
+
+            commitTheTarget();
+            tick(0);
+            drainSink();
+            assertThat(activeState().ctx().pendingTargetPuts()).as("the submitted value is forgotten once it committed").isEmpty();
+            assertThat(loadPuts()).as("exactly one LOAD once the target commits").hasSize(1);
+            assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
+            assertThat(warnings.get(1).subject()).isEqualTo(ARTIFACT + "@leader");
+            tick(bound());
+            drainSink();
+            assertThat(codes()).as("committed: no more warnings, no more re-submissions").hasSize(2);
+            assertThat(targetPuts()).hasSize(3);
+        }
+
+        @Test
+        void commitBeforeTheBound_neverWarnsAndRaisesNoRecovery() {
+            tick(0);
+            tick(bound() - 1);
+            commitTheTarget();
+            tick(0);
+            tick(bound() * 2);
+            drainSink();
+
+            assertThat(codes()).isEmpty();
+            assertThat(targetPuts()).hasSize(1);
+            assertThat(loadPuts()).hasSize(1);
+        }
+
+        @Test
+        void blueprintNoLongerDesired_endsTheWaitWithTheRecovery_andResubmitsNothing() {
+            tick(0);
+            tick(bound());
+            drainSink();
+            assertThat(codes()).containsExactly("slice-start-awaiting-target");
+
+            activeState().blueprints().remove(ARTIFACT);
+            tick(0);
+            tick(bound());
+            drainSink();
+
+            assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
+            assertThat(targetPuts()).as("only the first re-submission: the blueprint is gone").hasSize(2);
+        }
+
+        @Test
+        void refusalForASliceTheMirrorDoesNotHold_neverResubmitsAPut() {
+            var undesired = Artifact.artifact("org.example:slice-undesired:1.0.0").unwrap();
+            var engine = new SliceAllocationEngine(activeState(), List.of(SELF));
+
+            engine.tryAllocate(undesired, SELF);
+            injectedClock.addAndGet(bound());
+            engine.tryAllocate(undesired, SELF);
+
+            assertThat(targetPuts()).as("only the blueprint's own put: nothing is desired for the other slice").hasSize(1);
+            assertThat(loadPuts()).isEmpty();
+        }
+
+        /// v-2128 P3: the recovery follows the target's own notification, before any reconcile tick (the allocation that notification
+        /// triggers ends the wait itself).
+        @Test
+        void recoveryFollowsTheTargetNotification_withoutWaitingForATick() {
+            tick(0);
+            tick(bound());
+            drainSink();
+            assertThat(codes()).containsExactly("slice-start-awaiting-target");
+
+            commitTheTarget();
+            drainSink();
+
+            assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
+        }
+
+        /// v-2128 P4: the target commits while the mirror wants 0 instances, so no allocation follows the commit; the tick's sweep must still
+        /// end the wait, or the warning would stay open for good.
+        @Test
+        void targetCommittedWithNothingToAllocate_stillEndsTheWaitOnTheNextTick() {
+            tick(0);
+            tick(bound());
+            drainSink();
+            assertThat(codes()).containsExactly("slice-start-awaiting-target");
+
+            activeState().blueprints().put(ARTIFACT, org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint.blueprint(
+                    ARTIFACT, 0, 0, Option.some(OWNER), true));
+            kvStore.put(TARGET_KEY, targetPuts().getFirst());
+            tick(0);
+            drainSink();
+
+            assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
+        }
+
+        /// v-2128 W12b: the submitted value is only reused for the version it names. A rollout holds two versions of one base in the mirror and one
+        /// pending value (the newer's); the refused older version must not get it written for it.
+        @Test
+        void pendingValueOfAnotherVersion_isNeverResubmittedForThisOne() {
+            var newer = Artifact.artifact("org.example:slice-a:2.0.0").unwrap();
+
+            activeState().blueprints().put(newer, org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint.blueprint(
+                    newer, 7, 1, Option.some(OWNER), true));
+            activeState().ctx().pendingTargetPuts().put(ARTIFACT.base(), SliceTargetValue.sliceTargetValue(newer.version(), 7));
+            tick(0);
+            tick(bound());
+
+            assertThat(targetPuts().stream().skip(1).filter(put -> put.currentVersion().equals(ARTIFACT.version())).toList())
+                    .as("the refused older version is re-submitted with its own value, not the pending value of the newer one")
+                    .isNotEmpty()
+                    .allSatisfy(put -> assertThat(put.targetInstances()).isEqualTo(1));
+        }
+
+        /// v-2128 follow-up: a submitted value whose blueprint is rolled back or removed is forgotten, not kept.
+        @Test
+        void pendingValueOfARemovedBlueprint_isForgotten() {
+            assertThat(activeState().ctx().pendingTargetPuts()).as("control: the submitted value is held").isNotEmpty();
+
+            activeState().blueprints().remove(ARTIFACT);
+            tick(0);
+
+            assertThat(activeState().ctx().pendingTargetPuts()).isEmpty();
+        }
+
+        @Test
+        void aNewLeaderWithoutThePendingValue_resubmitsOneRebuiltFromTheMirror() {
+            activeState().ctx().pendingTargetPuts().clear();
+            tick(0);
+            tick(bound());
+
+            var resubmitted = targetPuts().getLast();
+
+            assertThat(targetPuts()).hasSize(2);
+            assertThat(resubmitted.currentVersion()).isEqualTo(ARTIFACT.version());
+            assertThat(resubmitted.owningBlueprint()).isEqualTo(Option.some(OWNER));
+        }
+    }
+
     // --- test fixtures ---
 
     private static SchemaOrchestratorService stubSchemaOrchestrator() {
@@ -467,6 +1146,25 @@ class ClusterDeploymentStateActiveTest {
                 return Promise.success(Unit.unit());
             }
         };
+    }
+
+    /// Unlike [#stubSchemaOrchestrator], records every `migrateIfNeeded` call so
+    /// [SchemaRecoveryDispatch] can assert an undo-produced COMPLETED record never triggers one.
+    private static final class RecordingSchemaOrchestrator implements SchemaOrchestratorService {
+        final List<String> migrateIfNeededCalls = Collections.synchronizedList(new ArrayList<>());
+
+        @Override public Promise<Unit> migrateIfNeeded(String datasourceName) {
+            migrateIfNeededCalls.add(datasourceName);
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> undoTo(String datasourceName, int targetVersion) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override public Promise<Unit> baseline(String datasourceName, int version) {
+            return Promise.success(Unit.unit());
+        }
     }
 
     private static TopologyManager stubTopologyManager(NodeId self) {
@@ -527,9 +1225,15 @@ class ClusterDeploymentStateActiveTest {
 
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
+        /// When set, every apply fails without touching anything — consensus that cannot commit.
+        volatile boolean failApplies;
+
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             commands.addAll(batch);
-            return Promise.success(Collections.emptyList());
+
+            return failApplies
+                   ? org.pragmatica.lang.utils.Causes.cause("no quorum").promise()
+                   : Promise.success(Collections.emptyList());
         }
     }
 
@@ -540,6 +1244,10 @@ class ClusterDeploymentStateActiveTest {
 
         void put(AetherKey key, AetherValue value) {
             process(createBatch(List.of(new KVCommand.Put<>(key, value))));
+        }
+
+        void remove(AetherKey key) {
+            process(createBatch(List.of(new KVCommand.Remove<>(key))));
         }
     }
 

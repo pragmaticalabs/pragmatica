@@ -13,6 +13,8 @@ import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.drain.InFlightRequestTracker;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -76,6 +78,9 @@ public final class DrainProcedure {
     private final Runnable jvmExit;
     private final TimeSpan drainTimeout;
     private final AtomicReference<DrainState> state = new AtomicReference<>(DrainState.INACTIVE);
+    /// Why this node is draining, set by the single winning [#initiate] BEFORE anything the drain triggers
+    /// (the drainee's consensus going passive happens synchronously inside it). Null until initiated.
+    private final AtomicReference<DrainReason> initiatedReason = new AtomicReference<>();
     /// Two-condition exit gate (issue #427): [#performExit] via the quiesced fork runs only once BOTH
     /// the in-flight tracker has drained AND the graceful-departure push has settled (acks in, or its
     /// own bounded budget expired). The grace-deadline fork ([#onGraceExpired]) ignores both flags —
@@ -183,6 +188,7 @@ public final class DrainProcedure {
             return;
         }
 
+        initiatedReason.set(reason);
         log.warn("DrainProcedure: DRAINING (reason={}) — closing tracker gate, grace={}ms",
                  reason,
                  drainTimeout.millis());
@@ -204,24 +210,30 @@ public final class DrainProcedure {
     }
 
     private Promise<Unit> runDeparturePushSafely() {
-        try {
-            return departurePush.get();
-        } catch (Throwable t) {
-            log.warn("DrainProcedure: departure push kickoff failed: {} — drain proceeds", t.getMessage());
+        return Result.lift(Causes::fromThrowable, departurePush::get).fold(cause -> {
+                                                                               log.warn("DrainProcedure: departure push kickoff failed: {} — drain proceeds",
+                                                                                        cause.message());
 
-            return Promise.success(Unit.unit());
-        }
+                                                                               return Promise.unitPromise();
+                                                                           },
+                                                                           promise -> promise);
     }
 
     /// Best-effort `SelfDrainInitiated` emit. A throwing emitter does not interrupt the drain — the
     /// emit is purely observability, not a correctness requirement (same philosophy as the SWIM
     /// LEAVE emit). Single-shot: only reached once, immediately after the CAS to DRAINING.
     private void emitDrainInitiatedSafely(DrainReason reason) {
-        try {
-            drainInitiatedEmitter.accept(reason);
-        } catch (Throwable t) {
-            log.warn("DrainProcedure: SelfDrainInitiated emit failed: {} — drain proceeds", t.getMessage());
-        }
+        Result.lift(Causes::fromThrowable,
+                    () -> drainInitiatedEmitter.accept(reason))
+              .onFailure(cause -> log.warn("DrainProcedure: SelfDrainInitiated emit failed: {} — drain proceeds",
+                                           cause.message()));
+    }
+
+    /// Whether this node is draining because the leader COMMANDED it (a planned operator or controller drain,
+    /// #2014). False for `QUORUM_LOSS` and every other reason: a node that drains because it LOST quorum is
+    /// exactly the node whose `QuorumLost` must stay loud.
+    public boolean isCommandedDrain() {
+        return state.get() != DrainState.INACTIVE && initiatedReason.get() == DrainReason.COMMANDED;
     }
 
     /// Current observability state. Exposed for `/api/status` projections and tests.
@@ -272,10 +284,7 @@ public final class DrainProcedure {
     /// aging, not a correctness requirement; suspect→DEAD aging will detect the
     /// halted node anyway).
     private void emitSwimLeaveSafely() {
-        try {
-            swimLeaveEmitter.run();
-        } catch (Throwable t) {
-            log.warn("DrainProcedure: SWIM LEAVE emit failed: {} — drain proceeds", t.getMessage());
-        }
+        Result.lift(Causes::fromThrowable, swimLeaveEmitter::run).onFailure(cause -> log.warn("DrainProcedure: SWIM LEAVE emit failed: {} — drain proceeds",
+                                                                                              cause.message()));
     }
 }

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.pg.codegen.processor;
 
@@ -226,7 +225,9 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         if (rejectsDataModifyingCte(execElement, methodName, sql, originalParamNames)) {
             return null;
         }
-        validateQueryParams(execElement, methodName, sql, originalParamNames);
+        if (rejectsParamMismatch(execElement, sql, originalParamNames)) {
+            return null;
+        }
         var expansion = expandRecordParams(execElement, sql, originalParams);
         var boundBody = boundBodyParams(execElement, expansion.bodyParams());
         schemaOpt.onPresent(schema -> validateQueryParamTypes(execElement,
@@ -240,22 +241,26 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         validateRewrittenSql(execElement, methodName, rewritten.sql(), schemaOpt);
         var mapperColumns = boundMapperColumns(execElement, resolved, resolveMapperColumns(execElement, resolved));
         var bodyParams = reorderedParams(boundBody, rewritten.parameterOrder());
-        var signatureParams = expansion.hasExpansion()
-                              ? originalParams
-                              : reorderedParams(originalParams, rewritten.parameterOrder());
+        // #648: the generated method OVERRIDES the interface method, so its signature is the
+        // declaration order, always. Only the bind list follows placeholder order — it is emitted by
+        // parameter NAME, so declaration order and placeholder order are independent. Reordering
+        // the signature too was "does not override" for a differently typed pair and, for a
+        // same-typed pair, compiled and bound the caller's arguments to the wrong placeholders.
         return new FactoryGenerator.MethodInfo(methodName,
                                                FactoryGenerator.toSqlConstantName(methodName),
                                                rewritten.sql(),
                                                resolved.kind(),
                                                resolved.innerTypeName(),
                                                resolved.innerTypeName(),
-                                               signatureParams,
+                                               originalParams,
                                                bodyParams,
                                                mapperColumns,
                                                resolved.needsMapper(),
                                                resolved.scalarAccessor());
     }
 
+    /// A positional `$n` placeholder (#1139).
+    private static final Pattern POSITIONAL_PARAM_PATTERN = Pattern.compile("\\$(\\d+)");
     private static final Pattern CTE_HINT_PATTERN = Pattern.compile("(?i)\\bWITH\\b");
 
     /// Rejects data-modifying CTEs — a `WITH` clause whose body is `INSERT`/`UPDATE`/`DELETE`
@@ -841,23 +846,54 @@ public class QueryAnnotationProcessor extends AbstractProcessor {
         return List.of();
     }
 
-    // --- Compile-time validation (Bug 4) ---
-    /// Validates that all named params in the SQL have matching method parameters,
-    /// and that all method parameters are used in the query.
-    private void validateQueryParams(
-    ExecutableElement execElement,
-    String methodName,
-    String sql,
-    List<String> availableParamNames) {
+    // --- Compile-time validation (Bug 4, #1139) ---
+    /// Refuses a query whose placeholders and method parameters disagree. These are ERRORS, not warnings (#1139): a
+    /// named placeholder with no parameter, or a parameter the SQL never names, generates a bind list whose length
+    /// differs from the placeholder count, which Postgres rejects at the first execution. A query written with
+    /// positional `$n` placeholders is checked by count instead: its highest `$n` must equal the parameter count,
+    /// since `$n` binds the n-th declared parameter.
+    private boolean rejectsParamMismatch(ExecutableElement execElement, String sql, List<String> availableParamNames) {
         var sqlParams = QueryRewriter.extractNamedParams(sql);
+
+        var positional = POSITIONAL_PARAM_PATTERN.matcher(QueryRewriter.sqlCodeOnly(sql))
+                                                 .results()
+                                                 .mapToInt(match -> Integer.parseInt(match.group(1)))
+                                                 .max();
+
+        if (sqlParams.isEmpty()) {
+            return rejectsPositionalCountMismatch(execElement, positional.orElse(0), availableParamNames.size());
+        }
+        if (positional.isPresent()) {
+            // #1707 review: `:name` is rewritten to `$n` while an existing `$n` is left as is, so a query mixing the two
+            // styles binds by an order neither check sees.
+            error(ProcessorError.mixedPlaceholderStyles(), execElement);
+            return true;
+        }
         var availableSet = new HashSet<>(availableParamNames);
-        for ( var sqlParam : sqlParams) {
-        if ( !availableSet.contains(sqlParam)) {
-        warning(ProcessorError.parameterNotInMethod(sqlParam), execElement);}}
         var sqlParamSet = new HashSet<>(sqlParams);
-        for ( var paramName : availableParamNames) {
-        if ( !sqlParamSet.contains(paramName)) {
-        warning(ProcessorError.unusedMethodParameter(paramName), execElement);}}
+        var rejected = false;
+
+        for (var sqlParam : sqlParams) {
+            if (!availableSet.contains(sqlParam)) {
+                error(ProcessorError.parameterNotInMethod(sqlParam), execElement);
+                rejected = true;
+            }
+        }
+        for (var paramName : availableParamNames) {
+            if (!sqlParamSet.contains(paramName)) {
+                error(ProcessorError.unusedMethodParameter(paramName), execElement);
+                rejected = true;
+            }
+        }
+        return rejected;
+    }
+
+    private boolean rejectsPositionalCountMismatch(ExecutableElement execElement, int highest, int parameterCount) {
+        if (highest != parameterCount) {
+            error(ProcessorError.positionalParameterCountMismatch(highest, parameterCount), execElement);
+            return true;
+        }
+        return false;
     }
 
     // --- Stage 3: Schema-aware validation ---

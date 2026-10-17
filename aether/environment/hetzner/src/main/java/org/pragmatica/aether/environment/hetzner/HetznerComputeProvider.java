@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.hetzner;
 
 import java.util.HashMap;
@@ -39,6 +38,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.parse.Number;
 
 import org.slf4j.Logger;
@@ -81,12 +81,17 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
             return SPOT_UNSUPPORTED.promise();
         }
 
+        if (!Verify.Is.present(request.zone())) {
+            return REGION_UNRESOLVED.promise();
+        }
+
         return requireClusterName(request.context()).fold(Cause::promise,
                                                           clusterName -> createLabelled(request, clusterName));
     }
 
     private Promise<InstanceInfo> createLabelled(ProvisionRequest request, ClusterName clusterName) {
-        return createAndConfirm(request, labelsFor(request.context(), clusterName)).mapError(cause -> toProvisionError(request.zone(),
+        return createAndConfirm(request, labelsFor(request.context(), clusterName)).mapError(cause -> toProvisionError(request.instanceSize(),
+                                                                                                                       request.zone(),
                                                                                                                        cause));
     }
 
@@ -115,6 +120,16 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                                                                               + "or the provider config. The server would carry no aether-cluster label, which no scoped "
                                                                                                               + "cleanup can find — it would leak as a billable orphan. Set the cluster name on the provisioning "
                                                                                                               + "context (bootstrap/CTM) or export AETHER_CLUSTER_NAME."));
+
+    /// #992 — a blank region never reaches the wire as `"location":""`. `cluster init` requires an explicit
+    /// region, but a config written by any other means reaches this provider too, and Hetzner is the one
+    /// provider whose placement is not already a required credential (AWS/GCP/Azure refuse a blank region at
+    /// factory construction). The check sits here, at the create-server call, rather than in the factory:
+    /// cleanup and discovery build this provider without a region and never place a server. Aether never
+    /// picks a jurisdiction on the operator's behalf.
+    private static final Cause REGION_UNRESOLVED = EnvironmentError.provisionFailed(new RuntimeException("Refusing to provision: no Hetzner region resolved — neither the placement nor `[cloud.compute] region` "
+                                                                                                        + "names a location, so the server would be created with an empty location and land wherever "
+                                                                                                        + "Hetzner chooses. Set the source's region (e.g. `region = \"fsn1\"`)."));
 
     /// Hetzner offers no spot/preemptible product. PF-16 ([ClusterBootstrapConfigValidator]) already
     /// rejects a spot sub-table on Hetzner at parse, so a SPOT request reaching this provider is a
@@ -182,12 +197,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return parseServerId(id).async()
-                            .flatMap(this::rebootServer);
-    }
-
-    @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return parseServerId(id).async()
                             .flatMap(serverId -> mergeLabels(serverId, tags));
@@ -207,15 +216,11 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
         return serverId.async()
                        .flatMap(this::serverById)
                        .map(HetznerComputeProvider::toInstanceInfo)
-                       .mapError(cause -> toProvisionError("", cause));
+                       .mapError(cause -> toProvisionError("", "", cause));
     }
 
     private Promise<Unit> destroyServer(long serverId) {
         return client.deleteServer(serverId);
-    }
-
-    private Promise<Unit> rebootServer(long serverId) {
-        return client.rebootServer(serverId);
     }
 
     /// #442 v2b — Hetzner's label update REPLACES the server's whole label map, so a partial
@@ -459,17 +464,27 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                      .flatMap(clusterWide -> unmanagedOrMissed(clusterWide, cluster, source));
     }
 
+    /// #1503: only INGRESS firewalls count as evidence that the selector missed — those Aether created for a
+    /// source, which carry [#SOURCE_LABEL] as well as the cluster label ([#createIngressFirewall]). A firewall
+    /// that carries only the cluster label (a harness partition firewall, #1500, or one an operator labelled
+    /// by hand) says nothing about this source's ingress; counting it turned every replacement into a
+    /// fail-closed refusal and disabled auto-heal for the whole cluster.
     private static Promise<List<Long>> unmanagedOrMissed(List<Firewall> clusterWide,
                                                          ClusterName cluster,
                                                          SourceName source) {
-        if (clusterWide.isEmpty()) {
+        var ingress = clusterWide.stream().filter(HetznerComputeProvider::isIngressFirewall).count();
+
+        if (ingress == 0) {
             return ingressUnmanaged(cluster, source);
         }
 
-        return FirewallSelectorMissed.firewallSelectorMissed(cluster,
-                                                             source,
-                                                             clusterWide.size())
-                                     .promise();
+        return FirewallSelectorMissed.firewallSelectorMissed(cluster, source, (int) ingress).promise();
+    }
+
+    private static boolean isIngressFirewall(Firewall firewall) {
+        return Option.option(firewall.labels())
+                     .map(labels -> labels.containsKey(SOURCE_LABEL))
+                     .or(false);
     }
 
     private static Promise<List<Long>> ingressUnmanaged(ClusterName cluster, SourceName source) {
@@ -843,7 +858,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                 collectAddresses(server),
                                 InstanceType.ON_DEMAND,
                                 labels,
-                                Option.option(labels.get(NODE_ID_LABEL)));
+                                Option.option(labels.get(NODE_ID_LABEL)),
+                                Option.option(server.location()).flatMap(location -> Option.option(location.name())));
     }
 
     private static Map<String, String> safeLabels(Server server) {
@@ -867,12 +883,15 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                       .toList();
     }
 
+    /// Hetzner's documented `server.status` values. `unknown`, and any value not listed here, map to
+    /// [InstanceStatus#UNKNOWN] (#1049): reading them as terminated drops an auto-heal replacement that
+    /// still exists.
     static InstanceStatus mapStatus(String hetznerStatus) {
         return switch (hetznerStatus) {
             case "initializing", "starting", "rebuilding", "migrating" -> InstanceStatus.PROVISIONING;
             case "running" -> InstanceStatus.RUNNING;
             case "stopping", "off", "deleting" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 
@@ -907,11 +926,22 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private static final String CAPACITY_UNAVAILABLE_CODE = "resource_unavailable";
 
-    private static EnvironmentError toProvisionError(String attemptedLocation, Cause cause) {
+    /// `attemptedServerType` / `attemptedLocation` are the values actually sent to Hetzner, threaded
+    /// through so the failure names them: a `422 (invalid_input): unsupported location for server
+    /// type` names NEITHER, and the commonest cause is a server type Hetzner has retired. Both are
+    /// blank on the [#instanceStatus] path, which has no requested spec — [EnvironmentError.ProvisionFailed]
+    /// then omits the clause rather than printing empty fields.
+    private static EnvironmentError toProvisionError(String attemptedServerType,
+                                                     String attemptedLocation,
+                                                     Cause cause) {
         return switch (cause) {
+            // #1111: the server EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+            case EnvironmentError.ProvisionReadinessTimeout timeout -> timeout;
             case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) -> EnvironmentError.capacityUnavailable(attemptedLocation,
                                                                                                                                                new RuntimeException(cause.message()));
-            default -> EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+            default -> EnvironmentError.provisionFailed(attemptedServerType,
+                                                        attemptedLocation,
+                                                        new RuntimeException(cause.message()));
         };
     }
 

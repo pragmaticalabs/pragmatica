@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -95,7 +95,9 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                      .flatMap(info -> confirmRunning(info,
                                                      ReadinessPolicy.cloudDefault()))
                      .onFailure(AzureComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(AzureComputeProvider::toProvisionError);
+                     .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                         request.zone(),
+                                                         cause));
     }
 
     /// Azure has no spot arm on this client — [CreateVmRequest.VmRequestProperties] exposes no
@@ -132,11 +134,6 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return client.getVm(instanceId.value())
                      .map(AzureComputeProvider::toInstanceInfo)
                      .mapError(AzureComputeProvider::toProvisionError);
-    }
-
-    @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.restartVm(id.value());
     }
 
     @Override
@@ -251,18 +248,20 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
                                 List.of(),
                                 InstanceType.ON_DEMAND,
                                 tags,
-                                Option.option(tags.get(NODE_ID_TAG)));
+                                Option.option(tags.get(NODE_ID_TAG)),
+                                Option.option(vm.zones()).flatMap(zones -> Option.from(zones.stream().findFirst())));
     }
 
     static InstanceInfo toInstanceInfoFromRow(ResourceRow row) {
         var tags = safeTags(row);
 
         return new InstanceInfo(new InstanceId(row.name()),
-                                InstanceStatus.RUNNING,
+                                mapRowStatus(row),
                                 List.of(),
                                 InstanceType.ON_DEMAND,
                                 tags,
-                                Option.option(tags.get(NODE_ID_TAG)));
+                                Option.option(tags.get(NODE_ID_TAG)),
+                                Option.option(row.zones()).flatMap(zones -> Option.from(zones.stream().findFirst())));
     }
 
     private static Map<String, String> safeTags(VirtualMachine vm) {
@@ -273,18 +272,38 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return option(row.tags()).or(Map.of());
     }
 
+    /// Provider-agnostic node-id key upper layers select by (`NodeLifecycleManager.NODE_ID_TAG`). This
+    /// provider STAMPS the hyphenated [#NODE_ID_TAG], so a lookup written as `Map.of("aether.node-id", id)`
+    /// must be rewritten here or it matches nothing and an existing VM reads as ABSENT — which the
+    /// auto-heal in-flight tracker would take as a deletion (#1049). Mirrors
+    /// `HetznerComputeProvider.translateKeys`.
+    static final String UPPER_LAYER_NODE_ID_TAG = "aether.node-id";
+
     static String buildTagFilterQuery(Map<String, String> tagFilter) {
         var baseQuery = "Resources | where type == \"microsoft.compute/virtualmachines\"";
-        var tagClauses = tagFilter.entrySet()
-                                  .stream()
-                                  .map(AzureComputeProvider::toTagClause)
-                                  .collect(Collectors.joining(" "));
+        var tagClauses = translateKeys(tagFilter).entrySet()
+                                      .stream()
+                                      .map(AzureComputeProvider::toTagClause)
+                                      .collect(Collectors.joining(" "));
 
         return baseQuery + tagClauses;
     }
 
     private static String toTagClause(Map.Entry<String, String> entry) {
         return " | where tags[\"" + entry.getKey() + "\"] == \"" + entry.getValue() + "\"";
+    }
+
+    static Map<String, String> translateKeys(Map<String, String> tagFilter) {
+        if (!tagFilter.containsKey(UPPER_LAYER_NODE_ID_TAG)) {
+            return tagFilter;
+        }
+
+        var translated = new LinkedHashMap<>(tagFilter);
+        var value = translated.remove(UPPER_LAYER_NODE_ID_TAG);
+
+        translated.put(NODE_ID_TAG, value);
+
+        return translated;
     }
 
     private static List<InstanceInfo> toInstanceInfoList(List<VirtualMachine> vms) {
@@ -297,6 +316,45 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return rows.stream()
                    .map(AzureComputeProvider::toInstanceInfoFromRow)
                    .toList();
+    }
+
+    /// #1049 — status of a VM as Resource Graph lists it. Previously hard-coded RUNNING, which made every
+    /// stopped, deallocated or failed VM read as present to the auto-heal tracker. Power state first, then
+    /// provisioning state, exactly as [#mapStatus] reads a VM: provisioning state reflects only the last
+    /// control-plane operation, so a running VM whose last tag update failed is still running. Neither
+    /// present → [InstanceStatus#UNKNOWN].
+    static InstanceStatus mapRowStatus(ResourceRow row) {
+        var properties = Option.<Map<?, ?>> option(row.properties()).or(Map.of());
+
+        return rowPowerStateCode(properties).map(AzureComputeProvider::powerStateToStatus)
+                                .or(() -> rowProvisioningStatus(properties));
+    }
+
+    /// The row's provisioning state, mapped; [InstanceStatus#UNKNOWN] when the row carries none.
+    private static InstanceStatus rowProvisioningStatus(Map<?, ?> properties) {
+        return rowProvisioningState(properties).map(AzureComputeProvider::provisioningStateToStatus)
+                                   .or(InstanceStatus.UNKNOWN);
+    }
+
+    /// Resource Graph carries a VM's power state at `properties.extended.instanceView.powerState.code`.
+    private static Option<String> rowPowerStateCode(Map<?, ?> properties) {
+        return nestedMap(properties, "extended").flatMap(extended -> nestedMap(extended, "instanceView"))
+                        .flatMap(instanceView -> nestedMap(instanceView, "powerState"))
+                        .flatMap(powerState -> text(powerState, "code"));
+    }
+
+    private static Option<String> rowProvisioningState(Map<?, ?> properties) {
+        return text(properties, "provisioningState");
+    }
+
+    private static Option<Map<?, ?>> nestedMap(Map<?, ?> map, String key) {
+        return option(map.get(key)).filter(Map.class::isInstance)
+                     .map(value -> (Map<?, ?>) value);
+    }
+
+    private static Option<String> text(Map<?, ?> map, String key) {
+        return option(map.get(key)).filter(String.class::isInstance)
+                     .map(String.class::cast);
     }
 
     static InstanceStatus mapStatus(VirtualMachine vm) {
@@ -325,23 +383,44 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
             case "PowerState/deallocated", "PowerState/stopped" -> InstanceStatus.STOPPING;
             case "PowerState/starting" -> InstanceStatus.PROVISIONING;
             case "PowerState/deallocating", "PowerState/stopping" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 
     private static InstanceStatus provisioningStateToStatus(VirtualMachine vm) {
-        var state = option(vm.properties()).map(VirtualMachine.VmProperties::provisioningState).or("Unknown");
+        return option(vm.properties()).flatMap(properties -> option(properties.provisioningState()))
+                     .map(AzureComputeProvider::provisioningStateToStatus)
+                     .or(InstanceStatus.UNKNOWN);
+    }
 
+    /// Azure's documented VM provisioning states. `Failed` reads as stopping, which the auto-heal tracker
+    /// classifies as a failed replacement. Any state not listed here (e.g. `Canceled`) maps to
+    /// [InstanceStatus#UNKNOWN] (#1049).
+    private static InstanceStatus provisioningStateToStatus(String state) {
         return switch (state) {
             case "Succeeded" -> InstanceStatus.RUNNING;
             case "Creating", "Updating" -> InstanceStatus.PROVISIONING;
             case "Deleting", "Failed" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 
+    /// No requested spec is available on this arity — it serves [#instanceStatus], a lookup on an
+    /// EXISTING VM. The `createFrom` path uses the three-argument form below.
     private static EnvironmentError toProvisionError(Cause cause) {
-        return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+        return toProvisionError("", "", cause);
+    }
+
+    /// Azure VM sizes are retired and their per-region availability varies, exactly as on Hetzner
+    /// (where the incident that motivated this was measured), so a rejection has to name what was
+    /// asked for — `SkuNotAvailable` names the sku but not the region it was refused in.
+    private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
+        // #1111: the VM EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout timeout) {
+            return timeout;
+        }
+
+        return EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
     }
 
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {

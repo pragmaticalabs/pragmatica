@@ -10,9 +10,12 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentContext;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.ConfigChanged;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactRemoveReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeRoutesPutReceived;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.SliceTargetPutReceived;
+import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.VersionRoutingPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentState;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
@@ -26,9 +29,13 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.VersionRoutingKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -41,8 +48,12 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
@@ -88,11 +99,34 @@ public interface NodeDeploymentManager {
     @MessageReceiver
     void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut);
 
+    /// #381 — a `ConfigKey` change applied to this node's dynamic config overlay (`DynamicConfigManager`
+    /// calls this after the overlay is updated, so a slice reading through its facade sees the new
+    /// value). Pushed to the registered slices' `notifyConfigUpdate` only while ACTIVE; every other
+    /// state ignores it, and the slices re-read at their next activation anyway.
+    @Contract
+    void onConfigChanged(String changedKey);
+
+    /// #1068: a start refused for want of a committed target is deferred, and these two observations
+    /// are what re-evaluate it.
+    @Contract
+    @MessageReceiver
+    void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut);
+
+    @Contract
+    @MessageReceiver
+    void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut);
+
     @Contract
     void setShutdownCallback(Runnable callback);
 
     @Contract
     void setSelfReadySignal(Runnable signal);
+
+    /// Binds THIS node's operator-warning sink, so a deployment condition an operator must see (a declared stream
+    /// consumer that could not be registered, #1935) reaches this node's event log. Until bound, only the log line
+    /// is written.
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
 
     boolean isActive();
 
@@ -149,23 +183,23 @@ public interface NodeDeploymentManager {
         }
 
         @Override
-        public Option<Integer> getInt(String section, String key) {
-            return Option.none();
+        public Result<Option<Integer>> getInt(String section, String key) {
+            return Result.success(Option.none());
         }
 
         @Override
-        public Option<Long> getLong(String section, String key) {
-            return Option.none();
+        public Result<Option<Long>> getLong(String section, String key) {
+            return Result.success(Option.none());
         }
 
         @Override
-        public Option<Double> getDouble(String section, String key) {
-            return Option.none();
+        public Result<Option<Double>> getDouble(String section, String key) {
+            return Result.success(Option.none());
         }
 
         @Override
-        public Option<Boolean> getBoolean(String section, String key) {
-            return Option.none();
+        public Result<Option<Boolean>> getBoolean(String section, String key) {
+            return Result.success(Option.none());
         }
     }
 
@@ -185,28 +219,35 @@ public interface NodeDeploymentManager {
 
         @Override
         public Result<Integer> requireInt(String section, String key) {
-            return delegate.getInt(section + "." + key)
-                           .toResult(MISSING_KEY);
+            return getInt(section, key).flatMap(value -> value.toResult(MISSING_KEY));
         }
 
+        // ConfigService exposes no numeric getters beyond getInt, so the adapter parses the string
+        // itself — through core's Result-returning parsers, not Long.parseLong inside a map, which
+        // threw NumberFormatException out of a facade whose whole contract is Result (#276 R20).
+        // A malformed value is a named failure on require* AND on get* (#1098): the Option-returning
+        // get* used to read it as absent, the same as ConfigurationProvider's own getLong/getDouble
+        // did for the slice-api facade before #1098.
         @Override
         public Result<Long> requireLong(String section, String key) {
-            return delegate.getString(section + "." + key)
-                           .map(Long::parseLong)
-                           .toResult(MISSING_KEY);
+            return getLong(section, key).flatMap(value -> value.toResult(MISSING_KEY));
         }
 
         @Override
         public Result<Double> requireDouble(String section, String key) {
-            return delegate.getString(section + "." + key)
-                           .map(Double::parseDouble)
-                           .toResult(MISSING_KEY);
+            return getDouble(section, key).flatMap(value -> value.toResult(MISSING_KEY));
         }
+
+        // The parse failure is mapped at the Result boundary to a cause that NAMES the key and the
+        // value; Number.parseX's own cause is a Causes.fromThrowable, whose message is the whole
+        // stack trace with the key nowhere in it (review of #1092, SF-2).
+        private static final Fn2<Cause, String, String> NOT_A_LONG = Causes.forTwoValues("Config key %s is not a long: \"%s\"");
+
+        private static final Fn2<Cause, String, String> NOT_A_DOUBLE = Causes.forTwoValues("Config key %s is not a double: \"%s\"");
 
         @Override
         public Result<Boolean> requireBoolean(String section, String key) {
-            return delegate.getBoolean(section + "." + key)
-                           .toResult(MISSING_KEY);
+            return getBoolean(section, key).flatMap(value -> value.toResult(MISSING_KEY));
         }
 
         private static final Cause STRING_LIST_NOT_SUPPORTED = Causes.cause("String list config not supported via legacy ConfigService adapter");
@@ -222,25 +263,33 @@ public interface NodeDeploymentManager {
         }
 
         @Override
-        public Option<Integer> getInt(String section, String key) {
+        public Result<Option<Integer>> getInt(String section, String key) {
             return delegate.getInt(section + "." + key);
         }
 
         @Override
-        public Option<Long> getLong(String section, String key) {
-            return delegate.getString(section + "." + key)
-                           .map(Long::parseLong);
+        public Result<Option<Long>> getLong(String section, String key) {
+            return parseOptional(section + "." + key, Number::parseLong, NOT_A_LONG);
         }
 
         @Override
-        public Option<Double> getDouble(String section, String key) {
-            return delegate.getString(section + "." + key)
-                           .map(Double::parseDouble);
+        public Result<Option<Double>> getDouble(String section, String key) {
+            return parseOptional(section + "." + key, Number::parseDouble, NOT_A_DOUBLE);
         }
 
         @Override
-        public Option<Boolean> getBoolean(String section, String key) {
+        public Result<Option<Boolean>> getBoolean(String section, String key) {
             return delegate.getBoolean(section + "." + key);
+        }
+
+        private <T> Result<Option<T>> parseOptional(String fullKey,
+                                                    Fn1<Result<T>, String> parser,
+                                                    Fn2<Cause, String, String> notParseable) {
+            return delegate.getString(fullKey)
+                           .fold(() -> Result.success(Option.none()),
+                                 value -> parser.apply(value)
+                                                .map(Option::some)
+                                                .mapError(_ -> notParseable.apply(fullKey, value)));
         }
     }
 
@@ -507,8 +556,23 @@ public interface NodeDeploymentManager {
                      quorumStateNotification);
             switch (quorumStateNotification.state()) {
                 case ACTIVE -> dispatchQuorumEstablished();
-                case PASSIVE -> ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+                case PASSIVE -> dispatchPassive(quorumStateNotification);
             }
+        }
+
+        // #1790: a demoted observer of a live quorum must keep its slices serving. Suspending them
+        // unpublishes the routes the local fast path reads, so the node would refuse traffic it hosts
+        // until DRAIN; the drain's admission gate is the one designed refusal. Genuine quorum loss
+        // still suspends.
+        private void dispatchPassive(ClusterStateNotification notification) {
+            if (notification.demoted()) {
+                log.info("Node {} demoted to observer of a live quorum — keeping slices serving",
+                         ctx.self().id());
+
+                return;
+            }
+
+            ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
 
         private void dispatchQuorumEstablished() {
@@ -531,6 +595,24 @@ public interface NodeDeploymentManager {
         @Override
         public void onNodeRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> valuePut) {
             ctx.dispatch(new NodeRoutesPutReceived(valuePut));
+        }
+
+        @Contract
+        @Override
+        public void onConfigChanged(String changedKey) {
+            ctx.dispatch(new ConfigChanged(changedKey));
+        }
+
+        @Contract
+        @Override
+        public void onSliceTargetPut(ValuePut<SliceTargetKey, SliceTargetValue> valuePut) {
+            ctx.dispatch(new SliceTargetPutReceived(valuePut));
+        }
+
+        @Contract
+        @Override
+        public void onVersionRoutingPut(ValuePut<VersionRoutingKey, VersionRoutingValue> valuePut) {
+            ctx.dispatch(new VersionRoutingPutReceived(valuePut));
         }
 
         @Override
@@ -569,6 +651,12 @@ public interface NodeDeploymentManager {
         @Override
         public void setShutdownCallback(Runnable callback) {
             ctx.setShutdownCallback(callback);
+        }
+
+        @Contract
+        @Override
+        public void setOperatorWarningSink(OperatorWarningSink sink) {
+            ctx.setOperatorWarningSink(sink);
         }
     }
 }

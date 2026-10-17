@@ -7,14 +7,11 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether-pg-tools</artifactId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
     </parent>
 
     <artifactId>pg-test-corpus</artifactId>
 
-    <properties>
-        <maven.deploy.skip>true</maven.deploy.skip>
-    </properties>
     <name>PG Test Corpus</name>
     <description>PostgreSQL migration file examples for testing</description>
 </project>

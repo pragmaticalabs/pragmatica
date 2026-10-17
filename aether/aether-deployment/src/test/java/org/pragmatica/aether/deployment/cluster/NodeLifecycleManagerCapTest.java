@@ -130,7 +130,7 @@ class NodeLifecycleManagerCapTest {
                                            List.of(),
                                            InstanceType.ON_DEMAND,
                                            Map.of(CLUSTER_TAG, cluster),
-                                           Option.empty()));
+                                           Option.empty(), org.pragmatica.lang.Option.none()));
         }
 
         return instances;
@@ -182,7 +182,7 @@ class NodeLifecycleManagerCapTest {
                                                     List.of(),
                                                     InstanceType.ON_DEMAND,
                                                     Map.of(CLUSTER_TAG, CLUSTER),
-                                                    Option.empty()));
+                                                    Option.empty(), org.pragmatica.lang.Option.none()));
         }
 
         @Override

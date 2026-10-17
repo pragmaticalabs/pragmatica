@@ -1,12 +1,13 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.gcp;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -77,20 +78,32 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
             return SPOT_UNSUPPORTED.promise();
         }
 
-        var zone = zoneOverride(request.zone());
+        var zone = Option.some(request.zone().isBlank()
+                               ? config.gcpConfig().zone()
+                               : request.zone());
         var userData = request.userData().or("");
         var labels = labelsFor(request.context());
+        var insert = buildInsertRequest(request.instanceSize(), request.image(), zone, userData, labels);
 
-        return client.insertInstance(buildInsertRequest(request.instanceSize(),
-                                                        request.image(),
-                                                        zone,
-                                                        userData,
-                                                        labels))
-                     .map(GcpComputeProvider::toInstanceInfo)
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.cloudDefault()))
+        return client.insertInstance(insert)
+                     .flatMap(_ -> confirmRunning(pendingInstance(insert),
+                                                  ReadinessPolicy.cloudDefault()))
                      .onFailure(GcpComputeProvider::logProvisionFailureRollbackGap)
-                     .mapError(GcpComputeProvider::toProvisionError);
+                     .mapError(cause -> toProvisionError(request.instanceSize(),
+                                                         zone.or(""),
+                                                         cause));
+    }
+
+    private InstanceInfo pendingInstance(InsertInstanceRequest request) {
+        var zone = request.zoneOverride().or(config.gcpConfig().zone());
+
+        return new InstanceInfo(new InstanceId(zone + "/" + request.name()),
+                                InstanceStatus.PROVISIONING,
+                                List.of(),
+                                InstanceType.ON_DEMAND,
+                                request.labels(),
+                                Option.option(request.labels().get(NODE_ID_LABEL)),
+                                Option.none());
     }
 
     /// GCP's [InsertInstanceRequest] exposes no `provisioningModel=SPOT` field on this client, so a
@@ -126,14 +139,14 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
 
     @Override
     public Promise<List<InstanceInfo>> listInstances() {
-        return client.listInstances()
+        return client.listAllInstances("")
                      .map(GcpComputeProvider::toInstanceInfoList)
                      .mapError(GcpComputeProvider::toListInstancesError);
     }
 
     @Override
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return client.listInstances(toLabelFilter(tagFilter))
+        return client.listAllInstances(toLabelFilter(tagFilter))
                      .map(GcpComputeProvider::toInstanceInfoList)
                      .mapError(GcpComputeProvider::toListInstancesError);
     }
@@ -143,12 +156,6 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return client.getInstance(instanceId.value())
                      .map(GcpComputeProvider::toInstanceInfo)
                      .mapError(GcpComputeProvider::toProvisionError);
-    }
-
-    @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.resetInstance(id.value())
-                     .mapToUnit();
     }
 
     @Override
@@ -176,13 +183,16 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                                                      Option<String> zoneOverride,
                                                      String userData,
                                                      Map<String, String> labels) {
-        var name = generateInstanceName();
-        var disk = buildBootDisk(image);
+        var name = generateInstanceName(labels);
+        var disk = buildBootDisk(image,
+                                 zoneOverride.or(config.gcpConfig().zone()));
         var networkInterface = buildNetworkInterface();
         var metadata = buildMetadata(userData);
 
         return new InsertInstanceRequest(name,
-                                         machineType,
+                                         zonalResource(zoneOverride.or(config.gcpConfig().zone()),
+                                                       "machineTypes",
+                                                       machineType),
                                          List.of(disk),
                                          List.of(networkInterface),
                                          labels,
@@ -217,8 +227,14 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                   .orElse(() -> ClusterName.maybeClusterName(System.getenv("AETHER_CLUSTER_NAME")));
     }
 
-    private Disk buildBootDisk(String image) {
-        return new Disk(true, true, new InitializeParams(image, 20, "pd-standard"));
+    private Disk buildBootDisk(String image, String zone) {
+        return new Disk(true, true, new InitializeParams(image, 20, zonalResource(zone, "diskTypes", "pd-standard")));
+    }
+
+    private static String zonalResource(String zone, String collection, String name) {
+        return name.contains("/")
+               ? name
+               : "zones/" + zone + "/" + collection + "/" + name;
     }
 
     private NetworkInterfaceConfig buildNetworkInterface() {
@@ -231,21 +247,31 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return new Metadata(List.of(new MetadataItem("startup-script", userData)));
     }
 
-    private static String generateInstanceName() {
-        return "aether-" + UUID.randomUUID()
-                               .toString()
-                               .substring(0, 8);
+    private static String generateInstanceName(Map<String, String> labels) {
+        var identity = labels.getOrDefault("aether-cluster", "")
+                     + "/" + labels.getOrDefault("aether-source", "")
+                     + "/" + labels.get(NODE_ID_LABEL);
+
+        return "aether-" + UUID.nameUUIDFromBytes(identity.getBytes(StandardCharsets.UTF_8));
     }
 
     static InstanceInfo toInstanceInfo(Instance instance) {
         var labels = safeLabels(instance);
 
-        return new InstanceInfo(new InstanceId(instance.name()),
+        return new InstanceInfo(new InstanceId(instanceReference(instance)),
                                 mapStatus(instance.status()),
                                 collectAddresses(instance),
                                 InstanceType.ON_DEMAND,
                                 labels,
-                                Option.option(labels.get(NODE_ID_LABEL)));
+                                Option.option(labels.get(NODE_ID_LABEL)),
+                                Option.option(instance.zone()).map(zone -> zone.substring(zone.lastIndexOf('/') + 1)));
+    }
+
+    private static String instanceReference(Instance instance) {
+        return Option.option(instance.zone())
+                     .filter(zone -> !zone.isBlank())
+                     .map(zone -> zone.substring(zone.lastIndexOf('/') + 1) + "/" + instance.name())
+                     .or(instance.name());
     }
 
     private static Map<String, String> safeLabels(Instance instance) {
@@ -258,12 +284,15 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                         .toList();
     }
 
+    /// Compute Engine's documented `Instance.status` values (GCP's `TERMINATED` is a stopped instance, not a
+    /// deleted one). `REPAIRING`, and any value not listed here, map to [InstanceStatus#UNKNOWN] (#1049):
+    /// reading them as terminated drops an auto-heal replacement that still exists.
     static InstanceStatus mapStatus(String gcpStatus) {
         return switch (gcpStatus) {
-            case "PROVISIONING", "STAGING" -> InstanceStatus.PROVISIONING;
+            case "PROVISIONING", "STAGING", "PENDING" -> InstanceStatus.PROVISIONING;
             case "RUNNING" -> InstanceStatus.RUNNING;
-            case "STOPPING", "TERMINATED", "SUSPENDED", "SUSPENDING" -> InstanceStatus.STOPPING;
-            default -> InstanceStatus.TERMINATED;
+            case "STOPPING", "TERMINATED", "SUSPENDED", "SUSPENDING", "PENDING_STOP", "STOPPED", "DEPROVISIONING" -> InstanceStatus.STOPPING;
+            default -> InstanceStatus.UNKNOWN;
         };
     }
 
@@ -278,12 +307,19 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
                          .toList();
     }
 
+    /// Provider-agnostic node-id key upper layers select by (`NodeLifecycleManager.NODE_ID_TAG`). GCP label
+    /// keys admit no `.`, and this provider STAMPS the hyphenated [#NODE_ID_LABEL], so the dotted key is
+    /// rewritten here or a node-id lookup matches nothing and an existing instance reads as ABSENT — which
+    /// the auto-heal in-flight tracker would take as a deletion (#1049). Mirrors
+    /// `HetznerComputeProvider.translateKeys`.
+    static final String UPPER_LAYER_NODE_ID_TAG = "aether.node-id";
+
     static String toLabelFilter(Map<String, String> tagFilter) {
-        return tagFilter.entrySet()
-                        .stream()
-                        .map(GcpComputeProvider::toLabelFilterEntry)
-                        .reduce(GcpComputeProvider::combineWithAnd)
-                        .orElse("");
+        return translateKeys(tagFilter).entrySet()
+                            .stream()
+                            .map(GcpComputeProvider::toLabelFilterEntry)
+                            .reduce(GcpComputeProvider::combineWithAnd)
+                            .orElse("");
     }
 
     private static String toLabelFilterEntry(Map.Entry<String, String> entry) {
@@ -294,8 +330,36 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return a + " AND " + b;
     }
 
+    static Map<String, String> translateKeys(Map<String, String> tagFilter) {
+        if (!tagFilter.containsKey(UPPER_LAYER_NODE_ID_TAG)) {
+            return tagFilter;
+        }
+
+        var translated = new LinkedHashMap<>(tagFilter);
+        var value = translated.remove(UPPER_LAYER_NODE_ID_TAG);
+
+        translated.put(NODE_ID_LABEL, value);
+
+        return translated;
+    }
+
+    /// No requested spec is available on this arity — it serves [#instanceStatus], a lookup on an
+    /// EXISTING instance. The `createFrom` path uses the three-argument form below.
     private static EnvironmentError toProvisionError(Cause cause) {
-        return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
+        return toProvisionError("", "", cause);
+    }
+
+    /// GCP machine types are retired and their per-zone availability varies, exactly as on Hetzner
+    /// (where the incident that motivated this was measured), so a rejection has to name what was
+    /// asked for. A blank `zone` here means the insert requested the client-level default placement
+    /// — [EnvironmentError.ProvisionFailed] renders that as "not recorded", never as an empty field.
+    private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
+        // #1111: the VM EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout timeout) {
+            return timeout;
+        }
+
+        return EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
     }
 
     private static EnvironmentError toTerminateError(InstanceId instanceId, Cause cause) {
