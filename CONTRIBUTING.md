@@ -6,7 +6,9 @@ This is a monorepo: **Pragmatica Core** (functional-programming library — `Res
 different maturity levels, but share one build and one contribution process.
 
 Pre-GA, we are not accepting external code contributions. Issues, bug reports and design
-discussion are welcome.
+discussion are welcome. The sections on branches, pull requests, CI on a fork and sign-off below
+describe the maintainers' own workflow, and the one that will apply to external contributors once
+contributions open; they are not an invitation to send a pull request today.
 
 Open an issue to report a bug or to discuss a design. This is a fast-moving pre-GA codebase, and
 some things you would expect to be stable (APIs under `aether/`, in particular) are still in flux.
@@ -86,8 +88,8 @@ therefore runs only where a pom opts back in: `aether/pom.xml` sets `jbct.skip` 
 whole Aether tree, and several `examples/` poms do the same for their own subtrees.
 
 The population that matters is the reactor modules that contain a `src/main/java` at all, since
-those are the only ones the gate could examine. There are 118 of them, and **the gate examines 71
-and skips 47.** The skipped 47 are `core/`, every module under `integrations/`, every module under
+those are the only ones the gate could examine. There are roughly 120 of them, and **the gate examines roughly 73
+and skips 47** [counts approximate at rc4, from a walk of the root pom's `<modules>`; they drift as modules are added]. The skipped 47 are `core/`, every module under `integrations/`, every module under
 `jbct/`, `testing/`, and `examples/pragmatica-lite`. So the gate does not examine the Core library,
 and does not examine a single integration. **A green gate is not coverage for those trees**, and you
 should not read one as evidence that code you added there conforms. This gap is real, known and
@@ -110,8 +112,9 @@ is in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — format+lint che
 [mechanism: `.github/workflows/ci.yml`]. There is no separate staging environment; passing this
 matrix is the bar for merge. The `@Tag("Heavy")` forge probes are not part of that matrix. They run
 in [`.github/workflows/heavy-forge.yml`](.github/workflows/heavy-forge.yml): nightly on `main`, on
-`workflow_dispatch`, and on any pull request labelled `run-heavy`. Add the label when your change
-touches auto-heal, drains, membership or stream ownership, which only those probes exercise.
+`workflow_dispatch`, and on any pull request labelled `run-heavy`. The nightly run exercises `main`,
+which lags the release branch, so for a change on the release branch use the `run-heavy` label.
+Add the label when your change touches auto-heal, drains, membership or stream ownership, which only those probes exercise.
 
 **`build.sh` does not run a cluster — run `./forge.sh` before pushing.** Steps 4-5 of `build.sh`
 *compile* the e2e and Forge tests; nothing local executes them [mechanism: `build.sh` step 4 runs
@@ -167,6 +170,9 @@ written for Claude Code, but their rule sections are ordinary prose and adapt to
 
 ## Branches, commits, and pull requests
 
+This section is the maintainers' workflow, and the one that will apply to external contributors
+once contributions open (see the policy at the top).
+
 - Fork the repository and branch off the **current release branch**, not `main`. Development
   integrates on the release branch; `main` lags it substantially and is not where changes land.
   The README's **Current release branch** line names the one in effect.
@@ -197,8 +203,8 @@ required from you while it waits.
 ### Sign-off
 
 There is no automated DCO or CLA check gating PRs in this repository today [mechanism:
-`.github/workflows/` contains `changelog.yml`, `ci.yml` and `release.yml` — no DCO/CLA bot is
-configured]. We nonetheless ask that you certify the provenance of your contribution by adding a
+`.github/workflows/` contains no DCO/CLA workflow (`ls .github/workflows` over its seven
+workflow files) — no DCO/CLA bot is configured]. We nonetheless ask that you certify the provenance of your contribution by adding a
 `Signed-off-by` trailer (`git commit -s`), per the
 [Developer Certificate of Origin](https://developercertificate.org/). This is a request, not (yet)
 an enforced gate — expect it to become one before GA, given the dual-license surface above.
