@@ -101,8 +101,12 @@ BuyRequestJson.decode(bytes)
 For code that holds a `Class` rather than the entry point (frameworks, generic adapters):
 
 ```java
-Option<JsonTypeCodec<BuyRequest>> codec = JsonCodecs.codecFor(BuyRequest.class);
+Result<Option<JsonTypeCodec<BuyRequest>>> codec = JsonCodecs.codecFor(BuyRequest.class);
 ```
+
+Empty means the class is not a `@Json` type on the class path. A failure (`JsonCodecs.ConflictingProviders`) means
+more than one provider lists it, for example the same model compiled into two artifacts: the lookup refuses to pick
+one by class-path order.
 
 The processor generates one registry class per package containing `@Json` types (`<Segment>JsonCodecs`, for package
 `com.example.booking` that is `BookingJsonCodecs`; the `codec.registry.suffix` processor option appends a suffix, as
@@ -111,7 +115,7 @@ it does for the binary `@Codec` registry) and lists it in
 `ServiceLoader` (the calling thread's context class loader) on the first lookup and keeps the result.
 
 Only `@Json` types are listed. A record or enum reachable only as a component of one has codec code inside that
-type's entry point, but it is not a lookup target: `codecFor` returns empty for it. Annotate it to make it one.
+type's entry point, but it is not a lookup target: `codecFor` returns an empty success for it. Annotate it to make it one.
 
 ### Containers
 

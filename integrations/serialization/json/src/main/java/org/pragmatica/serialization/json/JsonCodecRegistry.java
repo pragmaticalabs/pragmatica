@@ -15,27 +15,59 @@
  */
 package org.pragmatica.serialization.json;
 
-import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import org.pragmatica.lang.Lazy;
+import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.json.spi.JsonCodecProvider;
 
 
 /// The registry behind [JsonCodecs#codecFor]: every provider's codecs, loaded once, on first use. `Lazy`
 /// publishes the map safely and does not cache a failed load.
 sealed interface JsonCodecRegistry {
-    Lazy<Map<Class<?>, JsonTypeCodec<?>>> CODECS = Lazy.lazy(JsonCodecRegistry::load);
+    Lazy<Map<Class<?>, Result<JsonTypeCodec<?>>>> CODECS = Lazy.lazy(JsonCodecRegistry::load);
 
-    private static Map<Class<?>, JsonTypeCodec<?>> load() {
-        var codecs = new HashMap<Class<?>, JsonTypeCodec<?>>();
-
-        ServiceLoader.load(JsonCodecProvider.class).forEach(provider -> provider.codecs()
-                                                                                .forEach(codecs::putIfAbsent));
-
-        return Map.copyOf(codecs);
+    private static Map<Class<?>, Result<JsonTypeCodec<?>>> load() {
+        return index(ServiceLoader.load(JsonCodecProvider.class));
     }
+
+    /// Each listed class with its codec, or with a [JsonCodecs.ConflictingProviders] failure when more than one
+    /// provider lists it: which copy wins must not depend on class-path order.
+    static Map<Class<?>, Result<JsonTypeCodec<?>>> index(Iterable<JsonCodecProvider> providers) {
+        return StreamSupport.stream(providers.spliterator(),
+                                    false)
+                            .flatMap(JsonCodecRegistry::listings)
+                            .collect(Collectors.groupingBy(Listing::type))
+                            .entrySet()
+                            .stream()
+                            .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                                  entry -> resolve(entry.getKey(),
+                                                                                   entry.getValue())));
+    }
+
+    private static Stream<Listing> listings(JsonCodecProvider provider) {
+        return provider.codecs()
+                       .entrySet()
+                       .stream()
+                       .map(entry -> new Listing(entry.getKey(),
+                                                 provider.getClass().getName(),
+                                                 entry.getValue()));
+    }
+
+    private static Result<JsonTypeCodec<?>> resolve(Class<?> type, List<Listing> found) {
+        return found.size() == 1
+               ? Result.success(found.getFirst().codec())
+               : JsonCodecs.ConflictingProviders.conflictingProviders(type,
+                                                                      found.stream().map(Listing::provider).toList())
+                                                .result();
+    }
+
+    record Listing(Class<?> type, String provider, JsonTypeCodec<?> codec) {}
 
     record unused() implements JsonCodecRegistry {}
 }

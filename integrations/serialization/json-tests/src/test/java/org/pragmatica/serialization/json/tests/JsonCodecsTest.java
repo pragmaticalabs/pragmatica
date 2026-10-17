@@ -17,6 +17,7 @@ package org.pragmatica.serialization.json.tests;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.json.JsonCodecs;
 import org.pragmatica.serialization.json.spi.JsonCodecProvider;
 import org.pragmatica.serialization.json.tests.other.Receipt;
@@ -45,15 +46,15 @@ class JsonCodecsTest {
 
     @Test
     void codecFor_findsAnnotatedTypesOfBothPackages_asTheirEntryPointCodec() {
-        assertSame(Ticketing_BuyRequestJson.CODEC, JsonCodecs.codecFor(Ticketing.BuyRequest.class).unwrap());
-        assertSame(ReceiptJson.CODEC, JsonCodecs.codecFor(Receipt.class).unwrap());
+        assertSame(Ticketing_BuyRequestJson.CODEC, JsonCodecs.codecFor(Ticketing.BuyRequest.class).unwrap().unwrap());
+        assertSame(ReceiptJson.CODEC, JsonCodecs.codecFor(Receipt.class).unwrap().unwrap());
         assertEquals(new Receipt("r-1", 250),
-                     JsonCodecs.codecFor(Receipt.class).unwrap().decode("{\"id\":\"r-1\",\"amountMinor\":250}").unwrap());
+                     JsonCodecs.codecFor(Receipt.class).unwrap().unwrap().decode("{\"id\":\"r-1\",\"amountMinor\":250}").unwrap());
     }
 
     @Test
     void codecFor_isEmpty_forATypeWithoutGeneratedCodec() {
-        assertEquals(Option.none(), JsonCodecs.codecFor(String.class));
+        assertEquals(Result.success(Option.none()), JsonCodecs.codecFor(String.class));
     }
 
     // Documented decision: only @Json types are listed. Inner and ProductId have codec code inside their roots'
@@ -61,7 +62,7 @@ class JsonCodecsTest {
     @Test
     void codecFor_isEmpty_forATypeReachableOnlyAsANestedComponent() {
         assertTrue(StrictDecodingTest_AllRequiredJson.CODECS.containsKey(StrictDecodingTest.Inner.class));
-        assertEquals(Option.none(), JsonCodecs.codecFor(StrictDecodingTest.Inner.class));
-        assertEquals(Option.none(), JsonCodecs.codecFor(Ecommerce.ProductId.class));
+        assertEquals(Result.success(Option.none()), JsonCodecs.codecFor(StrictDecodingTest.Inner.class));
+        assertEquals(Result.success(Option.none()), JsonCodecs.codecFor(Ecommerce.ProductId.class));
     }
 }
