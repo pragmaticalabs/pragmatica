@@ -70,7 +70,8 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
     }
 
     /// Decodes `json[offset, offset + length)` in place: the region is read where it lies, never copied. A region
-    /// that does not lie inside `json` is refused with [JsonError.InvalidRange] before anything is read.
+    /// that does not lie inside `json` is refused with [JsonError.InvalidRange] before anything is read. Because the
+    /// region is not copied, a failure's position is an offset into the whole of `json`, not into the region.
     public Result<T> decode(byte[] json, int offset, int length) {
         return isInside(json.length, offset, length)
                ? read(JsonReader.jsonReader().reset(json, offset, length))

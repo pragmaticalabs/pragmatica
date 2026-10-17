@@ -19,14 +19,15 @@ import javax.annotation.processing.Filer;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
-import javax.lang.model.element.Element;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
+import javax.lang.model.util.ElementFilter;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -39,6 +40,7 @@ import org.pragmatica.lang.utils.Causes;
 /// generated; its users fall back.
 public final class JsonCodecGenerator {
     private final Filer filer;
+    private final Elements elements;
     private final JsonTypeAnalyzer analyzer;
     private final List<TypeMirror> roots = new ArrayList<>();
     private final String packageName;
@@ -50,6 +52,7 @@ public final class JsonCodecGenerator {
 
     public JsonCodecGenerator(Filer filer, Elements elements, Types types, String packageName) {
         this.filer = filer;
+        this.elements = elements;
         this.packageName = packageName;
         this.analyzer = new JsonTypeAnalyzer(elements, types, packageName);
     }
@@ -84,9 +87,10 @@ public final class JsonCodecGenerator {
         return new JsonCodecEmitter(analyzer).emitEntryPoint(packageName, holderName, root, generatedBy);
     }
 
-    /// Writes the holder `packageName.holderName` through the Filer.
-    public Result<Unit> write(String holderName, String generatedBy, Element... originatingElements) {
-        return writeSource(holderName, source(holderName, generatedBy), originatingElements);
+    /// Writes the holder `packageName.holderName` through the Filer, for `owner` (the type the holder is generated
+    /// for, named in a name-clash failure).
+    public Result<Unit> write(String holderName, String generatedBy, TypeElement owner) {
+        return writeSource(holderName, source(holderName, generatedBy), owner);
     }
 
     /// Writes the entry point `packageName.holderName` of `root` (the only root added) through the Filer.
@@ -94,15 +98,49 @@ public final class JsonCodecGenerator {
         return writeSource(holderName, entryPointSource(holderName, root, generatedBy), root);
     }
 
-    private Result<Unit> writeSource(String holderName, String source, Element... originatingElements) {
-        var qualified = packageName.isEmpty()
-                        ? holderName
-                        : packageName + "." + holderName;
+    /// The qualified name of the generated class `simpleName` in `packageName`.
+    public static String qualifiedName(String packageName, String simpleName) {
+        return packageName.isEmpty()
+               ? simpleName
+               : packageName + "." + simpleName;
+    }
 
-        return Result.lift(Causes::fromThrowable,
-                           () -> filer.createSourceFile(qualified, originatingElements))
-                     .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
-                     .map(writer -> print(writer, source));
+    private Result<Unit> writeSource(String holderName, String source, TypeElement owner) {
+        var qualified = qualifiedName(packageName, holderName);
+
+        return ensureFree(elements,
+                          qualified,
+                          owner.getQualifiedName().toString())
+                         .flatMap(_ -> Result.lift(Causes::fromThrowable,
+                                                   () -> filer.createSourceFile(qualified, owner)))
+                         .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
+                         .map(writer -> print(writer, source));
+    }
+
+    /// Fails when `qualified`, the class about to be generated for `owner`, already names a type that is not
+    /// generated JSON codec output (a user type that happens to have that name), with one message naming both and
+    /// how to resolve it, instead of the Filer's "attempt to recreate" error with a stack trace or a duplicate-class
+    /// error inside generated source. Generated output (a previous build's class still in the output directory) is
+    /// recognised by its `CODECS` map and may be regenerated.
+    public static Result<Unit> ensureFree(Elements elements, String qualified, String owner) {
+        return Option.option(elements.getTypeElement(qualified))
+                     .filter(existing -> !isGeneratedOutput(existing))
+                     .map(existing -> Causes.cause("Cannot generate " + qualified
+                                                   + " for " + owner
+                                                   + ": the type " + existing.getQualifiedName()
+                                                   + " already exists and is not generated JSON codec code."
+                                                   + " Rename " + existing.getQualifiedName()
+                                                   + ", or rename or move " + owner
+                                                   + "."))
+                     .map(Cause::<Unit>result)
+                     .or(Result::unitResult);
+    }
+
+    private static boolean isGeneratedOutput(TypeElement existing) {
+        return ElementFilter.fieldsIn(existing.getEnclosedElements())
+                            .stream()
+                            .anyMatch(field -> field.getSimpleName().contentEquals("CODECS")
+                                               && field.asType().toString().startsWith("java.util.Map<"));
     }
 
     private static Unit print(Writer target, String source) {

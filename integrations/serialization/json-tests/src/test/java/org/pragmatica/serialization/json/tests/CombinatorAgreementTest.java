@@ -112,6 +112,23 @@ class CombinatorAgreementTest {
         assertEquals(1, JsonTypeCodec.setOf(Containers_ItemJson.CODEC).decode("[{\"name\":\"a\"},{\"name\":\"a\"}]").unwrap().size());
     }
 
+    // Set equality ignores order, so the order is pinned on the iteration itself: document order, a repeat kept
+    // where it first appeared, for the combinator and the generated Set component alike.
+    @Test
+    void setOf_iteratesInDocumentOrder_asTheGeneratedSetDoes() {
+        var json = "[{\"name\":\"c\"},{\"name\":\"a\"},{\"name\":\"b\"},{\"name\":\"a\"},{\"name\":\"d\"}]";
+        var expected = List.of("c", "a", "b", "d");
+
+        assertEquals(expected, names(JsonTypeCodec.setOf(Containers_ItemJson.CODEC).decode(json).unwrap()));
+        assertEquals(expected, names(Containers_ItemSetJson.decode("{\"v\":" + json + "}").unwrap().v()));
+    }
+
+    private static List<String> names(Set<Containers.Item> items) {
+        return items.stream()
+                    .map(Containers.Item::name)
+                    .toList();
+    }
+
     @Test
     void optionOf_mapsNullToEmpty_asTheGeneratedOptionDoes() {
         assertAgreement(JsonTypeCodec.optionOf(Containers_ItemJson.CODEC), Containers_MaybeItemJson::decode,

@@ -22,8 +22,12 @@ import org.pragmatica.serialization.json.spi.JsonReader;
 import org.pragmatica.serialization.json.spi.JsonWriter;
 import org.pragmatica.serialization.json.tests.Ticketing.BuyRequest;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -68,6 +72,44 @@ class JsonTypeCodecApiTest {
         assertEquals(REQUEST, Ticketing_BuyRequestJson.CODEC.decode(json, 0, json.length).unwrap());
         assertTrue(Ticketing_BuyRequestJson.CODEC.decode(padded, 3, json.length + 1).isFailure());
         assertTrue(Ticketing_BuyRequestJson.CODEC.decode(padded, 2, json.length).isFailure());
+    }
+
+    // Documented decision: a region is read where it lies, so an error position is an offset into the whole buffer,
+    // not into the region. A copying decode would report the position relative to the region instead.
+    @Test
+    void decodeRegion_reportsErrorPositions_asOffsetsIntoTheWholeBuffer() {
+        var broken = "{\"customer\":x}".getBytes(StandardCharsets.UTF_8);
+        var padded = new byte[broken.length + 9];
+
+        Arrays.fill(padded, (byte) ' ');
+        System.arraycopy(broken, 0, padded, 5, broken.length);
+        var alone = assertInstanceOf(JsonError.Malformed.class, failureOf(Ticketing_BuyRequestJson.CODEC.decode(broken)));
+        var inRegion = assertInstanceOf(JsonError.Malformed.class,
+                                        failureOf(Ticketing_BuyRequestJson.CODEC.decode(padded, 5, broken.length)));
+
+        assertEquals(12, alone.position());
+        assertEquals(5 + 12, inRegion.position());
+    }
+
+    // The entry point's public surface is exactly the documented API; everything else is package-private machinery.
+    @Test
+    void entryPoint_publicMembers_areExactlyTheDocumentedApi() {
+        var type = Ticketing_BuyRequestJson.class;
+        var fields = Arrays.stream(type.getDeclaredFields())
+                           .filter(field -> Modifier.isPublic(field.getModifiers()))
+                           .map(Field::getName)
+                           .collect(Collectors.toSet());
+        var methods = Arrays.stream(type.getDeclaredMethods())
+                            .filter(method -> Modifier.isPublic(method.getModifiers()) && !method.isSynthetic())
+                            .map(method -> method.getName() + Arrays.toString(method.getParameterTypes()))
+                            .collect(Collectors.toSet());
+
+        assertEquals(Set.of("CODEC", "CODECS"), fields);
+        assertEquals(Set.of("decode[class [B]", "decode[class java.lang.String]", "encode[class " + BuyRequest.class.getName() + "]"),
+                     methods);
+        assertEquals(0, Arrays.stream(type.getDeclaredConstructors()).filter(ctor -> Modifier.isPublic(ctor.getModifiers())).count());
+        assertEquals(0, Arrays.stream(type.getDeclaredClasses()).filter(nested -> Modifier.isPublic(nested.getModifiers())).count());
+        assertTrue(Modifier.isPublic(type.getModifiers()) && Modifier.isFinal(type.getModifiers()));
     }
 
     @Test

@@ -104,15 +104,35 @@ For code that holds a `Class` rather than the entry point (frameworks, generic a
 Result<Option<JsonTypeCodec<BuyRequest>>> codec = JsonCodecs.codecFor(BuyRequest.class);
 ```
 
-Empty means the class is not a `@Json` type on the class path. A failure (`JsonCodecs.ConflictingProviders`) means
-more than one provider lists it, for example the same model compiled into two artifacts: the lookup refuses to pick
-one by class-path order.
+Empty means the class is not a `@Json` type its class loader sees. The lookup never throws; it fails in two cases:
 
-The processor generates one registry class per package containing `@Json` types (`<Segment>JsonCodecs`, for package
-`com.example.booking` that is `BookingJsonCodecs`; the `codec.registry.suffix` processor option appends a suffix, as
-it does for the binary `@Codec` registry) and lists it in
-`META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider`. `JsonCodecs` loads every provider with
-`ServiceLoader` (the calling thread's context class loader) on the first lookup and keeps the result.
+- `JsonCodecs.ConflictingProviders`: two **differently named** providers both list the class, so the lookup refuses
+  to pick one by class-path order. That happens when registries overlap (the same `@Json` type compiled into two
+  artifacts together with different other types of its package), when one copy was generated with another
+  `codec.registry.suffix`, or with a hand-written provider. The **same** registry in two artifacts (the same type
+  set compiled twice) is not a conflict: registry names are derived from the types they list, and `ServiceLoader`
+  loads a provider name once, so the lookup succeeds with the copy found first.
+- `JsonCodecs.ProviderFailed`: no healthy provider lists the class and some provider could not be read (a services
+  entry whose class cannot be loaded or instantiated, a `codecs()` that throws or returns `null`). Absence cannot be
+  told apart from "listed by the broken one", so it is reported instead of an empty success. Classes listed by
+  healthy providers keep resolving.
+
+The processor generates one registry class per package containing `@Json` types and lists it in
+`META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider`. Its name is
+`<Segment>JsonCodecs<suffix>_<hash>`: for package `com.example.booking`, `BookingJsonCodecs_` followed by the first 8
+hex digits of the SHA-256 of the sorted qualified names it lists; the `codec.registry.suffix` processor option
+supplies `<suffix>`, as it does for the binary `@Codec` registry. Deriving the name from the type set lets two
+artifacts with `@Json` types in one package (`src/main` and `src/test`, or two modules sharing a package) both ship
+a registry that loads, and keeps builds reproducible.
+
+`JsonCodecs` resolves a class against the providers of the class's own loader (`type.getClassLoader()`, the system
+class loader for a JDK class), so a type in a child class loader finds the registry shipped beside it. The answer is
+computed on the first lookup of that class and kept with the class (a `ClassValue`), so later lookups never rescan
+the class path and a discarded class loader is not kept alive by the cache.
+
+A generated name that is already taken (a hand-written `OrderJson` next to `@Json Order`, a nested `A.B` and a
+top-level `A_B` that both need `A_BJson`, a class named like the registry) is a compile error naming both types;
+rename one of them.
 
 Only `@Json` types are listed. A record or enum reachable only as a component of one has codec code inside that
 type's entry point, but it is not a lookup target: `codecFor` returns an empty success for it. Annotate it to make it one.
@@ -146,6 +166,9 @@ byte[] encoded             = BuyRequestJson.CODEC.encode(writer, value);   // wr
 
 Result<BuyRequest> region  = BuyRequestJson.CODEC.decode(buffer, offset, length);  // read in place, never copied
 ```
+
+A region is read where it lies, so the `position` of a `JsonError` from a region decode is an offset into the whole
+`buffer`, not into the region: a document at `offset` 5 refused at its own byte 12 reports position 17.
 
 ## Supported types
 

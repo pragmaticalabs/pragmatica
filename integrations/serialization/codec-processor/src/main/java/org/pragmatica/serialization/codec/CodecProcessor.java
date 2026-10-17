@@ -30,6 +30,7 @@ public class CodecProcessor extends AbstractProcessor {
 
     private CodecClassGenerator generator;
     private JsonRegistries jsonRegistries;
+    private final GeneratedNames generatedNames = new GeneratedNames();
     private String registrySuffix = "";
 
     @Override
@@ -45,7 +46,8 @@ public class CodecProcessor extends AbstractProcessor {
                               : suffix;
         this.jsonRegistries = new JsonRegistries(processingEnv.getFiler(),
                                                  processingEnv.getElementUtils(),
-                                                 registrySuffix);
+                                                 registrySuffix,
+                                                 generatedNames);
     }
 
     @Override
@@ -194,8 +196,10 @@ public class CodecProcessor extends AbstractProcessor {
 
         var entryPoint = jsonEntryPointName(type);
 
-        json.writeEntryPoint(entryPoint, type, "CodecProcessor")
-            .onSuccess(_ -> note(element, "Generated JSON codec: " + entryPoint))
+        generatedNames.claim(JsonCodecGenerator.qualifiedName(packageName, entryPoint),
+                             type.getQualifiedName().toString())
+                      .flatMap(_ -> json.writeEntryPoint(entryPoint, type, "CodecProcessor"))
+                      .onSuccess(_ -> note(element, "Generated JSON codec: " + entryPoint))
             .onSuccess(_ -> jsonRegistries.add(packageName,
                                                type.getQualifiedName().toString(),
                                                entryPoint))

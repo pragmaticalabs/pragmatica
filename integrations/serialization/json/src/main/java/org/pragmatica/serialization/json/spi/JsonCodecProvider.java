@@ -21,7 +21,7 @@ import org.pragmatica.serialization.json.JsonTypeCodec;
 
 
 /// One package's generated JSON codecs, found through `java.util.ServiceLoader`. The codec processor writes one
-/// implementation per package holding `@Json` types and lists it in
+/// implementation per package holding `@Json` types, named after the types it lists, and lists it in
 /// `META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider`; `JsonCodecs.codecFor` reads
 /// them all. Implemented by generated code only.
 public interface JsonCodecProvider {

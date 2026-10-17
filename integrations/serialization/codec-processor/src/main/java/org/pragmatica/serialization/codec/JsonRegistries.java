@@ -5,8 +5,12 @@ import javax.lang.model.util.Elements;
 import javax.tools.StandardLocation;
 import java.io.PrintWriter;
 import java.io.Writer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -16,20 +20,29 @@ import java.util.Set;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
 
 import static org.pragmatica.lang.Option.option;
 
 
-/// The per-package JSON registries: one `<Segment>JsonCodecs<suffix>` class per package holding `@Json` types,
+/// The per-package JSON registries: one `<Segment>JsonCodecs<suffix>_<hash>` class per package holding `@Json` types,
 /// implementing `JsonCodecProvider` and listing each type's entry-point `CODEC`, plus the single
 /// `META-INF/services` file naming every registry, so `JsonCodecs.codecFor` finds them through `ServiceLoader`.
+///
+/// Names: `<hash>` is the first 8 hex digits of the SHA-256 of the sorted qualified names the registry lists. Two
+/// artifacts with `@Json` types in one package (`src/main` and `src/test`, or two modules sharing a package) list
+/// different types, so their registries get different names and both load; with one name per package the
+/// `ServiceLoader`, which loads a provider name once, would silently drop one of them. The same type set always
+/// gets the same name, so a build is reproducible and two copies of one registry are deduplicated by name.
 ///
 /// Rounds: a package's registry is written in the first round that brings no new `@Json` type for it. The round
 /// that generated its entry points always has a successor (generated sources start a round), so registries are
 /// written before the last round and are compiled like any other source. A package whose `@Json` types arrive
-/// after its registry was written (another processor generating one late) gets a second, numbered registry.
-/// The services file is a resource and is written once, in the last round, with every registry; entries a
-/// previous incremental compilation left in it are kept while their class still resolves.
+/// after its registry was written (another processor generating one late) gets a second registry, named by its
+/// own type set. The services file is a resource and is written once, in the last round, with every registry;
+/// an entry a previous incremental compilation left in it is kept while its class still resolves, unless this
+/// compilation wrote a registry for the same package (it supersedes the old one, whose type set and so name may
+/// differ).
 final class JsonRegistries {
     static final String SERVICE = "org.pragmatica.serialization.json.spi.JsonCodecProvider";
     private static final String SERVICE_FILE = "META-INF/services/" + SERVICE;
@@ -37,15 +50,17 @@ final class JsonRegistries {
     private final Filer filer;
     private final Elements elements;
     private final String suffix;
+    private final GeneratedNames generatedNames;
     // package -> (type qualified name -> entry-point simple name), in discovery order
     private final Map<String, Map<String, String>> pending = new LinkedHashMap<>();
-    private final Map<String, Integer> written = new HashMap<>();
+    private final Set<String> writtenPackages = new HashSet<>();
     private final Set<String> providers = new LinkedHashSet<>();
 
-    JsonRegistries(Filer filer, Elements elements, String suffix) {
+    JsonRegistries(Filer filer, Elements elements, String suffix, GeneratedNames generatedNames) {
         this.filer = filer;
         this.elements = elements;
         this.suffix = suffix;
+        this.generatedNames = generatedNames;
     }
 
     /// Records an entry point for its package's next registry; returns this collector.
@@ -77,29 +92,44 @@ final class JsonRegistries {
     }
 
     private Result<Unit> writeRegistry(String packageName, Map<String, String> entries) {
-        var count = written.merge(packageName, 1, Integer::sum);
-        var name = registryName(packageName) + (count == 1
-                                                ? ""
-                                                : String.valueOf(count));
-        var qualified = packageName.isEmpty()
-                        ? name
-                        : packageName + "." + name;
-
-        return Result.lift(Causes::fromThrowable,
-                           () -> filer.createSourceFile(qualified))
-                     .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
-                     .map(writer -> print(writer,
-                                          registrySource(packageName, name, entries)))
-                     .onSuccess(_ -> providers.add(qualified));
+        return registryName(packageName, suffix, entries.keySet())
+                           .flatMap(name -> writeRegistry(packageName, name, entries));
     }
 
-    private String registryName(String packageName) {
+    private Result<Unit> writeRegistry(String packageName, String name, Map<String, String> entries) {
+        var qualified = JsonCodecGenerator.qualifiedName(packageName, name);
+        var owner = "the @Json types " + String.join(", ", entries.keySet());
+
+        return generatedNames.claim(qualified, owner)
+                             .flatMap(_ -> JsonCodecGenerator.ensureFree(elements, qualified, owner))
+                             .flatMap(_ -> Result.lift(Causes::fromThrowable,
+                                                       () -> filer.createSourceFile(qualified)))
+                             .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
+                             .map(writer -> print(writer,
+                                                  registrySource(packageName, name, entries)))
+                             .onSuccess(_ -> providers.add(qualified))
+                             .onSuccess(_ -> writtenPackages.add(packageName));
+    }
+
+    /// `<Segment>JsonCodecs<suffix>_<hash>`: `<hash>` is the first 8 hex digits of the SHA-256 of `types` sorted,
+    /// one qualified name per line.
+    static Result<String> registryName(String packageName, String suffix, Collection<String> types) {
         var segment = packageName.substring(packageName.lastIndexOf('.') + 1);
         var capitalized = segment.isEmpty()
                           ? "Default"
                           : Character.toUpperCase(segment.charAt(0)) + segment.substring(1);
 
-        return capitalized + "JsonCodecs" + suffix;
+        return typeSetHash(types).map(hash -> capitalized + "JsonCodecs" + suffix + "_" + hash);
+    }
+
+    // SHA-256 is required of every Java platform, so the lookup does not fail in practice; it is a Result only
+    // because MessageDigest declares the checked exception.
+    private static Result<String> typeSetHash(Collection<String> types) {
+        var text = String.join("\n", types.stream().sorted().toList());
+
+        return Result.lift(Causes::fromThrowable, () -> MessageDigest.getInstance("SHA-256"))
+                     .map(digest -> digest.digest(text.getBytes(StandardCharsets.UTF_8)))
+                     .map(bytes -> HexFormat.of().formatHex(bytes, 0, 4));
     }
 
     private static List<String> registrySource(String packageName, String name, Map<String, String> entries) {
@@ -138,7 +168,10 @@ final class JsonRegistries {
 
         var all = new LinkedHashSet<String>();
 
-        previousProviders().stream().filter(this::isResolvable).forEach(all::add);
+        previousProviders().stream()
+                           .filter(this::isResolvable)
+                           .filter(this::isNotSuperseded)
+                           .forEach(all::add);
         all.addAll(providers);
 
         return Result.lift(Causes::fromThrowable,
@@ -151,6 +184,13 @@ final class JsonRegistries {
     // A stale entry (its registry deleted since) would make ServiceLoader fail every lookup, so it is dropped.
     private boolean isResolvable(String provider) {
         return option(elements.getTypeElement(provider)).isPresent();
+    }
+
+    // A previous entry for a package this compilation wrote a registry for is the old copy of that registry (its
+    // type set, and so its name, may differ): listing both would make every type they share a conflict.
+    private boolean isNotSuperseded(String provider) {
+        return !writtenPackages.contains(provider.substring(0,
+                                                            Math.max(0, provider.lastIndexOf('.'))));
     }
 
     // The services file a previous (incremental) compilation left in the class output, if any.
