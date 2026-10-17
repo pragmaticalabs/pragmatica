@@ -141,9 +141,9 @@ an untrusted slice**: someone who can reach your cluster's ports but does not ho
 | Surface | Mechanism | Evidence |
 |---|---|---|
 | Node-to-node TCP (consensus, invocation, DHT) | mutual TLS, certs derived from a shared `cluster_secret` via HKDF | [mechanism: `aether/docs/operators/tls-certificates.md`; `SelfSignedCertificateProvider`] |
-| SWIM gossip (UDP) | AES-256-GCM under a key HKDF-derived from `cluster_secret` and the current calendar day, re-derived on day change for the life of the process; datagrams under the previous and next day's keys are accepted, so nodes whose **host calendar days** differ by at most one always decrypt each other regardless of uptime (#256, #1164). The day label is each host's **default-zone** calendar day, **not UTC**: hosts in different zones disagree on the day for part of every day, and for the widest zone pairs that disagreement reaches two days, which this window does not cover — so agreeing clocks alone do not imply agreeing keys (#1415) | [mechanism: `SelfSignedCertificateProvider.keysForToday` derives; `SwimGossipEncryptors.ProviderKeyedGossipEncryptor` follows it; `AesGcmGossipEncryptor` encrypts — per `aether/docs/architecture/10-security.md`] |
+| SWIM gossip (UDP) | AES-256-GCM under a key HKDF-derived from `cluster_secret` and the current calendar day, re-derived on day change for the life of the process; datagrams under the previous and next UTC day's keys are accepted, so nodes whose clocks differ by less than a day at a UTC-day boundary decrypt each other regardless of uptime (#256, #1164, #1415). The day label is the UTC day of the clock's instant, whatever the host's time zone | [mechanism: `SelfSignedCertificateProvider.keysForToday` derives; `SwimGossipEncryptors.ProviderKeyedGossipEncryptor` follows it; `AesGcmGossipEncryptor` encrypts — per `aether/docs/architecture/10-security.md`] |
 | Management API | API-key authentication + role-based authorization (ADMIN / OPERATOR / VIEWER) | [mechanism: see "Default posture" below] |
-| Cluster secret at rest (file) | `aether.toml` and the CLI's persisted `api-key` file are written `chmod 600` | [mechanism: `aether/aether-config/.../SecureFiles.java` — `writeSecure`/`restrictToOwner`, owner-read/write only, POSIX systems] |
+| Cluster secret at rest (file) | `aether.toml` and the CLI's persisted `api-key` file are written `chmod 600` | [mechanism: `aether/cli/.../cluster/SecureFiles.java` — `writeSecure`/`restrictToOwner`, owner-read/write only, POSIX systems] |
 
 All four of these authenticate **the transport or the caller**, not the slice code running behind
 it. None of them isolates one slice's data from another slice in the same cluster (see above).
@@ -156,7 +156,7 @@ credential by default [mechanism: `aether/aether-config/src/main/java/org/pragma
 `populateAppHttpConfig`: `explicitMode.or(SecurityMode.API_KEY)`]. If you provisioned no API key
 yourself, the first elected leader generates one random `ADMIN` key on first startup and prints it
 **once**, prominently, to its log and stdout [mechanism: `aether/node/src/main/java/org/pragmatica/aether/node/BootstrapAdminKeyRegistrar.java`].
-Capture that key — it is not retrievable afterward except by rotating it via `/api/cluster/keys`.
+Capture that key — it is not retrievable afterward except by rotating it via `aether cluster rotate-key` or `/api/v1/cluster/keys`.
 
 An operator can still explicitly set `security_mode = "none"` in `aether.toml` to disable
 authentication entirely (an explicit setting wins over the default, with the `enabled = false` exception below) — appropriate only for a
@@ -231,7 +231,7 @@ Per launch path:
 
 **Stated limits.** (1) Cloud-init user-data contains the secret in clear text. It is readable by the cloud
 account holder through the provider's metadata/API and by processes on the VM through the metadata service
-and `/var/lib/cloud`; no file mode on the node changes that. (2) The CLI-generated compose file (`aether cluster init` / `DockerComposeTemplate`) still passes `AETHER_CLUSTER_SECRET` as a container environment variable, like a hand-written one. (3) For `CLOUD` sources the node's `aether.toml`
+and `/var/lib/cloud`; no file mode on the node changes that. (2) The CLI-generated compose file (`aether cluster scaffold` / `DockerComposeTemplate`) still passes `AETHER_CLUSTER_SECRET` as a container environment variable, like a hand-written one. (3) For `CLOUD` sources the node's `aether.toml`
 also carries `[tls] cluster_secret` (0600, uid 1000 since #287). (4) Operator-written compose and `docker run -e` keep the env-var form, and so show in `docker inspect`, unless the operator adopts `NAME_FILE`. (5) `AETHER_BACKUP_REMOTE` (a git remote path or URL) is forwarded to provider-minted nodes as `-e`; a URL with an embedded token would be on that argv and in `docker inspect`, so use a deploy key or a mounted path. (6) A `.staged` copy of a credential survives if the ssh session drops between the push and the launch line (removal is inside that line); the next launch overwrites and removes it. (7) The uid-1000 ownership of the bootstrap and cloud-init files inside a real container, and the JVM path under a real unit, are not exercised by the real-container check. (8) A bind-mounted secret file is re-resolved on every container start; removing the host
 file makes a restart fail, loudly, because the mount is `--mount type=bind` (which errors on a missing source)
 rather than `-v` (which would create a directory in its place).
@@ -259,10 +259,9 @@ way to invalidate that exposure; deleting the file does not undo a leak into git
 
 Separately: the daily-rotated gossip key described above is itself HKDF-derived from
 `cluster_secret`, so rotating `cluster_secret` does not immediately revoke gossip decryption for
-an attacker who captured it beforehand; the KV-delivered path built for exactly this
-case (`GossipKeyRotationKey`, pushing independent key material without a full secret
-rotation/restart) has no production writer and no CLI/admin trigger, so it cannot currently be
-invoked — tracked as #683.
+an attacker who captured it beforehand. To push independent gossip key material without a full
+secret rotation/restart, use `aether cluster rotate-gossip-key` (see "All nodes in a cluster trust
+each other completely" above), noting the limits stated there.
 
 ### Recognizing an untrusted-network deployment
 
@@ -283,11 +282,14 @@ Ask these questions before exposing a cluster beyond a private network:
 
 ### Storage-at-rest encryption
 
-Aether's storage layer has an AEAD block-encryption mechanism, but production defaults to writing
-segments **unencrypted** — there is currently no wired key source for it in the default path
-[design intent — unverified; tracked internally as #253]. Do not rely on at-rest encryption of
-cluster storage in this release unless you have independently verified your deployment wires a key
-provider.
+Aether's storage layer has an AEAD block-encryption mechanism. Storage segments are written
+**unencrypted** unless `[storage.encryption]` is configured, with keys resolved through the node's
+`SecretsProvider` (see the
+[Configuration reference](aether/docs/reference/configuration.md#storage-encryption-configuration)).
+There is no plaintext-to-encrypted migration (see
+[Known Limitations](aether/docs/reference/known-limitations.md)). Do not assume at-rest
+encryption of cluster storage unless you have configured it and checked that your deployment boots
+with a resolvable keyring.
 
 ## Reference material
 
