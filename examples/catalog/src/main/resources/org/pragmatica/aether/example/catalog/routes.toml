@@ -2,6 +2,13 @@
 prefix = "/api/catalog"
 requireVersionHeader = false
 
+# #763: an absent [security] section now inherits the global security_mode instead of defaulting
+# to public. This is a no-auth demo -- make that explicit rather than relying on the pre-#763
+# implicit-public behavior. [security] is a single top-level table shared across all versions
+# (RouteConfigLoader.parseSecurity reads it once, before per-version routes are parsed).
+[security]
+default = "public"
+
 [v1.routes]
 list = "GET /items"
 get = "GET /items/{id:Long}"

@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>examples</artifactId>
-        <version>1.0.0-rc3</version>
+        <version>1.0.0-rc4</version>
     </parent>
 
     <groupId>org.pragmatica.aether.example</groupId>
@@ -14,7 +14,6 @@
     <packaging>pom</packaging>
 
     <properties>
-        <maven.deploy.skip>true</maven.deploy.skip>
         <jbct.skip>false</jbct.skip>
     </properties>
     <name>Aether Example - Notification Hub</name>
@@ -65,7 +64,7 @@
                 <plugin>
                     <groupId>org.pragmatica-lite</groupId>
                     <artifactId>jbct-maven-plugin</artifactId>
-                    <version>1.0.0-rc3</version>
+                    <version>1.0.0-rc4</version>
                     <executions>
                         <execution>
                             <id>package-slices</id>

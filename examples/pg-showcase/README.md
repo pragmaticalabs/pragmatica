@@ -13,7 +13,7 @@ pg-showcase/
 │   ├── UserPersistence.java             # Auto-generated CRUD with operators
 │   ├── OrderPersistence.java            # @Query with JOIN / subquery + CRUD
 │   └── OrderProcessing.java             # @Slice wiring both persistences
-└── src/main/resources/resources.toml    # aether.toml for the database resource
+└── src/main/resources/resources.toml    # database resource configuration
 ```
 
 ## Schema coverage
@@ -91,8 +91,4 @@ The compile-time validator currently enforces:
 - Parameter Java types are coercion-compatible with column Postgres types.
 - NOT NULL INSERT coverage.
 
-Patterns deliberately avoided in this example to keep compile warnings at zero:
-
-- CTE (`WITH clause`) — alias resolution of CTE aliases as tables is not implemented yet.
-- @Query with `:record` expansion in INSERT/UPDATE — the validator flags the expanded fields as "unused"; see the comprehensive-persistence example for a usage pattern that documents this gap.
-- @Query parameters of types that would require imports in the generated factory (`BigDecimal`, `Instant`, `UUID`) — wrapped in record parameters or converted at the call site.
+CTEs (`WITH`), `:record` expansion in INSERT/UPDATE, and non-primitive `@Query` parameters (`BigDecimal`, `Instant`, `UUID`) are not shown in this minimal example; see [comprehensive-persistence](../comprehensive-persistence/README.md) for them.

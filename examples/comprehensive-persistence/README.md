@@ -52,7 +52,7 @@ comprehensive-persistence/
 ## Running the tests
 
 ```bash
-mvn -pl examples/comprehensive-persistence test
+mvn -pl examples/comprehensive-persistence -am test
 ```
 
 The tests use inline stubs (no real database) to verify that:

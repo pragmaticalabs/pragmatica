@@ -2,7 +2,7 @@
 
 This is **one** deployable slice that runs **two API versions at the same time** (`v1`
 deprecated, `v2` current) and serves **multiple media types** (JSON, `text/csv`,
-`application/octet-stream`). It is living documentation for two rc2 platform features:
+`application/octet-stream`). It is living documentation for two platform features (introduced in rc2):
 
 - **#339 media types** — `produces` / `consumes` inline-table routes in `routes.toml`.
 - **#198 API versioning** — `[api]` / `[vN.routes]` / `[vN]` blocks; one artifact, the client
@@ -81,7 +81,7 @@ Because `[v2] defaultIfMissing = true`, a request with no version resolves to `v
 - `Sunset: <date>`
 - `Link: <successor>; rel="successor-version"`
 
-`GET /api/versions` (on the **management** port, `5150` — not the app port) lists the declared versions and their deprecation status.
+`GET /api/v1/versions` (on the **management** port, `5150` — not the app port) lists the declared versions and their deprecation status.
 
 ## curl examples (path mode, app port 8070)
 
@@ -106,21 +106,23 @@ curl -XPOST -H 'Content-Type: text/csv' --data-binary @items.csv \
      http://localhost:8070/api/catalog/v2/import
 
 # Declared versions (management port 5150, not the app port)
-curl http://localhost:5150/api/versions
+curl http://localhost:5150/api/v1/versions
 ```
 
 ## Build and run
 
 ```bash
-# Build the slice (from repo root)
-env -u HCLOUD_TOKEN mvn -pl examples/catalog install -DskipTests
+# From examples/catalog: build the slice and run its unit tests. The platform artifacts (`platform.version` 1.0.0-rc4)
+# must be resolvable: once rc4 is published they come from Maven Central; before that, run `mvn install` from the repo root first.
+# -P '!test-plan-gate': the root pom's test-plan-gate profile needs test-plan-witness, which is not on Central.
+mvn install -P '!test-plan-gate'
 
-# Run the unit tests
-env -u HCLOUD_TOKEN mvn -pl examples/catalog test
-
-# Run on a local 5-node Forge cluster (builds the slice + Forge jar, deploys the blueprint)
+# Run on a local 5-node Forge cluster with the installed Forge (builds the slice, deploys the blueprint)
 ./run-forge.sh              # add --skip-build to start without rebuilding
 ```
+
+Forge comes from the installer (see the [Quick Start](../../README.md#quick-start)); `./run-forge.sh --forge-from-source`
+is the contributor path, which builds Forge and the platform from this checkout.
 
 `run-forge.sh` deploys blueprint coordinate `org.pragmatica.aether.example:catalog:<version>:blueprint`
 onto a single-JVM 5-node cluster (see `forge.toml`) and prints the curl commands above.
