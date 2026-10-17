@@ -15,11 +15,11 @@
  */
 package org.pragmatica.serialization.json;
 
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.stream.Stream;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -27,7 +27,10 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.json.spi.JsonCodecProvider;
 
+import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Result.success;
 
 
 /// The registry behind [JsonCodecs#codecFor]: one answer per class, computed on the first lookup of that class and
@@ -37,9 +40,9 @@ import static org.pragmatica.lang.Option.option;
 /// Each class is resolved against the providers its own class loader sees (`type.getClassLoader()`, the system
 /// class loader for a bootstrap class), so a type loaded by a child loader finds the registry shipped beside it.
 sealed interface JsonCodecRegistry {
-    /// A broken services file whose `hasNext` keeps failing without advancing must not hang the lookup; no real
-    /// class path holds this many broken provider entries.
-    int MAX_PROVIDER_FAILURES = 64;
+    /// A services iterator consumes the entry it fails on, so a scan always advances; this bound only guarantees that
+    /// an iterator which failed without advancing could not hang a lookup. No class path holds this many providers.
+    int MAX_PROVIDER_STEPS = 1<< 16;
     String SERVICES_ENTRY = "META-INF/services/" + JsonCodecProvider.class.getName();
 
     ClassValue<Result<Option<JsonTypeCodec<?>>>> CODECS = new ClassValue<>() {
@@ -60,24 +63,29 @@ sealed interface JsonCodecRegistry {
         return resolve(type, scan(providers.iterator()));
     }
 
-    private static Result<Option<JsonTypeCodec<?>>> resolve(Class<?> type, Scan scan) {
-        var found = scan.listings()
-                        .stream()
+    private static Result<Option<JsonTypeCodec<?>>> resolve(Class<?> type, List<Result<List<Listing>>> scan) {
+        var found = scan.stream()
+                        .flatMap(outcome -> outcome.option()
+                                                   .stream())
+                        .flatMap(List::stream)
                         .filter(listing -> listing.type() == type)
                         .toList();
 
         return switch (found.size()) {
-            case 0 -> absent(scan.failures());
-            case 1 -> Result.success(Option.some(found.getFirst().codec()));
+            case 0 -> absent(scan.stream().flatMap(outcome -> failureOf(outcome).stream()).toList());
+            case 1 -> success(some(found.getFirst().codec()));
             default -> JsonCodecs.ConflictingProviders.conflictingProviders(type,
-                                                                            found.stream().map(Listing::provider).toList())
-                                                      .result();
+                                                                            found.stream().map(Listing::provider).toList()).result();
         };
+    }
+
+    private static Option<Cause> failureOf(Result<?> outcome) {
+        return outcome.fold(Option::some, _ -> none());
     }
 
     private static Result<Option<JsonTypeCodec<?>>> absent(List<Cause> failures) {
         return switch (failures.size()) {
-            case 0 -> Result.success(Option.none());
+            case 0 -> success(none());
             case 1 -> failures.getFirst().result();
             default -> Causes.composite(failures.stream().map(Cause::result).toArray(Result<?>[]::new)).result();
         };
@@ -85,51 +93,60 @@ sealed interface JsonCodecRegistry {
 
     /// Reads every provider, isolating each: a services entry that cannot be loaded or instantiated (the iterator's
     /// `ServiceConfigurationError`), a `codecs()` that throws, and a `codecs()` that returns `null` each become one
-    /// [JsonCodecs.ProviderFailed], and the providers after it are still read.
-    private static Scan scan(Iterator<JsonCodecProvider> providers) {
-        var listings = new ArrayList<Listing>();
-        var failures = new ArrayList<Cause>();
-
-        while (failures.size() < MAX_PROVIDER_FAILURES && hasNext(providers, failures)) {
-            Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t), providers::next)
-                  .flatMap(JsonCodecRegistry::listings)
-                  .onSuccess(listings::addAll)
-                  .onFailure(failures::add);
-        }
-
-        return new Scan(List.copyOf(listings), List.copyOf(failures));
+    /// failed outcome carrying a [JsonCodecs.ProviderFailed], and the providers after it are still read.
+    private static List<Result<List<Listing>>> scan(Iterator<JsonCodecProvider> providers) {
+        return Stream.generate(() -> step(providers))
+                     .limit(MAX_PROVIDER_STEPS)
+                     .takeWhile(Option::isPresent)
+                     .flatMap(Option::stream)
+                     .toList();
     }
 
-    // FER: a failing hasNext is recorded as a ProviderFailed (so a later miss reports it) and the scan degrades
-    // forward, because the entry it failed on has been consumed and asking again moves on to the next one;
-    // MAX_PROVIDER_FAILURES bounds the walk should an iterator fail without advancing.
-    private static boolean hasNext(Iterator<JsonCodecProvider> providers, List<Cause> failures) {
-        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t), providers::hasNext)
-                     .onFailure(failures::add)
-                     .or(true);
+    // FER: a failing hasNext becomes a failed outcome (so a later miss reports it) and the scan degrades forward:
+    // the entry it failed on has been consumed, so asking again moves on to the next one. Empty ends the scan.
+    private static Option<Result<List<Listing>>> step(Iterator<JsonCodecProvider> providers) {
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t),
+                           providers::hasNext)
+                     .fold(cause -> some(cause.result()),
+                           more -> nextIf(more, providers));
+    }
+
+    private static Option<Result<List<Listing>>> nextIf(boolean more, Iterator<JsonCodecProvider> providers) {
+        return more
+               ? some(next(providers))
+               : none();
+    }
+
+    private static Result<List<Listing>> next(Iterator<JsonCodecProvider> providers) {
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t),
+                           providers::next)
+                     .flatMap(JsonCodecRegistry::listings);
     }
 
     private static Result<List<Listing>> listings(JsonCodecProvider provider) {
         var name = provider.getClass().getName();
 
-        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(name, t), provider::codecs)
-                     .flatMap(codecs -> option(codecs).toResult(JsonCodecs.ProviderFailed.returnedNull(name)))
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(name, t),
+                           provider::codecs)
+                     .flatMap(codecs -> option(codecs).toResult(JsonCodecs.ProviderFailed.providerFailed(name,
+                                                                                                         "codecs() returned null")))
                      .map(codecs -> listings(name, codecs));
     }
 
     private static List<Listing> listings(String provider, Map<Class<?>, JsonTypeCodec<?>> codecs) {
         return codecs.entrySet()
                      .stream()
-                     .map(entry -> new Listing(entry.getKey(),
-                                               provider,
-                                               entry.getValue()))
+                     .map(entry -> Listing.listing(entry.getKey(),
+                                                   provider,
+                                                   entry.getValue()))
                      .toList();
     }
 
-    record Listing(Class<?> type, String provider, JsonTypeCodec<?> codec) {}
-
-    /// What one pass over the providers found: every listing of a healthy provider, and one failure per broken one.
-    record Scan(List<Listing> listings, List<Cause> failures) {}
+    record Listing(Class<?> type, String provider, JsonTypeCodec<?> codec) {
+        static Listing listing(Class<?> type, String provider, JsonTypeCodec<?> codec) {
+            return new Listing(type, provider, codec);
+        }
+    }
 
     record unused() implements JsonCodecRegistry {}
 }

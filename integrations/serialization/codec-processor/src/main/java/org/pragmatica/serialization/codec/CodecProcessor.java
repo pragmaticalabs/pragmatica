@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
 
 
@@ -196,16 +198,24 @@ public class CodecProcessor extends AbstractProcessor {
 
         var entryPoint = jsonEntryPointName(type);
 
-        generatedNames.claim(JsonCodecGenerator.qualifiedName(packageName, entryPoint),
-                             type.getQualifiedName().toString())
-                      .flatMap(_ -> json.writeEntryPoint(entryPoint, type, "CodecProcessor"))
-                      .onSuccess(_ -> note(element, "Generated JSON codec: " + entryPoint))
-            .onSuccess(_ -> jsonRegistries.add(packageName,
-                                               type.getQualifiedName().toString(),
-                                               entryPoint))
-            .onSuccess(_ -> jsonPackages.add(packageName))
-            .onFailure(cause -> error(element,
-                                      "Cannot write " + entryPoint + ": " + cause.message()));
+        writeJsonEntryPoint(json, packageName, entryPoint, type).onSuccess(_ -> note(element,
+                                                                                     "Generated JSON codec: " + entryPoint))
+                           .onSuccess(_ -> jsonRegistries.add(packageName,
+                                                              type.getQualifiedName().toString(),
+                                                              entryPoint))
+                           .onSuccess(_ -> jsonPackages.add(packageName))
+                           .onFailure(cause -> error(element,
+                                                     "Cannot write " + entryPoint + ": " + cause.message()));
+    }
+
+    // The name is claimed first: a type generated in this round is not yet visible to JsonCodecGenerator.ensureFree.
+    private Result<Unit> writeJsonEntryPoint(JsonCodecGenerator json,
+                                             String packageName,
+                                             String entryPoint,
+                                             TypeElement type) {
+        return generatedNames.claim(JsonCodecGenerator.qualifiedName(packageName, entryPoint),
+                                    type.getQualifiedName().toString())
+                             .flatMap(_ -> json.writeEntryPoint(entryPoint, type, "CodecProcessor"));
     }
 
     private static String jsonEntryPointName(TypeElement type) {

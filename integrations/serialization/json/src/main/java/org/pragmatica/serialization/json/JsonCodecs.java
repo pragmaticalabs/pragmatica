@@ -22,6 +22,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.utils.Causes.cause;
+
 
 /// Lookup of generated codecs by class, for code that holds a `Class` rather than the generated `<Type>Json`
 /// entry point (frameworks, generic adapters).
@@ -57,7 +59,7 @@ public sealed interface JsonCodecs {
     /// provider maps each class to that class's codec.
     @SuppressWarnings("unchecked")
     static <T> Result<Option<JsonTypeCodec<T>>> codecFor(Class<T> type) {
-        return (Result<Option<JsonTypeCodec<T>>>) (Result<?>) JsonCodecRegistry.CODECS.get(type);
+        return (Result<Option<JsonTypeCodec<T>>>)(Result<?>) JsonCodecRegistry.CODECS.get(type);
     }
 
     /// More than one provider on the class path lists `type`.
@@ -79,10 +81,10 @@ public sealed interface JsonCodecs {
                                       "JSON codec provider " + provider + " cannot be read: " + failure);
         }
 
-        static ProviderFailed returnedNull(String provider) {
+        static ProviderFailed providerFailed(String provider, String reason) {
             return new ProviderFailed(provider,
-                                      Causes.cause("codecs() returned null"),
-                                      "JSON codec provider " + provider + " cannot be read: codecs() returned null");
+                                      cause(reason),
+                                      "JSON codec provider " + provider + " cannot be read: " + reason);
         }
     }
 

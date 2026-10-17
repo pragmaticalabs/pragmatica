@@ -92,8 +92,9 @@ final class JsonRegistries {
     }
 
     private Result<Unit> writeRegistry(String packageName, Map<String, String> entries) {
-        return registryName(packageName, suffix, entries.keySet())
-                           .flatMap(name -> writeRegistry(packageName, name, entries));
+        return registryName(packageName, suffix, entries.keySet()).flatMap(name -> writeRegistry(packageName,
+                                                                                                 name,
+                                                                                                 entries));
     }
 
     private Result<Unit> writeRegistry(String packageName, String name, Map<String, String> entries) {
@@ -102,13 +103,17 @@ final class JsonRegistries {
 
         return generatedNames.claim(qualified, owner)
                              .flatMap(_ -> JsonCodecGenerator.ensureFree(elements, qualified, owner))
-                             .flatMap(_ -> Result.lift(Causes::fromThrowable,
-                                                       () -> filer.createSourceFile(qualified)))
-                             .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
-                             .map(writer -> print(writer,
-                                                  registrySource(packageName, name, entries)))
+                             .flatMap(_ -> writeSource(qualified,
+                                                       registrySource(packageName, name, entries)))
                              .onSuccess(_ -> providers.add(qualified))
                              .onSuccess(_ -> writtenPackages.add(packageName));
+    }
+
+    private Result<Unit> writeSource(String qualified, List<String> lines) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> filer.createSourceFile(qualified))
+                     .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
+                     .map(writer -> print(writer, lines));
     }
 
     /// `<Segment>JsonCodecs<suffix>_<hash>`: `<hash>` is the first 8 hex digits of the SHA-256 of `types` sorted,
@@ -125,9 +130,11 @@ final class JsonRegistries {
     // SHA-256 is required of every Java platform, so the lookup does not fail in practice; it is a Result only
     // because MessageDigest declares the checked exception.
     private static Result<String> typeSetHash(Collection<String> types) {
-        var text = String.join("\n", types.stream().sorted().toList());
+        var text = String.join("\n",
+                               types.stream().sorted().toList());
 
-        return Result.lift(Causes::fromThrowable, () -> MessageDigest.getInstance("SHA-256"))
+        return Result.lift(Causes::fromThrowable,
+                           () -> MessageDigest.getInstance("SHA-256"))
                      .map(digest -> digest.digest(text.getBytes(StandardCharsets.UTF_8)))
                      .map(bytes -> HexFormat.of().formatHex(bytes, 0, 4));
     }
@@ -168,10 +175,7 @@ final class JsonRegistries {
 
         var all = new LinkedHashSet<String>();
 
-        previousProviders().stream()
-                           .filter(this::isResolvable)
-                           .filter(this::isNotSuperseded)
-                           .forEach(all::add);
+        previousProviders().stream().filter(this::isResolvable).filter(this::isNotSuperseded).forEach(all::add);
         all.addAll(providers);
 
         return Result.lift(Causes::fromThrowable,
@@ -189,8 +193,8 @@ final class JsonRegistries {
     // A previous entry for a package this compilation wrote a registry for is the old copy of that registry (its
     // type set, and so its name, may differ): listing both would make every type they share a conflict.
     private boolean isNotSuperseded(String provider) {
-        return !writtenPackages.contains(provider.substring(0,
-                                                            Math.max(0, provider.lastIndexOf('.'))));
+        return ! writtenPackages.contains(provider.substring(0,
+                                                             Math.max(0, provider.lastIndexOf('.'))));
     }
 
     // The services file a previous (incremental) compilation left in the class output, if any.

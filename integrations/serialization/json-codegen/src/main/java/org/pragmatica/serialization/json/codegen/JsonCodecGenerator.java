@@ -33,6 +33,11 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.utils.Causes.cause;
+
 
 /// Generates reflection-free JSON codecs for a set of root types. Shared by the codec processor (one `@Json`
 /// type per entry point, [#writeEntryPoint]) and the slice processor (HTTP route request and response types in
@@ -69,10 +74,10 @@ public final class JsonCodecGenerator {
                     .map(JsonType.ListOf.class::cast)
                     .onPresent(containerRoots::add);
 
-            return Option.none();
+            return none();
         }
 
-        return Option.some(analyzer.reason(type));
+        return some(analyzer.reason(type));
     }
 
     public boolean hasCodecs() {
@@ -120,9 +125,9 @@ public final class JsonCodecGenerator {
 
         return ensureFree(elements,
                           qualified,
-                          owner.getQualifiedName().toString())
-                         .flatMap(_ -> Result.lift(Causes::fromThrowable,
-                                                   () -> filer.createSourceFile(qualified, owner)))
+                          owner.getQualifiedName().toString()).flatMap(_ -> Result.lift(Causes::fromThrowable,
+                                                                                        () -> filer.createSourceFile(qualified,
+                                                                                                                     owner)))
                          .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
                          .map(writer -> print(writer, source));
     }
@@ -133,24 +138,25 @@ public final class JsonCodecGenerator {
     /// error inside generated source. Generated output (a previous build's class still in the output directory) is
     /// recognised by its `CODECS` map and may be regenerated.
     public static Result<Unit> ensureFree(Elements elements, String qualified, String owner) {
-        return Option.option(elements.getTypeElement(qualified))
-                     .filter(existing -> !isGeneratedOutput(existing))
-                     .map(existing -> Causes.cause("Cannot generate " + qualified
-                                                   + " for " + owner
-                                                   + ": the type " + existing.getQualifiedName()
-                                                   + " already exists and is not generated JSON codec code."
-                                                   + " Rename " + existing.getQualifiedName()
-                                                   + ", or rename or move " + owner
-                                                   + "."))
-                     .map(Cause::<Unit>result)
+        return option(elements.getTypeElement(qualified)).filter(existing -> !isGeneratedOutput(existing))
+                     .map(existing -> cause("Cannot generate " + qualified
+                                           + " for " + owner
+                                           + ": the type " + existing.getQualifiedName()
+                                           + " already exists and is not generated JSON codec code."
+                                           + " Rename " + existing.getQualifiedName()
+                                           + ", or rename or move " + owner
+                                           + "."))
+                     .map(Cause::<Unit> result)
                      .or(Result::unitResult);
     }
 
     private static boolean isGeneratedOutput(TypeElement existing) {
         return ElementFilter.fieldsIn(existing.getEnclosedElements())
                             .stream()
-                            .anyMatch(field -> field.getSimpleName().contentEquals("CODECS")
-                                               && field.asType().toString().startsWith("java.util.Map<"));
+                            .anyMatch(field -> field.getSimpleName()
+                                                    .contentEquals("CODECS") && field.asType()
+                                                                                     .toString()
+                                                                                     .startsWith("java.util.Map<"));
     }
 
     private static Unit print(Writer target, String source) {

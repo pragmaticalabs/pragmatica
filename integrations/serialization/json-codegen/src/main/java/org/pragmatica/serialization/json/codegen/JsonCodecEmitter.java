@@ -173,8 +173,7 @@ final class JsonCodecEmitter {
         containerRoots.forEach(root -> byType.putIfAbsent(javaType(root), root));
         var named = new LinkedHashMap<String, JsonType.ListOf>();
 
-        byType.values()
-              .forEach(root -> named.put(freeName(containerBase(root)), root));
+        byType.values().forEach(root -> named.put(freeName(containerBase(root)), root));
 
         return named;
     }
@@ -237,7 +236,8 @@ final class JsonCodecEmitter {
         var lines = new ArrayList<String>();
 
         lines.add("    /// The codec of every List and Set root, by its generic type as a TypeToken of it reports.");
-        lines.add("    java.util.Map<java.lang.reflect.Type, " + RT + "JsonTypeCodec<?>> CONTAINERS = java.util.Map.ofEntries(");
+        lines.add("    java.util.Map<java.lang.reflect.Type, " + RT
+                 + "JsonTypeCodec<?>> CONTAINERS = java.util.Map.ofEntries(");
         for (int i = 0; i < entries.size(); i++) {
             lines.add("        " + entries.get(i) + (i + 1 < entries.size()
                                                      ? ","
