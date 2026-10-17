@@ -11,14 +11,14 @@
     <packaging>jar</packaging>
 
     <name>Test Blueprint - Stream (Multi-Partition, Replicated)</name>
-    <description>partitions=4 / RF=2 / min-sync-replicas=2 stream — for the #429 multi-partition e2e and #430 publish-under-reshuffle forge tests</description>
+    <description>partitions=4 / RF=3 / min-sync-replicas=2 stream — for the #429 multi-partition e2e and #430 publish-under-reshuffle forge tests</description>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
         <maven.deploy.skip>true</maven.deploy.skip>
         <jbct.skip>false</jbct.skip>
-        <platform.version>1.0.0-rc3</platform.version>
+        <platform.version>1.0.0-rc4</platform.version>
     </properties>
 
     <dependencies>

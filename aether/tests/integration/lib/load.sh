@@ -9,6 +9,32 @@ source "${LIB_DIR}/common.sh"
 # ---------------------------------------------------------------------------
 LOAD_PIDS=()
 
+# One load request. Prints the HTTP status (000 = no answer) on stdout, like http_status. On a non-2xx it also appends
+# ONE line to the failure-body file ($1): UTC timestamp, status, full URL (the endpoint), and the response body
+# (first 512 bytes, newlines/tabs flattened), tab-separated. The status alone cannot say WHICH 503 branch answered
+# ("Quorum disappeared...", "Route table propagating...", a transient cause's message): 03 Scale_down failed at
+# S-triple-prime with 12 of 482 requests at 503 and nothing to attribute them with.
+# <body-scratch> is ONE reusable file per load loop (no per-tick mktemp/rm: that cost ~8ms per request).
+# Usage: _load_tick <bodies-file> <body-scratch> <method> <url> [json body]
+_load_tick() {
+    local bodies="$1" bf="$2" method="$3" url="$4" body="${5:-}" status detail
+    # The scratch file is reused across ticks, and a request that gets NO answer (status 000) writes nothing to it: without
+    # the truncate its stale content is the PREVIOUS tick's body, and the 000 row would carry another request's detail.
+    # --connect-timeout/--max-time: a request to a halted node must end in seconds, not whenever the kernel gives up.
+    : > "$bf" 2>/dev/null || true
+    if [ "$method" = "GET" ]; then
+        status=$(curl -sk --connect-timeout 2 --max-time 5 -o "$bf" -w "%{http_code}" -H "X-API-Key: ${API_KEY}" "$url")
+    else
+        status=$(curl -sk --connect-timeout 2 --max-time 5 -o "$bf" -w "%{http_code}" -X "$method" -H "X-API-Key: ${API_KEY}" \
+                      -H "Content-Type: application/json" -d "$body" "$url")
+    fi
+    if ! { [ "$status" -ge 200 ] && [ "$status" -lt 300 ]; } 2>/dev/null; then
+        detail=$(head -c 512 "$bf" 2>/dev/null | tr '\n\t\r' '   ')
+        printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${status:-000}" "$url" "$detail" >> "$bodies" 2>/dev/null || true
+    fi
+    printf '%s' "${status:-000}"
+}
+
 # Start background HTTP load against the app endpoint
 # Usage: start_load <rps> <duration_seconds> <method> <path> [body] [reresolve_coords]
 #
@@ -40,23 +66,27 @@ start_load() {
     # so a previous window's stale 404s are not summed into this window's totals
     # (the 642-stale-404 over-count came from stop_load globbing /tmp/load_*_*.txt
     # across runs; both ends are now $$-scoped).
-    rm -f "/tmp/load_result_$$.txt" "/tmp/load_failures_$$.txt"
+    rm -f "/tmp/load_result_$$.txt" "/tmp/load_failures_$$.txt" "/tmp/load_failure_bodies_$$.txt" "/tmp/load_endpoint_override_$$"
 
     log_info "Starting load: ${rps} rps for ${duration}s — ${method} ${path}"
 
     (
-        local success=0 failure=0 consec_fail=0
+        local success=0 failure=0 consec_fail=0 tick_scratch applied_override=""
+        tick_scratch=$(mktemp)
         while [ "$(now_epoch)" -lt "$end_time" ]; do
             local status
-            if [ "$method" = "GET" ]; then
-                status=$(http_status "${APP_ENDPOINT}${path}" -H "X-API-Key: ${API_KEY}")
-            else
-                status=$(http_status "${APP_ENDPOINT}${path}" \
-                    -X "$method" \
-                    -H "X-API-Key: ${API_KEY}" \
-                    -H "Content-Type: application/json" \
-                    -d "$body")
+            # SCALE_LOAD_TARGET_VICTIM (opt-in, 03-scaling): scale_load_retarget_to_victim writes the new target here.
+            # Applied ONCE per distinct value, not every tick: re-applying it each tick overwrote the re-resolve below, so a
+            # load aimed at a victim that halted could never leave it (the loop kept returning to the dead endpoint).
+            if [ -s "/tmp/load_endpoint_override_$$" ]; then
+                local ovr
+                ovr=$(cat "/tmp/load_endpoint_override_$$")
+                if [ "$ovr" != "$applied_override" ]; then
+                    APP_ENDPOINT="$ovr"
+                    applied_override="$ovr"
+                fi
             fi
+            status=$(_load_tick "/tmp/load_failure_bodies_$$.txt" "$tick_scratch" "$method" "${APP_ENDPOINT}${path}" "$body")
             if [ "$status" -ge 200 ] && [ "$status" -lt 300 ] 2>/dev/null; then
                 success=$((success + 1))
                 consec_fail=0
@@ -74,8 +104,12 @@ start_load() {
                     new_owner=$(slice_owner_for "$reresolve_coords" 2>/dev/null || true)
                     if [ -n "$new_owner" ]; then
                         if [ "${ENV_TYPE:-docker}" = "cloud" ]; then
-                            new_ip=$(cloud_public_ip "$new_owner" 2>/dev/null || true)
-                            [ -n "$new_ip" ] && APP_ENDPOINT="http://${new_ip}:${app_port}"
+                            new_ip=$(cloud_public_ip "$new_owner" 2>/dev/null) || new_ip=""
+                            if [ -n "$new_ip" ]; then
+                                APP_ENDPOINT="http://${new_ip}:${app_port}"
+                            else
+                                log_warn "load: cloud_public_ip(${new_owner}) returned empty; APP_ENDPOINT unchanged"
+                            fi
                         fi
                     fi
                     consec_fail=0
@@ -83,6 +117,7 @@ start_load() {
             fi
             sleep "$interval"
         done
+        rm -f "$tick_scratch"
         echo "${success}:${failure}" > "/tmp/load_result_$$.txt"
     ) &
     LOAD_PIDS+=($!)
@@ -117,6 +152,25 @@ start_mgmt_load() {
         echo "${success}:${failure}" > "/tmp/load_result_$$.txt"
     ) &
     LOAD_PIDS+=($!)
+}
+
+# Persist this window's failure lines (timestamp, status, endpoint, body) into the failure-logs dir, one line per
+# failure, and log a per-detail histogram next to the status histogram. The detail is the problem+json `detail` when
+# present, else the first 80 bytes of the body.
+_load_persist_failure_bodies() {
+    local fb="/tmp/load_failure_bodies_$$.txt" dest
+    [ -s "$fb" ] || { rm -f "$fb"; return 0; }
+    dest="$(_failcap_root)/${SUITE_TAG:-no-suite}/load-failures-${TEST_TAG:-outside-a-test}.log"
+    mkdir -p "$(dirname "$dest")" 2>/dev/null || true
+    cat "$fb" >> "$dest" 2>/dev/null || true
+    # (assigned first, outside any double-quoted string: bash 3.2 mis-parses quotes inside "$( ... )")
+    local hist
+    hist=$(awk -F'\t' '{
+            d = $4; if (match(d, /"detail"[ ]*:[ ]*"[^"]*"/)) { d = substr(d, RSTART, RLENGTH); sub(/^"detail"[ ]*:[ ]*"/, "", d); sub(/"$/, "", d) }
+            print $2 " | " substr(d, 1, 80) }' "$fb" | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; printf "[%sx%s] ", c, $0}')
+    log_info "Failure details (status | detail, count): ${hist}"
+    log_info "Failure bodies (one line per failure: time, status, endpoint, body): ${dest}"
+    rm -f "$fb"
 }
 
 # Stop all background load and collect results
@@ -161,6 +215,8 @@ stop_load() {
             rm -f "$ff"
         fi
     done
+    _load_persist_failure_bodies >&2
+    rm -f "/tmp/load_endpoint_override_$$"
 
     echo "${total_success}:${total_failure}"
 }

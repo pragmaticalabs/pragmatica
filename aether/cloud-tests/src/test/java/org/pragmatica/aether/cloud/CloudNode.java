@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.cloud;
 
@@ -52,7 +51,7 @@ public record CloudNode(String nodeId, String publicIp, long serverId, Path priv
     /// Starts the aether node with the given peer list.
     public Result<Unit> startNode(String peerList) {
         log.info("[{}] Starting node on {} with peers: {}", nodeId, publicIp, peerList);
-        var command = "nohup java -Xmx256m -XX:+UseZGC"
+        var command = "nohup java -XX:+ExitOnOutOfMemoryError -Xmx256m -XX:+UseZGC"
                       + " -jar /opt/aether/aether-node.jar"
                       + " --node-id=" + nodeId
                       + " --port=" + CLUSTER_PORT

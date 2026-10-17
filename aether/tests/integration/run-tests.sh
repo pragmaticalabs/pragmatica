@@ -35,16 +35,32 @@ SKIP_BUILD=false
 SKIP_DEPLOY=false
 SKIP_TEARDOWN=false
 SKIP_IMAGE_PUSH=false
+# --keep-on-failure: on a non-zero exit, leave the clusters up for log extraction instead of
+# tearing them down, and pass the same flag to `aether cluster bootstrap` so a failed
+# formation keeps its VMs too. Empty or the flag itself, so it expands safely under set -u.
+KEEP_ON_FAILURE_FLAG=""
 
 RESULTS_FILE="$(mktemp /tmp/aether-test-results.XXXXXX)"
+# Run-level warnings (log_run_warning in lib/common.sh): one line per warning, shared by every suite process, reported in
+# each suite's summary, the end-of-run report and test-results.json.
+export RUN_WARNINGS_FILE="$(mktemp /tmp/aether-run-warnings.XXXXXX)"
 RESULTS_JSON="${SCRIPT_DIR}/test-results.json"
 TIMINGS_FILE="$(mktemp /tmp/aether-test-timings.XXXXXX)"
 # Child processes (suites) may record per-await durations here.
 export QUIESCED_TIMINGS_FILE="$TIMINGS_FILE"
 
+# Captured BEFORE the defaults below assign over them. resolve_cluster_name (lib/cluster.sh)
+# deliberately never reads CLUSTER_{A,B}_NAME itself, so it cannot mistake a default this
+# script just set for a name the operator chose. Set CLUSTER_A_NAME / CLUSTER_B_NAME in the
+# environment to give one arm its own cluster name, state dir and aether-cluster label —
+# required before running two arms concurrently, because the reaper scopes by that label and
+# an unscoped second arm's teardown reaps the first arm's live VMs.
+CLUSTER_A_NAME_EXPLICIT="${CLUSTER_A_NAME:-}"
+CLUSTER_B_NAME_EXPLICIT="${CLUSTER_B_NAME:-}"
+
 # Cluster A: non-destructive (parallel)
 COMPOSE_A="${SCRIPT_DIR}/docker-compose-a.yml"
-CLUSTER_A_NAME="test-a"
+CLUSTER_A_NAME="$(resolve_cluster_name a container)"
 # Direct entry point: node-1's host-mapped mgmt port. `_resolve_live_endpoint`
 # (lib/common.sh) handles failover by health-probing MGMT_PORT..MGMT_PORT+N-1
 # and updating the pin to the first live node — structurally equivalent to a
@@ -62,7 +78,7 @@ CLUSTER_A_LB_MGMT=""
 
 # Cluster B: destructive (sequential)
 COMPOSE_B="${SCRIPT_DIR}/docker-compose-b.yml"
-CLUSTER_B_NAME="test-b"
+CLUSTER_B_NAME="$(resolve_cluster_name b container)"
 # Direct entry point: node-1's host-mapped mgmt port. Same rationale as
 # CLUSTER_A_MGMT above. `_resolve_live_endpoint` failover preserves destructive-
 # test resilience: if node-1 (the pinned endpoint) is killed, the resolver
@@ -89,7 +105,7 @@ CLUSTER_A_SUITES=(00 04 06 07 08 09 10 11 14 15)
 # rather than a member of 02-chaos: the 8th test of that suite fails whichever test it is
 # (see #593, and #594 for the probable cause). Listing it here means it gets its own
 # cluster-B pass instead of inheriting six chaos tests' worth of un-reconciled churn.
-CLUSTER_B_SUITES=(05 13 12 03 02 02y 02w)
+CLUSTER_B_SUITES=(05 13 12 03 02 02y 02w 02s)
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -106,6 +122,7 @@ while [ $# -gt 0 ]; do
         --skip-build)    SKIP_BUILD=true; shift ;;
         --skip-deploy)   SKIP_DEPLOY=true; shift ;;
         --skip-teardown) SKIP_TEARDOWN=true; shift ;;
+        --keep-on-failure) KEEP_ON_FAILURE_FLAG="--keep-on-failure"; shift ;;
         --skip-image-push) SKIP_IMAGE_PUSH=true; shift ;;
         -h|--help)
             echo "Usage: $0 --env docker|remote|cloud [OPTIONS]"
@@ -117,6 +134,10 @@ while [ $# -gt 0 ]; do
             echo "  --skip-build       Skip build.sh and blueprint builds"
             echo "  --skip-deploy      Skip cluster provisioning (reuse running clusters)"
             echo "  --skip-teardown    Leave clusters running after tests"
+            echo "  --keep-on-failure  On a failed run (or failed bootstrap) leave clusters running for log"
+            echo "                     extraction; a green run still tears down. An interrupt (Ctrl-C,"
+            echo "                     SIGTERM, SIGHUP) counts as a failure and also preserves. Cloud VMs"
+            echo "                     stay BILLABLE."
             echo "  --skip-image-push  Skip pushing aether-node.jar + rebuilding remote image (reuse what is already on remote)"
             echo ""
             echo "Environment variables:"
@@ -190,14 +211,21 @@ case "$ENV_TYPE" in
         case "$CLOUD_RUNTIME" in
             container) ;;
             jvm)
-                CLUSTER_A_NAME="cloud-test-a-jvm"
-                CLUSTER_B_NAME="cloud-test-b-jvm"
+                CLUSTER_A_NAME="$(resolve_cluster_name a jvm)"
+                CLUSTER_B_NAME="$(resolve_cluster_name b jvm)"
                 ;;
             *)
                 echo "ERROR: --runtime must be 'container' or 'jvm', got: ${CLOUD_RUNTIME}"
                 exit 2
                 ;;
         esac
+        # Export for suite scripts (each `bash "$test_file"` is a fresh process —
+        # a plain, unexported CLOUD_RUNTIME never reaches them). --runtime jvm
+        # cloud VMs run the node as systemd unit `aether-node` with no docker
+        # daemon, and test-self-drain-quorum-loss.sh reads drain state per
+        # runtime (S19, the exit-code step, S20's drain confirmation). On cloud
+        # that suite refuses an unset CLOUD_RUNTIME instead of defaulting (#1051).
+        export CLOUD_RUNTIME
         ;;
     *)
         echo "ERROR: Invalid --env value: ${ENV_TYPE}. Must be docker, remote, or cloud."
@@ -306,48 +334,8 @@ collect_blueprints() {
 # ---------------------------------------------------------------------------
 # Run a single suite against a specific cluster
 # ---------------------------------------------------------------------------
-# Best-effort node-log capture for a failed suite. Never fails the run: it exists to
-# preserve evidence, and losing evidence must not also lose the result that produced it.
-capture_node_logs() {
-    local suite_name="$1" target_cluster="$2"
-    local out_dir="${SCRIPT_DIR}/failure-logs/${suite_name}"
-
-    mkdir -p "$out_dir" 2>/dev/null || return 0
-    # Clear STALE captures first: this dir accumulates across runs, and run3's diagnosis
-    # nearly used run2's node-5.log sitting beside run3's fresh files. A capture must
-    # only ever contain THIS run's evidence.
-    rm -f "${out_dir}"/*.log 2>/dev/null || true
-    date -u '+captured %Y-%m-%dT%H:%M:%SZ' > "${out_dir}/capture-manifest.txt" 2>/dev/null || true
-
-    local names
-    case "$ENV_TYPE" in
-        docker)
-            names=$(docker ps -a --format '{{.Names}}' --filter "name=aether-${target_cluster}-node-" 2>/dev/null)
-            for n in $names; do
-                docker logs --tail 400 "$n" > "${out_dir}/${n}.log" 2>&1 || true
-            done
-            ;;
-        remote)
-            names=$(remote_exec "docker ps -a --format '{{.Names}}' --filter name=aether-${target_cluster}-node-" 2>/dev/null)
-            for n in $names; do
-                remote_exec "docker logs --tail 400 ${n}" > "${out_dir}/${n}.log" 2>&1 || true
-            done
-            # Streamed logs survive `docker rm` (auto-heal destroys a dying node's container
-            # WITH its logs — node-5 in run2, node-3 in run4 died undiagnosable). The streamer
-            # daemon (start_log_streamers, lib/cluster.sh) appends to per-container files on
-            # the remote host; fetch whatever it has, prefixed so live-capture and streamed
-            # views of the same node stay distinguishable.
-            local streamed
-            streamed=$(remote_exec "ls /tmp/aether-node-logs/*.log 2>/dev/null" 2>/dev/null || true)
-            for f in $streamed; do
-                remote_exec "tail -c 2000000 ${f}" > "${out_dir}/streamed-$(basename "$f")" 2>&1 || true
-            done
-            ;;
-        *) return 0 ;;
-    esac
-
-    log_info "${suite_name}: node logs captured to ${out_dir}"
-}
+# capture_node_logs lives in lib/capture.sh (sourced by lib/common.sh), so a test process can call it at
+# the instant of failure; this runner calls it at suite end and on a failed baseline restore.
 
 run_suite() {
     local suite_prefix="$1"
@@ -442,6 +430,14 @@ run_suite() {
     # with the same quarantine semantics the between-suites gate below applies: a
     # broken cluster fails every downstream test on its OWN subject (#628's shape).
     local restore_marker="${TMPDIR:-/tmp}/aether-suite-${suite_name}-restore-failed"
+    # Fail-time capture (lib/capture.sh): arms the per-[FAIL] hook for this suite's test processes.
+    # SUITE_FAILCAP_DIR holds the once-per-test markers and the suite-has-a-FAIL flag.
+    export SUITE_START_EPOCH="$start_time"
+    export SUITE_FAILCAP_DIR
+    SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/aether-failcap-${suite_name}.XXXXXX" 2>/dev/null) || SUITE_FAILCAP_DIR=""
+    # Cloud VM registry for this suite: start empty (no VM from a previous run), remember what exists now.
+    capture_forget_vms "$target_cluster" "$suite_name"
+    capture_remember_vms "$target_cluster" "$suite_name"
     rm -f "$restore_marker"
     export SUITE_RESTORE_FAILED_MARKER="$restore_marker"
     local suite_pass=0 suite_fail=0
@@ -454,14 +450,22 @@ run_suite() {
             suite_fail=$((suite_fail + 1))
         fi
         if [ -f "$restore_marker" ]; then
-            log_fail "${suite_name}: baseline restore failed after $(basename "$test_file") — capturing evidence and aborting the remaining test files (quarantine)"
-            capture_node_logs "${suite_name}-restore-failed" "$target_cluster" || true
+            SUITE_FAILCAP_DIR="" log_fail "${suite_name}: baseline restore failed after $(basename "$test_file") — capturing evidence and aborting the remaining test files (quarantine)"
+            capture_node_logs "${suite_name}-restore-failed" "$target_cluster" "$start_time" || true
             suite_fail=$((suite_fail + 1))
             break
         fi
     done
     rm -f "$restore_marker"
-    unset SUITE_RESTORE_FAILED_MARKER
+    if [ -n "$SUITE_FAILCAP_DIR" ]; then
+        # One line here, in the runner (its output reaches run-container.log); the notes file is the record.
+        local ff_n pre_n
+        ff_n=$(find "$SUITE_FAILCAP_DIR" -maxdepth 1 -name 'first-fail-*' | wc -l | tr -d ' ')
+        pre_n=$(find "$SUITE_FAILCAP_DIR" -maxdepth 1 -name 'pre-*' | wc -l | tr -d ' ')
+        [ $((ff_n + pre_n)) -gt 0 ] && log_info "${suite_name}: failtime captures: ${ff_n} first-fail, ${pre_n} pre-destructive (see failure-logs/${suite_name}/)"
+        rm -rf "$SUITE_FAILCAP_DIR"
+    fi
+    unset SUITE_RESTORE_FAILED_MARKER SUITE_FAILCAP_DIR SUITE_START_EPOCH
     unset SUITE_TAG
 
     local duration=$(( $(date +%s) - start_time ))
@@ -472,10 +476,10 @@ run_suite() {
     # so without this a failed suite leaves no evidence and the only way to investigate
     # is to reproduce it — which does not work for a failure that does not reproduce.
     if [ "$status" = "failed" ]; then
-        capture_node_logs "$suite_name" "$target_cluster" || true
+        capture_node_logs "$suite_name" "$target_cluster" "$start_time" || true
     fi
 
-    echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration}}" >> "$RESULTS_FILE"
+    echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration},$(run_warnings_json "$suite_name")}" >> "$RESULTS_FILE"
 
     log_info "${suite_name}: ${suite_pass} passed, ${suite_fail} failed (${duration}s)"
 
@@ -782,11 +786,14 @@ deploy_docker() {
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
         _local_cleanup_zombies "b"
+        # #1968: the backup remote is an external volume, created fresh for this cluster (a restart restores from it).
+        bash -c "$(backup_remote_init_script)" >/dev/null
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
         remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
         cleanup_cluster_zombies "b"
+        remote_exec "$(backup_remote_init_script)" >/dev/null
         remote_exec "cd ~ && docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
         # Capture-before-heal: streamed log files survive the `docker rm` auto-heal performs
         # on a dying node — without this, the container's death destroys its own evidence.
@@ -800,12 +807,12 @@ deploy_docker() {
 # CLOUD_TOML_A / CLOUD_TOML_B must already be resolved (and exported — #441
 # S20) by the Step-2 cloud branch before either function runs.
 bootstrap_cloud_cluster_a() {
-    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 300
+    aether cluster bootstrap "$CLOUD_TOML_A" --cluster "$CLUSTER_A_NAME" --yes --wait --timeout 600 ${KEEP_ON_FAILURE_FLAG:+"$KEEP_ON_FAILURE_FLAG"}
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
     # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
     local cluster_a_ip
-    cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+    cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1) || cluster_a_ip=""
     if [ -n "$cluster_a_ip" ]; then
         CLUSTER_A_MGMT="http://${cluster_a_ip}:8080"
         CLUSTER_A_APP_DIRECT="http://${cluster_a_ip}:8070"
@@ -822,10 +829,10 @@ bootstrap_cloud_cluster_a() {
 }
 
 bootstrap_cloud_cluster_b() {
-    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 300
+    aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 600 ${KEEP_ON_FAILURE_FLAG:+"$KEEP_ON_FAILURE_FLAG"}
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     local cluster_b_ip
-    cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+    cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1) || cluster_b_ip=""
     if [ -n "$cluster_b_ip" ]; then
         CLUSTER_B_MGMT="http://${cluster_b_ip}:8080"
         CLUSTER_B_APP_DIRECT="http://${cluster_b_ip}:8070"
@@ -852,6 +859,12 @@ cloud_bringup_cluster_b() {
     if [ "$SKIP_DEPLOY" = false ]; then
         log_step "Bootstrapping cloud Cluster B (runtime=${CLOUD_RUNTIME})"
         bootstrap_cloud_cluster_b
+        # Same meaning as after cluster A's bootstrap (Step 2): resources exist now. Without it a
+        # B-only run (`--suites` naming only cluster-B suites) never set the flag, so teardown
+        # skipped the bare orphan sweep — and CTM replacements, labelled `cloud-<cluster>`, are
+        # matched by no scoped reap — and --keep-on-failure reported "nothing to reap" over live
+        # VMs (2026-09-24: 5 VMs running while the handler printed that).
+        CLOUD_RESOURCES_PROVISIONED=true
     fi
 
     # Step 3 analog
@@ -907,6 +920,7 @@ teardown() {
                 docker rm -f $(docker ps -aq --filter "name=aether-a-node-" --filter "name=aether-b-node-") 2>/dev/null || true
                 docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
                 docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
+                docker volume rm -f "$BACKUP_REMOTE_VOLUME" 2>/dev/null || true
             else
                 # Stop the capture-before-heal streamers BEFORE removing their containers,
                 # so the daemon is not left re-attaching to a cluster being torn down.
@@ -914,26 +928,34 @@ teardown() {
                 # Same order on remote: sweep CTM containers before compose down
                 remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-a.yml down -v 2>/dev/null || true"
-                remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true"
+                remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true; docker volume rm -f ${BACKUP_REMOTE_VOLUME} 2>/dev/null || true; rm -f ~/.aether-b-generation"
             fi
             ;;
         cloud)
-            # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).
-            # Use cloud-reaper.sh which filters by `aether-cluster` label — works regardless of
+            # Reap through cloud-reaper.sh (_cloud_teardown_reap_cluster) rather than
+            # `aether cluster destroy --cluster`: the reaper filters by `aether-cluster` label (and by `aether-chaos-cluster`,
+            # the partition-chaos firewalls' key, #1500) — works regardless of
             # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
             # A's guard uses the PRE-GATE snapshot (A_SUITES_SELECTED): the Step-8
             # gate removes 00 from A_SUITES after running it, so on a `--suites 00`
             # run the array is empty here even though cluster A was bootstrapped.
             # On the serialized cloud flow A is normally already reaped in Step 9.5
             # — this reap then finds nothing and exits 0 (idempotent by design).
-            [ "${A_SUITES_SELECTED:-0}" -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
-            [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
+            #
+            # END-OF-RUN TEARDOWN (#1051 round 3): deletes whole clusters BY DESIGN once the
+            # run is over. It is not a liveness decision, so it deliberately does not go
+            # through _cloud_reap_after_confirmed_drain: "unreachable is not dead" governs
+            # recovery reaps (S20, restart_all_nodes), not the planned destruction of a
+            # finished run's clusters.
+            [ "${A_SUITES_SELECTED:-0}" -gt 0 ] && _cloud_teardown_reap_cluster "$CLUSTER_A_NAME"
+            [ ${#B_SUITES[@]} -gt 0 ] && _cloud_teardown_reap_cluster "$CLUSTER_B_NAME"
             # Catch-all sweep for CTM-provisioned ORPHANS. The scoped `--cluster <name>`
             # reaps above filter on `aether-cluster=<name>` (plus same-cluster orphans),
             # but CTM-provisioned replacement VMs may carry a DIFFERENT or MISSING
-            # `aether-cluster` label value (the seed/replacement prefix mismatch:
-            # cluster reports `aether-cloud-test-b-node-<ULID>` while the VM is labeled
-            # `aether-node-id=aether-b-node-<ULID>` with no matching `aether-cluster`).
+            # `aether-cluster` label value (historically: CTM labelled replacements with the
+            # TOML's `[cluster] name` rather than the harness cluster name, fixed by #1487 —
+            # and a replacement created before its cluster name was stamped carries only
+            # `aether-node-id`, with no `aether-cluster` at all).
             # Those rows are dropped by the per-cluster orphan filter and survived
             # teardown last run (4 orphan VMs leaked). A final bare reaper run (no
             # --cluster) matches ANY `aether-cluster` OR `aether-node-id` label and
@@ -1023,6 +1045,12 @@ print_results() {
     echo "========================================"
     printf "  Total: %d | Passed: %d | Failed: %d | Skipped: %d | Unrecoverable: %d\n" \
         "$total" "$passed" "$failed" "$skipped" "$unrecoverable"
+    local nwarn
+    nwarn=$(_run_warning_lines)
+    if [ "$nwarn" -gt 0 ]; then
+        printf "  Warnings: %d (a green run with warnings is not a clean run)\n" "$nwarn"
+        sed 's/^/    [WARN] /' "$RUN_WARNINGS_FILE"
+    fi
     echo "========================================"
 
     print_timing_report
@@ -1075,6 +1103,37 @@ else
     log_warn "--skip-build: running against the jars already on disk. Their provenance is NOT verified — confirm they contain the change under test (javap the symbol; mtime is not evidence)."
 fi
 
+# --- Step 1b: Blueprint fixture preflight (ALWAYS, including under --skip-build) ---
+# Runs after the build so that a full build satisfies it, and guards the --skip-build
+# path, which is exactly where a fixture gap survives. Checks the SAME local repository
+# the CLI will resolve from (honouring -Dmaven.repo.local via AETHER_JAVA_OPTS) — checking
+# a different repository than the deploy reads is the #1223 defect in another costume.
+#
+# 2026-09-18: without this, a missing url-shortener blueprint surfaced as an HTTP 500
+# mid-suite, four suites deep and one paid cloud provision cycle after it was knowable.
+"${SCRIPT_DIR}/lib/verify-blueprint-fixtures.sh" || {
+    log_error "blueprint fixture preflight failed — refusing to provision against an incomplete fixture set"
+    exit 1
+}
+
+# --- Re-derive CLOUD_MODE now that --env has been parsed ---------------------------
+# lib/common.sh computes CLOUD_MODE from ENV_TYPE at SOURCE time (line ~1038), and it is
+# sourced at the top of this file — before the argument loop runs. So on `--env cloud`
+# it latched "false" from the default ENV_TYPE=docker and EXPORTED that to every suite
+# subprocess, while ENV_TYPE itself was later set to "cloud".
+#
+# That split the harness in half: functions branching on ENV_TYPE took cloud paths, and
+# the six that branch on CLOUD_MODE (kill_node, restart_all_nodes, ...) took
+# DOCKER paths on a cloud run. Measured 2026-09-18: restore_cluster_baseline escalated to
+# restart_all_nodes, which ran a docker-compose cycle over SSH to the remote host, timed
+# out, and declared a merely-degraded cloud cluster "unrecoverable" — hard-skipping
+# 03-scaling, 02y, 02w and 02s.
+#
+# Keep the two in sync here, after parsing, rather than trusting source-time order.
+if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; else CLOUD_MODE="false"; fi
+export CLOUD_MODE
+log_info "runtime dispatch: ENV_TYPE=${ENV_TYPE} CLOUD_MODE=${CLOUD_MODE}"
+
 # --- Compute selected suites early so cluster bootstrap can be skipped per-cluster ---
 A_SUITES=($(filter_suites "${CLUSTER_A_SUITES[@]}"))
 B_SUITES=($(filter_suites "${CLUSTER_B_SUITES[@]}"))
@@ -1088,7 +1147,59 @@ A_SUITES_SELECTED=${#A_SUITES[@]}
 # Install EXIT trap so teardown runs even when later steps fail (set -e exit, errors,
 # unbound variables). Without this, any failure between Step 2 and Step 11 leaks
 # bootstrapped clusters — on cloud, that is real €/hour cost.
-trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT
+#
+# The handler re-exits with the run's real status. A run aborted by `set -u` used to exit 0 and
+# read as success to any caller checking it: macOS /bin/bash 3.2 loses an unbound-variable
+# abort's status whenever an EXIT trap runs, entering the trap with `$?`=0. So success is proven
+# only by reaching the final exit (RUN_REACHED_END); a 0 without it is an abort.
+RUN_REACHED_END=false
+on_exit() {
+    local rc=$?
+    # errexit off inside the handler: one failing teardown step must not abort the rest of the
+    # cleanup, nor replace the run's status with its own. The run's status is `rc`, re-raised below.
+    set +e
+    if [ "$rc" -eq 0 ] && [ "$RUN_REACHED_END" != true ]; then
+        log_error "Run aborted before completion (no final result) — exiting 1, not 0"
+        rc=1
+    fi
+    # This run's scratch state (endpoint memory), keyed by AETHER_RUN_ID so only ours. Removed on
+    # EVERY exit path: it is useless to any later run, so preserving clusters is no reason to keep it.
+    rm -f "${TMPDIR:-/tmp}/aether-live-endpoint-"*"-${AETHER_RUN_ID:-norun}" \
+          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" 2>/dev/null
+    if [ "$SKIP_TEARDOWN" = false ]; then
+        if [ -n "$KEEP_ON_FAILURE_FLAG" ] && [ "$rc" -ne 0 ]; then
+            preserve_on_failure "$rc"
+        else
+            teardown
+        fi
+    fi
+    exit "$rc"
+}
+
+# --keep-on-failure path: nothing is destroyed; the PG firewall is still closed because log
+# extraction does not need the shared PG VM reachable.
+preserve_on_failure() {
+    log_step "Run failed (rc=$1) with --keep-on-failure — clusters PRESERVED for log extraction"
+    if [ "$ENV_TYPE" = "cloud" ]; then
+        if [ "${CLOUD_RESOURCES_PROVISIONED:-false}" = true ]; then
+            log_warn "Preserved cloud VMs are BILLABLE. Reap this run's clusters when done:"
+            log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_A_NAME} --destroy --force"
+            log_warn "  with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh --cluster ${CLUSTER_B_NAME} --destroy --force"
+            log_warn "  CTM replacement VMs may carry no matching cluster label; the bare"
+            log_warn "  'cloud-reaper.sh --destroy --force' catches them but destroys EVERY aether-labelled"
+            log_warn "  resource in the account except test-pg — never run it while another run is live."
+        else
+            # No bootstrap COMPLETED. That is not "nothing exists": a bootstrap that failed under
+            # --keep-on-failure keeps the VMs it created. List without deleting:
+            log_warn "No cluster bootstrap completed this run, but a failed bootstrap under --keep-on-failure keeps its VMs."
+            log_warn "  List (dry run, deletes nothing): with-hcloud ${REPO_ROOT}/../tools/cloud-reaper.sh"
+        fi
+        "${REPO_ROOT}/../tools/pg-firewall.sh" close 2>&1 | tail -1 || true
+    else
+        log_warn "Containers left running on ${TARGET_HOST:-localhost}; a later normal run's teardown removes them."
+    fi
+}
+trap on_exit EXIT
 
 # Open the Hetzner firewall guarding the PG VM for the duration of the cloud test
 # window. Closed again by teardown(). Skipped on docker/remote (those use the
@@ -1101,8 +1212,17 @@ if [ "$ENV_TYPE" = "cloud" ]; then
     # docker-exec pattern as tools/provision-test-pg.sh's smoke test. Non-fatal on
     # failure: suite 10 will surface it loudly, and a wedged SSH here must not kill
     # runs that never touch PG.
-    ensure_cloud_pg_database "${PG_DB}_testpersistence" \
-        || log_warn "could not ensure PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
+    # Reset rather than ensure: suite 10 asserts FIRST-TIME baseline behaviour, and the
+    # shared PG VM keeps migration state across runs, so `ensure` handed it an already-
+    # baselined database and the server correctly answered 409 (#1228).
+    reset_cloud_pg_database "${PG_DB}_testpersistence" \
+        || log_warn "could not reset PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
+    # Cluster B's OWN copy (env/cloud-hetzner-b.toml, cloud-hetzner-jvm-b.toml: database.testpersistence ->
+    # ${PG_DB}_testpersistence_b). Without that section, and this database, test-persistence deployed on B (by
+    # 13-edge-cases) fails its schema migration and stays LOADED forever. Separate from A's so B's V900 cannot
+    # collide with suite 10's baselines on the shared PG VM. Reset like A's: a fresh database per run.
+    reset_cloud_pg_database "${PG_DB}_testpersistence_b" \
+        || log_warn "could not reset PG database ${PG_DB}_testpersistence_b — test-persistence on cluster B will fail its schema migration if it is deployed"
 fi
 
 # --- Step 1.5: CLI / node-image version-parity preflight (#440) ---
@@ -1293,9 +1413,9 @@ if [ "$PREFLIGHT_STOP" = true ]; then
     # THIS machine's CLI is blocked" — connectivity_preflight returns non-zero ONLY in
     # that case. Tearing the cluster down here would destroy a healthy cluster and force
     # a full re-bootstrap once the operator fixes Local Network access. So preserve it by
-    # reusing the existing skip-teardown mechanism: the EXIT trap (installed above,
-    # `trap '[ "$SKIP_TEARDOWN" = false ] && teardown' EXIT`) honours SKIP_TEARDOWN, the
-    # same flag `--skip-teardown` sets. No parallel teardown path.
+    # reusing the existing skip-teardown mechanism: the EXIT handler (`on_exit`, installed
+    # above) honours SKIP_TEARDOWN, the same flag `--skip-teardown` sets. No parallel
+    # teardown path.
     SKIP_TEARDOWN=true
     log_error "Cluster PRESERVED (not torn down): it is healthy and reachable via curl; only this machine's CLI is blocked."
     log_error "After fixing access, re-run the suite to reuse it (add --skip-deploy to skip re-bootstrap)."
@@ -1334,6 +1454,8 @@ if [ "$GATE_PASSED" = true ]; then
     # normal teardown (or --skip-teardown preservation) governs cluster A.
     if [ "$ENV_TYPE" = "cloud" ] && [ ${#B_SUITES[@]} -gt 0 ]; then
         if [ "$A_SUITES_SELECTED" -gt 0 ]; then
+            # SERIALIZATION TEARDOWN (#1051 round 3): deletes cluster A BY DESIGN after its
+            # suites finished — not a liveness decision (see the end-of-run teardown note).
             log_step "Reaping Cluster A before Cluster B bring-up (serialized cloud clusters)"
             reap_cloud_cluster "$CLUSTER_A_NAME" || \
                 log_warn "Cluster A reap did not fully converge — proceeding to Cluster B bring-up (leftover A VMs reduce scale-up headroom; final teardown sweeps them)"
@@ -1357,8 +1479,9 @@ FINAL_RESULT=$?
 set -e
 
 # Cleanup temp files (teardown runs from EXIT trap installed earlier)
-rm -f "$RESULTS_FILE" "$TIMINGS_FILE"
+rm -f "$RESULTS_FILE" "$TIMINGS_FILE" "$RUN_WARNINGS_FILE"
 
+RUN_REACHED_END=true
 exit "$FINAL_RESULT"
 
 exit $FINAL_RESULT

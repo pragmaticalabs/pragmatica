@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.test.streamconsumer;
 
 import java.util.List;
@@ -41,8 +40,8 @@ import static org.pragmatica.lang.Result.success;
 ///     stream blueprint in the corpus is `String`-typed, which is exactly why nothing caught it;
 ///     this stream is the control's counterpart.
 ///   - `streams.spread-events` has FIVE partitions and proves placement independence (#535). Deployed
-///     with `instances = 1`, its single host can own at most one of the five, so the rest must be
-///     consumed by reading through their owners. Before #535 those partitions were consumed by
+///     with `instances = 3` on seven nodes (`DeclarativeConsumerPlacementTest`), every partition whose
+///     owner is not one of the three hosts must be consumed by reading through its owner. Before #535 those partitions were consumed by
 ///     nobody: delivery required the owner to host the slice, and at default placement it does not.
 ///
 /// Keeping them separate means a regression in any one mechanism cannot mask the others.
@@ -164,20 +163,17 @@ public interface ConsumerSlice {
 
         @Override
         public Promise<Unit> onConsumerEvent(String event) {
-            return Promise.success(delivered.add(event))
-                          .mapToUnit();
+            return Promise.success(delivered.add(event)).mapToUnit();
         }
 
         @Override
         public Promise<Unit> onOrderPlaced(OrderPlaced event) {
-            return Promise.success(deliveredOrders.add(event))
-                          .mapToUnit();
+            return Promise.success(deliveredOrders.add(event)).mapToUnit();
         }
 
         @Override
         public Promise<Unit> onSpreadEvent(String event) {
-            return Promise.success(deliveredSpread.add(event))
-                          .mapToUnit();
+            return Promise.success(deliveredSpread.add(event)).mapToUnit();
         }
     }
 }

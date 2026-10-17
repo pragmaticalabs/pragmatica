@@ -14,18 +14,26 @@ STREAM_NAME="${STREAM_NAME:-notifications}"
 # 1h stream publish soak; small percentage of in-flight requests lost during reconfigurations.
 MAX_ERROR_RATE="${MAX_ERROR_RATE:-2.0}"
 
+# "create by publishing" stopped working at #1224 — a publish no longer mints a stream, and the
+# soak's whole publish phase addressed one that was never registered. Create it at a catalog
+# address and assert it landed there, which is also what makes this test able to fail at all: the
+# old body logged and passed unconditionally whatever `stream_list` returned.
 test_stream_exists() {
-    local streams
-    streams=$(stream_list)
-    # If no streams, try to create by publishing
-    if [ -z "$streams" ] || [ "$streams" = "[]" ]; then
-        log_info "No streams found — will verify via publish"
-    fi
-    log_pass "Stream list retrieved"
+    stream_create "$STREAM_NAME" 1 > /dev/null 2>&1 || true   # idempotent
+    assert_ne "$(stream_coordinate "$STREAM_NAME" 2>/dev/null)" "" \
+              "Stream ${STREAM_NAME} present in catalog before soak"
 }
 
 test_sustained_publish() {
     log_info "Publishing to stream for ${STREAM_DURATION}s at ${STREAM_RPS} rps"
+
+    # The publish route is `/streams/{namespace}/{stream}/{version}/publish` since the 2026-09-02
+    # catalog migration (7a523c9e3); the flat `/streams/publish/{name}` used here 400s.
+    local coord
+    coord=$(stream_coordinate "$STREAM_NAME") || {
+        log_fail "stream_coordinate ${STREAM_NAME} failed — stream absent from the catalog"
+        return 1
+    }
 
     local end_time=$(($(now_epoch) + STREAM_DURATION))
     local interval
@@ -34,8 +42,11 @@ test_sustained_publish() {
 
     while [ "$(now_epoch)" -lt "$end_time" ]; do
         local payload="{\"message\":\"soak-test-${count}\",\"timestamp\":$(now_epoch)}"
-        local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/streams/publish/${STREAM_NAME}" \
+        local status probe
+        # Body on the FIRST failure only: this is a 1h soak at 5rps, so dumping every body would
+        # bury the diagnosis it exists to surface.
+        if [ "$failure" -eq 0 ]; then probe=http_status_with_body; else probe=http_status; fi
+        status=$("$probe" "${CLUSTER_ENDPOINT}/api/v1/streams/${coord}/publish" \
             -X POST \
             -H "X-API-Key: ${API_KEY}" \
             -H "Content-Type: application/json" \

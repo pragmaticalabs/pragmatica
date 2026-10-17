@@ -1,12 +1,14 @@
 #!/bin/bash
-# test-streaming-resources.sh — Verify StreamPublisher/StreamSubscriber (streams auto-create on publish)
+# test-streaming-resources.sh — Verify StreamPublisher/StreamSubscriber
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "${SCRIPT_DIR}/../../lib/common.sh"
 source "${SCRIPT_DIR}/../../lib/cluster.sh"
 
-# Note: No blueprint needed — streams auto-create on first publish
+# Note: no blueprint needed, but the stream MUST be created explicitly — "streams auto-create on
+# first publish" stopped being true at #1224, and this file was built on that assumption in three
+# places. Every publish below addressed a stream that was never in the catalog.
 STREAM_NAME="${NOTIFICATION_STREAM:-notifications}"
 EVENT_COUNT="${STREAM_EVENT_COUNT:-20}"
 
@@ -16,35 +18,50 @@ test_cluster_ready() {
 }
 
 test_deploy_notification_hub() {
-    # Streams auto-create on first publish — no blueprint needed
-    log_pass "Notification hub deployed"
+    stream_create "$STREAM_NAME" 1 > /dev/null 2>&1 || true   # idempotent
+    assert_ne "$(stream_coordinate "$STREAM_NAME" 2>/dev/null)" "" \
+              "Stream ${STREAM_NAME} present in catalog"
 }
 
 test_stream_publisher_provisioned() {
     local streams
     streams=$(stream_list)
     assert_ne "$streams" "" "Stream list returns data after deployment"
-    # Exact-field match — see test-pub-sub.sh for rationale (substring grep
-    # matches prefix/embedded names and creates false positives).
-    if printf '%s' "$streams" | grep -qE "\"name\"[[:space:]]*:[[:space:]]*\"${STREAM_NAME}\""; then
-        log_pass "StreamPublisher provisioned: ${STREAM_NAME} visible"
+    # Exact-field match rather than a substring grep, which would match prefix/embedded names
+    # (`test-events` inside `test-events-other`) and create false positives.
+    #
+    # The field is `stream`, NOT `name`: the catalog response is
+    # `{"streams":[{"namespace":..,"stream":..,"version":..}]}` and carries no `name` field at all
+    # — measured against a live 5-node cluster 2026-09-23, 0 occurrences of `"name"` vs 5 of
+    # `"stream"`. So this grep could never match, and the test never noticed because the absent
+    # branch warned and then passed a DIFFERENT claim ("stream list endpoint responds"). The
+    # vacuous pass is what kept a permanently-false assertion alive; the stream is created above,
+    # so absence is now a real failure. Whitespace is tolerated because the body is pretty-printed
+    # (`"stream" : "notifications"`).
+    if printf '%s' "$streams" | grep -qE "\"stream\"[[:space:]]*:[[:space:]]*\"${STREAM_NAME}\""; then
+        log_pass "StreamPublisher provisioned: ${STREAM_NAME} visible in list"
     else
-        log_warn "Stream ${STREAM_NAME} not in list — may use different name"
-        log_pass "Stream list endpoint responds"
+        log_fail "StreamPublisher provisioned: ${STREAM_NAME} absent from stream list (first 300 chars: ${streams:0:300})"
+        return 1
     fi
 }
 
 test_publish_notifications() {
-    local success=0 failure=0
+    local success=0 failure=0 errfile
+    errfile=$(mktemp)
     for i in $(seq 1 "$EVENT_COUNT"); do
         local payload="{\"key\":\"notif-${i}\",\"data\":\"notification-${i}\",\"timestamp\":$(now_epoch)}"
-        if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>&1; then
+        # `2>&1` here discarded the `api ... status=NNN: <body>` diagnostic `_api_call` emits on
+        # stderr — which is why the baseline's "expected '20', got '0'" carried no reason.
+        if stream_publish "$STREAM_NAME" "$payload" > /dev/null 2>>"$errfile"; then
             success=$((success + 1))
         else
             failure=$((failure + 1))
         fi
     done
     log_info "Notifications published: success=${success}, failure=${failure}"
+    [ "$failure" -eq 0 ] || log_warn "Notification publish diagnostics (first 500B): $(head -c 500 "$errfile" 2>/dev/null | tr -d '\n')"
+    rm -f "$errfile"
     assert_eq "$success" "$EVENT_COUNT" "All ${EVENT_COUNT} notifications published"
 }
 
@@ -95,7 +112,7 @@ test_cluster_healthy_after_streaming() {
 }
 
 run_test "Cluster ready" test_cluster_ready
-run_test "Deploy notification hub" test_deploy_notification_hub
+run_test "Create notification stream" test_deploy_notification_hub
 run_test "StreamPublisher provisioned" test_stream_publisher_provisioned
 run_test "Publish notifications" test_publish_notifications
 run_test "Subscriber receives notifications" test_subscriber_receives_notifications

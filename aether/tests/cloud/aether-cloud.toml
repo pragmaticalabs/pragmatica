@@ -7,9 +7,11 @@
 # Teardown:
 #   bash aether/tests/cloud/teardown-cloud.sh --yes
 
+config_version = "1.0.0"
+
 [cluster]
 name = "cloud-test"
-version = "1.0.0-rc3"
+version = "1.0.0-rc4"
 
 [cluster.core]
 count = 5
@@ -27,16 +29,18 @@ type = "hetzner"
 network_id = "${env:CLOUD_NETWORK_ID}"
 
 [deployment.instances]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 core = "cx22"
 
 [deployment.runtime]
 type = "container"
 # Must match a tag published by .github/workflows/release.yml, which derives the tag
 # from the pushed git tag (VERSION=${GITHUB_REF#refs/tags/v}). The moving candidate tag
-# v1.0.0-rc3-candidate therefore publishes :1.0.0-rc3-candidate. A stale pin here does
-# not fail loudly — deploy-cloud.sh swallows a failed pull — so it must be updated
-# whenever the candidate tag's name changes.
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"
+# v1.0.0-rc4-candidate therefore publishes :1.0.0-rc4-candidate. This key is the ONLY
+# live pin: `aether cluster bootstrap` reads it. (deploy-cloud.sh used to carry a second,
+# hard-coded copy as AETHER_IMAGE; it had no consuming reference, pulled nothing, went stale
+# a release behind this key, and was removed.)
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc4-candidate"
 
 [deployment.zones]
 zone-1 = "fsn1-dc14"

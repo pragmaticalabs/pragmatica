@@ -82,28 +82,42 @@ test_concurrent_deploy() {
     _refresh_mgmt_entry_point || log_warn "no live mgmt endpoint — proceeding with pinned ${CLUSTER_ENDPOINT}"
     log_info "Publishing to streams ${STREAM_A} and ${STREAM_B} concurrently"
 
-    # Publish to two streams in parallel (auto-creates them)
+    # Publish to two streams in parallel.
+    #
+    # "auto-creates them" stopped being true at #1224: the flat `POST /api/v1/streams` that used to
+    # mint a stream on first publish wrote only the engine ring and never the registry, so it was
+    # refused. Create both at a catalog address first, then address the publish route by its
+    # coordinate — `/streams/{namespace}/{stream}/{version}/publish` since the 2026-09-02 migration
+    # (7a523c9e3). The flat `/streams/publish/{name}` used here is what returned the baseline's
+    # A=400, B=400.
+    local coord_a coord_b
+    stream_create "$STREAM_A" 1 > /dev/null 2>&1 || true   # idempotent
+    stream_create "$STREAM_B" 1 > /dev/null 2>&1 || true
+    coord_a=$(stream_coordinate "$STREAM_A") || {
+        log_fail "stream_coordinate ${STREAM_A} failed — stream absent from the catalog after create"
+        return 1
+    }
+    coord_b=$(stream_coordinate "$STREAM_B") || {
+        log_fail "stream_coordinate ${STREAM_B} failed — stream absent from the catalog after create"
+        return 1
+    }
+
     local result_a_file="/tmp/deploy-a-$$.txt"
     local result_b_file="/tmp/deploy-b-$$.txt"
 
+    # stream_publish_status keeps the HTTP status (the blind form is why the baseline could only say
+    # "A=400, B=400" with no detail) and retries a transient 503 "retry" refusal for a bounded time (an
+    # owner not yet promoted while both deploys settle); a 500 is never retried (#1750).
     (
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/streams/publish/${STREAM_A}" \
-            -X POST \
-            -H "X-API-Key: ${API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "{\"data\":\"concurrent-a\"}")
+        status=$(stream_publish_status "$STREAM_A" "{\"data\":\"concurrent-a\"}")
         echo "$status" > "$result_a_file"
     ) &
     local pid_a=$!
 
     (
         local status
-        status=$(http_status "${CLUSTER_ENDPOINT}/api/v1/streams/publish/${STREAM_B}" \
-            -X POST \
-            -H "X-API-Key: ${API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "{\"data\":\"concurrent-b\"}")
+        status=$(stream_publish_status "$STREAM_B" "{\"data\":\"concurrent-b\"}")
         echo "$status" > "$result_b_file"
     ) &
     local pid_b=$!

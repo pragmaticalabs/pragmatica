@@ -1,4 +1,5 @@
 [routes]
+hold = "GET /hold/{port:Integer}"
 echo = "GET /echo/{message:String}"
 ping = "GET /ping"
 transform = "GET /transform/{operation:String}/{value:String}"

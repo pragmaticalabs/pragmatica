@@ -28,6 +28,7 @@ provider = "hetzner"
 # longer aborts the whole cluster bootstrap. Different nodes may land in different zones
 # (cross-zone is desirable). A single `zone = "<loc>"` still works (treated as a 1-element
 # list); when neither `zone` nor `zones` is set the provider falls back to `region`.
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zones = ["fsn1", "nbg1", "hel1"]
 region = "nbg1"           # Default location used when no zone placement hint is set (single-attempt fallback).
 credentials = "${env:HCLOUD_TOKEN}"
@@ -36,6 +37,7 @@ databases.forge = "${env:PG_URL}"
 
 [source.hetzner-eu.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cpx32"
 image = "ubuntu-22.04"
 
@@ -64,11 +66,8 @@ swim = 6100
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "30s"
-startup_cooldown = "15s"
-# Integration-test tuning (Wave 3 / Theme B): faster provisioning gate for chaos.
-provision_stability_window = "5s"
-provisioning_timeout = "60s"
+# #675: the tunables that used to sit here (retry_interval, startup_cooldown,
+# provision_stability_window, provisioning_timeout) never reached a node and are now refused.
 
 [source.hetzner-eu.node_config.app-http]
 # Cluster B runs 05-security tests which assert that unauthenticated requests are
@@ -109,6 +108,17 @@ username = "${env:PG_USER}"
 password = "${env:PG_PASSWORD}"
 async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}"
 
+# #598 (cluster B): test-persistence's NAMED datasource (config="database.testpersistence"). The connector resolves
+# config by exact section name, so the flat [database] override above does not reach it: without this section the
+# slice's schema migration fails at once ("Config section not found: database.testpersistence" ->
+# SCHEMA_MIGRATION_FAILED) and the slice is held in LOADED forever (13-edge-cases deploys test-persistence on B).
+# Points at a B-OWNED database, distinct from cluster A's ${PG_DB}_testpersistence (suite 10 resets and baselines
+# that one), so B's V900 cannot collide with A's. run-tests.sh creates/resets it beside A's after the PG firewall opens.
+[source.hetzner-eu.node_config.database.testpersistence]
+username = "${env:PG_USER}"
+password = "${env:PG_PASSWORD}"
+async_url = "postgresql://${env:PG_HOST}:5432/${env:PG_DB}_testpersistence_b"
+
 [runtime.default]
 type = "container"
-image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3-candidate"
+image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc4-candidate"

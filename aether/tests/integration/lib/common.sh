@@ -3,6 +3,7 @@
 
 LIB_DIR_COMMON="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${LIB_DIR_COMMON}/json.sh"
+source "${LIB_DIR_COMMON}/capture.sh"
 
 # Colors
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
@@ -27,6 +28,15 @@ LB_MGMT_PORT="${LB_MGMT_PORT:-9091}"
 MGMT_ENTRY_POINT="${MGMT_ENTRY_POINT:-http://${TARGET_HOST}:5150}"
 # App traffic → LB public port; management API → MGMT_ENTRY_POINT (witness or LB).
 CLUSTER_ENDPOINT="${CLUSTER_ENDPOINT:-${MGMT_ENTRY_POINT}}"
+# One identity per run for per-run scratch state (see _live_endpoint_sticky_file). Minted and
+# exported here when run-tests.sh sources this file; each suite it spawns inherits the exported
+# value and keeps it on its own `source`. A standalone suite or tool run mints its own. Exporting
+# AETHER_RUN_ID by hand shares that state across runs — the stale-endpoint hazard it exists to stop.
+export AETHER_RUN_ID="${AETHER_RUN_ID:-$$-$(date +%s)}"
+case "${CLOUD_PIN_RETRY_S:-30}" in
+    ''|*[!0-9]*) echo "[WARN]  CLOUD_PIN_RETRY_S='${CLOUD_PIN_RETRY_S}' is not whole seconds; using 30" >&2
+                 export CLOUD_PIN_RETRY_S=30 ;;
+esac
 APP_ENDPOINT="${APP_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 LB_ENDPOINT="${LB_ENDPOINT:-http://${TARGET_HOST}:${LB_PORT}}"
 # Direct node access (legitimate per-node queries — e.g., "is METRICS ACTIVE on node-2?").
@@ -124,6 +134,18 @@ _log_prefix() {
     fi
 }
 
+# deadline_in <seconds>: the absolute `$SECONDS` value a poll loop compares against, reached NO SOONER than <seconds> of wall time from now.
+# `$((SECONDS + N))` is not that: `$SECONDS` counts whole seconds from integer boundaries of the shell's own clock, so it expires after
+# anywhere in (N-1, N] seconds, and a short budget (an 8s node-removal wait, a 5s partition hold) can lose most of a second, or all of
+# it for N=1 (#1887: a 1s stub deadline expired after one slow call). This one is in [N, N+1). A budget of 0 stays "already expired".
+deadline_in() {
+    if [ "${1:-0}" -gt 0 ] 2>/dev/null; then
+        echo $((SECONDS + $1 + 1))
+    else
+        echo "$SECONDS"
+    fi
+}
+
 log_info()  { echo -e "${GREEN}[INFO]${NC}  $(_log_prefix)$1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(_log_prefix)$1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
@@ -134,9 +156,30 @@ log_pass()  { echo -e "${GREEN}[PASS]${NC}  $(_log_prefix)$1"; }
 # `return 0` afterwards (a real bug pattern: helpers report failure via log_fail
 # without latching, the caller's last command was an unrelated `true`, and
 # the test was counted as PASS).
+#
+# #1511: the latch is a shell variable, so a [FAIL] from a subshell or a background worker (`( ... ) &`,
+# `$( ... )`) never reached it, and a [FAIL] outside any run_test (cleanup) was not counted at all: the
+# suite reported PASS over its own logged failure. Every [FAIL] is therefore also appended to a
+# per-run file, which subshells share with the process that sourced this library; run_test counts
+# the lines its test added, and print_summary counts the rest against the suite.
+if [ "${HARNESS_FAIL_FILE_OWNER:-}" != "$$" ] || [ ! -f "${HARNESS_FAIL_FILE:-}" ]; then
+    HARNESS_FAIL_FILE=$(mktemp "${TMPDIR:-/tmp}/harness-fail.XXXXXX")
+    HARNESS_FAIL_FILE_OWNER=$$
+    HARNESS_FAIL_CONSUMED=0
+fi
+_harness_fail_lines() {
+    if [ -f "${HARNESS_FAIL_FILE:-}" ]; then
+        wc -l < "$HARNESS_FAIL_FILE" | tr -d ' '
+    else
+        echo 0
+    fi
+}
 log_fail()  {
     echo -e "${RED}[FAIL]${NC}  $(_log_prefix)$1"
     TEST_FAIL_COUNT=$(( ${TEST_FAIL_COUNT:-0} + 1 ))
+    printf '%s: %s\n' "${TEST_TAG:-outside-a-test}" "$1" >> "${HARNESS_FAIL_FILE:-/dev/null}" 2>/dev/null || true
+    # Evidence at the instant of the first [FAIL] of a test (lib/capture.sh); inert outside run-tests.sh.
+    _failcap_on_fail || true
 }
 log_step()  { echo -e "${BLUE}[STEP]${NC}  $(_log_prefix)$1"; }
 
@@ -230,6 +273,83 @@ _discover_endpoint_by_label() {
 # `if timeout ...; then` (a missing binary just evaluates false); this helper
 # is for callers like _cloud_running_vm_ips that must also cap wall-clock time
 # on macOS dev boxes and turn "took too long" into an honest non-zero rc.
+# Like _run_with_timeout, but escalates to SIGKILL <grace> seconds after the TERM (TIMEOUT_KILL_GRACE_S, default 5), so a
+# command that ignores SIGTERM still ends. For background callers nobody reaps. The fallback (no timeout binary) already
+# uses kill -9.
+_run_with_timeout_kill() {
+    local secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k "${TIMEOUT_KILL_GRACE_S:-5}" "$secs" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout -k "${TIMEOUT_KILL_GRACE_S:-5}" "$secs" "$@"
+        return $?
+    fi
+    _run_with_timeout "$secs" "$@"
+}
+
+# Reap a background job: wait up to <seconds> for it to end, then kill it and its whole process tree (TERM, then KILL).
+# Never fails.
+# Usage: reap_bg_job <pid> [seconds]
+reap_bg_job() {
+    local pid="${1:-}" bound="${2:-10}" waited=0
+    [ -n "$pid" ] || return 0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$bound" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        pkill -TERM -P "$pid" 2>/dev/null || true
+        kill -TERM "$pid" 2>/dev/null || true
+        sleep 1
+        _kill_tree "$pid"
+    fi
+    wait "$pid" 2>/dev/null || true
+    return 0
+}
+
+# Kill <pid> and every descendant with SIGKILL (#1886). Each process is STOPPED before its children are listed, so it
+# cannot fork a replacement between the listing and its own kill, and descendants are killed before their parent, so
+# none is orphaned out of reach of `-P`. Killing the job first left a child it had just respawned, and killing only its
+# direct children left grandchildren; either survived the reap and outlived the suite.
+_kill_tree() {
+    local p="$1" c
+    kill -STOP "$p" 2>/dev/null || return 0
+    for c in $(pgrep -P "$p" 2>/dev/null); do
+        _kill_tree "$c"
+    done
+    kill -KILL "$p" 2>/dev/null || true
+}
+
+# A run-level warning: logged, AND recorded in RUN_WARNINGS_FILE (exported by run-tests.sh) so print_summary, the end-of-run
+# report and test-results.json carry it. A warning visible only inline in a long suite log is invisible to whoever reads
+# the summary. One line per warning: suite|test|text.
+log_run_warning() {
+    log_warn "$1"
+    [ -n "${RUN_WARNINGS_FILE:-}" ] && printf '%s|%s|%s\n' "${SUITE_TAG:-no-suite}" "${TEST_TAG:-outside-a-test}" "$(printf '%s' "$1" | tr '\n|' '  ')" >> "$RUN_WARNINGS_FILE" 2>/dev/null
+    return 0
+}
+_run_warning_lines() {
+    if [ -f "${RUN_WARNINGS_FILE:-}" ]; then wc -l < "$RUN_WARNINGS_FILE" | tr -d ' '; else echo 0; fi
+}
+# JSON fragment for one suite: "warnings":N,"warning_texts":["...",...]
+run_warnings_json() {
+    local suite="$1" n=0 texts="" line text
+    if [ -f "${RUN_WARNINGS_FILE:-}" ]; then
+        while IFS= read -r line; do
+            [ "${line%%|*}" = "$suite" ] || continue
+            text="${line#*|}"; text="${text#*|}"
+            text=$(printf '%s' "$text" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')
+            texts="${texts}${texts:+,}\"${text}\""
+            n=$((n + 1))
+        done < "$RUN_WARNINGS_FILE"
+    fi
+    printf '"warnings":%s,"warning_texts":[%s]' "$n" "$texts"
+}
+_RUN_WARN_BASE=$(_run_warning_lines)
+
 _run_with_timeout() {
     local secs="$1"
     shift
@@ -258,12 +378,115 @@ _run_with_timeout() {
         sleep 1
         waited=$((waited + 1))
     done
-    wait "$pid"
-    rc=$?
+    # `wait` returns the child's status, and callers of this function run under `set -e`
+    # (every suite sets `set -euo pipefail`). A bare `wait "$pid"` followed by `rc=$?`
+    # therefore ABORTS the shell on any non-zero child instead of capturing it — the exact
+    # status this function exists to return. Capture it in the condition instead.
+    rc=0
+    wait "$pid" || rc=$?
     cat "$outfile"
     cat "$errfile" >&2
     rm -f "$outfile" "$errfile"
     return "$rc"
+}
+
+# #1226: bound a SHELL FUNCTION call to $secs wall-clock seconds without losing this
+# interpreter's sourced functions/variables. _run_with_timeout above cannot be reused
+# for this: its primary path execs coreutils `timeout "$@"`, which only works when
+# "$@" is a real binary on $PATH — every existing call site passes one (hcloud, ssh).
+# A shell function is not on $PATH, and `bash -c "$@"` would run it in a FRESH
+# interpreter that never sourced lib/common.sh/lib/cluster.sh, so the function
+# wouldn't exist there either. Backgrounding "$@" with `&` instead forks THIS
+# process, which keeps every sourced function and every variable visible at the
+# fork point (bash's dynamic scoping means a called function also sees its caller's
+# locals across the fork) — the only thing a fork cannot hand back is the child's
+# OWN variable/export changes, so a caller needing one back (e.g.
+# _refresh_mgmt_entry_point_bounded's MGMT_ENTRY_POINT export) must relay it via
+# stdout/a file and apply it in the parent, never inside "$@" itself.
+# stdout/stderr of "$@" are whatever the caller redirected before invoking this.
+_fork_bounded() {
+    local secs="$1"
+    shift
+    [ "$secs" -lt 1 ] 2>/dev/null && secs=1
+    # `( "$@" ) &`, not bare `"$@" &`: this box runs bash 3.2.57 (macOS's frozen
+    # system bash), which has a fork-avoidance optimization for command
+    # substitution that misfires specifically when a function containing NESTED
+    # command substitutions (value_cmd -> api_get -> the real network/stub call)
+    # is itself backgrounded directly by name. Confirmed by isolation: a 3-level
+    # nested function chain (each level assigning `x=$(next_level)`), with the
+    # innermost doing a real blocking `command sleep N`, loses its own
+    # continuation the instant the sleep's child exits when backgrounded as
+    # `funcname &` — the sleep genuinely runs to completion (verified via `ps`
+    # showing it as a live process), but the subshell that was waiting on it
+    # never executes the lines AFTER the sleep, so a value the reader was about
+    # to print is silently dropped and the poll comes back as "read failed"
+    # instead of "value=N" even though nothing actually errored. Wrapping the
+    # backgrounded call in an explicit `( ... )` subshell forces bash to take
+    # the real fork path instead of the buggy optimization; verified this
+    # resolves it while leaving elapsed time and return value unchanged. This
+    # is what made B8 fail: a legitimately slow (not hung) value read via
+    # _wait_for_poll_once, backgrounded here, came back empty at the exact
+    # moment its own read finished, well inside its time budget.
+    # #1226 (CI runaway, post-fix regression): `( "$@" ) &` and the watchdog below are
+    # each a REAL two-level fork (subshell wrapping a real command, e.g. `command sleep`
+    # inside the watchdog, or a nested command substitution chain inside "$@" — see the
+    # bash-3.2 comment above, which established this is a genuine fork, not a collapse).
+    # Killing by bare PID only reaches the wrapper subshell's OWN pid, not any child it
+    # forked — that child is reparented to PID 1 and runs to completion regardless.
+    # Confirmed by direct `ps` measurement: after `kill "$wpid"` alone, the watchdog's
+    # nested `command sleep "$secs"` survived as an orphan, up to the full $secs bound.
+    # The chaos harness calls _fork_bounded on every fast poll; each leaked sleep lives
+    # out its bound before exiting, so live orphans accumulate faster than they drain,
+    # blowing a 300-process ceiling that this same harness held at ~10 before this
+    # function existed (issue: watchdog processes outliving the command they guard).
+    #
+    # Fix: bash job control (`set -m`) makes each backgrounded `( ... ) &` the leader of
+    # its OWN new process group, and any further child it forks inherits that same
+    # pgid — so `kill -- -"$pid"` (negative PID = signal the whole group) reaches the
+    # wrapper AND its nested child together. Confirmed by direct `ps` measurement this
+    # leaves zero residual processes in both the fast-success and killed-by-bound cases,
+    # including when _fork_bounded is invoked inside command substitution (the shape
+    # WAIT_FOR_VALUE callers use). `set -m` is saved/restored rather than left on: it is
+    # off by default in a non-interactive script, and other code in this process must
+    # not inherit job-control side effects (e.g. job-done notifications on stderr) it
+    # didn't ask for.
+    local had_monitor=0
+    case "$-" in *m*) had_monitor=1 ;; esac
+    [ "$had_monitor" -eq 0 ] && set -m
+    ( "$@" ) &
+    local cpid=$!
+    # `command sleep`, not bare `sleep`: this subshell is a fork of the caller's own
+    # interpreter, so a caller-defined shell function named `sleep` (e.g. the chaos
+    # harness's virtual-clock stub, which bumps $SECONDS with zero real delay) would
+    # otherwise be inherited here too, making the watchdog fire in the same instant
+    # it forks regardless of $secs and killing "$@" on effectively every call.
+    # `command` bypasses shell-function lookup and always reaches the real binary.
+    # Kills below target the process GROUP (`-- -"$cpid"`), not the bare pid, so the
+    # nested `command sleep` cannot outlive the group that owns it.
+    ( command sleep "$secs"; kill -TERM -- -"$cpid" 2>/dev/null || true; command sleep 0.2; kill -KILL -- -"$cpid" 2>/dev/null || true ) &
+    local wpid=$!
+    local rc
+    wait "$cpid" 2>/dev/null && rc=0 || rc=$?
+    # Reap the watchdog now rather than let it sleep out its own budget: this runs
+    # once per wait_for poll, so a leaked sleep per iteration adds up over a long
+    # cloud run (see probe-runner-leaks-exhaust-process-cap in memory). Group-kill it
+    # too, for the same reason as above: the watchdog's own `command sleep`/`command
+    # sleep 0.2` is a nested child that a bare-pid kill would orphan.
+    kill -- -"$wpid" 2>/dev/null || true
+    wait "$wpid" 2>/dev/null || true
+    [ "$had_monitor" -eq 0 ] && set +m
+    return "$rc"
+}
+
+# Per-run scratch state (`AETHER_RUN_ID`, minted once near the top of this file; run-tests.sh sources
+# it first, so every suite inherits one id) so nothing an earlier run left behind is read as this run's: an endpoint it
+# recorded may since have been recycled to another cluster, which would answer /health/live with the
+# same API key — a successful read from the wrong subject.
+_live_endpoint_sticky_file() {
+    printf '%s/aether-live-endpoint-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
+}
+_pin_dead_file() {
+    printf '%s/aether-pin-dead-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
 }
 
 # Resolve an endpoint that actually responds to /health/live. Preserves the pinned
@@ -280,10 +503,37 @@ _run_with_timeout() {
 #   3. docker/remote: label discovery (CTM KSUID replacements with ephemeral host
 #      ports) — the only path that survives full seed replacement; see
 #      _discover_endpoint_by_label.
+#
+# Dead-pin memory (cloud): once the pinned probe fails, it is skipped for
+# CLOUD_PIN_RETRY_S (default 30s) — the pin is still preferred, just not re-probed on every call.
+# Chaos suites kill the pinned node routinely; before this, every later call paid the 2s timeout
+# first, which one cloud endpoint enumeration multiplied into ~14s (2026-09-24 review of #1486).
 _resolve_live_endpoint() {
-    if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
-        echo "${CLUSTER_ENDPOINT}"
-        return 0
+    local pin_dead_file skip_pin=false now since pinned_then retry_s
+    pin_dead_file=$(_pin_dead_file)
+    if [ "${ENV_TYPE:-docker}" = "cloud" ] && [ -f "$pin_dead_file" ]; then
+        # "<epoch> <endpoint>": skip only for the SAME pin, and only inside the window.
+        read -r since pinned_then < "$pin_dead_file" 2>/dev/null || true
+        # Both numbers are validated BEFORE the arithmetic: a non-numeric operand is an expansion
+        # error no redirect can contain — it kills the caller's `$(...)` before any probe and the
+        # record is never rewritten, so every later call fails. Not an epoch → treated as expired.
+        case "${since:-}" in ''|*[!0-9]*) since=0 ;; esac
+        retry_s="${CLOUD_PIN_RETRY_S:-30}"
+        case "$retry_s" in ''|*[!0-9]*) retry_s=30 ;; esac
+        now=$(date +%s)
+        if [ "${pinned_then:-}" = "${CLUSTER_ENDPOINT}" ] \
+            && [ $(( now - since )) -lt "$retry_s" ]; then
+            skip_pin=true
+        fi
+    fi
+    if [ "$skip_pin" = false ]; then
+        if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
+            rm -f "$pin_dead_file" 2>/dev/null || true
+            echo "${CLUSTER_ENDPOINT}"
+            return 0
+        fi
+        [ "${ENV_TYPE:-docker}" = "cloud" ] \
+            && printf '%s %s\n' "$(date +%s)" "${CLUSTER_ENDPOINT}" > "$pin_dead_file" 2>/dev/null || true
     fi
     # Cloud: the pinned endpoint is dead. Each node lives on its OWN VM public IP at
     # the uniform CLOUD_MGMT_PORT (8080) — there is no shared TARGET_HOST port range
@@ -318,7 +568,8 @@ _resolve_live_endpoint() {
         # Re-probed with the same cheap `-m 2` curl before trust (mirrors the
         # _LABEL_DISCOVERED_ENDPOINT TTL+reprobe idiom below), so a stale/dead
         # cached IP degrades to the normal scan rather than being trusted blindly.
-        local sticky_file="${TMPDIR:-/tmp}/aether-live-endpoint-${CLUSTER_ID:-default}"
+        local sticky_file
+        sticky_file=$(_live_endpoint_sticky_file)
         if [ -f "$sticky_file" ]; then
             local sticky_ep
             sticky_ep=$(cat "$sticky_file" 2>/dev/null || true)
@@ -326,6 +577,9 @@ _resolve_live_endpoint() {
                 echo "${sticky_ep}"
                 return 0
             fi
+            # Dead: forget it. Only the scan below re-writes this file, so a kept dead entry taxed
+            # every call by 2s, and its IP stayed first in line if it was ever recycled.
+            rm -f "$sticky_file" 2>/dev/null || true
         fi
         local n node_id node_ip endpoint
         for n in $(seq 0 $((NODE_COUNT - 1))); do
@@ -334,6 +588,8 @@ _resolve_live_endpoint() {
             node_ip=$(cloud_public_ip "$node_id" 2>/dev/null || true)
             [ -z "$node_ip" ] && continue
             endpoint="${MGMT_SCHEME:-http}://${node_ip}:${mgmt_port}"
+            # The pin is often node-1's own address; it was just probed dead or is known dead.
+            [ "$endpoint" = "${CLUSTER_ENDPOINT}" ] && continue
             if curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${endpoint}/health/live" >/dev/null 2>&1; then
                 printf '%s' "${endpoint}" > "$sticky_file" 2>/dev/null || true
                 echo "${endpoint}"
@@ -385,6 +641,13 @@ _resolve_live_endpoint() {
                     return 0
                 fi
             done
+        fi
+        # Everything else is dead; a pin skipped as known-dead may have revived inside the window.
+        if [ "$skip_pin" = true ] \
+            && curl -sfk -m 2 -H "X-API-Key: ${API_KEY}" "${CLUSTER_ENDPOINT}/health/live" >/dev/null 2>&1; then
+            rm -f "$pin_dead_file" 2>/dev/null || true
+            echo "${CLUSTER_ENDPOINT}"
+            return 0
         fi
         # No surviving VM responded; fall back so the caller surfaces a curl failure.
         # #426 item 4: this was a silent fallback (comment-only) — a dead pinned
@@ -463,6 +726,34 @@ _resolve_live_endpoint() {
 _refresh_mgmt_entry_point() {
     local live
     if live=$(_resolve_live_endpoint); then
+        export MGMT_ENTRY_POINT="${live}"
+        export CLUSTER_ENDPOINT="${live}"
+        return 0
+    fi
+    return 1
+}
+
+# #1226: bounded variant for wait_for, whose OWN wall-clock budget must not be
+# spent inside a hung resolve — measured on cloud, a failing poll's refresh alone
+# stretched a 180s wait to 1083s. Cannot just wrap the call in `timeout`
+# (_resolve_live_endpoint is a shell function, not on $PATH) or run it via
+# `_fork_bounded` the way _refresh_mgmt_entry_point itself is called (its whole
+# point is the `export` — made inside a fork, that export dies with the fork and
+# never reaches the caller). So only the part that can hang — the VM-scan/SSH
+# probes inside _resolve_live_endpoint — runs forked and bounded; the export that
+# makes rotation stick happens back here, in the same shell wait_for runs in.
+# Same success/failure contract as _refresh_mgmt_entry_point: exports and returns
+# 0 on a live endpoint found within $secs, otherwise leaves env vars unchanged and
+# returns 1 (a timeout is indistinguishable here from "no live endpoint" — both
+# are "could not refresh in time", which is all a caller needs to know).
+_refresh_mgmt_entry_point_bounded() {
+    local secs="$1"
+    local outfile rc live=""
+    outfile=$(mktemp)
+    _fork_bounded "$secs" _resolve_live_endpoint >"$outfile" 2>/dev/null && rc=0 || rc=$?
+    [ "$rc" -eq 0 ] && live=$(cat "$outfile" 2>/dev/null)
+    rm -f "$outfile"
+    if [ -n "$live" ]; then
         export MGMT_ENTRY_POINT="${live}"
         export CLUSTER_ENDPOINT="${live}"
         return 0
@@ -768,16 +1059,53 @@ http_status_with_body() {
     printf '%s' "$status"
 }
 
+# #1226: the actual value_cmd+check_cmd poll body, run from inside wait_for's own
+# fork (via _fork_bounded so a hung predicate cannot outlive the iteration's
+# budget). Reads wait_for's locals (check_cmd, value_cmd, errfile, valuefile,
+# valuercfile) via bash's dynamic scoping — a called function sees its caller's
+# locals, and this is only ever called from wait_for's own frame, never
+# standalone. Everything this writes to a shell variable dies with the fork, so
+# the value_cmd result crosses back to the parent the only way a fork allows:
+# written to a file, read back by wait_for itself after `wait` returns.
+_wait_for_poll_once() {
+    if [ -n "$value_cmd" ]; then
+        local v vrc
+        v=$(eval "$value_cmd" 2>/dev/null) && vrc=0 || vrc=$?
+        printf '%s' "$vrc" > "$valuercfile"
+        if [ "$vrc" -eq 0 ] && [ -n "$v" ]; then
+            printf '%s' "$v" > "$valuefile"
+            export WAIT_FOR_VALUE="$v"
+            eval "$check_cmd" > /dev/null 2>"$errfile"
+            return $?
+        fi
+        return 1
+    fi
+    eval "$check_cmd" > /dev/null 2>"$errfile"
+}
+
 # ---------------------------------------------------------------------------
 # Wait for condition with timeout
 # ---------------------------------------------------------------------------
 wait_for() {
-    local description="$1" check_cmd="$2" timeout="${3:-60}" interval="${4:-2}"
+    local description="$1" check_cmd="$2" timeout="${3:-60}" interval="${4:-2}" value_cmd="${5:-}"
+    # value_cmd (optional, #1051): a reader whose stdout is the value check_cmd tests,
+    # e.g. _cluster_active_core_count_checked. wait_for runs it ONCE per poll and
+    # exports its stdout as WAIT_FOR_VALUE for check_cmd to test
+    # (`[ "$WAIT_FOR_VALUE" -eq 5 ]`), so the predicate and the value the timeout
+    # message reports come from the same read. A reader that exits non-zero or prints
+    # nothing is a FAILED READ: check_cmd is not evaluated for that poll, the poll does
+    # not satisfy the wait, and no number is invented for it.
+    local last_value="" value value_rc read_failures=0 polls=0
     # Scale timeouts on slower environments (cloud VMs have higher inter-node latency than
     # docker-localhost). TIMEOUT_SCALE=3 default for cloud, 1 elsewhere — set in run-tests.sh.
     timeout=$((timeout * ${TIMEOUT_SCALE:-1}))
-    local rc errfile
+    local rc errfile valuefile valuercfile
     errfile=$(mktemp)
+    # #1226: value_cmd's result crosses the _fork_bounded boundary via these two
+    # files instead of a variable — see _wait_for_poll_once. Only ever touched
+    # when value_cmd is set, but cheap enough to always allocate.
+    valuefile=$(mktemp)
+    valuercfile=$(mktemp)
     log_info "Waiting for: ${description} (timeout: ${timeout}s)"
     # Cloud poll-loop hygiene: predicates round-trip through _resolve_live_endpoint
     # → _api_call against the PINNED CLUSTER_ENDPOINT. When that endpoint is a
@@ -810,29 +1138,108 @@ wait_for() {
     local cloud_poll="false"
     if [ "${CLOUD_MODE:-false}" = "true" ]; then
         cloud_poll="true"
-        _refresh_mgmt_entry_point >/dev/null 2>&1 || true
+        _refresh_mgmt_entry_point_bounded "$timeout" >/dev/null 2>&1 || true
     fi
     while [ "$SECONDS" -lt "$deadline" ]; do
-        # #628: the deadline is only checked BETWEEN iterations, so a predicate that
-        # hangs on remote transport overruns arbitrarily (4596s observed against a
-        # 480s budget). Export the remaining budget so transport-touching predicates
-        # can bound themselves via remote_exec_bounded.
+        # #628: the deadline used to be checked only BETWEEN iterations, so a
+        # predicate that hung overran arbitrarily (4596s observed against a 480s
+        # budget; a whole suite once ran 19057s against cloud). Export the
+        # remaining budget for transport-touching predicates that cooperate via
+        # remote_exec_bounded, AND enforce it unconditionally via _fork_bounded
+        # below — an iteration now cannot outlive the budget it belongs to
+        # whether or not the predicate itself cooperates.
         export WAIT_FOR_REMAINING=$((deadline - SECONDS))
-        # Capture rc without tripping `set -e` from the caller — `eval` as a standalone
-        # command would propagate its non-zero exit and abort the entire script when
-        # the predicate is simply false. The `&& rc=0 || rc=$?` idiom swallows the exit
-        # code into a captured variable, equivalent to the legacy `if eval; then`
-        # protection without re-introducing the if/then nesting.
-        eval "$check_cmd" > /dev/null 2>"$errfile" && rc=0 || rc=$?
+        polls=$((polls + 1))
+        if [ -n "$value_cmd" ]; then
+            : > "$valuefile"
+            : > "$valuercfile"
+        fi
+        # _wait_for_poll_once runs value_cmd+check_cmd inside a fork bounded to the
+        # remaining budget (_fork_bounded forks THIS interpreter rather than
+        # `bash -c`, so check_cmd/value_cmd still see every function sourced from
+        # lib/common.sh/lib/cluster.sh — a fresh interpreter would not). A poll
+        # killed for hitting the wall returns a signal exit (128+N: e.g. 143 for
+        # SIGTERM), which falls through the same `case` default below as an
+        # ordinary "predicate said no" — correct, since either way the iteration
+        # simply didn't succeed and the wait should keep polling, not treat a
+        # self-inflicted kill as the "buggy predicate" 2|127 case.
+        #
+        # #1226/B8: _fork_bounded's job here is to catch a predicate that HANGS
+        # (the original defect: unbounded, 4596s/19057s observed), not to
+        # truncate a poll that is merely slower than the sliver of budget left
+        # once the deadline is close. A poll already in flight whose value_cmd
+        # takes a real 8s against a 6s remaining budget must still be allowed
+        # to finish — the caller's own post-hoc elapsed-vs-budget check is what
+        # reports that overrun (S20 in test-self-drain-quorum-loss.sh), not a
+        # kill from inside wait_for.
+        #
+        # DESIGN (owner ruling): the wall-clock DEADLINE governs whether a NEW
+        # poll may START — that is the `while` loop condition above, unchanged.
+        # It never governs whether an IN-FLIGHT poll may FINISH. Killing a poll
+        # mid-flight collapses "recovered, slowly" into "never recovered" and
+        # destroys a real operator diagnostic (B8: a late "5 cores" read must
+        # still register as a read, so the CALLER can report the slow-recovery
+        # message instead of a generic timeout).
+        #
+        # So the per-poll bound is a FIXED CAP, independent of WAIT_FOR_REMAINING
+        # — it no longer shrinks as the deadline approaches. This is what
+        # actually closes #1226's 5h17m runaway: that overrun came from MANY
+        # iterations each doing degraded-provider work, not from one long poll,
+        # and a fixed per-iteration cap bounds every single one of them,
+        # including ones nowhere near the deadline (the old WAIT_FOR_REMAINING
+        # bound only clamped iterations near the END of the budget). The cap is
+        # the largest single provider-call ceiling already legitimate in this
+        # file — non-cloud _api_call's `-m 30`, itself more generous than
+        # cloud's `${CLOUD_API_MAX_TIME:-15}` — so any predicate/value_cmd built
+        # from this file's own primitives finishes well inside it; anything
+        # that doesn't is a genuine hang and gets killed.
+        #
+        # GUARANTEE, stated precisely because it is weaker than "bounded by
+        # timeout": worst case is BUDGET + ONE POLL CAP, not BUDGET alone — the
+        # last poll can start a moment before the deadline and still run up to
+        # the full cap. That trade is deliberate: the stronger guarantee is
+        # only buyable by killing an in-flight poll, which is the diagnostic
+        # loss above. A killed poll is still classified as a failed READ (the
+        # existing branch below), never as a buggy predicate.
+        local poll_bound=${WAIT_FOR_POLL_CAP_S:-30}
+        _fork_bounded "$poll_bound" _wait_for_poll_once && rc=0 || rc=$?
+        if [ -n "$value_cmd" ]; then
+            value_rc=$(cat "$valuercfile" 2>/dev/null)
+            if [ -z "$value_rc" ]; then
+                # Killed by the wall clock before the fork even finished the
+                # value_cmd read — still a failed read, just say why.
+                read_failures=$((read_failures + 1))
+                last_value="<read failed: ${value_cmd} killed at ${poll_bound}s bound, no value>"
+                unset WAIT_FOR_VALUE
+            elif [ "$value_rc" -eq 0 ] && [ -s "$valuefile" ]; then
+                value=$(cat "$valuefile" 2>/dev/null)
+                last_value="$value"
+                export WAIT_FOR_VALUE="$value"
+            else
+                # Either value_rc != 0, or the reader exited 0 but printed
+                # nothing (valuefile still empty from this iteration's
+                # truncation) — _wait_for_poll_once treats that as no value
+                # obtained and never evaluates check_cmd, so wait_for must
+                # count it as a failed read rather than a successful empty one.
+                read_failures=$((read_failures + 1))
+                last_value="<read failed: ${value_cmd} rc=${value_rc}, no value>"
+                unset WAIT_FOR_VALUE
+            fi
+        fi
         case "$rc" in
             0)
                 log_pass "${description} ($((SECONDS - start_seconds))s)"
-                rm -f "$errfile"
+                rm -f "$errfile" "$valuefile" "$valuercfile"
+                # A read belongs to this wait only: a later wait without a reader must
+                # never see it (#1051 round 3).
+                unset WAIT_FOR_VALUE
                 return 0
                 ;;
             2|127)
                 # Bash parse error / command not found — predicate is buggy, not just false.
                 # Surface it so a test author can fix the typo instead of waiting for timeout.
+                # A count helper's failed read no longer lands here when it is passed as
+                # value_cmd: that poll never evaluates check_cmd.
                 log_warn "wait_for predicate emitted shell error (rc=${rc}): $(head -c 300 < "$errfile")"
                 ;;
         esac
@@ -841,15 +1248,25 @@ wait_for() {
         # next poll so the dead endpoint isn't re-probed at full cost every
         # iteration. Cheap: succeeds via the `-m 2` happy-path probe when the
         # current endpoint is still live, scans VMs only when it genuinely died.
+        # #1226: bounded to whatever budget is left — this call sits inside the
+        # SAME iteration as the poll above, so it must not be the thing that
+        # blows the deadline (this was the specific call the bug report names as
+        # the actual source of the worst overruns).
         if [ "$cloud_poll" = "true" ]; then
-            _refresh_mgmt_entry_point >/dev/null 2>&1 || true
+            local refresh_remaining=$((deadline - SECONDS))
+            _refresh_mgmt_entry_point_bounded "$refresh_remaining" >/dev/null 2>&1 || true
         fi
         # Skip the final sleep once the deadline has already passed — avoids
         # overshooting the wall-clock ceiling by an extra `interval` for no reason.
         [ "$SECONDS" -lt "$deadline" ] && sleep "$interval"
     done
-    log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)"
-    rm -f "$errfile"
+    local read_note=""
+    if [ -n "$value_cmd" ]; then
+        read_note=" — last observed value: ${last_value:-<none: no poll ran>} (${read_failures} of ${polls} read(s) failed)"
+    fi
+    unset WAIT_FOR_VALUE
+    log_fail "${description} (timed out after $((SECONDS - start_seconds))s, budget ${timeout}s)${read_note}"
+    rm -f "$errfile" "$valuefile" "$valuercfile"
     return 1
 }
 
@@ -1001,7 +1418,7 @@ ENV_TYPE="${ENV_TYPE:-docker}"
 export ENV_TYPE
 CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
 if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
-# Sync the reverse direction: kill_node, start_node, etc. still branch on CLOUD_MODE.
+# Sync the reverse direction: kill_node, restart_all_nodes, etc. still branch on CLOUD_MODE.
 if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; fi
 export CLOUD_MODE
 # BASTION_IP is retained for backward-compat env templates but ignored under
@@ -1076,10 +1493,58 @@ to_node_id() {
         aether-*) echo "$node_id"; return 0 ;;
     esac
     if [[ "$node_id" =~ ^node-([0-9]+)$ ]] && [ -n "${CLUSTER_ID:-}" ]; then
-        echo "aether-${CLUSTER_ID}-node-${BASH_REMATCH[1]}"
+        local ordinal="${BASH_REMATCH[1]}"
+        if [ "$CLUSTER_ID" = "b" ]; then
+            ordinal=$(b_seed_number "$(b_current_generation)" "$ordinal")
+        fi
+        echo "aether-${CLUSTER_ID}-node-${ordinal}"
         return 0
     fi
     echo "$node_id"
+}
+
+# ---------------------------------------------------------------------------
+# Cluster B core-node generations (#1968, #1543)
+# ---------------------------------------------------------------------------
+# A node id never returns: restart_all_nodes restarts the whole cluster onto FRESH core ids and restores the KV from the
+# backup. Core ids are `aether-b-node-<number>`. Generation 0 (the first start) is 1..5; generation G >= 1 is G*100+i, so
+# every id still ends in digits and the ordinal (i) is recoverable as (number-1)%100+1 wherever an id is mapped to a
+# host port or a position. The current generation is kept on the Docker host (one cluster B per host), read when needed.
+BACKUP_REMOTE_VOLUME="aether-b-backup-remote"
+BACKUP_GENERATION_FILE='~/.aether-b-generation'
+
+# The core number of seed ordinal <i> (1-based) at generation <G>.
+b_seed_number() {
+    local gen="$1" ordinal="$2"
+    if [ "${gen:-0}" -gt 0 ] 2>/dev/null; then
+        echo $((gen * 100 + ordinal))
+    else
+        echo "$ordinal"
+    fi
+}
+
+# The 0-based position of core number <N> (any generation) in the fixed per-seed port ranges.
+b_seed_offset() {
+    echo $((($1 - 1) % 100))
+}
+
+# The current generation of cluster B, 0 when none was ever started by restart_all_nodes. Cached per process in a NON-exported
+# variable that restart_all_nodes refreshes, so a suite subshell started after a restart reads the file once.
+b_current_generation() {
+    if [ -z "${_AETHER_B_GEN:-}" ]; then
+        _AETHER_B_GEN=$(remote_exec "cat ${BACKUP_GENERATION_FILE} 2>/dev/null || echo 0" 2>/dev/null | tail -n1 | tr -dc '0-9')
+        _AETHER_B_GEN="${_AETHER_B_GEN:-0}"
+    fi
+    echo "$_AETHER_B_GEN"
+}
+
+# Shell run on the Docker host to (re)create the backup remote of a cluster B start: a fresh external volume holding an
+# initialised bare repository owned by the in-container user (uid 1000), and generation 0. The remote is what a restart restores
+# from, so it must exist before the nodes boot and must not be removed by `compose down -v` (it is external).
+backup_remote_init_script() {
+    cat <<SCRIPT
+docker volume rm -f ${BACKUP_REMOTE_VOLUME} >/dev/null 2>&1; rm -f ${BACKUP_GENERATION_FILE}; docker volume create ${BACKUP_REMOTE_VOLUME} >/dev/null && docker run --rm --user root --entrypoint sh -v ${BACKUP_REMOTE_VOLUME}:/r aether-node:local -c 'git init -q --bare /r/kv.git && chown -R 1000:1000 /r'
+SCRIPT
 }
 
 # Map a node's runtime id (as reported by the management API, e.g. in
@@ -1093,7 +1558,7 @@ to_node_id() {
 _registered_by_to_offset() {
     local id="$1"
     if [[ "$id" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
-        echo "$(( ${BASH_REMATCH[2]} - 1 ))"
+        b_seed_offset "${BASH_REMATCH[2]}"
         return 0
     fi
     if [[ "$id" =~ ^[A-Za-z0-9-]+-core-([0-9]+)$ ]]; then
@@ -1123,6 +1588,17 @@ _registered_by_to_offset() {
 #
 # Provider-agnostic shell: dispatches on CLOUD_PROVIDER so an aws/gcp branch slots
 # in later. Hetzner is the only implemented backend today.
+#
+# A NOT-FOUND outcome is a PROBE MISS, not a failure: nothing on stdout, a log_warn on stderr, rc 1.
+# log_fail prints on the stdout that callers capture with $(...) while still counting through the fail
+# file, so a miss became a counted [FAIL] with no visible line (12-network S05, cloud run 4). A caller
+# for which a miss is fatal logs its own log_fail on rc!=0. Argument/provider errors (rc 2) stay loud.
+#
+# THREE distinct non-success outcomes, and callers must not conflate them:
+#   rc 1  the node's address is KNOWN and no server holds it: the VM is gone (the only "departed" evidence);
+#   rc 3  UNKNOWN: the address could not be resolved, or hcloud could not list servers. Says NOTHING about the
+#         VM, which may be running. An existence probe treats rc 3 as "cannot tell", never as "gone".
+#   rc 2  harness/argument/provider error.
 cloud_server_id() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -1137,17 +1613,20 @@ cloud_server_id() {
             fi
             local ip
             ip=$(cloud_public_ip "$node_id") || {
-                log_fail "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed)"
-                return 1
+                log_warn "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed); the VM's existence is UNKNOWN" >&2
+                return 3
             }
             # Map IP -> numeric server id. `hcloud -o columns -o noheader` prints
             # `id<WS>ipv4` per server; awk exact-matches column 2 and prints the id.
             # No manual JSON parsing — hcloud handles the (multi-line) API body.
-            local sid
-            sid=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null \
-                    | awk -v ip="$ip" '$2==ip{print $1; exit}')
+            local sid servers
+            servers=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null) || {
+                log_warn "cloud_server_id: hcloud server list failed; the existence of '${node_id}' (${ip}) is UNKNOWN" >&2
+                return 3
+            }
+            sid=$(printf '%s\n' "$servers" | awk -v ip="$ip" '$2==ip{print $1; exit}')
             if [ -z "$sid" ]; then
-                log_fail "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')"
+                log_warn "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')" >&2
                 return 1
             fi
             printf '%s\n' "$sid"
@@ -1170,8 +1649,12 @@ cloud_server_id() {
 # Cluster name resolution: $BOOTSTRAP_CLUSTER_NAME (set by run-tests.sh per cluster);
 # falls back to CLOUD_BOOTSTRAP_CLUSTER for ad-hoc invocations.
 #
-# Returns the IP on stdout. Logs a failure (without exiting the caller) and returns
-# non-zero if the state file is missing or the node has no recorded address.
+# Returns the IP on stdout. A NOT-FOUND outcome (state file missing, arrays missing, no entry for the
+# node) is a PROBE MISS: nothing on stdout, a log_warn on stderr, rc 1 — never log_fail. log_fail prints
+# on the stdout a caller captures with $(...) while still counting through the fail file (#1511), so a
+# miss became a counted [FAIL] with no visible line (02-chaos S19 x2, 12-network S05; cloud run 4). The
+# caller decides whether a miss is fatal and logs its own log_fail then. Argument errors (rc 2) are
+# harness bugs and stay loud.
 cloud_public_ip() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -1185,7 +1668,7 @@ cloud_public_ip() {
     fi
     local state_file="${HOME}/.aether/clusters/${cluster}/bootstrap-state.json"
     if [ ! -f "$state_file" ]; then
-        log_fail "cloud_public_ip: bootstrap-state.json not found at ${state_file}"
+        log_warn "cloud_public_ip: bootstrap-state.json not found at ${state_file}" >&2
         return 1
     fi
     # Translate friendly node-N → bootstrap nodeId form.
@@ -1207,7 +1690,7 @@ cloud_public_ip() {
         if (RSTART > 0) print substr($0, RSTART, RLENGTH);
     }' "$state_file")
     if [ -z "$ids_raw" ] || [ -z "$addrs_raw" ]; then
-        log_fail "cloud_public_ip: provisionedNodeIds or collectedAddresses missing from ${state_file}"
+        log_warn "cloud_public_ip: provisionedNodeIds or collectedAddresses missing from ${state_file}" >&2
         return 1
     fi
     # Strip key + brackets, split into one quoted token per line, drop quotes.
@@ -1254,7 +1737,7 @@ cloud_public_ip() {
             printf '%s\n' "$ip"
             return 0
         fi
-        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/v1/nodes/endpoint/${node_id} returned no address"
+        log_warn "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/v1/nodes/endpoint/${node_id} returned no address" >&2
         return 1
     fi
     printf '%s\n' "$ip"
@@ -1281,9 +1764,112 @@ cloud_ssh() {
     local node_id="$1"; shift
     local target_ip
     target_ip=$(cloud_public_ip "$node_id") || return $?
+    cloud_ssh_ip "$target_ip" "$@"
+}
+
+# SSH to an already-resolved address. For callers that resolve through a cache (S19's pre-kill
+# survivor IPs) and must not re-resolve mid-quorum-loss; cloud_ssh is this plus the live lookup.
+cloud_ssh_ip() {
+    local target_ip="$1"; shift
     ssh "${SSH_OPTS[@]}" \
         -i "${AETHER_SSH_KEY}" \
         "${CLOUD_SSH_USER:-root}@${target_ip}" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# JVM-runtime systemd unit inspection (H1/H2, 2026-09-13 cloud-JVM harness
+# fixes: docker inspect over SSH is a hard failure on --runtime jvm, since a
+# JVM cloud VM has no docker daemon at all — the node runs as systemd unit
+# `aether-node`, Restart=no by deliberate product design. Shared here (rather
+# than duplicated per suite) so it is unit-testable via
+# test/test-cloud-helpers.sh by stubbing cloud_ssh/ssh, and so every caller
+# reads the halt reason the same way.
+# ---------------------------------------------------------------------------
+
+# Read one or more `systemctl show aether-node` properties on a node's own VM
+# over SSH. Prints raw "KEY=value\n..." lines on stdout in whatever order
+# systemd returns them (callers extract by field name via jvm_unit_field, so
+# order never matters). Returns the ssh/remote-command rc — a non-zero rc
+# means either the SSH transport failed or the remote systemctl invocation
+# itself failed; the caller must not treat rc!=0 output as a valid reading.
+jvm_unit_show() {
+    local node_id="$1" properties="$2"
+    cloud_ssh "$node_id" "systemctl show aether-node --property=${properties} 2>&1"
+}
+
+# Extract one KEY=value field's value from jvm_unit_show's raw output. Prints
+# nothing if the field is absent (e.g. rc!=0 output, or a field name typo) —
+# callers must treat an empty result as "not read", never coerce it into a
+# passing or failing comparison value.
+jvm_unit_field() {
+    local show="$1" field="$2"
+    printf '%s\n' "$show" | sed -n "s/^${field}=//p" | head -1 | tr -d '\r'
+}
+
+# The designed drain-halt signature of the aether-node unit: the node's drain ends in
+# the Runtime.getRuntime().halt(2) that AetherNode.aetherNode(...) wires as
+# DrainProcedure's jvmExit, and Restart=no leaves the unit at ActiveState=failed with
+# ExecMainStatus=2. The ONE predicate both readers of the S19 halt REASON use (S19
+# tier 2 and the exit-code step in test-self-drain-quorum-loss.sh), so they cannot
+# disagree. The reap gate asks a different question — may this VM be reaped — and
+# accepts a broader positive-evidence class (_cloud_vm_node_state, lib/cluster.sh).
+jvm_unit_is_drain_halt() {
+    local active_state="$1" exec_status="$2"
+    [ "$active_state" = "failed" ] && [ "$exec_status" = "2" ]
+}
+
+# H2 (#1051): assert the drain-halt signature on a JVM-runtime node, read over SSH via
+# systemctl show — the JVM-runtime analog of `docker inspect .State.ExitCode`. An
+# SSH/systemctl read failure is a hard log_fail, never a silent pass. Unit-tested via
+# test/test-cloud-helpers.sh and test/test-chaos-harness.sh with a stubbed ssh.
+#
+# With a THIRD argument (even empty) the read goes to that ADDRESS (cloud_ssh_ip) instead of resolving <node id> live, and
+# proves WHICH VM answered: the same ssh command first prints the VM's own AETHER_NODE_ID (/etc/aether/node.env, written by
+# the node's user-data), and a mismatch or missing id is a FAIL. After a quorum-loss drain a CTM survivor no longer resolves
+# live (it is not in bootstrap-state.json and the cluster API is down), so callers pass the pre-kill cached address; and a
+# cached address may have been RECYCLED onto another VM, which would answer with its own unit state (a successful read from
+# the wrong subject). An empty address is an honest FAIL ("SSH not attempted"), never a guess.
+jvm_unit_assert_drain_halt() {
+    local node_id="$1" label="${2:-$1}"
+    local show rc active_state exec_status
+    if [ "$#" -ge 3 ]; then
+        local ip="$3" expected="$1" observed
+        if [ -z "$ip" ]; then
+            log_fail "${label} systemd unit unread: IP unresolvable (no pre-kill cache entry, live lookup failed) — SSH not attempted"
+            return 1
+        fi
+        [[ "$expected" =~ ^node-([0-9]+)$ ]] && expected="${CLOUD_SOURCE_NAME}-core-$(( ${BASH_REMATCH[1]} - 1 ))"
+        show=$(cloud_ssh_ip "$ip" "grep -m1 '^AETHER_NODE_ID=' /etc/aether/node.env 2>&1; systemctl show aether-node --property=ActiveState,ExecMainStatus 2>&1")
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}) at ${ip}: $(printf '%s' "$show" | head -c 300)"
+            return 1
+        fi
+        observed=$(jvm_unit_field "$show" "AETHER_NODE_ID" | tr -d '"')
+        if [ -z "$observed" ]; then
+            log_fail "${label} identity indeterminate: ${ip} returned no AETHER_NODE_ID, so it cannot be shown WHICH VM answered — the read is void, not a pass"
+            return 1
+        fi
+        if [ "$observed" != "$expected" ]; then
+            log_fail "${label} identity violation: read ${ip} expecting node '${expected}' but node '${observed}' answered — the cached survivor IP has been recycled onto another VM; its unit state says nothing about ${expected}"
+            return 1
+        fi
+    else
+        show=$(jvm_unit_show "$node_id" "ActiveState,ExecMainStatus")
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}): $(printf '%s' "$show" | head -c 300)"
+            return 1
+        fi
+    fi
+    active_state=$(jvm_unit_field "$show" "ActiveState")
+    exec_status=$(jvm_unit_field "$show" "ExecMainStatus")
+    if jvm_unit_is_drain_halt "$active_state" "$exec_status"; then
+        log_pass "${label} systemd unit ActiveState=failed ExecMainStatus=2 (Runtime.halt(2), read via systemctl show)"
+        return 0
+    fi
+    log_fail "${label} systemd unit is not in the drain-halt state: expected ActiveState=failed ExecMainStatus=2, got ActiveState='${active_state}' ExecMainStatus='${exec_status}'"
+    return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -1366,6 +1952,9 @@ run_test() {
     # Cleared at function exit so logs emitted by surrounding scaffolding don't
     # leak the last test's name.
     export TEST_TAG="$sanitized_name"
+    # Cloud: remember the VMs the provider lists NOW (nodes join and leave mid-suite); the capture tries every
+    # remembered VM, not only those still listed when a failure is finally captured (lib/capture.sh).
+    [ -n "${SUITE_FAILCAP_DIR:-}" ] && capture_remember_vms "${CLUSTER_ID:-a}" "${SUITE_TAG:-no-suite}" >/dev/null 2>&1 || true
     echo ""
     log_step "=== TEST: ${name} ==="
 
@@ -1381,7 +1970,8 @@ run_test() {
     # non-zero return (e.g. early in a long test, before later success-coded
     # commands) caused the suite to record PASS while the logs screamed FAIL.
     TEST_FAIL_COUNT=0
-    local t_start t_elapsed fn_rc
+    local t_start t_elapsed fn_rc fails_before fails_logged
+    fails_before=$(_harness_fail_lines)
     t_start=$(date +%s)
     # set -e abort guard: when the test script runs under `set -euo pipefail`, a
     # failing command inside "$fn" (including an unhandled non-zero return from a
@@ -1396,11 +1986,22 @@ run_test() {
     else
         fn_rc=$?
     fi
-    if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -eq 0 ]; then
+    fails_logged=$(( $(_harness_fail_lines) - fails_before ))
+    # A [FAIL] raised inside a $(...) capture counts through the fail file but its text went into the
+    # caller's variable, so the log may show no line for it. When more were counted than the in-process
+    # latch saw, print the test's whole fail-file record (every line from fails_before+1, exactly as counted;
+    # which of them were already visible is not knowable here), so a counted [FAIL] never appears only as a number.
+    if [ "$fails_logged" -gt "${TEST_FAIL_COUNT:-0}" ] && [ -f "${HARNESS_FAIL_FILE:-}" ]; then
+        log_info "run_test: '${name}' counted [FAIL] record for this test (${fails_logged} counted, ${TEST_FAIL_COUNT:-0} printed above):"
+        sed -n "$((fails_before + 1)),\$p" "$HARNESS_FAIL_FILE" | sed 's/^/    | /'
+    fi
+    [ "${TEST_FAIL_COUNT:-0}" -gt "$fails_logged" ] && fails_logged=${TEST_FAIL_COUNT:-0}
+    HARNESS_FAIL_CONSUMED=$(_harness_fail_lines)
+    if [ "$fn_rc" -eq 0 ] && [ "$fails_logged" -eq 0 ]; then
         TESTS_PASSED=$((TESTS_PASSED + 1))
     else
-        if [ "$fn_rc" -eq 0 ] && [ "${TEST_FAIL_COUNT:-0}" -gt 0 ]; then
-            log_warn "run_test: '${name}' function returned 0 but emitted ${TEST_FAIL_COUNT} [FAIL] line(s) — recording as FAIL"
+        if [ "$fn_rc" -eq 0 ]; then
+            log_warn "run_test: '${name}' function returned 0 but emitted ${fails_logged} [FAIL] line(s) — recording as FAIL"
         fi
         TESTS_FAILED=$((TESTS_FAILED + 1))
     fi
@@ -1429,11 +2030,25 @@ skip_test() {
 }
 
 print_summary() {
+    # #1511: [FAIL] lines logged outside any run_test (cleanup, background work that outlived its test)
+    # count against the suite, so the verdict never disagrees with the log.
+    local outside=$(( $(_harness_fail_lines) - ${HARNESS_FAIL_CONSUMED:-0} ))
+    if [ "$outside" -gt 0 ]; then
+        log_warn "print_summary: ${outside} [FAIL] line(s) were logged outside any test — counted as failed:"
+        tail -n "$outside" "$HARNESS_FAIL_FILE" | sed 's/^/    /'
+        TESTS_FAILED=$((TESTS_FAILED + outside))
+        HARNESS_FAIL_CONSUMED=$(_harness_fail_lines)
+    fi
     echo ""
     echo "========================================"
     echo "  PASSED:  ${TESTS_PASSED}"
     echo "  FAILED:  ${TESTS_FAILED}"
     echo "  SKIPPED: ${TESTS_SKIPPED}"
+    local warned=$(( $(_run_warning_lines) - ${_RUN_WARN_BASE:-0} ))
+    if [ "$warned" -gt 0 ]; then
+        echo "  WARNINGS: ${warned}"
+        tail -n "$warned" "$RUN_WARNINGS_FILE" | sed 's/^/    warning: /'
+    fi
     echo "========================================"
 
     if [[ "${COLLECT_METRICS:-false}" == "true" ]]; then
