@@ -15,7 +15,10 @@
  */
 package org.pragmatica.serialization.json.codegen;
 
+import javax.annotation.processing.Filer;
 import javax.annotation.processing.ProcessingEnvironment;
+import javax.lang.model.util.Elements;
+import javax.lang.model.util.Types;
 import javax.lang.model.element.Element;
 import javax.lang.model.type.TypeMirror;
 import java.io.IOException;
@@ -28,7 +31,7 @@ import java.util.Optional;
 /// processor (`@Json` types) and the slice processor (HTTP route request and response types), so both emit
 /// identical codecs. A root the generator cannot handle is reported, not generated; its users fall back.
 public final class JsonCodecGenerator {
-    private final ProcessingEnvironment env;
+    private final Filer filer;
     private final JsonTypeAnalyzer analyzer;
     private final List<TypeMirror> roots = new ArrayList<>();
 
@@ -36,9 +39,13 @@ public final class JsonCodecGenerator {
 
     /// `packageName` is where the holder will be written; it decides which types and factories are reachable.
     public JsonCodecGenerator(ProcessingEnvironment env, String packageName) {
-        this.env = env;
+        this(env.getFiler(), env.getElementUtils(), env.getTypeUtils(), packageName);
+    }
+
+    public JsonCodecGenerator(Filer filer, Elements elements, Types types, String packageName) {
+        this.filer = filer;
         this.packageName = packageName;
-        this.analyzer = new JsonTypeAnalyzer(env.getElementUtils(), env.getTypeUtils(), packageName);
+        this.analyzer = new JsonTypeAnalyzer(elements, types, packageName);
     }
 
     /// Adds a root type; empty when supported, otherwise why it is not.
@@ -67,7 +74,7 @@ public final class JsonCodecGenerator {
         var qualified = packageName.isEmpty()
                         ? holderName
                         : packageName + "." + holderName;
-        var file = env.getFiler().createSourceFile(qualified, originatingElements);
+        var file = filer.createSourceFile(qualified, originatingElements);
 
         try (var writer = new PrintWriter(file.openWriter())) {
             writer.print(source(holderName, generatedBy));

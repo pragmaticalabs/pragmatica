@@ -63,6 +63,12 @@
             <artifactId>javapoet</artifactId>
             <version>${javapoet.version}</version>
         </dependency>
+        <!-- Shared with the codec processor, so route codecs and @Json codecs are generated identically. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-json-codegen</artifactId>
+            <version>${project.version}</version>
+        </dependency>
 
         <!-- Testing -->
         <dependency>
