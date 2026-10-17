@@ -20,7 +20,7 @@ High-level design and the numbered architecture series, one document per subsyst
 - [02 — Deployment and Lifecycle](architecture/02-deployment.md) — how slices are deployed, managed, and scaled
 - [03 — Slice Invocation and Routing](architecture/03-invocation.md) — method invocation, request routing, pub/sub, scheduled tasks
 - [04 — Networking and Transport](architecture/04-networking.md) — cluster transport layer, topology management, message routing
-- [05 — Worker Pools and Two-Layer Topology](architecture/05-worker-pools.md) — scaling beyond the Rabia consensus limit to 10,000+ nodes
+- [05 — Worker Pools and Two-Layer Topology](architecture/05-worker-pools.md) — a two-layer topology designed to scale past the Rabia consensus limit (design target ~100 nodes per worker community; multi-community reach is unvalidated, see [Known Limitations](reference/known-limitations.md))
 - [06 — HTTP Request Routing](architecture/06-http-routing.md) — routing HTTP requests to slices, cross-node forwarding, retries
 - [07 — Observability](architecture/07-observability.md) — metrics pipeline, alerting, dynamic aspects, monitoring interfaces
 - [08 — Auto-Scaling](architecture/08-scaling.md) — the two-tier scaling system: reactive (decision tree) and predictive (TTM)
@@ -83,8 +83,8 @@ Deploy, monitor, and maintain Aether clusters.
 - [TLS Certificate Management](operators/tls-certificates.md) — certificate provisioning and rotation for inter-node TLS
 - [Docker Deployment](operators/docker-deployment.md) — container-based deployment
 - [Current Docker Setup](operators/current-docker-setup.md) — current container configuration
-- [Deployment Guide](guides/deploy-guide.md) — zero-downtime deployments (canary, blue-green, rolling)
-- [Rolling Cluster Upgrade](guides/rolling-upgrade.md) — zero-downtime cluster upgrades via the rolling upgrade script
+- [Deployment Guide](guides/deploy-guide.md) — canary, blue-green and rolling slice deployments (per-operation guarantees: [Guarantees](reference/guarantees.md))
+- [Rolling Cluster Upgrade](guides/rolling-upgrade.md) — rolling cluster upgrades via the upgrade script (mixed node-binary versions are not supported; see [Known Limitations](reference/known-limitations.md))
 - [Deployment Recovery](operators/deployment-recovery.md) — recovering from failed or interrupted deployments
 - [Multi-Cluster Deployment](operators/multi-cluster-deployment.md) — running and coordinating multiple clusters
 - [VM Snapshot](operators/vm-snapshot.md) — snapshot-based VM provisioning
@@ -124,7 +124,7 @@ For a system design overview, see [Architecture](#architecture) above — the fo
 
 ## Specs
 
-Design and implementation specifications for Aether subsystems — active, archived, and designed-only. See the [specs index](specs/README.md) for the full breakdown, including [archive/](specs/archive/) (superseded designs) and [future/](specs/future/) (designed-only, not in RC1).
+Design and implementation specifications for Aether subsystems — active, archived, and designed-only. See the [specs index](specs/README.md) for the full breakdown, including [archive/](specs/archive/) (superseded designs) and [future/](specs/future/) (designed-only, not yet implemented).
 
 ## Articles
 
