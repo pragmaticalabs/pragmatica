@@ -200,11 +200,16 @@ public interface SliceCodec extends Serializer, Deserializer {
     }
 
     // --- String helpers ---
+    /// The JDK's UTF-8 encoder is vectorized; measured about 2x faster than a `ByteBufUtil.utf8Bytes` length
+    /// pass followed by `ByteBufUtil.writeUtf8`. The bytes equal Netty's for all well-formed text. They differ
+    /// only after an unpaired high surrogate followed by a non-ASCII char other than its low surrogate: Netty
+    /// 4.2.9 writes `?` and then just the low byte of that next char (invalid UTF-8, and a following pair is
+    /// destroyed); the JDK writes `?` and encodes the next char correctly. [SliceCodecTest] pins both facts.
     static void writeString(ByteBuf buf, String value) {
-        int utf8Bytes = ByteBufUtil.utf8Bytes(value);
+        var bytes = value.getBytes(StandardCharsets.UTF_8);
 
-        writeCompact(buf, utf8Bytes);
-        ByteBufUtil.writeUtf8(buf, value);
+        writeCompact(buf, bytes.length);
+        buf.writeBytes(bytes);
     }
 
     static String readString(ByteBuf buf) {
