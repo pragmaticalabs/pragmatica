@@ -203,11 +203,8 @@ public interface ComputeProvider {
         return provision(spec.instanceType());
     }
 
-    /// REQ-C-06: Restart an instance (provider-specific: reboot, stop+start, or replace).
-    default Promise<Unit> restart(InstanceId instanceId) {
-        return terminate(instanceId).flatMap(_ -> provision(InstanceType.ON_DEMAND))
-                                    .map(_ -> Unit.unit());
-    }
+    /// REQ-C-06: (withdrawn, #1543) `restart(InstanceId)` was removed from `ComputeProvider`: a node is
+    /// replaced under a fresh NodeId, never restarted under its old one.
 
     /// REQ-C-07: Apply or update tags/labels on an existing instance.
     default Promise<Unit> applyTags(InstanceId instanceId, Map<String, String> tags) {
@@ -787,10 +784,13 @@ provider = "hetzner"
 
 [cloud.compute]
 # REQ-CF-02: Default instance size for provisioning.
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
+# The same applies to every `instance_size` below.
 instance_size = "cx22"
 # REQ-CF-03: OS image or snapshot ID for new instances.
 image = "ubuntu-24.04"
 # REQ-CF-04: Cloud region for provisioning.
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 # REQ-CF-05: User data script executed on instance boot.
 user_data = """
@@ -883,6 +883,7 @@ namespace = ""
 
 [cloud.secrets.aws]
 # REQ-CF-23: AWS Secrets Manager-specific configuration.
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-west-2"
 # Uses default AWS credential chain (env, instance profile, etc.)
 
@@ -909,6 +910,7 @@ load_balancer_type = "nlb"  # "alb" or "nlb"
 [cloud.gcp]
 # REQ-CF-26: GCP-specific configuration.
 project = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-central1-a"
 network = "default"
 subnetwork = "default"
@@ -918,6 +920,7 @@ service_account = "aether-node@my-project.iam.gserviceaccount.com"
 # REQ-CF-27: Azure-specific configuration.
 subscription_id = "..."
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "westus2"
 vnet_name = "aether-vnet"
 subnet_name = "aether-subnet"
@@ -1129,7 +1132,7 @@ Each cloud provider implementation fills in this template to document the mappin
 | provision(InstanceType) | | |
 | provision(ProvisionSpec) | | |
 | terminate(InstanceId) | | |
-| restart(InstanceId) | | |
+| ~~restart(InstanceId)~~ | | removed, #1543 |
 | listInstances() | | |
 | instanceStatus(InstanceId) | | |
 | applyTags(InstanceId, tags) | | |
@@ -1231,7 +1234,7 @@ Each cloud provider implementation fills in this template to document the mappin
 | provision(InstanceType) | POST /servers | **Implemented.** Maps to CreateServerRequest with config defaults. |
 | provision(ProvisionSpec) | POST /servers | Extend existing: use spec.instanceSize for server_type, spec.imageId for image. |
 | terminate(InstanceId) | DELETE /servers/{id} | **Implemented.** Server ID is numeric string. |
-| restart(InstanceId) | POST /servers/{id}/actions/reboot | New. Hetzner has native reboot action. |
+| ~~restart(InstanceId)~~ | POST /servers/{id}/actions/reboot | Removed (#1543): replace the node under a fresh NodeId instead. |
 | listInstances() | GET /servers | **Implemented.** Paginated; current impl fetches first page only. |
 | instanceStatus(InstanceId) | GET /servers/{id} | **Implemented.** |
 | applyTags(InstanceId, tags) | PUT /servers/{id} (labels field) | Hetzner uses `labels` map on server. |
@@ -1422,7 +1425,7 @@ These tests serve as the pattern for new provider test classes.
 
 | Task | Module | Effort |
 |------|--------|--------|
-| ComputeProvider: ProvisionSpec, restart, tags, pagination | environment/hetzner | 1 day |
+| ComputeProvider: ProvisionSpec, tags, pagination (restart withdrawn, #1543) | environment/hetzner | 1 day |
 | LoadBalancerProvider: create/delete/info, health check, drain | environment/hetzner | 2 days |
 | DiscoveryProvider: label_selector queries, poll watch | environment/hetzner | 2 days |
 

@@ -97,6 +97,13 @@ The slice processor validates:
 | `Option<Boolean>` | boolean | `getBoolean(key)` |
 | `Option<Double>` | float | `getDouble(key)` |
 
+`Option` here is optional in the **key**, not in the parse. The typed readers answer
+`Result<Option<T>>`: an absent key is `Success(None)` and the record's factory sees `Option.none()`;
+a key that is present but unparseable (`port = "80x"`, `enable_tls = "yes"`) is a failure naming
+the key, the value and the slice, which fails the section's `Result.all(...)` — at activation this
+is `Fatal.ConfigurationFailed`, and on a `@ConfigUpdate` re-parse the update is logged and not
+applied. Before #1098 such a value read as absent and the default applied silently.
+
 ### Collections
 
 | Java Type | TOML Type | Generated Code |

@@ -1,0 +1,444 @@
+# Hierarchical cluster contract
+
+Scope: normative target for runtime PR #1390; present-tense requirements do not assert that
+`release-1.0.0-rc4` implements them. Baseline observations are explicitly labelled below.
+
+Status: implementation in progress; no scale certification implied.
+Baseline: `release-1.0.0-rc4`, `ccba0dba5` (2026-09-19).
+
+## 1. Purpose and authority
+
+This specification consolidates the hierarchy correctness review and the owner's subsequent
+design decisions. It governs the complete path from configured capacity through admission,
+community placement, governor authority, observation, recovery and shutdown. It supersedes
+worker-membership-spec D2's one-source restriction and historical assumptions that any worker
+may become a core. The companion metrics-distribution-spec governs observation exchange.
+
+Core and worker are immutable instance roles. A governor is an operation a worker performs, not a
+third instance role. Core sizes 5/7/9/11, roughly 100 workers per community and roughly 100
+communities are operating targets, not protocol constants or measured production limits.
+
+The specified operation remains dependent on core authority. Disconnected autonomous provisioning,
+delegated recovery budgets and regional consensus cells are explicitly outside this batch.
+Authorization boundaries must permit their later addition without redefining node identity,
+operation identity or resource fencing. Existing seasonal predictive supervision remains the
+separate cluster-supervision-spec; this batch supplies its topology and observation substrate.
+
+## 2. Invariants
+
+H01. Workers and unknown peers contribute zero votes or synchronization quorum evidence.
+[limit: crash-fault-configurations] This assumes crash-fault participants: a responder's voter
+configuration is one it applied from the log. Configurations carry identity lists, not Byzantine
+signatures; a fabricated configuration is outside this model.
+Workers may obtain state but never become voters through activation or a capacity deficit.
+
+H02. Applied consensus history is ordered and never applied twice, including after in-memory
+phase history eviction. Carry-forward phases do not imply missing application commands.
+An unexplained forward gap requires synchronization, not speculative application.
+
+H03. Desired core capacity, admitted core identity, live reachability and active voter
+configuration are different facts. Local health cannot independently change a committed
+quorum denominator. Voter changes require an agreed activation boundary and intersecting
+old/new quorums; changing an integer alone is not such a protocol.
+Provisioning and disruption guards intersect counted live membership with the installed voter roster;
+nonvoting CORE candidates cannot supply quorum evidence. Desired capacity remains the scaling
+target, including changes larger than one pair of cores. Missing installed authority fails closed.
+Operator drain and shutdown share the voter disruption budget, and concurrent operator requests
+must reserve that budget atomically. Worker removal does not consume the core voter budget.
+
+H04. A community has one committed authority owner and monotonically advancing generation.
+Local election proposes a candidate; committed acquisition authorizes effects. Stale owners
+cannot write through an equal-generation overwrite or act merely because their claim was
+submitted. Rejections must be visible to the submitting operation.
+
+H05. Node role, source and physical location are distinct from community assignment. A stable
+community can span sources and zones. Replica anti-affinity requires distinct eligible node
+identities; community zone coverage is a separate placement property. Single-zone configurations
+remain supported. No universal zone-count limit is introduced.
+
+[limit: replica-zone-diversity] Distinct replica nodes do not guarantee distinct physical zones.
+Zone diversity requires an explicit workload placement policy; community zone coverage alone
+does not provide that guarantee.
+
+H06. Replayed activation does not allocate duplicate schedulers, listeners or worker runtimes.
+A directive naming a different community is refused at commit (H11). Shutdown cancels all
+owned subscriptions and tasks. Initial membership is sampled; activation must not wait for a
+later unrelated SWIM edge.
+
+H07. Observation is not authorization. Any authenticated cluster member can exchange ping/pong
+observations independently of leadership. Authority-bearing piggybacks have their own sender,
+term and scope checks. Worker traffic cannot renew core reachability.
+
+H08. Missing, partial or old measurements are not zero load or fresh evidence. Receiving a
+forwarded sample cannot renew its original freshness. Raw samples and overlapping summaries
+are never summed twice. Only core nodes need the complete control metrics view.
+
+H09. Recovery and migration have durable identities, guarded transitions and bounded attempts.
+Timeouts do not prove provider failure or exclusive ownership. Destination readiness precedes
+source retirement; replica repair completes before retiring required copies.
+
+H10. Correctness traffic has bounded queues isolated from bulk telemetry and repair.
+[limit: transport-lane-isolation] Independent lanes do not provide scheduler priority or prove
+freedom from connection-wide QUIC flow-control starvation.
+Steady-state operation and failure recovery must both fit the supported resource envelope.
+
+H11. A node's community assignment is final for the identity's lifetime. The first committed
+non-empty `ActivationDirective` community of a NodeId is the only one it carries; a later write
+naming a different community for that NodeId is refused at commit. An identical rewrite is a no-op.
+[mechanism: an arm of the KV applier's committed-state fence (`KVStore.staleWrite`), a pure
+function of the committed and incoming values, so every replica refuses identically and a refused
+`LeaderTransaction` applies none of its mutations]. A writer's own compare-and-set (a directive
+mutation expecting absence) is not this guarantee: it binds only that writer's transaction, and a
+writer that reads the committed directive first passes it. The arm compares against the committed
+directive, so it holds only while the directive exists; the removal rule below is what extends it
+to the identity's lifetime.
+The directive is not removed while the identity can still appear. A DEAD verdict is an
+observation (H07): it triggers replacement and a release request to the node source, not removal
+of the directive, and is not the terminal fencing of §8. Removal is garbage collection, permitted
+only after the node source confirms the instance is terminated (#1842: the source owns release and
+termination, and its reconcile is the collection point). A falsely-DEAD node that returns while
+its instance exists therefore finds its assignment intact: it rejoins the same community, or the
+source terminates it if a release was already issued. It is not re-assigned. Moving capacity between
+communities is make-before-break replacement: provision in the target community, wait for READY,
+then drain and terminate the old node (§6). Dissolving or merging a community replaces its nodes; no node is relabelled.
+[limit: dead-edge-deletion] Until #1842 lands, every caller of
+`ClusterDeploymentState.handleNodeRemoval` removes the directive, in violation of this invariant: a
+worker DEAD edge (`MembershipDeltaProjector` emits `WorkerLeaveDecision`; `processWorkerLeave`), a
+core DEAD edge (`NodeRemoved`), `NodeDecommissioned`, a self-shutdown observation, and the
+restored-worker sweep (directives without a committed community only). Community placement
+retirement already removes it only after the provider reports the previous instance absent.
+
+H12. SWIM membership is scoped by role. A core retains SWIM state for cores and for each
+community's committed governor, approximately `K + G`; a worker retains it for cores and the
+members of its own committed community, approximately `K + M`. No node's retained membership, and
+no per-edge work done to maintain it, grows with the total worker count `N`. A worker's
+community scope follows its first committed assignment (H11). Cores challenge governors every
+ping interval; governor replacement waits the community-absence window (§8) and goes through the
+guarded successor claim and generation fence (§7). A community that stops answering is handled
+as §8 states, without declaring individual workers dead (resource envelope below).
+
+H13. Governor candidates are workers whose first committed assignment (H11) names the community;
+core-role nodes are not candidates (§1: a governor is an operation a worker performs). Candidate
+derivation chooses deterministically among the ALIVE peers of the community's SWIM view (§7:
+derive eligible local candidates); eligibility comes from the committed role and community, never
+from presence in that view, so a core the worker observes is not a candidate. The core's guarded
+claim acceptance (§7) independently refuses a claim whose owner is not a WORKER assigned
+to that community. [mechanism: the nominee's committed directive is a read witness of the claim's
+`LeaderTransaction`, so a directive changed before apply refuses the claim]
+
+## 3. Facts and owners
+
+| Fact | Owner | Readers and enforcement |
+|---|---|---|
+| Instance role and identity | Provision/admission boundary | Consensus eligibility, lifecycle, placement |
+| Source capability, location eligibility and quota | Cluster configuration | Capacity admission and provisioning |
+| Desired community placement | Core-authorized configuration operation | Community reconciler and management |
+| Actual node placement | Provisioning result plus authenticated admission | Reconciliation and diagnostics |
+| Community assignment | Core committed state, write-once per node (H11) | Worker runtime, SWIM scope (H12), governor membership, scoped projection |
+| Governor owner and generation | Committed guarded acquisition | Every governor-authorized effect |
+| Raw metric observation | Original producer | Core collectors; intermediaries preserve identity |
+| Summary | Named aggregation scope and interval | Consumers validate coverage and overlap |
+| Migration progress and reservations | One committed workflow | Failover successor and provider reconciliation |
+
+Each durable field must have a real producer and consumer. A model-only record with no live
+configuration/runtime path does not satisfy this specification.
+
+## 4. Core admission, synchronization and application
+
+Consensus eligibility is a named predicate supplied by the hierarchy adapter, checked on
+inbound protocol messages and synchronization quorum construction. An unknown sender fails
+closed. Snapshot availability and voting evidence are separate concepts. Observers cannot
+advertise themselves as LIVE voting responders. Broadcast audiences must distinguish voter
+protocol traffic from committed state delivery to observers.
+
+Consensus application keeps an applied progress boundary independent of garbage-collected
+phase objects. Delayed decisions below progress are ignored. [limit: ahead-decision-buffer]
+Unchanged from rc4, ahead decisions are buffered up to 256 entries per engine; overflow evicts the oldest buffered
+entry and requests authoritative synchronization rather than applying across the gap. Replay uses
+the same checks. Snapshot installation
+establishes the new boundary before replay. Observer activation follows the same installation
+barrier as voting activation. Paused/synchronizing modes must not lose accepted buffered work.
+
+Changing target core count must not promote a worker, demote a core, or independently change
+quorum rules according to each node's locally healthy count. Any existing dynamic membership
+path must be reconciled against H03 before being described as supported.
+
+## 5. Community placement and sources
+
+Community identity is stable and independent of source/zone names. A placement policy names
+eligible source/location combinations, required minimum coverage, preferred distribution and
+target capacity. Observed allocations are separate. Preferences may yield to unavailable
+capacity only within explicit hard constraints; residency and quota are never implicit soft
+preferences. Empty optional topology means the existing single-zone deployment, not an error.
+
+Several communities may use one source; one community may use several sources. Source-level
+quotas are shared reservations, not multiplied by community count. Source fallback resolves
+prior ambiguous provisioning attempts before issuing replacement requests elsewhere.
+Definitive no-create refusals may redistribute discretionary capacity through persisted
+location availability; hard minima remain obligations. Effective targets and bounded recovery
+probes follow the community placement runtime specification.
+
+Configuration must travel through parse/validation, committed desired state, source selection,
+provision request, returned physical placement, assignment and operator-visible reconciliation.
+Unknown source/zone combinations fail at configuration entry. Actual provider placement must
+be recorded; requested location must not be reported as observed location without evidence.
+
+## 6. Migration process
+
+Trigger: committed placement revision differs from actual allocation.
+Input: revision, stable community ID, current assignments, eligible sources, reservations,
+replica requirements and observed ready capacity.
+Output: converged allocation with old resources retired, or a named blocked/failure state
+that preserves the last safe allocation and remaining commitments.
+
+States: Planned -> CapacityReserved -> Provisioning -> CatchingUp -> Shifting -> Draining ->
+Complete. WaitingForCapacity and ReconcilingUncertainEffect retain the operation and reservations.
+Every effect uses a stable operation/attempt identity. Leadership change resumes from committed
+progress and reconciles provider observations before issuing effects. A placement revision
+superseding an in-flight migration reconciles existing effects rather than forgetting them.
+
+No fixed maximum number of zones is imposed. Admission instead checks placement constraints,
+temporary capacity, disruption allowance and repair feasibility. Cross-region movement must
+respect residency and make the WAN/repair costs observable. Rollback is permitted only while
+the source remains safe; after destructive retirement use forward recovery.
+
+Source-count reductions in the implicit single-source mode use the same durable retirement
+workflow. They may not delete surplus workers directly or treat a timeout as quiescence. A
+retirement requires a committed worker assignment, source facts and unchanged configuration intent;
+it excludes the victim from new placement, evacuates its workloads and waits for its matching
+drain acknowledgement before source-bound termination. Missing authority or assignment refuses
+the action and emits a bounded system event. Operations continue reconciling even when no explicit
+placement policy exists; only one retirement per community is admitted at a time.
+
+## 7. Governor authority and lifecycle
+
+Read committed incumbent; derive eligible local candidates; request a guarded successor claim;
+activate only on accepted committed ownership. Two equal-generation different-owner claims
+cannot both succeed. A new process reads the existing generation rather than restarting at 1.
+An incumbent is sticky only while still authoritative and eligible, not merely locally alive.
+
+Announcement refreshes are owner-fenced updates, not fresh acquisitions. Reordered completions
+cannot regress local knowledge. Lost authority stops owned mutations and clears local governor
+activation. Every affected resource enforces community identity, owner and generation at its
+write boundary; a metadata-only fence is insufficient.
+
+Activation owns one runtime handle containing all subscriptions and scheduled tasks. The handle
+is reused for an identical directive and released with orderly cancellation at shutdown. A
+directive for another community is refused at commit (H11), so no handle is swapped.
+Committed authority is consulted for effects, while observations can continue without authority.
+
+## 8. Isolation and reconnection
+
+Current policy retains core-dependent mutation. No autonomous scale-up, replacement or new
+ownership is inferred from a cached allocation. Document the exact existing work/drain behavior
+at execution and storage boundaries; distinguish receiving requests from completing in-flight
+work and from shared durable writes.
+
+Core absence uses identified-core evidence. Assigned workers without accepted governor history are
+immediately unavailable for placement. Installed cores challenge governors every ping interval
+(default 1 second); governor replacement requires the separate community-absence window (default
+20 seconds). Leadership-age grace applies only to unassigned nodes. Fresh observations may
+restore availability but cannot undo terminal fencing or revive an evicted instance identity.
+On reconnection reconcile current authority and assignment before accepting new work.
+
+The inequality core_absence < community_absence is an operational margin, not an exclusive
+ownership proof. Asymmetric loss, scheduling pauses and delayed packets must be covered by
+effect fencing and tested explicitly.
+
+## 9. Metrics and bounded information flow
+
+Ping/pong remains leader independent. Separate observation acceptance from authority-bearing
+piggyback processing. All cores receive sufficient control information for leader failover;
+workers need their local/community information, not a full global history. A partial ping must
+not erase a collector's entire peer roster. Higher sender terms alone confer no authority.
+
+The companion specification defines producer identity, sequence, intervals, quality, summary
+coverage, counter reset, histogram aggregation, core recipients and payload bounds. Long-term
+forecast history uses durable rollups rather than expanding the hot in-memory window.
+
+Scoped metadata delivery must have snapshot/subscribe ordering, sequence progress and gap repair.
+Core failover and worker reconnection must not cause an unbounded full-snapshot herd. Worker membership and control connections must be bounded by community/control needs, not
+global worker count. Application dependency endpoints are a separate catalog: a dependency
+with instances throughout the cluster can require a larger catalog and more connections.
+Enforce explicit metadata byte limits and report an unavailable projection when exceeded;
+do not claim a constant total connection bound for arbitrary application graphs.
+
+## 10. Verification and scale claims
+
+The acceptance matrix must drive the live production path, not only invoke consumer methods:
+
+| ID | Scenario | Required observation |
+|---|---|---|
+| H-T01 | Workers outnumber cores during cold synchronization | No worker quorum contribution |
+| H-T02 | Duplicate decision after phase eviction; reordered decisions and carry-forward gap | No duplicate/out-of-order application; convergence |
+| H-T03 | Worker joins below core target; core joins above target | Roles unchanged |
+| H-T04 | Two governor candidates, restart, delayed refresh, partition/heal | One accepted authority; stale effects rejected |
+| H-T05 | Repeated activation; a directive naming another community | One active runtime; the other community refused at commit, directive unchanged |
+| H-T06 | New leader has no governor history for an isolated community | Assigned workers immediately unavailable; recovery waits the community-absence window |
+| H-T07 | Worker and follower pings with lower/higher terms | Pong returned; no unauthorized control effects |
+| H-T08 | Repeated/forwarded metrics and overlapping summaries | No freshness renewal or double counting |
+| H-T09 | Multi-source, multi-zone policy and unavailable preferred capacity | Hard constraints preserved; deterministic fallback |
+| H-T10 | Migration interrupted at every state | Resume without duplicate provisioning or premature retirement |
+| H-T11 | One-region outage, asymmetric loss, mass reconnect | Bounded queues, fenced effects, continuing control responsiveness |
+| H-T12 | 10K logical nodes plus real increasing-size clusters | Report CPU, memory, bytes, convergence and recovery bounds |
+| H-T13 | Worker join wave of `N` with fixed `K`, `G` and `M` | Retained SWIM membership and per-edge work on every node independent of `N` |
+| H-T14 | A falsely-DEAD worker re-admitted under the same NodeId | Directive survives the DEAD edge; the worker keeps its original community |
+| H-T15 | Worker SWIM view holds cores with lower ids; a core-role node submits a governor claim | Only community workers are nominated; the core refuses the core-role claim |
+
+Synthetic topology tests establish algorithmic bounds only. In-JVM tests establish wiring and
+failure behavior, not WAN throughput. Real cluster measurements state node counts, workload
+cardinality, hardware, network, warm-up, failure injection and percentile durations. Never
+convert a 100x100 layout into a benchmark claim. Existing #591 results are not active-worker
+coordination evidence. No paid cloud resources are required or authorized by this specification.
+
+## 11. PR sequence and reconciliation
+
+All PRs target `release-1.0.0-rc4`, remain unmerged for independent review, and declare dependencies.
+Dependent branches contain their prerequisites and identify the incremental commits explicitly.
+
+1. Contract/specification and acceptance plan.
+2. Additive canonical serialization and guarded KV mutation primitives, independently validated
+   against the otherwise unchanged rc4 node and CLI callers.
+3. Integrated hierarchy runtime: consensus and voter reconfiguration, role admission, community authority,
+   worker execution, metrics, scoped metadata and source placement/movement, with runtime tests.
+
+The integrated runtime changes have mutual wire, persistence and assembly dependencies. They are
+reviewed as one cohesive layer so intermediate commits do not run new protocol messages against
+old node wiring. The [implementation plan](hierarchical-cluster-implementation-plan.md) explains
+these boundaries and records incremental validation. Each code layer needs JBCT review and relevant
+module tests; the integrated batch additionally needs the repository build gate, Forge smoke and
+targeted hierarchy/recovery probes. Use isolated Maven repositories.
+
+Reconciliation records each requirement as DONE, MISSING, STUB, SHORTCUT, OMISSION or
+SIMPLIFICATION with implementation and executed evidence. Implementation is complete only when
+no required behavior remains in the latter five categories. Explicit future disconnected
+autonomy is outside scope, not an implementation shortcut. This document's initial status is
+not a claim that any requirement is already verified.
+
+## Additional integration requirements
+
+- `cluster.genesis_voters` is optional and, when present, carries the genesis voter identities
+  independently of discovery addresses, current membership health and desired capacity; a blank id
+  fails boot. Genesis forms by view agreement: views of authenticated cores grow by union, and epoch 0
+  starts only when the view has exactly the configured count and every member reported it in two
+  consecutive rounds; a late core never aborts assembly, and more visible candidates than configured
+  make the node wait with a WARN rather than choose. Replacements carry no `cluster.genesis_voters`: they join the formed
+  electorate through a Rabia §4 add command, and each command agreed at slot R governs from R+1
+  ([voter-configuration-handoff-spec.md](voter-configuration-handoff-spec.md), #1526). A whole-cluster
+  cold restart forms a fresh genesis and restores backup data under it.
+- Consensus state is in memory; there is no local consensus journal and no
+  `cluster.consensus_path` (owner ruling, session 28). A restarted process carries a new random
+  boot token and is refused under its old NodeId; recovery is a fresh node identity.
+- An installed successor roster is not permission to terminate its predecessors. Retirement
+  additionally requires that no reconfiguration is pending and that every member the last change
+  added has been observed voting past that change's slot R.
+- Node READY proves node readiness, not workload replacement. Planned retirement first removes
+  the old node from allocation eligibility, keeps its instances until the required replacements
+  are ACTIVE, and waits for its workload entries to be removed before closing node admission.
+  Drain completion is acknowledged only after quiescence and successful departure transfer,
+  then committed by the current leader before the worker receives `DrainAccepted`.
+  HTTP and QUIC execution accounting outlives caller timeout or cancellation. A terminal reply
+  must be enqueued before its admission is released; timeout replies do not release unfinished
+  execution. This ordering does not promise network delivery after transport or peer failure.
+- With explicit communities configured, community target sizes are the worker capacity intent.
+  Legacy per-source worker count reconciliation must not recreate a location that a community
+  has left. Core count remains a separate aggregate capacity intent; the existing reactive
+  slice-instance controller continues operating.
+
+
+## Boundary and implementation contracts
+
+Domain APIs and retained durations use Core `TimeSpan`; injectable monotonic clocks use Core
+`TimeSource`. Monotonic clock readings and wire
+representations may use numeric units at their adapters; convert immediately when representing
+an age, timeout, freshness interval or duration. Renaming a raw value to remove `Ms` or `Nanos`
+does not satisfy this rule. Use names describing purpose and domain, without `DTO` suffixes.
+New fallible behavior uses `Result` or `Promise`; throwing libraries are accessed through their
+`lift` boundaries. Infallible mutations return `Unit` unless a framework callback requires void.
+
+Transport authentication and payload identity are separate checks. Authority-bearing direct
+messages must bind their claimed sender to the authenticated transport peer before routing.
+Any relay exception must name the permitted message category, trusted relay audience and
+original-evidence validation; it must not allow a worker to impersonate a core by changing a
+payload field. This is a crash-fault consensus design, not Byzantine consensus. It does not
+establish a general certificate infrastructure binding provisioned roles to identities.
+
+A configured core discovery seed can provide state-transfer history without acquiring voting
+authority. Voter admission requires verified electorate history or trusted committed provisioning
+intent. Inventory labels and a peer's claimed CORE role alone cannot create that intent.
+Separating transfer trust from voter eligibility permits replacement after the original genesis
+members have retired without promoting arbitrary discovery peers into the electorate.
+A fresh worker uses configured CORE discovery seeds for its initial routing directory, then
+replaces that directory with the verified projection. These bootstrap identities never become
+voters by this mechanism. A disconnected worker cannot discover an entirely disjoint replacement
+core roster from its obsolete directory alone: recovery requires reachable known cores or updated
+administrative/provider discovery seeds and a restart. Seedless recovery across complete roster
+replacement is not provided by this batch.
+
+A worker installs a verified, complete metadata projection atomically. Its membership directory
+contains relevant core and community peers; application endpoints do not enlarge this directory.
+Readiness and new invocation admission require a fresh projection, even when core ping/pong
+continues. Expiry prevents new work while preserving accounting for already admitted calls.
+A later fresh projection cannot reopen a drain-closed invocation gate.
+
+Workers forward global management reads to a core. Local membership and ownership diagnostics
+include `completeClusterView=false` so that their scoped data cannot be mistaken for the full
+cluster. A forwarded global read received by another worker fails explicitly instead of returning
+partial results or entering a forwarding loop.
+
+## Resource envelope to measure
+
+Let `N` be workers, `K` cores, `G` communities, `M` the largest community, and `B` the
+encoded bytes per producer observation. With two selected core uplinks and a possible additional
+leader connection, worker control connections are at most approximately `3N` cluster-wide, plus
+core mesh and governor/community links. This is a cluster-wide bound, not three connections per
+core: at 10,000 workers, each core can still terminate thousands of connections. Changing the
+leader can temporarily increase reconnect traffic. Application endpoint connections are additional.
+[limit: core-dht-connections] After #1390, worker DHT clients also connect to every verified core replica peer: these data connections
+can require `N * K` links and `N` worker connections per core. The two-uplink policy bounds control
+probe audiences; it does not cap total worker-to-core connections or core-hosted storage demand.
+
+Core SWIM membership is approximately `K + G`; worker membership is approximately `K + M` (H12).
+A governor processes its own community's direct health observations and answers fenced core
+challenges. Ordinary workers do not relay global peer metrics. These bounds reduce observation
+fan-out without substituting silence for proof of an individual worker's death.
+
+Complete metrics on every core still require at least order `K * N * B` delivered observation
+bytes per collection interval, regardless of batching. Batch limits bound individual messages,
+not total throughput. History retention adds its configured point count times producer and metric
+cardinality. Measure encoded payload bytes, allocation rate and collection/forwarding CPU alongside
+message counts; a fixed sample count alone is not a memory limit.
+
+[limit: metadata-and-endpoint-cardinality] Metadata caches, per-worker projection size, manifest lifetime and serving bandwidth have explicit
+limits. Large shared catalogs and endpoint fan-out can exhaust those limits even when membership
+is small. Reconnect tests must measure cache churn, rebuild cost, time until a fresh projection and
+consensus latency while workers recover. Oversize projection rejection is a visible availability
+failure, not permission to fall back to an unbounded full snapshot.
+
+[unverified: 10k-wan-throughput] The 100-by-100 hierarchy is a deployment target. It is not evidence that one core group can sustain
+all workloads at that size, or that a wide-area core quorum has local-area latency. Core consensus
+latency, durable journal writes, governor turnover, metric cardinality, endpoint cardinality and
+cross-region repair bandwidth each impose independent limits. Physical multi-region measurements
+remain necessary before publishing a supported production envelope.
+
+[limit: durable-checkpoint-pauses] The #1390 durable Rabia path forces proposal, first-round vote, second-round vote and decision
+records for a normal decided batch. Retried rounds add evidence writes. The journal checkpoints
+after 4,096 appended records or 32 MiB, encoding a canonical full-state image on the consensus
+actor. A checkpoint temporary file is forced, atomically renamed, and its containing directory
+is forced before the covered WAL prefix is replaced; atomic rename alone is not power-loss durability.
+Large control-state images can therefore introduce checkpoint pauses. Local small-state
+write measurements do not establish the latency or throughput of a 10K-worker deployment;
+measure checkpoint size, serialization time, force latency and proposal queue delay under the
+intended state cardinality and storage hardware.
+
+[limit: core-snapshot-frame] Core catch-up, including an added voter's, transfers whole encoded sync
+responses under a 32 MiB transport frame limit. The usable application snapshot is smaller: framing
+and the carried voter configuration consume the same envelope. A reconfiguration that adds members is
+refused with `STATE_TRANSFER_TOO_LARGE` when the current state cannot be encoded in one sync response.
+Uncommitted pending requests may be omitted from recovery hints without being acknowledged; callers
+retain their ordinary retry obligations. Chunked core snapshot transfer is future work. Bounded worker
+metadata chunks do not remove this core limit.
+
+A Rabia §4 reconfiguration has no write-unavailability window: slot R is an ordinary slot, and from
+R+1 the new roster decides as soon as a majority of it — which the retained voters already are — is
+live (#1526). [mechanism: an admitted change retains a majority of the target roster]

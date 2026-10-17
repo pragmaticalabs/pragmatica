@@ -158,7 +158,7 @@ an unsafe deployment live in [`SECURITY.md`](../../../SECURITY.md) at the repo r
 covers only the architecture, not the operational posture.
 
 ```
-GET /api/nodes/status
+GET /api/v1/nodes/status
 X-Api-Key: <key>
 ```
 

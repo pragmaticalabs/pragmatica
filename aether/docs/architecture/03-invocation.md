@@ -153,7 +153,7 @@ v1 weight: 3, v2 weight: 1
 → 75% of requests go to v1, 25% to v2
 ```
 
-Weights are adjusted via `aether deploy promote <id>` (or the `/api/deploy/{id}/promote` endpoint).
+Weights are adjusted via `aether deploy promote <id>` (or the `/api/v1/deploy/promote/{id}` endpoint).
 
 ## DynamicAspectInterceptor
 
@@ -166,7 +166,7 @@ Runtime-configurable per-method instrumentation:
 | `LOG_AND_METRICS` | Both |
 | `NONE` | No interception |
 
-Toggled at runtime via REST API (`/api/aspects`) without redeployment. Configuration persisted in KV-Store via `AspectConfigKey`.
+Toggled at runtime via REST API (`/api/v1/observability/depth`, `/api/v1/observability/config`) without redeployment. Configuration persisted in KV-Store via `AspectConfigKey`.
 
 ## Generated Proxies
 

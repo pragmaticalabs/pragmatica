@@ -111,9 +111,8 @@ private String httpGet(int port, String path) {
 }
 ```
 
-Common management paths (all under `/api/`, prefix required): `/api/health`, `/api/nodes/status`,
-`/api/metrics`, `/api/blueprints/{id}` (GET/POST/DELETE for deploy/scale/undeploy), `/api/deploy`
-and `/api/deploy/{id}/{promote,complete,rollback}` for staged deployments. Read the actual route
+Management routes are versioned under `/api/v1/` (e.g. `/api/v1/health`, `/api/v1/nodes/status`); the
+unauthenticated probes `/health/live` and `/health/ready` are unversioned. Read the actual route
 definitions under `aether/node/.../api/routes/` or `aether/forge/forge-api/.../api/` rather than
 trusting a doc snapshot of the full path list — these evolve.
 
@@ -129,7 +128,7 @@ ls aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/*Test.java
 ```
 
 Two JUnit tags partition the suite: `@Tag("Smoke")` (fast, run by default via `./forge.sh`) and
-`@Tag("Heavy")` (slower probes, excluded from the default CI run).
+`@Tag("Heavy")` (slower probes, excluded from the per-PR CI run and run separately; see [CI](#ci)).
 
 ## Test Categories
 
@@ -145,7 +144,7 @@ void threeNodeCluster_formsQuorum_andElectsLeader() {
 @Test
 void cluster_nodesVisibleToAllMembers() {
     for (var node : cluster.status().nodes()) {
-        var health = httpGet(node.mgmtPort(), "/api/health");
+        var health = httpGet(node.mgmtPort(), "/api/v1/health");
         assertThat(health).contains("\"connectedPeers\":2").contains("\"nodeCount\":3");
     }
 }
@@ -183,7 +182,7 @@ Deployment goes through the blueprint HTTP API on the leader's management port �
 @Test
 void cluster_deploysSlice_acrossNodes() {
     var leaderPort = cluster.getLeaderManagementPort().or(cluster.status().nodes().getFirst().mgmtPort());
-    // POST /api/blueprints/{id} with the blueprint body, then poll /api/nodes/status
+    // POST /api/v1/blueprints with the blueprint body, then poll /api/v1/nodes/status
     // for SliceState.ACTIVE across the target instance count — see SliceDeploymentTest.java
     // for the full request/response shapes and polling pattern.
 }
@@ -214,9 +213,11 @@ set) out of the reactor — don't widen that scope without reading `forge.sh`'s 
 
 ### CI
 
-Forge runs in CI as the `ci` mode above (everything except `@Tag("Heavy")`); check
-`.github/workflows/` for the current trigger conditions rather than assuming a specific branch
-rule, which is a CI-config detail this doc shouldn't duplicate.
+Forge runs in CI as the `ci` mode above (everything except `@Tag("Heavy")`). The Heavy probes run
+in a separate, non-required workflow (`heavy-forge.yml`, selecting them with `-Dgroups=Heavy`),
+which does not run on every pull request. Check `.github/workflows/` for the current trigger
+conditions rather than assuming a specific branch rule, which is a CI-config detail this doc
+shouldn't duplicate.
 
 ## Best Practices
 

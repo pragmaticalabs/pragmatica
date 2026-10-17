@@ -507,8 +507,8 @@ Five metric cards in a horizontal strip. Each card contains:
 | Card | Value Source | Sparkline Data |
 |------|-------------|----------------|
 | Requests/sec | `aggregates.rps` | Last 60 RPS values |
-| Latency P50 | `metrics.comprehensive.latencyP50` | Last 60 P50 values |
-| Latency P99 | `metrics.comprehensive.latencyP99` | Last 60 P99 values |
+| Latency P50 | `metrics.comprehensive.intervalMeanLatencyP50` | Last 60 P50 values |
+| Latency P99 | `metrics.comprehensive.intervalMeanLatencyP99` | Last 60 P99 values |
 | Success Rate | `aggregates.successRate` (as %) | Last 60 success rate values |
 | Node Count | `cluster.nodeCount` | Last 60 node counts |
 
@@ -1515,7 +1515,7 @@ Phases 2, 3, and 4 can be partially parallelized after Phase 1 is complete.
 
 ### Technical Documentation
 
-- [Aether Management API Reference](/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/docs/reference/management-api.md) -- Comprehensive REST + WebSocket endpoint documentation
+- [Aether Management API Reference](../reference/management-api.md) -- Comprehensive REST + WebSocket endpoint documentation
 - [Alpine.js Documentation](https://alpinejs.dev/) -- Reactive framework documentation
 - [uPlot GitHub](https://github.com/leeoniya/uPlot) -- Time series charting library
 - [d3-force Documentation](https://d3js.org/d3-force) -- Force-directed graph layout module
@@ -1523,17 +1523,17 @@ Phases 2, 3, and 4 can be partially parallelized after Phase 1 is complete.
 
 ### Internal References
 
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/dashboard/src/main/resources/dashboard/` -- Current dashboard source (index.html, dashboard.js, style.css)
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/forge/forge-core/src/main/resources/static/` -- Forge dashboard source (index.html, dashboard.js, style.css)
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/DashboardWebSocketHandler.java` -- WebSocket handler for /ws/dashboard
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/DashboardMetricsPublisher.java` -- Metrics aggregation and broadcasting
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/StatusWebSocketHandler.java` -- WebSocket handler for /ws/status
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/EventWebSocketHandler.java` -- WebSocket handler for /ws/events (delta mode)
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/EventWebSocketPublisher.java` -- Delta event broadcasting
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/StatusWebSocketPublisher.java` -- Periodic status broadcasting
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/ManagementServer.java` -- HTTP server setup with all 3 WebSocket endpoints
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/node/src/main/java/org/pragmatica/aether/api/routes/DashboardRoutes.java` -- Static file serving for dashboard
-- `/Users/sergiyyevtushenko/IdeaProjects/pragmatica/aether/forge/forge-core/src/main/java/org/pragmatica/aether/forge/ForgeServer.java` -- Forge server with WebSocket setup
+- `aether/dashboard/src/main/resources/dashboard/` -- Current dashboard source (index.html, dashboard.js, style.css)
+- `aether/forge/forge-core/src/main/resources/static/` -- Forge dashboard source (index.html, dashboard.js, style.css)
+- `aether/node/src/main/java/org/pragmatica/aether/api/DashboardWebSocketHandler.java` -- WebSocket handler for /ws/dashboard
+- `aether/node/src/main/java/org/pragmatica/aether/api/DashboardMetricsPublisher.java` -- Metrics aggregation and broadcasting
+- `aether/node/src/main/java/org/pragmatica/aether/api/StatusWebSocketHandler.java` -- WebSocket handler for /ws/status
+- `aether/node/src/main/java/org/pragmatica/aether/api/EventWebSocketHandler.java` -- WebSocket handler for /ws/events (delta mode)
+- `aether/node/src/main/java/org/pragmatica/aether/api/EventWebSocketPublisher.java` -- Delta event broadcasting
+- `aether/node/src/main/java/org/pragmatica/aether/api/StatusWebSocketPublisher.java` -- Periodic status broadcasting
+- `aether/node/src/main/java/org/pragmatica/aether/api/ManagementServer.java` -- HTTP server setup with all 3 WebSocket endpoints
+- `aether/node/src/main/java/org/pragmatica/aether/api/routes/DashboardRoutes.java` -- Static file serving for dashboard
+- `aether/forge/forge-core/src/main/java/org/pragmatica/aether/forge/ForgeServer.java` -- Forge server with WebSocket setup
 
 ### Bundle Size Analysis
 
@@ -1562,7 +1562,7 @@ Extracted from `DashboardWebSocketHandler.java` and `DashboardMetricsPublisher.j
 | Endpoint | Layer | Usage |
 |----------|-------|-------|
 | `GET /api/status` | 1 (fallback) | Polling fallback for /ws/status |
-| `GET /api/health` | 1 | Health banner data |
+| `GET /api/v1/health` | 1 | Health banner data |
 | `GET /api/events` | 1 (initial) | Initial event history on page load |
 | `GET /api/events?since=` | 1 (fallback) | Polling fallback for /ws/events |
 | `GET /api/node-metrics` | 1 | Per-node CPU/heap |
@@ -1588,7 +1588,7 @@ Extracted from `DashboardWebSocketHandler.java` and `DashboardMetricsPublisher.j
 | `POST /api/scale` | 2 | Manual scaling |
 | `GET /api/alerts/active` | 2 | Active alerts |
 | `GET /api/alerts/history` | 2 | Alert history |
-| `POST /api/alerts/clear` | 2 | Clear active alerts |
+| ~~`POST /api/alerts/clear`~~ | — | **Removed (#957).** Was already a no-op: threshold alerts re-derive within a tick and injected alerts were re-read from the cluster event log on the next poll |
 | `GET /api/thresholds` | 2 | Alert thresholds |
 | `POST /api/thresholds` | 2 | Set/update threshold |
 | `DELETE /api/thresholds/{metric}` | 2 | Delete threshold |

@@ -13,7 +13,7 @@ component is assumed normal (deposed owners *exist*; the epoch fence makes their
 rejectable rather than impossible).
 
 **Exception (Allspaw's caveat, ours by design):** acked-data durability is prevention-class.
-The `min-sync-replicas` floor is an invariant, never a recovery target — recovery may restore
+The `confirmation_factor` floor is an invariant, never a recovery target — recovery may restore
 *service* in seconds, but it must never be the mechanism that makes acked data "mostly" survive.
 
 ## P2 — Recovery budgets per failure mode; no aggregate MTTR
@@ -21,8 +21,8 @@ The `min-sync-replicas` floor is an invariant, never a recovery target — recov
 The VOID data (10k+ incidents) shows incident durations are heavily skewed: **means of TTR
 describe nothing**, and duration does not correlate with severity. Therefore:
 
-- Aether publishes **per-failure-mode recovery budgets** (e.g. self-drain ≤ 45 s, cluster
-  recovery ≤ 60 s, owner failover catch-up ≤ 20 s bounded-wait) — asserted per scenario in the
+- Aether publishes **per-failure-mode recovery budgets** (e.g. self-drain ≤ 45 s, harness
+  restart of the same five containers ≤ 60 s, owner failover catch-up ≤ 20 s bounded-wait) — asserted per scenario in the
   chaos suite, documented per scenario for operators.
 - Aether **does not ship an MTTR gauge** — on the dashboard, in the management API, anywhere.
   An aggregate recovery metric is noise presented as signal (cf. #303's fabricated percentiles:
@@ -57,7 +57,7 @@ a rising gap-event trend is the cheapest leading indicator Aether can offer.
 A metric that doesn't match user experience is worse than none (Google CRE; #303 is our own
 instance). Aether's availability story:
 
-- **SLIs defined from the caller's seat**: publish-acked-within-X at declared min-sync,
+- **SLIs defined from the caller's seat**: publish-acked-within-X at declared `confirmation_factor`,
   read-served-through-failover, entity dispatch success under churn — quantifying the
   guarantees.md rows, not inventing parallel truths.
 - **Measured by black-box probes**: synthetic publish→consume on a canary topic, exercised
@@ -77,4 +77,4 @@ The chaos suite is the system half of GameDay and gates merges. The human half �
 operator, from the runbooks and surfaces alone, diagnose and act? — must be exercised
 deliberately before GA: an operator-in-the-loop GameDay against the published ops docs,
 whose findings fix docs and surfaces alike. Validation gates on risky mechanisms (lease
-clock-skew suite, replicas=3 union-catch-up scenario) are the same principle applied forward.
+clock-skew suite, `replication_factor = 3` union-catch-up scenario) are the same principle applied forward.

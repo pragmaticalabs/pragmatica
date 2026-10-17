@@ -169,12 +169,12 @@ All tenants are independent in:
 Before starting the batch:
 - Cluster healthy (5 core nodes, leader elected, quorum).
 - ClusterGenerationSnapshot quiesced.
-- No prior-run blueprints remaining (`aether blueprint list` returns empty).
+- No prior-run blueprints remaining (`aether blueprints list` returns empty).
 
 ### 5.4 Post-batch invariants
 
 After the batch completes (pass or fail):
-- All batch blueprints present in `aether blueprint list`.
+- All batch blueprints present in `aether blueprints list`.
 - Cluster still healthy (no node churn, no OOM crash).
 - Epoch advanced by bounded amount (no runaway reprojection loop).
 - No stray process left behind (all test PIDs collected).
@@ -312,7 +312,7 @@ A dedicated validation test — `run-tests.sh --parallel --validate-isolation` �
 - No two tests sent a request to the same path prefix.
 - Each test's API key authenticated only against its own endpoints.
 - No task-group IDs collided in the topology.
-- `aether blueprint list` final state matches the expected set.
+- `aether blueprints list` final state matches the expected set.
 
 A second test — `--negative-isolation` — deliberately configures two tests to share a prefix and asserts the batch runner rejects deployment.
 

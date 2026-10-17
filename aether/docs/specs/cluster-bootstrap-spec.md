@@ -169,7 +169,7 @@ include = ["path/to/fragment.toml", ...]
 | Field     | Type   | Required | Constraints                                   | Default |
 |-----------|--------|----------|-----------------------------------------------|---------|
 | `name`    | string | Yes      | Lowercase, hyphens only, max 63 chars, must start with letter, must match `^[a-z][a-z0-9-]{0,62}$` | -- |
-| `version` | string | Yes      | Valid semver (X.Y.Z)                          | --      |
+| `version` | string | Yes      | Valid semver 2.0.0 (`MAJOR.MINOR.PATCH`, optional `-pre-release`/`+build`) | -- |
 
 ### 3.3 `[cluster.core]` -- Core Node Topology
 
@@ -265,7 +265,7 @@ Variable resolution is **two-phase**. The CLI produces two artifacts stored in t
 
 **REQ-4.2.6**: `config_hash` (§13 resume state) is computed from the config template, ensuring that environment changes (different API token value) do not invalidate resume, while structural changes (different field or placeholder reference) do.
 
-**REQ-4.2.7** (cloud credential propagation): For sources of `type = "cloud"`, the CLI-resolved value of `credentials` MUST be written into each node's per-node TOML overlay under `[cloud.credentials].api_token` so the consensus leader can authenticate with the cloud provider when auto-provisioning nodes during runtime `/api/cluster/scale` operations. The literal token (not the `${env:...}` placeholder) is distributed to every cluster node, because any core node may become the consensus leader after failover and the leader is the sole caller of `ComputeProvider.provision()`. Operators MUST treat the cluster's per-node TOML files as containing the cloud project's full-access credential and protect them accordingly (see [`reference/cloud-integration.md` § Credential Propagation to Nodes](../reference/cloud-integration.md#credential-propagation-to-nodes)). For deployments that cannot accept this propagation model, defer cloud auto-scaling and use external orchestration to call `/api/cluster/scale` only after manually provisioning nodes — or wait for the secrets-provider runtime resolution path (RC2; see issue tracking the investigation).
+**REQ-4.2.7** (cloud credential propagation): For sources of `type = "cloud"`, the CLI-resolved value of `credentials` MUST be written into each node's per-node TOML overlay under `[cloud.credentials].api_token` so the consensus leader can authenticate with the cloud provider when auto-provisioning nodes during runtime `/api/v1/cluster/scale` operations. The literal token (not the `${env:...}` placeholder) is distributed to every cluster node, because any core node may become the consensus leader after failover and the leader is the sole caller of `ComputeProvider.provision()`. Operators MUST treat the cluster's per-node TOML files as containing the cloud project's full-access credential and protect them accordingly (see [`reference/cloud-integration.md` § Credential Propagation to Nodes](../reference/cloud-integration.md#credential-propagation-to-nodes)). For deployments that cannot accept this propagation model, defer cloud auto-scaling and use external orchestration to call `/api/v1/cluster/scale` only after manually provisioning nodes — or wait for the secrets-provider runtime resolution path (RC2; see issue tracking the investigation).
 
 ### 4.3 Resolution Pipeline
 
@@ -353,6 +353,7 @@ In the examples above:
 type = "cloud"
 provider = "hetzner"
 credentials = "${env:HCLOUD_TOKEN}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc14"
 load_balancer = "elected"
@@ -361,6 +362,7 @@ databases.default = "postgresql://user@rds.example.com:5432/app"
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 ```
@@ -462,16 +464,19 @@ Every source declares one or more **role sub-tables**. The allowed role names ar
 ```toml
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.worker]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx33"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.spot]
 count = 10
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx33"
 runtime = "default"
 ```
@@ -617,6 +622,7 @@ databases.default = "${env:DATABASE_URL}"
 
 [source.hetzner-eu-fsn1-dc14]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc14"
 load_balancer = "elected"
@@ -624,6 +630,7 @@ load_balancer_ips = ["138.201.1.1"]
 
 [source.hetzner-eu-fsn1-dc15]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc15"
 load_balancer = "elected"
@@ -753,17 +760,17 @@ cert_ttl = "720h"
 ```toml
 [operations.auto_heal]
 enabled = true
-retry_interval = "10s"
-startup_cooldown = "15s"
 ```
 
 | Field              | Type   | Required | Default  | Description                                          |
 |--------------------|--------|----------|----------|------------------------------------------------------|
-| `enabled`          | bool   | No       | `true`   | Master toggle for the CTM auto-heal reconcile loop.  |
-| `retry_interval`   | string | No       | `"10s"`  | Period of the reconcile loop between heal attempts.  |
-| `startup_cooldown` | string | No       | `"15s"`  | Delay between cluster formation and the first heal check, giving nodes time to complete boot. |
+| `enabled`          | bool   | No       | `true`   | Master toggle for the CTM auto-heal reconcile loop. `false` is refused (PF-25). |
 
-**REQ-7.2.1**: The shortcut `auto_heal = true` under `[operations]` is equivalent to `[operations.auto_heal] enabled = true` with default-valued `retry_interval` and `startup_cooldown`. Declaring both forms for the same field is a validation error.
+*(Superseded by #675: `retry_interval` and `startup_cooldown` were removed from this section — they
+reached no node — and are refused with PF-26. The formation-check delay is the NODE config's
+`[timeouts.scaling] auto_heal_startup_cooldown`; the reconcile cadence is not operator-tunable.)*
+
+**REQ-7.2.1**: The shortcut `auto_heal = true` under `[operations]` is equivalent to `[operations.auto_heal] enabled = true`. Declaring both forms for the same field is a validation error.
 
 **REQ-7.2.2**: Retry count, exponential backoff schedule, and the max-concurrent-replacements cap are not operator-tunable in v1 (KL-7).
 
@@ -877,7 +884,7 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 | Runtime Type       | Deployment Steps                                              |
 |--------------------|---------------------------------------------------------------|
 | `container`        | Pull image on target host. Start container with peer list, database URLs from source, port bindings, JVM args. |
-| `docker`           | Start containers via `DockerComputeProvider` with peer list, database URLs from source, port bindings, environment variables. Each node is a separate container on the same Docker network. |
+| `docker`           | Start containers via `DockerComputeProvider` with peer list, database URLs from source, port bindings, environment variables. Each node is a separate container on the same Docker network. Bootstrap ensures that network (default `aether-network`, overridable with `AETHER_DOCKER_NETWORK` or the provider setting `network_name`): it is reused when present and created, labelled `aether.created-by-cluster=<cluster>`, when absent. Ownership is that label: a network carrying this cluster's own label (left by an earlier run) is owned again, one with no label or another cluster's is reused and never owned. Only owned networks are recorded in the cleanup ledger, and `aether cluster destroy` removes exactly the recorded name, only if it still carries the label and is empty, so a network you provided is never removed (#2131). Label contract: any network carrying `aether.created-by-cluster=<this cluster>` is treated as owned, recorded and, when empty, removed, so a user who puts our label on their own network hands it to us. Two clusters sharing one network leave it in place when the creating cluster is destroyed first. |
 | `ember`            | Start Ember nodes in-process (forge source). Configure peer list, database URLs, ports within the single JVM. |
 | `jvm`              | Transfer Aether JAR to target via SSH. Start JVM process with args and peer list. |
 | `managed-container`| Apply Kubernetes manifests. (FUTURE)                          |
@@ -935,7 +942,7 @@ The config file is the **complete desired state**. There is no partial config. E
 
 ```
 1. Parse and validate desired config (same as bootstrap Phase 1)
-2. Fetch current state from running cluster: GET /api/cluster/config
+2. Fetch current state from running cluster: GET /api/v1/cluster/config
 3. Pre-flight cluster-health check: verify every configured core node
    is currently responding and consensus reports a healthy leader.
    Refuse to proceed if the cluster is degraded.
@@ -981,6 +988,8 @@ The diff operates at `(source, role)` granularity. Changes are classified, order
 
 **REQ-9.3.5**: `apply --resume` reads the last wave state and continues from the first unfinished wave, re-running pre-flight before each resumption. `apply --rollback` reverses completed waves in LIFO order: re-provision drained nodes, re-join cluster, destroy nodes that were added, restore prior firewall rules.
 
+> **Superseded by #1543 (2026-10-09):** the runtime-change and source-level rolling restarts described in this section (drain and destroy a node, then start another in its place, the SSH branch under the same id) are no longer executed: `apply` refuses a runtime change with an error naming the supported ways. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, `POST /api/v1/nodes/replace/{id}`). There is no supported way today to change a source role's runtime profile on a running cluster.
+
 ### 9.4 Plan Output Format
 
 ```
@@ -998,6 +1007,9 @@ Desired: 7 cores, 5 workers, 4 spot (3 sources)
 
 Apply these changes? [y/N]
 ```
+
+> **The instance types in this sample output are EXAMPLES.** Providers retire instance types and
+> vary their availability by location — check your provider's current catalogue before copying them.
 
 ---
 
@@ -1159,20 +1171,21 @@ The `CloudProvider` SPI in §11.1 is a **new, higher-level** interface specifica
 | PF-19  | Forge sub-tables: `runtime` must be `"ember"` or omitted             | Forge       | Error    |
 | PF-20  | Docker sub-tables: `runtime` must be `"docker"` or omitted           | Docker      | Error    |
 | PF-21  | Cloud sub-tables: `runtime` must be `"container"` or `"jvm"`         | Cloud       | Error    |
-| PF-22  | SSH sub-tables: `runtime` must be `"container"`, `"jvm"`, or `"ember"` | SSH       | Error    |
+| PF-22  | SSH sub-tables: `runtime` must be `"container"` (the only runtime launched over SSH — #1090) | SSH | Error |
 | PF-23  | Provider implements ingress management when `allow_ingress` declared  | Cloud       | Error    |
 | PF-24  | Management port not open to `0.0.0.0/0` while `security_mode = "none"` | Cloud       | Error    |
+| PF-27  | A host is declared by at most one SSH source (PF-09 is intra-source)   | SSH         | Error    |
 
 ### 12.2 Cluster-Level Checks
 
 | ID     | Check                                                                 | Severity |
 |--------|-----------------------------------------------------------------------|----------|
 | CL-01  | Cluster name matches `^[a-z][a-z0-9-]{0,62}$`                         | Error    |
-| CL-02  | Version is valid semver                                               | Error    |
+| CL-02  | Version is valid semver 2.0.0 (`MAJOR.MINOR.PATCH`, optional `-pre-release` and `+build` metadata) | Error |
 | CL-04  | Derived core count odd and >= 3                                       | Error    |
 | CL-06  | All referenced profiles exist                                         | Error    |
 | CL-07  | At least one `[source.X.core]` sub-table across all sources           | Error    |
-| CL-08  | All source names unique                                               | Error    |
+| CL-08  | All source names unique, and none a `<name>-` prefix of another (node ids are `<source>-<role>-<index>`; #296) | Error    |
 | CL-09  | Template inheritance has no cycles; depth <= 16                       | Error    |
 | CL-11  | All ports distinct and in range 1-65535                               | Error    |
 | CL-13  | WARN if a single source holds a majority of cores                     | Warning  |
@@ -1319,12 +1332,13 @@ version = "1.0.0"
 
 [cluster.core]
 min = 3
-max = 15
+max = 9
 
 [source.hetzner-eu-fsn1-dc14]
 type = "cloud"
 provider = "hetzner"
 credentials = "${env:HCLOUD_TOKEN}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc14"
 load_balancer = "elected"
@@ -1333,6 +1347,7 @@ databases.default = "${env:DATABASE_URL}"
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
@@ -1372,6 +1387,7 @@ min = 3
 type = "cloud"
 provider = "hetzner"
 credentials = "${env:HCLOUD_TOKEN}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 databases.default = "${env:HETZNER_DB_URL}"
 
@@ -1379,49 +1395,58 @@ databases.default = "${env:HETZNER_DB_URL}"
 type = "cloud"
 provider = "aws"
 credentials = "${env:AWS_ACCESS_KEY}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 databases.default = "${env:AWS_DB_URL}"
 
 [source.hetzner-eu-fsn1-dc14]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "fsn1-dc14"
 load_balancer = "elected"
 load_balancer_ips = ["138.201.1.1"]
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 1
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc15]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "fsn1-dc15"
 load_balancer = "elected"
 load_balancer_ips = ["138.201.2.1"]
 
 [source.hetzner-eu-fsn1-dc15.core]
 count = 1
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
 [source.aws-us-east-1a]
 inherit = "aws-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-east-1a"
 load_balancer = "external"
 load_balancer_endpoint = "https://us-alb.example.com"
 
 [source.aws-us-east-1a.core]
 count = 1
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 runtime = "default"
 
 [source.aws-us-east-1a.worker]
 count = 3
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 runtime = "default"
 
 [source.aws-us-east-1a.spot]
 count = 4
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 runtime = "default"
 
@@ -1505,7 +1530,7 @@ version = "1.0.0"
 
 [cluster.core]
 min = 3
-max = 15
+max = 9
 max_unavailable = 1
 
 [cluster.workers]
@@ -1528,6 +1553,7 @@ databases.default = "postgresql://user@us-rds.example.com:5432/app"
 
 [source.hetzner-eu-fsn1-dc14]
 inherit = "hetzner-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 zone = "fsn1-dc14"
 load_balancer = "elected"
@@ -1535,11 +1561,13 @@ load_balancer_ips = ["138.201.1.1", "138.201.1.2"]
 
 [source.hetzner-eu-fsn1-dc14.core]
 count = 3
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx23"
 runtime = "default"
 
 [source.hetzner-eu-fsn1-dc14.worker]
 count = 5
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "cx33"
 runtime = "large"
 
@@ -1550,6 +1578,7 @@ allow_ingress = [
 
 [source.aws-us-east-1a]
 inherit = "aws-base"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 zone = "us-east-1a"
 load_balancer = "external"
@@ -1557,11 +1586,13 @@ load_balancer_endpoint = "https://us-alb.example.com"
 
 [source.aws-us-east-1a.core]
 count = 2
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 runtime = "default"
 
 [source.aws-us-east-1a.spot]
 count = 8
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.large"
 runtime = "default"
 
@@ -1599,8 +1630,6 @@ cert_ttl = "720h"
 
 [operations.auto_heal]
 enabled = true
-retry_interval = "10s"
-startup_cooldown = "15s"
 
 [operations.timeouts]
 health_check = "300s"
@@ -1717,7 +1746,7 @@ This model supports only a **single deployment type** and a **single runtime** p
 | KL-4  | No database URL validation at bootstrap                                                    | Runtime failure if database unreachable                    |
 | KL-5  | Source-level field migration in `apply` is destroy+recreate for region/zone changes        | Downtime during cross-zone moves; replace-before-retire keeps same-zone moves safe |
 | KL-6  | No SWIM port in new schema                                                                 | SWIM is multiplexed over the existing cluster QUIC connection, so there is no second port to configure. Old `swim_port` values are silently ignored during migration (see §15.3). |
-| KL-7  | Auto-heal retry count, backoff schedule, and max-concurrent-replacements are hardcoded     | Only `retry_interval` and `startup_cooldown` are operator-tunable in v1 |
+| KL-7  | Auto-heal retry count, backoff schedule, and max-concurrent-replacements are hardcoded     | The tunable auto-heal timings are the NODE config's `[timeouts.scaling] auto_heal_startup_cooldown` / `auto_heal_provisioning_timeout` / `auto_heal_swim_hints_ttl` (#675); `[operations.auto_heal]` carries `enabled` only |
 | KL-8  | Forge integration tests require rewrite to use elected-LB model                            | The old `aether-lb:local` separate process is gone; tests must exercise the in-cluster LB task group |
 | KL-9  | Upgrade verification windows and auto-rollback for runtime upgrades not implemented        | V2 feature                                                 |
 | KL-10 | Spot provisioning is schema-recognized but not implemented for AWS/GCP/Azure               | Operators using `spot` will see pre-flight errors for Hetzner (unsupported) and Phase 2 errors for AWS/GCP/Azure (stub `provisionSpot`) |

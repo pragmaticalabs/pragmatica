@@ -47,15 +47,12 @@ Aether's distributed capabilities. It provides:
 │                                                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │  ForgeApiHandler          │  StaticFileHandler                   │
-│  /api/status              │  /index.html                         │
-│  /api/kill/{nodeId}       │  /dashboard.js                       │
-│  /api/crash/{nodeId}      │  /style.css                          │
-│  /api/add-node            │                                      │
-│  /api/rolling-restart     │                                      │
-│  /api/load/set/{rate}     │                                      │
-│  /api/load/ramp           │                                      │
+│  /api/nodes/status        │  /index.html                         │
+│  /api/nodes/metrics       │  /dashboard.js                       │
+│  /api/forge/status        │  /style.css                          │
+│  /api/chaos/*             │                                      │
+│  /api/load/*              │                                      │
 │  /api/events              │                                      │
-│  /api/reset-metrics       │                                      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -85,21 +82,18 @@ The web dashboard (`index.html`) provides:
 
 ### Prerequisites
 
-- JDK 25+
-- Maven 3.9+
-- Built Aether project (`mvn clean install`)
+- Aether installed from the GitHub release, which puts `aether-forge` in `~/.aether/bin`:
+  `curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh`
+  (see the [Quick Start](../../../README.md#quick-start))
 
 ### Running Locally
 
 ```bash
-# Build Forge
-mvn package -pl aether/forge/forge-core -am -DskipTests
-
 # Run with defaults (5 nodes, 1000 req/sec)
-java -jar aether/forge/forge-core/target/aether-forge.jar
+aether-forge
 
 # Or with custom settings
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar aether/forge/forge-core/target/aether-forge.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 aether-forge
 ```
 
 The dashboard opens automatically at `http://localhost:8888`.
@@ -365,6 +359,8 @@ After starting, access these endpoints:
 | node-4 | http://localhost:8084 | http://localhost:8084/dashboard |
 | node-5 | http://localhost:8085 | http://localhost:8085/dashboard |
 
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
+
 ### Step-by-Step Demo
 
 **1. Start the cluster:**
@@ -410,6 +406,8 @@ Shows slice distribution across nodes.
 
 Navigate to http://localhost:8081/dashboard for real-time metrics.
 
+Against a real node (not Forge) the REST-fed dashboard panels are empty in 1.0.0-rc4: see [Known Limitations](../reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty).
+
 **6. Clean up:**
 
 ```bash
@@ -444,8 +442,9 @@ lsof -i :8081-8095  # Check for processes using these ports
 
 **Slice deployment fails:**
 ```bash
-# Ensure ecommerce example is installed
-cd examples/ecommerce && mvn install -DskipTests
+# Ensure ecommerce example is installed (standalone build; -P '!test-plan-gate' because the root pom's
+# test-plan-gate profile needs test-plan-witness, which is not on Maven Central)
+cd examples/ecommerce && mvn install -DskipTests -P '!test-plan-gate'
 ```
 
 ---

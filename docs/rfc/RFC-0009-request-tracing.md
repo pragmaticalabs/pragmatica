@@ -339,7 +339,7 @@ Each outbound `InvokeRequest` sets `hops` to the current hop count (0 for the fi
 
 New `TraceRoutes` added to `ManagementServer`:
 
-#### `GET /api/traces` -- Recent Traces
+#### `GET /api/v1/traces` -- Recent Traces
 
 Returns recent trace entries with optional filters. Paginated.
 
@@ -377,7 +377,7 @@ Returns recent trace entries with optional filters. Paginated.
 }
 ```
 
-#### `GET /api/traces/{requestId}` -- Request Call Chain
+#### `GET /api/v1/traces/{requestId}` -- Request Call Chain
 
 Returns all entries for a single request ID, sorted by timestamp (earliest first). Shows the full waterfall of an individual request across all local invocations.
 
@@ -415,7 +415,7 @@ Returns all entries for a single request ID, sorted by timestamp (earliest first
 }
 ```
 
-#### `GET /api/traces/stats` -- Summary Statistics
+#### `GET /api/v1/traces/stats` -- Summary Statistics
 
 Aggregated statistics computed from the current ring buffer contents.
 
@@ -467,17 +467,17 @@ public final class TraceRoutes implements RouteSource {
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(
-            Route.<TraceListResponse>get("/api/traces")
+            Route.<TraceListResponse>get("/api/v1/traces")
                  .withQuery(anInt("limit"), aString("slice"),
                             aString("method"), aString("status"),
                             aString("since"))
                  .toValue(this::queryTraces)
                  .asJson(),
-            Route.<TraceChainResponse>get("/api/traces")
+            Route.<TraceChainResponse>get("/api/v1/traces")
                  .withPath(aString())
                  .to(this::getTraceChain)
                  .asJson(),
-            Route.<TraceStatsResponse>get("/api/traces/stats")
+            Route.<TraceStatsResponse>get("/api/v1/traces/stats")
                  .toJson(this::getTraceStats)
         );
     }
@@ -612,9 +612,9 @@ Forge proxies trace queries to individual cluster nodes and merges results:
 package org.pragmatica.aether.forge.api;
 
 public final class TraceProxyRoutes implements RouteSource {
-    // GET /api/traces -> fan out to all nodes, merge, sort by timestamp desc
-    // GET /api/traces/{requestId} -> fan out to all nodes, merge entries
-    // GET /api/traces/stats -> aggregate stats from all nodes
+    // GET /api/v1/traces -> fan out to all nodes, merge, sort by timestamp desc
+    // GET /api/v1/traces/{requestId} -> fan out to all nodes, merge entries
+    // GET /api/v1/traces/stats -> aggregate stats from all nodes
 }
 ```
 
@@ -660,7 +660,7 @@ The Forge proxy follows the same pattern as existing `MetricsProxyRoutes` and `A
 #### Querying Failures in the Last 5 Minutes
 
 ```
-GET /api/traces?status=failure&since=2026-02-15T10:25:00Z&limit=50
+GET /api/v1/traces?status=failure&since=2026-02-15T10:25:00Z&limit=50
 ```
 
 Returns up to 50 failed trace entries from the last 5 minutes, most recent first.

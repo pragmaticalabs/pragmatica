@@ -14,7 +14,7 @@ Aether uses TLS in three contexts:
 | Management API | TCP (HTTP/1.1 or HTTP/3) | Same as cluster |
 | Application HTTP (slice endpoints) | TCP (HTTP/1.1 or HTTP/3) | Same as cluster |
 
-Additionally, SWIM gossip messages (UDP port 8091) are encrypted with AES-256-GCM using a key
+Additionally, SWIM gossip messages (UDP port 8190) are encrypted with AES-256-GCM using a key
 derived from the same cluster secret.
 
 ## Auto-Generated Certificates (Development and Simple Deployments)
@@ -186,7 +186,7 @@ the current key first, then fall back to the previous key.
 ### Management API
 
 ```
-GET /api/certificates
+GET /api/v1/certificates
 ```
 
 Response:
@@ -224,11 +224,11 @@ When no certificate provider is configured, the response returns:
 aether certs status
 ```
 
-This fetches and displays the `/api/certificates` endpoint output for the connected node.
+This fetches and displays the `/api/v1/certificates` endpoint output for the connected node.
 
 ### Cluster-Level Status
 
-The `GET /api/cluster/status` endpoint includes certificate information aggregated across the
+The `GET /api/v1/cluster/status` endpoint includes certificate information aggregated across the
 cluster:
 
 ```json
@@ -246,10 +246,13 @@ cluster:
 continue to work until they are closed or time out.
 
 **Resolution:**
-1. Check renewal scheduler status: `GET /api/certificates` -- look for `renewalStatus: "FAILED"`
+1. Check renewal scheduler status: `GET /api/v1/certificates` -- look for `renewalStatus: "FAILED"`
 2. Check logs for `CertificateRenewalScheduler` errors
 3. If auto-generating, verify `cluster_secret` is set and consistent across all nodes
-4. Restart the node -- a fresh certificate will be generated on startup
+4. Replace the node (`POST /api/v1/nodes/replace/<node-id>`) -- the replacement starts under a new
+   node id and generates a fresh certificate on startup. Restarting the process under the same node
+   id is not a recovery: the cluster refuses a node id it has removed. The renewal scheduler above is
+   the live rotation mechanism; replace the node only when it cannot recover
 
 ### Wrong Cluster Secret
 
@@ -259,7 +262,8 @@ handshake failures. Nodes appear isolated (each sees only itself in the cluster)
 **Resolution:**
 1. Verify all nodes use the same `cluster_secret` in `aether.toml`
 2. Check if `AETHER_CLUSTER_SECRET` environment variable differs between nodes
-3. After correcting the secret, restart the affected nodes
+3. After correcting the secret, start the affected nodes again under fresh node ids (replace them,
+   `POST /api/v1/nodes/replace/<node-id>`); a restart under an id the cluster has already removed is refused
 
 ### Renewal Failed
 
@@ -271,7 +275,8 @@ handshake failures. Nodes appear isolated (each sees only itself in the cluster)
 2. Check logs for the specific failure cause
 3. For `CaGenerationFailed`: verify the BouncyCastle security provider is available
 4. For `CertificateIssueFailed`: check file system permissions if using file-based certificates
-5. If retries are exhausted and the certificate expires, restart the node
+5. If retries are exhausted and the certificate expires, replace the node
+   (`POST /api/v1/nodes/replace/<node-id>`); a restart under the same node id is refused
 
 ### TLS Setup Failed at Startup
 
@@ -329,7 +334,7 @@ certificates (no shared trust, suitable only for single-node development).
 Currently, Aether supports self-signed certificates via `SelfSignedCertificateProvider`. The
 `CertificateProvider` interface is designed for extensibility -- cloud CA adapters (e.g., AWS
 Private CA, GCP Certificate Authority Service, HashiCorp Vault PKI) are planned for a future
-release. See [GitHub Issue #88](https://github.com/pragmatica-lite/pragmatica/issues/88) for
+release. See [GitHub Issue #88](https://github.com/pragmaticalabs/pragmatica/issues/88) for
 tracking.
 
 ## Related Documents

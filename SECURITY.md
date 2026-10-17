@@ -18,7 +18,7 @@ in a public PR.
 
 ## Supported Versions
 
-Aether is pre-GA (`1.0.0-rc3` at this writing). There is currently one active release line — the
+Aether is pre-GA (`1.0.0-rc4` at this writing). There is currently one active release line — the
 latest release candidate — and no formal backport/LTS policy yet. See
 [`aether/docs/reference/versioning-and-compatibility.md`](aether/docs/reference/versioning-and-compatibility.md)
 for what is and isn't decided yet on versioning, including the open node-version-skew gap.
@@ -37,7 +37,90 @@ Two consequences follow directly:
 - **All nodes in a cluster trust each other completely.** Any node that can complete the join
   handshake is a full member — able to reach every slice, every KV key, and (if storage encryption
   is enabled) every data key in that cluster. There is currently no per-node revocation short of
-  removing the node and rotating the shared secret.
+  removing the node and rotating the shared secret. For the gossip layer specifically there is one
+  in-place mitigation, `aether cluster rotate-gossip-key` (`POST /api/v1/cluster/gossip-key/rotate`,
+  ADMIN), which pushes a fresh, non-derived gossip key through consensus without a restart (#683).
+  Three facts about it, accepted and stated:
+  - **The key material lives in the consensus log and its snapshots, readable by any KV reader** —
+    accepted by the §5.8 delivery design because a per-node out-of-band channel would need a second
+    trust root, and every KV reader is already a full member.
+  - **After the first rotation the `cluster_secret`-derived daily key is permanently superseded on
+    that cluster.** The delivered key is what every node encrypts under from then on. The first
+    rotation carries NO decrypt overlap (there is no prior record to carry), so boot-key ciphertext
+    is rejected from the moment it lands; subsequent rotations carry the previous key.
+  - **A ROTATED CLUSTER CANNOT GROW UNTIL AN OPERATOR ACTS — INCLUDING AUTO-HEAL.**
+
+    **If a node will not join after a rotation, CHECK THE SEED NODES' LOGS, NOT THE NEW NODE'S.**
+    Look for `Failed to decrypt gossip from <id>` on the seeds. This is the first thing to know
+    because it inverts where you will instinctively look: a node the cluster has never heard of
+    logs **nothing** about the cause — worse, it logs `Aether node <id> started, cluster forming...`
+    and then stays quiet, because an unreachable quorum is retried and never exits. The only
+    evidence is on the healthy machines you have no reason to suspect.
+
+    The mechanism: a node booting after a rotation derives its gossip key from `cluster_secret`,
+    which the rotated cluster no longer accepts; its SWIM datagrams are dropped and it cannot decrypt
+    the cluster's either. SWIM therefore discovers no peers, the QUIC dial set stays self-only, no
+    quorum forms, and the consensus replay that carries the rotation record — the only way to obtain
+    the cluster key — never runs. The node cannot join, and the cycle cannot resolve itself.
+    **So an emergency rotation, performed precisely because something was compromised, leaves the
+    cluster unable to self-heal: auto-heal replacements, scale-up and re-provisioned nodes all fail
+    to join until they are given the rotated key material out of band.** Existing running nodes are
+    unaffected.
+
+    Which nodes say so for themselves:
+    - A **restarted existing member** refuses to boot with a `FATAL` line naming gossip-key
+      divergence (#683) — its peers still hold it in their configured seed set, so they probe it and
+      it can see gossip arriving under a key id it does not hold.
+    - A **node the cluster has never heard of** — an auto-heal replacement or scale-up node — cannot
+      detect it at all. Nobody probes an address they do not know, so it receives nothing, and its
+      silence is indistinguishable from a partition, down seeds, or a wrong advertise address. Hence
+      the instruction above.
+
+    A general key-delivery path for joining nodes is not in rc4. It is an architecture change — it
+    needs either a second trust root or a deliberately weakened revocation — and the choice is an open
+    **owner decision tracked as #1200**. Until that lands, the out-of-band re-provisioning described
+    above is the supported answer.
+
+    **Exposure introduced by the boot refusal, stated as capability.** The refusal counts
+    same-key-id-consecutive undecryptable datagrams, and an unencrypted datagram is **not**
+    distinguishable from a rotated peer's by that signal alone — anything at least as long as the
+    16-byte header has its first four bytes read as a key id. So an attacker who can send UDP to a
+    node's SWIM port, while that node has gone a full minute without decrypting a single gossip
+    datagram, can end that node's process. This needs **no privileged position**: the SWIM listener
+    decrypts datagrams from any sender with no source check, and the default firewall preset opens
+    SWIM UDP to `0.0.0.0/0`, so the packets are off-path and spoofable, and a restart supervisor will
+    crash-loop the node.
+
+    Two bounds contain it, and they are not equally load-bearing — **the first is the protection, the
+    second only bounds what the first has not yet covered:**
+    - **A node that has decrypted even once is immune, permanently.** One successful decrypt latches
+      the check off for the life of the process, so no volume of later traffic can reach it —
+      measured at 500 junk packets after a single successful decrypt, no effect. A healthy node in a
+      healthy cluster decrypts within seconds of SWIM starting. **This, not the arming delay, is what
+      keeps running nodes safe.**
+    - **The arming delay only bounds the pre-decrypt interval, and it costs an attacker patience
+      rather than bandwidth.** It removes the instant kill — before it, eight packets sufficed — but
+      it does not make the attack expensive: **a one-packet-per-second stream that merely crosses the
+      60-second boundary trips the gate at 68 packets, needing no knowledge of when the node booted.**
+      The exposed population is therefore nodes that have not yet decrypted anything, for a bounded
+      interval, at a price measured in seconds of waiting.
+
+    **Do not "harden" this by lengthening the arming delay.** That widens the pre-decrypt interval,
+    which is the only interval that was ever exposed; it makes the exposure worse, not better.
+
+    **Both bounds are CHOSEN, not measured.** 60 seconds is intended to clear a healthy node's
+    first-decrypt latency — expected to be seconds after SWIM starts, itself unmeasured — by roughly
+    an order of magnitude, so a spurious refusal needs a node that is genuinely not communicating.
+    10 minutes is intended to clear, by a similar margin, the time a restarted member takes to
+    accumulate the threshold once its peers begin probing it, while still ending the interval in
+    which the process can be killed. Neither number was derived from a measured distribution; both
+    margins were chosen deliberately wide, and **whether the behaviour is sensitive to either is
+    unknown until those distributions are measured** (#1208).
+
+    Do not read the pre-existing alternatives as making this free: dropping traffic requires being
+    on-path and flooding requires sustained bandwidth, whereas this requires a handful of spoofable
+    packets aimed at a node in a state an attacker can wait for. It is a remote-input-triggered
+    process exit that did not exist before #683.
 - **The runtime/slice boundary is an accident boundary, not a security sandbox.** Each slice loads
   in its own `SliceClassLoader` [mechanism: `aether/slice/src/main/java/org/pragmatica/aether/slice/SliceClassLoader.java`],
   which isolates classpaths across slices/versions. This is **not** a hardened security boundary:
@@ -58,9 +141,9 @@ an untrusted slice**: someone who can reach your cluster's ports but does not ho
 | Surface | Mechanism | Evidence |
 |---|---|---|
 | Node-to-node TCP (consensus, invocation, DHT) | mutual TLS, certs derived from a shared `cluster_secret` via HKDF | [mechanism: `aether/docs/operators/tls-certificates.md`; `SelfSignedCertificateProvider`] |
-| SWIM gossip (UDP) | AES-256-GCM, daily key rotation with overlap | [mechanism: `AesGcmGossipEncryptor`, per `aether/docs/architecture/10-security.md`] |
+| SWIM gossip (UDP) | AES-256-GCM under a key HKDF-derived from `cluster_secret` and the current calendar day, re-derived on day change for the life of the process; datagrams under the previous and next UTC day's keys are accepted, so nodes whose clocks differ by less than a day at a UTC-day boundary decrypt each other regardless of uptime (#256, #1164, #1415). The day label is the UTC day of the clock's instant, whatever the host's time zone | [mechanism: `SelfSignedCertificateProvider.keysForToday` derives; `SwimGossipEncryptors.ProviderKeyedGossipEncryptor` follows it; `AesGcmGossipEncryptor` encrypts — per `aether/docs/architecture/10-security.md`] |
 | Management API | API-key authentication + role-based authorization (ADMIN / OPERATOR / VIEWER) | [mechanism: see "Default posture" below] |
-| Cluster secret at rest (file) | `aether.toml` and the CLI's persisted `api-key` file are written `chmod 600` | [mechanism: `aether/aether-config/.../SecureFiles.java` — `writeSecure`/`restrictToOwner`, owner-read/write only, POSIX systems] |
+| Cluster secret at rest (file) | `aether.toml` and the CLI's persisted `api-key` file are written `chmod 600` | [mechanism: `aether/cli/.../cluster/SecureFiles.java` — `writeSecure`/`restrictToOwner`, owner-read/write only, POSIX systems] |
 
 All four of these authenticate **the transport or the caller**, not the slice code running behind
 it. None of them isolates one slice's data from another slice in the same cluster (see above).
@@ -73,16 +156,33 @@ credential by default [mechanism: `aether/aether-config/src/main/java/org/pragma
 `populateAppHttpConfig`: `explicitMode.or(SecurityMode.API_KEY)`]. If you provisioned no API key
 yourself, the first elected leader generates one random `ADMIN` key on first startup and prints it
 **once**, prominently, to its log and stdout [mechanism: `aether/node/src/main/java/org/pragmatica/aether/node/BootstrapAdminKeyRegistrar.java`].
-Capture that key — it is not retrievable afterward except by rotating it via `/api/cluster/keys`.
+Capture that key — it is not retrievable afterward except by rotating it via `aether cluster rotate-key` or `/api/v1/cluster/keys`.
 
 An operator can still explicitly set `security_mode = "none"` in `aether.toml` to disable
-authentication entirely (an explicit setting always wins over the default) — appropriate only for a
+authentication entirely (an explicit setting wins over the default, with the `enabled = false` exception below) — appropriate only for a
 single-node local/dev instance, never for anything reachable over an untrusted network.
 
-Note: this default applies to nodes started from `aether.toml` via the normal CLI/bootstrap path.
-The bare in-process config builders used by test harnesses (`AppHttpConfig.appHttpConfig()` and
-friends, used by Ember/Forge) still default to `NONE` — that is a test-harness convenience, not the
-production default, and those harnesses are not meant to be exposed to a network.
+The same default holds for the in-process config builders (`AppHttpConfig.appHttpConfig()` and
+friends) since #665: with no `SecurityMode` named they yield `API_KEY`, and with no key configured
+that is fail-closed — the cluster bootstrap admin key is the only credential accepted. `Main`'s
+fallback when `[app-http]` is absent or disabled uses the same builder, so a node with no app-HTTP
+section now has the same fail-closed posture for its Management API as an `aether.toml` with no
+`security_mode`. **This is a behaviour change for such nodes, not a wording change:** before #665
+that fallback yielded `NONE`, and under `NONE` the management server dispatches every request
+without consulting any validator [mechanism: `ManagementServerImpl.handleRequest` gates on
+`securityEnabled`; the #573 `denyUnlessPublicValidator` installed for that arm was never reached], so the
+Management API, forwarded requests, websockets and unauthenticated artifact `PUT`
+(`MavenProtocolRoutes.admitPush` → `SECURITY_DISABLED`) were all open. A node upgraded across #665
+with no `[app-http]` section (or `enabled = false`) refuses those requests until the cluster
+bootstrap admin key is presented; present that key, or declare `[app-http]` with the mode you
+mean. Note the one case where an explicit setting does NOT win: `[app-http] enabled = false` with an
+explicit `security_mode = "none"` is discarded whole by `Main`'s fallback (one flag governs two
+planes — #573) and the fail-closed default applies. The only way
+to `NONE` without naming the mode is
+`AppHttpConfig.insecureAppHttpConfig(port)`, and its name is the opt-in: Ember passes `NONE`
+explicitly (`EmberCluster.withAppHttpSecurity` overrides it, which is how Forge authenticates), and
+unit tests that need an open listener call the insecure builder by name. Those harnesses are not
+meant to be exposed to a network.
 
 **To configure roles**, give each API key an `authorization_role` (default `VIEWER` if omitted):
 
@@ -96,25 +196,72 @@ authorization_role = "OPERATOR"   # ADMIN | OPERATOR | VIEWER
 change configuration; `VIEWER` is read-only. Keys can also be supplied via the `AETHER_API_KEYS`
 environment variable at startup.
 
-### `cluster_secret` hygiene — a known gap
+### `cluster_secret` hygiene
 
 `cluster_secret` seeds the cluster's derived CA (mTLS) and, per the on-disk file, is chmod-600'd
-when written by the CLI. **However**, the Docker Compose generator currently writes it as a plain
-environment variable in the generated compose file
-(`AETHER_CLUSTER_SECRET: "<value>"`) [mechanism: `DockerComposeGenerator.java` — the value is visible
-via `docker inspect` on any host that can reach the Docker socket]. This is a known, tracked residual
-(internally referenced as #684, which also covers the generator-class sweep so this doesn't recur
-elsewhere — distinct from the now-closed #287, which hardened a different code path: cloud-init
-user-data/argv and `aether.toml` file permissions). If you generate a Compose deployment, treat
-the resulting `docker-compose.yml` and the Docker daemon's inspect API as secret-bearing, and control
-access accordingly, exactly as you would a file containing the secret in the clear.
+when written by the CLI. The `aether cluster scaffold` compose template
+(`DockerComposeTemplate.java`) and the shipped reference file (`aether/docker/docker-compose.yml`)
+both emit `AETHER_CLUSTER_SECRET` as a `${AETHER_CLUSTER_SECRET:?...}` shell-substitution
+reference, never a literal [mechanism: `DockerComposeTemplate.appendCommon`] — the generated
+compose file itself carries no secret value, so a copy of it in git, in a backup, or on disk is not
+secret-bearing on its own (#684, distinct from #287, which closed only the on-disk `aether.toml`
+permission hygiene — chmod 600, via `SecureFiles.writeSecure`/`restrictToOwner`. A related exposure
+of the same secret named in #287's own discussion — `docker run -e AETHER_CLUSTER_SECRET=...` and
+inline-JVM-env-on-the-SSH-command-line, on live bootstrap/redeploy paths in
+`BootstrapPhaseDeploy.java` — was closed by #828, see the next subsection; it is a distinct
+code path from the generated-file vector #684 closes). The `DockerComposeGenerator`
+class, which used to bake a literal `AETHER_CLUSTER_SECRET: "<value>"` into a separate,
+never-wired code path, has been deleted rather than fixed — it had zero production callers, so
+patching it would not have closed anything a real deployment used.
+
+### How the cluster secret reaches a node (#828)
+
+The node reads its secret from the file named by `AETHER_CLUSTER_SECRET_FILE`, and its API keys from `AETHER_API_KEYS_FILE` (any `${env:NAME}` in a node config likewise has a `NAME_FILE` form) (trailing line breaks
+stripped). Setting both that variable and `AETHER_CLUSTER_SECRET` to *different* values is refused at start
+(exit 65): the node cannot know which was meant. Setting both to the same value, or only one, is accepted.
+Per launch path:
+
+| Path | Process argv | Container env (`docker inspect`) | Log lines | At rest |
+|---|---|---|---|---|
+| CLI bootstrap / SSH source, container | no | no | no | scp'd 0600 to a staged path, installed 0400 owned by uid 1000 at `/opt/aether/config/cluster-secret`, bind-mounted read-only at `/run/secrets/aether-cluster-secret`; staged copy removed on every exit; installed file kept for the container's life |
+| CLI bootstrap, JVM node | no | n/a | no | installed 0400 root at `/etc/aether/cluster-secret`; the unit's env file holds only the path |
+| Cloud-init, container and JVM | no (`printf` is a shell builtin) | no | no | written under `umask 077`, same final paths and modes as above |
+| Provider-minted replacement (`DockerComputeProvider`) | no | no | no | `docker create`, then the file is piped over stdin to `docker cp -` as a tar owned by uid 1000 mode 0400, then `docker start`; it lives in the container's own layer |
+| Hand-written compose / `docker run -e AETHER_CLUSTER_SECRET=...` by an operator | operator's choice | **yes** | operator's choice | unchanged; prefer `AETHER_CLUSTER_SECRET_FILE` with a mounted file |
+
+**Stated limits.** (1) Cloud-init user-data contains the secret in clear text. It is readable by the cloud
+account holder through the provider's metadata/API and by processes on the VM through the metadata service
+and `/var/lib/cloud`; no file mode on the node changes that. (2) The CLI-generated compose file (`aether cluster scaffold` / `DockerComposeTemplate`) still passes `AETHER_CLUSTER_SECRET` as a container environment variable, like a hand-written one. (3) For `CLOUD` sources the node's `aether.toml`
+also carries `[tls] cluster_secret` (0600, uid 1000 since #287). (4) Operator-written compose and `docker run -e` keep the env-var form, and so show in `docker inspect`, unless the operator adopts `NAME_FILE`. (5) `AETHER_BACKUP_REMOTE` (a git remote path or URL) is forwarded to provider-minted nodes as `-e`; a URL with an embedded token would be on that argv and in `docker inspect`, so use a deploy key or a mounted path. (6) A `.staged` copy of a credential survives if the ssh session drops between the push and the launch line (removal is inside that line); the next launch overwrites and removes it. (7) The uid-1000 ownership of the bootstrap and cloud-init files inside a real container, and the JVM path under a real unit, are not exercised by the real-container check. (8) A bind-mounted secret file is re-resolved on every container start; removing the host
+file makes a restart fail, loudly, because the mount is `--mount type=bind` (which errors on a missing source)
+rather than `-v` (which would create a directory in its place).
+
+**What this does not close.** Once `docker compose up` resolves the reference, the running
+container's environment carries the actual secret value like any env-var-delivered secret, and
+remains visible via `docker inspect` (or `/proc`) on any host that can reach the Docker socket.
+This is unchanged by #684 and is inherent to env-var secret delivery generally, not specific to
+Aether's compose path — treat any host that can run `docker inspect` against a cluster container as
+able to read `cluster_secret`, and scope Docker socket access accordingly.
+
+**Migrating a compose file generated before this fix.** A `docker-compose.yml` produced by
+`aether cluster scaffold` before #684 has the literal value baked in under
+`AETHER_CLUSTER_SECRET: "change-me-cluster-secret"` (or whatever you edited it to). To migrate:
+note the actual secret value you are running with, `export AETHER_CLUSTER_SECRET=<that value>` in
+the shell that runs `docker compose up` (or put it in a git-ignored `.env` file next to the compose
+file), then either regenerate the file with `aether cluster scaffold` and reapply your local edits,
+or hand-edit the `AETHER_CLUSTER_SECRET:` line to
+`"${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"`. The
+regenerated or hand-edited file carries no secret value of its own, but that does **not** make it
+safe to commit outright — confirm every literal was replaced with the `${...}` reference form
+first, and never commit the exported value itself. If the old file with the literal value was ever
+committed or otherwise left where it could have been read, rotating `cluster_secret` is the only
+way to invalidate that exposure; deleting the file does not undo a leak into git or shell history.
 
 Separately: the daily-rotated gossip key described above is itself HKDF-derived from
 `cluster_secret`, so rotating `cluster_secret` does not immediately revoke gossip decryption for
-an attacker who captured it beforehand; the KV-delivered path built for exactly this
-case (`GossipKeyRotationKey`, pushing independent key material without a full secret
-rotation/restart) has no production writer and no CLI/admin trigger, so it cannot currently be
-invoked — tracked as #683.
+an attacker who captured it beforehand. To push independent gossip key material without a full
+secret rotation/restart, use `aether cluster rotate-gossip-key` (see "All nodes in a cluster trust
+each other completely" above), noting the limits stated there.
 
 ### Recognizing an untrusted-network deployment
 
@@ -135,11 +282,14 @@ Ask these questions before exposing a cluster beyond a private network:
 
 ### Storage-at-rest encryption
 
-Aether's storage layer has an AEAD block-encryption mechanism, but production defaults to writing
-segments **unencrypted** — there is currently no wired key source for it in the default path
-[design intent — unverified; tracked internally as #253]. Do not rely on at-rest encryption of
-cluster storage in this release unless you have independently verified your deployment wires a key
-provider.
+Aether's storage layer has an AEAD block-encryption mechanism. Storage segments are written
+**unencrypted** unless `[storage.encryption]` is configured, with keys resolved through the node's
+`SecretsProvider` (see the
+[Configuration reference](aether/docs/reference/configuration.md#storage-encryption-configuration)).
+There is no plaintext-to-encrypted migration (see
+[Known Limitations](aether/docs/reference/known-limitations.md)). Do not assume at-rest
+encryption of cluster storage unless you have configured it and checked that your deployment boots
+with a resolvable keyring.
 
 ## Reference material
 

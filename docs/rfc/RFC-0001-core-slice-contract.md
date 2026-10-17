@@ -271,7 +271,6 @@ dependency.1.artifact=org.example:payment-service
 dependency.1.version=1.2.0
 
 # Metadata
-generated.timestamp=2026-01-15T12:00:00Z
 processor.version=0.5.0
 ```
 

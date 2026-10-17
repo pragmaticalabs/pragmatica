@@ -50,13 +50,24 @@ Interactive CLI for managing Aether clusters.
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
+| `-c, --connect <host:port>` | Node address to connect to | active cluster context, else `localhost:8080` |
 | `--config <path>` | Path to aether.toml config file | |
-| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env |
+| `-k, --api-key <key>` | API key for authenticated access | `AETHER_API_KEY` env, else the active context's `api_key_env` |
 | `-h, --help` | Show help | |
 | `-V, --version` | Show version | |
 
-When `--config` is specified, the CLI reads the management port from the config file. The `--connect` option takes precedence if both are provided.
+**Endpoint precedence (#584).** Every command resolves its target the same way: an explicit
+`--connect`/`--endpoint` (or `--config`, which yields `localhost:<management port>`) wins; otherwise the
+**active cluster context** in `~/.aether/clusters.toml` (`[current] context`, set by `cluster bootstrap`
+and `cluster use`) is dialled with the credential its `api_key_env` names; only when no context is set
+does the built-in `localhost:8080` default apply. `cluster` subcommands that take `--cluster <name>`
+target that entry instead of the context. So with a context set, a local compose node needs
+`--connect localhost:8080` explicitly. **The credential follows the endpoint's source:** the
+context's `api_key_env` is sent only when the context supplied the endpoint; `--connect` sends only
+`--api-key`/`AETHER_API_KEY`; `--cluster X` sends X's stored key or nothing. A `--config` path that
+does not exist warns and uses the localhost default, never the context. A registry that cannot be
+read, a context naming no entry, or an entry without an endpoint each warn on stderr and fall back
+to the localhost default; `--cluster` on an entry without an endpoint is refused by name.
 
 ### Authentication
 
@@ -94,7 +105,7 @@ authorization_role = "VIEWER"
 | Role | CLI Access |
 |------|-----------|
 | **ADMIN** | All commands |
-| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, backup, config, alerts |
+| **OPERATOR** | Status, scaling, drain, deploy from artifact, schema, updates, config, alerts |
 | **VIEWER** | Read-only commands: `status`, `nodes`, `slices`, `nodes slices`, `routes`, `nodes routes`, `metrics`, `events`, `health` |
 
 When `authorization_role` is omitted, the key defaults to `ADMIN`. See [Management API - Authorization](management-api.md#authorization-rbac) for the full permission mapping.
@@ -170,7 +181,7 @@ Nodes:
 #### nodes resolve
 
 Resolve a single node to its cluster-transport `host:port` and probe its reachability. Wraps
-`GET /api/nodes/endpoint/{id}`. The address is printed regardless of reachability; the exit code
+`GET /api/v1/nodes/endpoint/{id}`. The address is printed regardless of reachability; the exit code
 reports the probe result, so the command doubles as a connectivity check in scripts.
 
 ```bash
@@ -194,7 +205,7 @@ Use `--format value --field address` to extract just the `host:port` for piping.
 #### nodes live
 
 Show the unified live-node view — each known node's transport address, role, SWIM liveness, and
-reported work-state in one table. Wraps `GET /api/nodes/live` (served from any core node).
+reported work-state in one table. Wraps `GET /api/v1/nodes/live` (served from any core node).
 
 ```bash
 aether nodes live
@@ -258,7 +269,7 @@ aether slices --state LOADED+ACTIVE
 
 #### slices status
 
-Show the aggregate slice state breakdown across the cluster — counts by lifecycle state, per-slice rollup. Wraps `GET /api/slices/status`.
+Show the aggregate slice state breakdown across the cluster — counts by lifecycle state, per-slice rollup. Wraps `GET /api/v1/slices/status`.
 
 ```bash
 aether slices status
@@ -266,7 +277,7 @@ aether slices status
 
 #### slices topology
 
-Show the slice topology — the per-slice governor mapping across the cluster (which node currently owns each slice's governor assignment). Wraps `GET /api/slices/topology`.
+Show the slice topology — the per-slice governor mapping across the cluster (which node currently owns each slice's governor assignment). Wraps `GET /api/v1/slices/topology`.
 
 ```bash
 aether slices topology
@@ -274,7 +285,7 @@ aether slices topology
 
 #### slices config
 
-Show the effective configuration view for a loaded slice with per-key layer attribution. Wraps `GET /api/slices/config/{id}`.
+Show the effective configuration view for a loaded slice with per-key layer attribution. Wraps `GET /api/v1/slices/config/{id}`.
 
 ```bash
 aether slices config <artifact>
@@ -396,7 +407,7 @@ Metrics:
     org.example:order:1.0.0  node-2  1156ms  SUCCESS
 ```
 
-Variants (wrap `/api/metrics/*` REST routes):
+Variants (wrap `/api/v1/metrics/*` REST routes):
 
 ```bash
 # Prometheus-format scrape (text/plain exposition)
@@ -491,7 +502,7 @@ aether scale org.example:order:1.0.0 -n 5 -p WORKER_PREFERRED
 
 | Option | Description |
 |--------|-------------|
-| `-n, --instances` | Target number of instances (required) |
+| `-n, --instances` | Target number of instances (required). At least 3 and at least the slice's `minAvailable`; fewer is refused with `400` (#1495) |
 | `-p, --placement` | Placement strategy: `CORE_ONLY`, `WORKER_PREFERRED`, `WORKER_ONLY` (optional) |
 
 > **Note:** Individual deploy/undeploy commands have been removed. Use `blueprint apply` and `blueprint delete` instead.
@@ -522,8 +533,9 @@ aether artifacts info <group:artifact:version>
 # Download an artifact file (writes to stdout or --out)
 aether artifacts get <group:artifact:version> [--out=<file>] [--file=<filename>]
 
-# Delete an artifact
-aether artifacts delete <group:artifact:version>
+# Archive an artifact version (stops resolving, is delisted, keys are kept; `delete` is an alias).
+# Allowed once the version has been stored for the minimum retention period (default 7 days).
+aether artifacts archive <group:artifact:version>
 
 # Show artifact storage metrics
 aether artifacts metrics
@@ -561,9 +573,15 @@ aether artifacts get com.example:my-slice:1.0.0 > my-slice.jar
 # Download a specific file from the artifact (e.g. sources jar)
 aether artifacts get com.example:my-slice:1.0.0 --file=my-slice-1.0.0-sources.jar --out=src.jar
 
-# Remove an artifact
-aether artifacts delete com.example:my-slice:1.0.0
+# Archive an artifact version that is no longer needed
+aether artifacts archive com.example:my-slice:1.0.0
 ```
+
+The built-in store writes each coordinate once. `deploy` and `push` of identical content again are a no-op
+(`already-present`); different content for a stored coordinate is refused (`409`, naming what differs between the stored and the offered content) and a
+`-SNAPSHOT` version is refused (`400`), so publish release versions. Archiving a version younger than the retention
+period is refused (`409`); archived artifacts answer `410` on download. See
+[Artifact Repository](../operators/artifact-repository.md).
 
 #### blueprint
 
@@ -608,7 +626,7 @@ instances = 3
 
 [slices.inventory]
 artifact = "org.example:inventory:1.0.0"
-instances = 2
+instances = 3
 ```
 
 Example workflow:
@@ -634,12 +652,29 @@ aether blueprints delete order-system:1.0.0 -f
 # Deploy from artifact coordinates
 aether blueprints deploy org.example:my-app:1.0.0
 
-# Publish a blueprint already present in the repository (POST /api/blueprints/publish)
+# Publish a blueprint already present in the repository (POST /api/v1/blueprints/publish)
 aether blueprints publish org.example:my-app:1.0.0
 
 # Upload a blueprint JAR and deploy it
 aether blueprints upload my-app-1.0.0-blueprint.jar -g org.example -a my-app -v 1.0.0
 ```
+
+**Publish output — rejected bindings and warnings.** Under the default TABLE format `publish` prints
+`Published blueprint: <coords>` and then one line per entry of the response's `rejectedStreamBindings`
+(#1336) and one line per entry of its `warnings` (#1564), in response order:
+
+```
+Published blueprint: org.example:my-app:1.0.0
+WARNING [streams.orders] [replication-factor-below-three]: stream 'orders' (replication_factor=2, confirmation_factor=2): replication_factor is below 3
+```
+
+A warning line reads `WARNING <field> [<rule>]: <message>`. The replication warnings are
+`replication-factor-below-three` (an explicit `replication_factor` below 3 — LOUD),
+`confirmation-equals-replication-factor` (losing any one replica refuses writes) and
+`confirmation-factor-owner-only` (`confirmation_factor = 1`: the owner's death loses records it
+acknowledged but had not replicated); see `guarantees.md` §4a. A warning never fails the command. With
+`--quiet`, or any non-TABLE format, nothing extra is printed — JSON output already carries both keys.
+`deploy` and `apply` print the whole response body, so the same keys appear there as JSON.
 
 **Single-migrator gate.** `deploy` and `publish` (the artifact-based paths) are refused with
 HTTP 409 when the artifact declares migrations for a datasource that a **different** blueprint
@@ -671,7 +706,7 @@ aether deploy <group:artifact:version> --blue-green
 aether deploy <group:artifact:version> --rolling
 
 # Common options (all strategies):
-#   -n, --instances <n>      Number of new version instances (default: 1)
+#   -n, --instances <n>      Number of new version instances (default: 3; fewer is refused, #1495)
 #   --error-rate <rate>      Max error rate threshold 0.0-1.0 (default: 0.01)
 #   --latency <ms>           Max latency threshold in ms (default: 500)
 #   --manual-approval        Require manual approval for routing changes
@@ -852,9 +887,6 @@ aether alerts active
 
 # Show alert history
 aether alerts history
-
-# Clear all active alerts
-aether alerts clear
 
 # Inject a synthetic alert (operator-driven; visible via 'aether alerts list')
 aether alerts inject \
@@ -1253,14 +1285,20 @@ aether nodes lifecycle --state READY+SYNCING
 aether nodes lifecycle <nodeId>
 
 # Drain a node (READY → DRAINING via the membership-v2 DRAIN-command heartbeat;
-# the target self-drains, finishing in-flight requests, respecting disruption budget)
+# the target self-drains, finishing in-flight requests, respecting the disruption budget
+# and every hosted slice's minAvailable floor: a drain that would take a slice below it
+# is refused with 409 naming the slice)
 aether nodes drain <nodeId>
 
+# Override the slice minAvailable floor (the cluster raises an operator warning)
+aether nodes drain <nodeId> --override-floor
+
 # Shut down a node (self-drain then halt via the DRAIN-command heartbeat; CTM
-# grace-terminate backstop reaps the container)
+# grace-terminate backstop reaps the container). Same floor, same --override-floor.
 aether nodes shutdown <nodeId>
 
-# Promote a node to a new role (CORE or WORKER) via consensus
+# Check an already matching immutable role (CORE, WORKER or SPOT).
+# A different role is refused; provision a new node with the required role.
 aether nodes promote <nodeId> --role WORKER
 aether nodes promote <nodeId> --role CORE
 ```
@@ -1279,7 +1317,7 @@ aether nodes lifecycle node-2
 # Initiate shutdown
 aether nodes shutdown node-3
 
-# Promote node-4 to a WORKER role at runtime (CORE → WORKER); reverse with --role CORE
+# Acknowledges node-4 only if it already has the immutable WORKER role
 aether nodes promote node-4 --role WORKER
 ```
 
@@ -1334,6 +1372,8 @@ aether scheduled-tasks inject \
 aether scheduled-tasks executions-by-node <configSection> <artifact> <method>
 ```
 
+The task entries printed by `list` and `get` carry `lastOutcome` (`SUCCESS`, `FAILURE`, `UNKNOWN`, or empty) and `completionTimeouts` and `lateResolutions` (monotonic counters): `UNKNOWN` is a remote fire whose response did not arrive within the scheduler's 10-minute completion bound, counted neither as an execution nor as a failure (see the scheduled-tasks state API in the management API reference).
+
 Example:
 ```bash
 # Show all scheduled tasks
@@ -1367,43 +1407,11 @@ aether scheduled-tasks inject \
 
 ### backup
 
-Manage cluster backups. Two surfaces are available: the **singular** `aether backup` parent
-with verb-style subcommands (`create`, `restore`, `list`) introduced for operator-facing
-workflows in P-NEW-C, and the legacy **plural** `aether backups` parent with the original
-`trigger`/`list`/`restore` subcommands. Both call the same REST routes
-(`POST /api/backups`, `POST /api/backups/restore`, `GET /api/backups`) — pick whichever
-reads more naturally for your scripts.
-
-```bash
-# Singular surface (P-NEW-C, recommended for new scripts)
-aether backup create                   # create a new backup (synchronous)
-aether backup create --wait            # create + poll /api/backups until the new entry appears
-aether backup create --wait --timeout 120
-aether backup restore <commit-id>      # restore from a specific backup commit (prompts for confirmation)
-aether backup restore <commit-id> --yes  # skip confirmation (required in non-interactive shells)
-aether backup list                     # list available backups
-
-# Plural surface (legacy alias, identical routes)
-aether backups trigger
-aether backups list
-aether backups restore <commit-id>
-```
-
-#### `aether backup` subcommands
-
-| Subcommand | Description |
-|------------|-------------|
-| `create [--wait] [--timeout N]` | Create a new backup (`POST /api/backups`). With `--wait`, polls `GET /api/backups` until the new entry appears or `--timeout` (default 60s) elapses. |
-| `restore <commit> [--yes\|--force]` | Restore the cluster KV-Store from the named backup commit (`POST /api/backups/restore`). Destructive — overwrites current state, so it prompts for confirmation; `--yes`/`--force` skips the prompt (required in non-interactive shells). |
-| `list` | List available backups (`GET /api/backups`). |
-
-#### `aether backups` subcommands (legacy)
-
-| Subcommand | Description |
-|------------|-------------|
-| `trigger` | Trigger a manual backup |
-| `list` | List available backups |
-| `restore <commit>` | Restore from backup |
+Removed (#676). The `backup` and `backups` command trees and `POST|GET /api/v1/backups` were wired to a
+service whose only implementation was `disabled()`, so every call returned `backup-disabled` in every
+configuration. Declared-state durability is `[backup]` git-backed persistence — see
+[backup-recovery](../operators/runbooks/backup-recovery.md); it has no CLI or API surface and is
+inspected with `git log` in the configured `path`.
 
 ---
 
@@ -1431,17 +1439,17 @@ aether schema undo <datasource> -v <version>
 aether schema retry <datasource>
 
 # Baseline a datasource at a version
-aether schema baseline <datasource> -v <version>
+aether schema baseline <datasource> -v <version> [--force]
 ```
 
 | Subcommand | Description |
 |------------|-------------|
 | `status [datasource]` | Show schema status (all or specific) |
 | `history <datasource>` | Show migration history |
-| `migrate <datasource>` | Trigger manual migration |
-| `undo <datasource> -v N` | Undo to target version |
+| `migrate <datasource>` | Trigger manual migration (refused with `409` if the record is COMPLETED and already serving, or already PENDING) |
+| `undo <datasource> -v N` | Undo to target version — leader-only (`409` on a follower); `422` if the version has no undo script or fails its checksum |
 | `retry <datasource>` | Retry a failed migration (clears the activation hold) |
-| `baseline <datasource> -v N` | Baseline at version |
+| `baseline <datasource> -v N [--force]` | Baseline at version — leader-only (`409` on a follower or on applied history past the target version); `409` while a migration is PENDING or MIGRATING unless `--force` (#217) |
 
 #### `aether schema status` output
 
@@ -1453,6 +1461,7 @@ command.
 |--------|-----------|---------|
 | `DATASOURCE` | `datasource` | Datasource name (cluster-global, not per-blueprint) |
 | `STATUS` | `status` | `PENDING`, `MIGRATING`, `COMPLETED`, `FAILED` |
+| `HELD SLICES` | `heldSlices` | Slice artifacts withheld from activation by this record (#760) — always empty for `COMPLETED` |
 | `VERSION` | `currentVersion` | Highest version recorded |
 | `LAST MIGRATION` | `lastMigration` | Filename of the last migration recorded |
 | `OWNING BLUEPRINT` | `owningBlueprint` | Blueprint that declared the migrations — **whose slices this record holds** while `status` is not `COMPLETED` |
@@ -1488,15 +1497,68 @@ aether blueprints deploy org.example:my-app:1.0.1   # redeploy the owning bluepr
 aether schema status orders_db
 ```
 
-`retry` only applies to a record in `FAILED`; against any other status it fails with `409 Conflict`
-and ``Schema for datasource '<name>' is not in FAILED state (currently <STATUS>) — retry only
-applies to failed migrations``, naming the status it actually observed. `baseline` requires an
+`retry` applies to a record in `FAILED` **or `PENDING`** (#724 widened the guard — a migration
+that never dispatched has no other lever short of retry or a redeploy); against `MIGRATING` or
+`COMPLETED` it fails with `409 Conflict` and ``Schema for datasource '<name>' is not in FAILED
+state (currently <STATUS>) — retry applies to FAILED or PENDING migrations only``, naming the
+status it actually observed. `baseline` requires an
 existing record — it inherits that record's owning blueprint rather than inventing one, so
 baselining a datasource that has never been published fails with `404 Not Found` and
 ``Schema status not found for datasource '<name>'``.
 
+`undo` and `baseline` both require this node to be the cluster leader (#543) — a non-leader node
+refuses immediately with `409 Conflict` and ``Schema <operation> for datasource '<name>' requires
+the leader node — current leader: <id>`` (leader suffix omitted when unknown), rather than
+attempting the write and rolling back; the orchestrator's own single-flight fence is in-process
+only and does not protect a schema row from a second node mutating it concurrently. Both then
+delegate to the schema orchestrator's real `undoTo` / `baseline` operation and report its own
+re-read of the outcome — status is always `COMPLETED` on success, never a bare `PENDING` (the prior
+`undo` implementation wrote `PENDING` and reported success without ever running the undo script,
+which silently held the owning blueprint's slices instead of undoing anything). `undo` against a
+target version with no matching `U<version>__*.sql` script, or one whose checksum no longer
+matches the script content, fails with `422 Unprocessable Entity` rather than a generic `500`.
+`baseline` against a datasource with versioned migrations already applied past the requested
+version fails with `409 Conflict` (``Baseline conflict for datasource '<name>': versioned
+migrations already applied up to version <existingVersion>``) — undo to the target version instead,
+or baseline at (or above) the existing version.
+
+`undo` (and, for the same declarative-contract reason, `baseline`) is not sticky across a
+republish: the artifact's declared version wins on every publish, so republishing (or
+redeploying) a blueprint that declares a version higher than the undo target re-arms migration
+and re-applies from scratch whatever rows the undo removed — nothing compares the live record to
+the request first. To keep an undo, deploy a blueprint that declares the lower version instead of
+republishing the higher one, or accept the re-migration. A guard that refuses (or requires
+`force` for) such a publish is tracked separately in #834, not implemented here.
+
+`migrate` similarly refuses (#760 review BLOCKING 1) when the record is `COMPLETED` **and** the
+owning blueprint has at least one slice instance already `ACTIVE` — re-arming to `MIGRATING` would
+hold the next slice reaching `LOADED` (scale-up, rolling redeploy, a rejoining node) with no
+automatic recovery, since only a `PENDING` record's Put actually dispatches a migration run. The
+409 names the datasource and how many active instances it is serving; `baseline` or `undo` first
+if a genuine re-migration is intended. A COMPLETED record with zero live ACTIVE slices still goes
+through unchanged.
+
+`migrate` also refuses (#760/#724 review round 2 item l) when the record is already `PENDING`: a
+fresh `PENDING` Put is what dispatches a migration run, so a second `migrate` call has no dispatch
+effect of its own to join — it neither adds nor replaces any in-flight tracking (a `PENDING` record
+can otherwise sit with zero in-flight tracking at all, which is exactly the stuck state #724 fixed)
+and would only strand the record with no automatic clearing path. The 409 names the datasource.
+`aether schema retry <datasource>` is the lever for a `PENDING` record and re-triggers dispatch,
+not only once the record has since failed (it accepts `PENDING`, unlike `migrate` — see above).
+Dispatch requires this node's deployment FSM to be the elected leader and `Active` (only that
+state's handler consumes the consensus Put `retry` writes); given that, it still no-ops when either
+guard `SchemaOrchestratorService.acquireLock` checks is already held — the local per-JVM fence or the
+cross-node consensus lock — so a retry racing an in-progress attempt for the same datasource returns
+`LOCK_HELD` rather than starting a second run. `migrate` itself does not re-trigger dispatch
+`[mechanism: SchemaRoutes.guardReactivation
+switches on the observed status before any orchestrator effect and returns SchemaAlreadyPending for
+PENDING without writing MIGRATING]`.
+
 The cluster leader also writes a `SCHEMA_ACTIVATION_BLOCKED` audit entry when it observes a
-`FAILED` record, naming the datasource, the owning blueprint, and the held slices.
+`FAILED` record, naming the datasource, the owning blueprint, and the held slices. The same held
+slices render in the `HELD SLICES` column of `aether schema status` output (#760/#724 review round
+2 item k), without waiting for that audit entry — before this fix the table stopped at `OWNING
+BLUEPRINT` and `heldSlices` was reachable only via `--format json` or `--field heldSlices`.
 
 > **Known limit — the gate scopes by migration *ownership*, not by *usage*.** A blueprint that
 > reads or writes a datasource **without declaring migrations for it** is never held when that
@@ -1535,7 +1597,11 @@ aether schema baseline orders_db -v 3
 
 > **`status`/`publish`/`read`/`delete` take an address, not just a name.** These now dispatch to
 > catalog-form `(namespace, stream, version)` routes (management-api-versioning-spec.md §3.2, #742).
-> A bare name (no colon) defaults to `system:<name>:1.0.0`, preserving the original single-name UX;
+> A stream address must be the full `namespace:stream:version`. A bare name is REFUSED (#1044): it
+> names no namespace, and silently assuming `system:` returned an empty result for every application
+> stream once engine keys were qualified (#1040) — a well-formed empty answer indistinguishable from a
+> stream with no events. The error names the form to retype, including the `system:<name>:1.0.0`
+> spelling for a system stream. `aether streams list` shows the catalog address of every stream;
 > a `namespace:stream:version` triple addresses any stream. `list`, `consumers`, and `create` are
 > unaffected and remain on their existing flat addressing.
 
@@ -1549,12 +1615,12 @@ aether streams list
 
 ### `aether streams status <name-or-address>`
 
-Show detailed stream info including per-partition details. Bare name defaults to
-`system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream. Wraps
-`GET /api/v1/streams/{namespace}/{stream}/{version}/info`.
+Show detailed stream info including per-partition details. Takes the full
+`namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/info`.
 
 ```bash
-aether streams status my-events                  # -> system:my-events:1.0.0
+aether streams status system:my-events:1.0.0
 aether streams status orders:order-events:1.0.0
 ```
 
@@ -1573,51 +1639,64 @@ owns it — reads are forwarded to the owner whenever those differ — and is co
 node, so one call answers "who consumes partition 3". `unassignedPartitions` is the gap worth alerting
 on: partitions no node can consume because the declaring slice is `ACTIVE` nowhere.
 
+`attachSkippedNoLocalSliceCount` (#1389) is the second gap: partitions committed to THIS node while the
+declaring slice is not loaded here, so nothing here consumes them. It counts state entries, not
+partitions, and the matching `diagnostic` names the group, stream, partitions, node and slice. Rising
+while `attachedSubscriptions` stays flat means the group is assigned and consumed nowhere — redeploy or
+unload the slice on this node so the leader stops naming it.
+
+A `diagnostic` naming more than one artifact for a single entry means two different artifacts declared
+the same stream and consumer group (#545) — neither is consuming until the group is renamed or one of
+the declarations is removed. This is unrelated to `aether blueprints status`: that command reports
+slice deployment health, not stream registrations, and shows nothing for a #545 collision — a slice can
+be fully deployed while its declarative consumer sits idle on one.
+
 See [Management API — Declarative Stream Consumers](management-api.md#declarative-stream-consumers).
 
-### `aether streams publish <name-or-address> <message>`
+### `aether streams publish <name-or-address> <message> [--partition N]`
 
-Publish a text message to a stream. The message is base64-encoded automatically. Bare name
-defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any stream.
-Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
+Publish a text message to a stream. The message is base64-encoded automatically. Takes the full
+`namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}/publish`.
+
+`--partition N` targets a specific partition; omitted, it defaults to **partition 0** (unchanged
+behavior). This command does no key-based routing — Management-API publish writes untyped bytes
+with no event to extract an `@PartitionKey` from (unlike an app publish, #507), so `--partition`
+is a direct, deliberate target choice, not a routing key. Naming a partition outside the stream's
+declared range fails with `400 Bad Request` naming the valid range.
 
 ```bash
-aether streams publish my-events "Hello, world!"
+aether streams publish system:my-events:1.0.0 "Hello, world!"
 aether streams publish orders:order-events:1.0.0 "Hello, world!"
+aether streams publish orders:order-events:1.0.0 "Hello, world!" --partition 2
 ```
 
 ### `aether streams read <name-or-address> <partition>`
 
-Read events from a specific partition of a stream. Bare name defaults to `system:<name>:1.0.0`;
-a `namespace:stream:version` address targets any stream. Optional `--since <offset>` selects the
+Read events from a specific partition of a stream. Takes the full `namespace:stream:version`
+address; a bare name is refused (spell a system stream `system:<name>:1.0.0`). Optional `--since <offset>` selects the
 starting offset (maps to `?from=`), and `--limit <N>` caps the number of events returned (maps to
 `?max=`). Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/read/{partition}`.
 
 ```bash
-aether streams read my-events 0                  # -> system:my-events:1.0.0
+aether streams read system:my-events:1.0.0 0
 aether streams read orders:order-events:1.0.0 0
-aether streams read my-events 0 --since 100 --limit 50
+aether streams read orders:order-events:1.0.0 0 --since 100 --limit 50
 ```
 
 ### `aether streams create <name> [--partitions N]`
 
-Create a new event stream. The optional `--partitions N` flag overrides the server-side
-default partition count. The underlying `POST /api/streams` route is idempotent — calling
-`create` on an existing stream returns the existing metadata (status `exists`).
-
-```bash
-aether streams create my-events
-aether streams create my-events --partitions 8
-```
+Removed (#1224): the command refuses unconditionally, because the body-carried create never registered a
+catalog entry. Use [`aether stream create`](#aether-stream-create-namespacestreamversion---partitions-n).
 
 ### `aether streams delete <name-or-address> [--force]`
 
-Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied. Bare
-name defaults to `system:<name>:1.0.0`; a `namespace:stream:version` address targets any
-stream. Wraps `DELETE /api/v1/streams/{namespace}/{stream}/{version}`.
+Delete an event stream. Prompts for confirmation unless `--force` (`-f`) is supplied. Takes the
+full `namespace:stream:version` address; a bare name is refused (spell a system stream
+`system:<name>:1.0.0`). Wraps `DELETE /api/v1/streams/{namespace}/{stream}/{version}`.
 
 ```bash
-aether streams delete my-events
+aether streams delete system:my-events:1.0.0
 aether streams delete orders:order-events:1.0.0 --force
 ```
 
@@ -1625,7 +1704,8 @@ aether streams delete orders:order-events:1.0.0 --force
 
 Register a consumer in a consumer group on the given stream. `--consumer-id` is the unique
 identifier of the consumer within the group. `--partitions N` (default `1`) is the partition
-count the consumer expects to be assigned to.
+count the coordinator spreads its assignment records over. This records membership only: no stream read
+consults those records, so joining does not change which events a consumer receives (#2201).
 
 ```bash
 aether streams consumer-group join orders-workers orders --consumer-id worker-1 --partitions 4
@@ -1641,8 +1721,8 @@ aether streams consumer-group leave orders-workers orders --consumer-id worker-1
 
 ### `aether streams consumer-group status <group> [<stream>]`
 
-Show the per-stream consumer assignments for the given group. The optional `<stream>`
-positional is informational — the server-side `/api/streams/groups/{id}` returns the full
+Show the per-stream members of the given group (consumer id and node, no partitions). The optional `<stream>`
+positional is informational — the server-side `/api/v1/streams/groups/{id}` returns the full
 multi-stream group status.
 
 ```bash
@@ -1657,14 +1737,56 @@ aether streams consumer-group status orders-workers orders
 aether streams list
 
 # Check stream details
-aether streams status user-events
+aether streams status system:user-events:1.0.0
 
 # Publish a message
-aether streams publish user-events "order_created:12345"
+aether streams publish system:user-events:1.0.0 "order_created:12345"
 
 # Read events from partition 0, starting at offset 100, max 50 events
-aether streams read user-events 0 --since 100 --limit 50
+aether streams read system:user-events:1.0.0 0 --since 100 --limit 50
 ```
+
+---
+
+## Durable Topics (`aether topics`)
+
+Operator surface for durable pub/sub consumer groups and the projections behind them (#1333). Both
+commands are LOCAL: they describe, and act on, the node the CLI is pointed at.
+
+### `aether topics groups <namespace:topic:version>`
+
+Show every consumer group over a durable topic — one per durable subscriber method, identified as the
+runtime identifies it (`artifactBase#method`) — and, per partition, which node consumes it and which
+owns it, the consensus-committed cursor with its rewind epoch, the live cursor where this node runs the
+consumer, and the projection state (`LIVE` / `REBUILDING`) where this node hosts the group's projection.
+
+```bash
+aether topics groups com.example:projection-events:1.0.0
+```
+
+The topic must be addressed in full (`namespace:topic:version`); a bare name is refused because it
+could name two different backing streams. `replayState: UNKNOWN` means this node hosts no projection
+for the group — ask the node shown as `consumerNode`.
+
+See [Management API — Durable Topic Groups](management-api.md#durable-topic-groups).
+
+### `aether topics rebuild <namespace:topic:version> <group>`
+
+Rebuild the read model behind one consumer group's projection: capture the replay range, reset the
+projection store to a new generation, rewind the group's committed cursor under a fenced epoch. Run it
+against the node that consumes the group's partitions (`consumerNode` from `aether topics groups`); any
+other node answers `409` naming that node.
+
+```bash
+aether topics rebuild com.example:projection-events:1.0.0 'com.example:orders-slice#onProjectionEvent'
+```
+
+The answer carries the new generation, the rewind token and the captured range per partition. Follow
+progress with `aether topics groups`: the partition reads `REBUILDING` with `nextReplayOffset` advancing,
+then `LIVE`; `committedEpoch` equals the returned token once the rewound consumer has checkpointed. A
+replay event that dead-letters is skipped and stays out of the rebuilt model until redriven.
+
+See [Management API — Rebuild Projection](management-api.md#rebuild-projection).
 
 ---
 
@@ -1672,7 +1794,7 @@ aether streams read user-events 0 --since 100 --limit 50
 
 The `aether stream` command group (singular) operates on **namespaced** streams addressed by a
 fully-qualified `namespace:stream:version` triple (version is `MAJOR.MINOR.PATCH`). It wraps the
-namespaced `/api/streams/*` route surface. This is distinct from the legacy `aether streams`
+namespaced `/api/v1/streams/*` route surface. This is distinct from the legacy `aether streams`
 (plural) commands above, which use flat single-name addressing.
 
 Exit codes: `0` success, `1` error, `2` validation, `3` user-cancelled, `4` not-found,
@@ -1697,13 +1819,17 @@ aether stream show orders:order-events:1.0.0
 
 ### `aether stream replicas <stream> <partition> [--local]`
 
-Show per-node replica state for a stream partition — the replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Renders a per-replica table (each replica's `STATE` — `SYNCING`/`CAUGHT_UP`/`LAGGING` — its `CONFIRMED` acked offset, and whether it is the partition's HRW owner) and surfaces the partition-level fields (`hrwOwner`, `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`) in `--format json`. Compare a `CAUGHT_UP` replica's `CONFIRMED` against `ownerHeadOffset` to spot the #333 write-idle residual (a replica that reports caught-up but lags the owner's true tail).
+Show per-node replica state for a stream partition — the replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Renders a per-replica table (each replica's `STATE` — `SYNCING`/`CAUGHT_UP`/`LAGGING` — its `CONFIRMED` acked offset, and whether it is the partition's HRW owner) and surfaces the partition-level fields (`hrwOwner`, `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`, `ownerActivationBlock`) in `--format json`. A non-empty `ownerActivationBlock` names why the owner's promotion waits for an operator (#1555: a divergent peer, or members unreachable past the alarm window). Compare a `CAUGHT_UP` replica's `CONFIRMED` against `ownerHeadOffset` to spot the #333 write-idle residual (a replica that reports caught-up but lags the owner's true tail).
 
 **`<stream>` means something different depending on `--local` (#753):**
-- **Without `--local`** (default): `<stream>` must be a full `namespace:stream:version` catalog address — there is no bare-name-defaults-to-`system` convenience here (unlike `streams status/publish/read/delete`), because the raw engine key a `--local` query needs and the catalog address this path needs are two different shapes for a non-`system` stream, and silently guessing between them is worse than requiring the caller to say which one. Dispatches to the catalog-form `STREAM_REPLICAS` route.
-- **With `--local`**: `<stream>` is the partition manager's raw *engine key* (`StreamManager#engineKey` — bare name for `system`-namespace streams, e.g. `cluster-events`; the full `namespace:stream:version` triple for any other namespace), passed through unparsed. Dispatches to `STREAM_REPLICAS_LOCAL`, keyed on that engine key rather than the catalog address.
+- **Without `--local`** (default): `<stream>` must be a full `namespace:stream:version` catalog address — there is no bare-name-defaults-to-`system` convenience here (unlike `streams status/publish/read/delete`), because a bare name would silently mean a different stream than the one the caller intends (#1044), so the caller must say which one. Dispatches to the catalog-form `STREAM_REPLICAS` route.
+- **With `--local`**: `<stream>` is the partition manager's raw *engine key* (`StreamManager#engineKey` — the full `namespace:stream:version` triple in every namespace, `system` included, e.g. `system:cluster-events:1.0.0`), passed through unparsed. Dispatches to `STREAM_REPLICAS_LOCAL`, keyed on that engine key rather than the catalog address.
 
-**Owner authority:** the answering node's `ReplicaRegistry` holds the complete per-peer watermark view only when that node IS the partition's HRW owner (`servedByOwner: true`). By default the query is served from an arbitrary STREAMING-capable delegate and is owner-aware but **not** owner-forwarded — and because of that delegation, re-querying another port still lands on a delegate. Pass **`--local`** (#490) to make the ADDRESSED node answer from its OWN registry: point the CLI at the `hrwOwner` node's management port with `--local` to get the authoritative full set (`servedByOwner: true`), or sweep each node's port with `--local` to compare per-node views during failover diagnosis. Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` (default) or `GET /api/v1/streams/{name}/{partition}/replicas-local` (`--local`).
+**Owner authority:** the answering node's `ReplicaRegistry` holds the complete per-peer watermark view only when that node IS the partition's HRW owner (`servedByOwner: true`). Since #1039 the default query is **owner-forwarded**: whichever node you address resolves the partition's HRW owner and forwards there, so a successful answer is the authoritative set (`servedByOwner: true`) from any management port. Before #1039 it was served by an arbitrary STREAMING-capable delegate, which reported `servedByOwner: false` with an empty replica table on every port — indistinguishable from a partition that holds nothing.
+
+Two conditions are reported as errors rather than as an empty table: no HRW owner resolvable at all (empty member view / pre-reconcile bootstrap), and an owner-forward loop — the node the request was forwarded to re-resolves the owner from its own membership view, disagrees, and refuses by name rather than answering from a non-owner's registry. The second is expected during failover, which is when this command is most used; the trade is an explicit `503` you can act on instead of a `200` carrying `servedByOwner: false` that reads like an empty partition.
+
+Pass **`--local`** (#490) for the different question — what does THIS node see: the ADDRESSED node answers from its OWN registry, never forwarded, so sweeping every node's port with `--local` compares per-node views during failover diagnosis. Wraps `GET /api/v1/streams/{namespace}/{stream}/{version}/replicas/{partition}` (default) or `GET /api/v1/streams/{name}/{partition}/replicas-local` (`--local`).
 
 ```bash
 aether stream replicas system:cluster-events:1.0.0 0
@@ -1711,8 +1837,8 @@ aether stream replicas system:cluster-events:1.0.0 0
 # Machine-readable (includes hrwOwner / servedByOwner / ownerHeadOffset)
 aether stream replicas system:cluster-events:1.0.0 0 --format json
 
-# Owner-authoritative view: address the hrwOwner node's management port + --local, engine key form (#490)
-aether stream replicas cluster-events 0 --local
+# Per-node view: what THIS node's registry holds, never forwarded, engine key form (#490)
+aether stream replicas system:cluster-events:1.0.0 0 --local
 aether stream replicas orders:order-events:1.0.0 0 --local
 ```
 
@@ -1728,7 +1854,7 @@ core-4    SYNCING    240        no
 
 Show per-node stream hydration state — the memory/placement observability sensor for placement-aware-stream-hydration (#265). Renders a per-stream table (each stream's `DECLARED` partition count, `RINGS` materialized locally, `DEFERRED` held-but-not-yet-materialized partitions, `FLOOR-BYTES` reserved, `OVER-CEIL` whether the committed config is over the per-stream partition ceiling, and the node's `OWNER`/`REPLICA`/`NONE` placement-role tally) and surfaces the per-node budget fields (`totalAllocatedBytes`, `maxTotalBytes`, `overBudget`, `deferredPartitions`), the partition-cap fields (`perStreamCeiling`, `clusterAggregateGuard`, `currentAggregatePartitionSlots`, `aggregateHeadroom`, `configOverCeilingStreams`), and the reshuffle-lifecycle fields (`releaseCandidates`, `releasedPartitionsSinceBoot`, `materializeQueueDepth` — increment 5) in `--format json`. Answered by the STREAMING-capable node from its own `StreamPartitionManager` — a PER-NODE view, not leader-forwarded.
 
-Materialization is placement-gated: `RINGS` drops below `DECLARED` on non-replicas and `REPLICA`/`NONE` are non-zero off-owner. Per §6 a follower that cannot admit a held partition's floor NO LONGER over-subscribes — it holds the partition metadata-only and counts it under `DEFERRED` until budget frees, when the deferred-retry hook materializes it. Partition caps (§7, increment 4) are admission control: a create over the per-stream ceiling (`1024`) or the cluster aggregate guard (`100 × nodes × maxDeclaredReplicas`) is rejected pre-commit; a follower observing an over-ceiling committed config flags it under `OVER-CEIL` / `configOverCeilingStreams` (never rejecting — the budget machinery is the memory backstop). The reshuffle lifecycle (§5/§14.2, increment 5) releases a ring on confirmed role loss (catch-up-gated + flap-debounced, freeing memory + budget while keeping the WAL) — `releaseCandidates` counts partitions debouncing toward release, `releasedPartitionsSinceBoot` the running release total, and `materializeQueueDepth` the partitions paced behind the `reshuffle_concurrency = 2` slot limit (system streams drain first). This command is how that memory win, any budget pressure, cap headroom, and reshuffle pacing are observed. Wraps `GET /api/streams/hydration`.
+Materialization is placement-gated: `RINGS` drops below `DECLARED` on non-replicas and `REPLICA`/`NONE` are non-zero off-owner. Per §6 a follower that cannot admit a held partition's floor NO LONGER over-subscribes — it holds the partition metadata-only and counts it under `DEFERRED` until budget frees, when the deferred-retry hook materializes it. Partition caps (§7, increment 4) are admission control: a create over the per-stream ceiling (`1024`) or the cluster aggregate guard (`100 × nodes × maxDeclaredReplicas`) is rejected pre-commit; a follower observing an over-ceiling committed config flags it under `OVER-CEIL` / `configOverCeilingStreams` (never rejecting — the budget machinery is the memory backstop). The reshuffle lifecycle (§5/§14.2, increment 5) releases a ring on confirmed role loss (catch-up-gated + flap-debounced, freeing memory + budget while keeping the WAL) — `releaseCandidates` counts partitions debouncing toward release, `releasedPartitionsSinceBoot` the running release total, and `materializeQueueDepth` the partitions paced behind the `reshuffle_concurrency = 2` slot limit (system streams drain first). This command is how that memory win, any budget pressure, cap headroom, and reshuffle pacing are observed. Wraps `GET /api/v1/streams/hydration`.
 
 ```bash
 aether stream hydration
@@ -1750,7 +1876,7 @@ system:cluster-events:1.0.0   1         1      0         2660352         false  
 ### `aether stream tail <namespace:stream:version> [options]`
 
 Tail events from a stream version. Tailing is **polling-based** (paginated GETs against
-`/api/streams/events/...`); each event payload is printed on its own stdout line. Press Ctrl-C to
+`/api/v1/streams/{ns}/{stream}/{ver}/events`); each event payload is printed on its own stdout line. Press Ctrl-C to
 stop. A streaming SSE/WebSocket subscription is **deferred to issue #212**.
 
 ```bash
@@ -1765,6 +1891,25 @@ aether stream tail orders:order-events:1.0.0 --no-follow   # one-shot drain, the
 | `--from-offset` | Initial offset to read from (default `0` — from beginning) |
 | `--max-events` | Max events per poll page (default `100`, server-capped at `1000`) |
 | `--follow` / `--no-follow` | Keep polling (default) vs. one-shot drain then exit |
+
+### `aether stream create <namespace:stream:version> [--partitions N]`
+
+Create a stream at a catalog address and register it in the catalog. Idempotent: an address that
+already exists reports `exists`. `--partitions N` overrides the server-side default partition count.
+Wraps `POST /api/v1/streams/{namespace}/{stream}/{version}`.
+There is no replication option: the stream takes the committed cluster `[replication]` defaults (#1564;
+built-in `replication_factor` 3, `confirmation_factor` 2), so a publish to it needs one registered peer.
+
+An address in the `topic` or `entity` namespace is refused with `400` (`ReservedStreamName`), because
+those stream kinds are created only by internal provisioning (durable topics, entity keyspaces). The
+command prints the server's problem detail, for example `Failed to create stream: Stream name
+'topic:foo:1.0.0' uses the reserved prefix 'topic:'; streams under it are created only by internal
+provisioning`, and exits non-zero. See the management API's *Reserved stream-name prefixes*.
+
+```bash
+aether stream create orders:order-events:1.0.0
+aether stream create orders:order-events:1.0.0 --partitions 8
+```
 
 ### `aether stream delete <namespace:stream:version> [--force]`
 
@@ -1808,7 +1953,7 @@ reserved for framework topics.
 Unlike streams, pub/sub is an in-process, declaration-driven delivery mechanism: there is **no
 `aether topic` CLI command group** and **no topic management HTTP route**. Operators inspect topic
 wiring (publishers, subscribers, and their resolved `namespace:topic:version` addresses) through the
-topology graph — `GET /api/slices/topology` and the dashboard topology view — where pub→sub edges
+topology graph — `GET /api/v1/slices/topology` and the dashboard topology view — where pub→sub edges
 are matched on the resolved canonical address.
 
 ---
@@ -1824,45 +1969,83 @@ Generate a `cluster-config.toml` interactively (default) or in batch mode driven
 aether cluster init --output cluster-config.toml
 
 # Batch mode — driven by --target plus per-target flags
-aether cluster init --target docker --name test-cluster --nodes 5 --output cluster-config.toml
+aether cluster init --target docker --name test-cluster --core-nodes 5 --output cluster-config.toml
 
 # Strict non-interactive mode — fails fast if required flags are missing (P-NEW-G)
-aether cluster init --non-interactive --name test-cluster --nodes 5 --output cluster-config.toml
+aether cluster init --non-interactive --name test-cluster --core-nodes 5 --output cluster-config.toml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--output` | Output path (default `cluster-config.toml`) |
-| `--force` | Overwrite existing output file |
+| `--force` | Overwrite an existing output file wholesale. Without it, an existing file is **merged into in place** — see "Re-running against an existing file" below. |
+| `--merge` | Consent, given up front, to every edit the merge would make to an existing file — rewriting `init`-generated keys whose value differs from the new flags/answers, and appending generated keys, sections or firewall rules the file lacks. Batch mode refuses without it (non-zero exit, file untouched); interactive mode asks instead. |
 | `--non-interactive` | Force non-interactive mode; default `--target=docker` if absent, fail fast on missing required flags (P-NEW-G, 2026-05-21). Required for CI/integration test usage (TC-07-J3). |
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
 | `--target` | Deployment target: `docker`, `ssh`, `cloud`, or `forge` |
-| `--nodes` | Total node count (>= 3 for non-SSH targets) |
+| `--core-nodes` | Consensus tier size: 5 (minimum), 7 (recommended) or 9 (maximum). Must be odd. **Required for every target, `ssh` included** — see the note below |
+| `--worker-nodes` | Worker tier size (default 0). Not bounded by the consensus-tier maximum. For an `ssh` target it is the remainder of `--hosts` after `--core-nodes` and must not be given |
 | `--hosts` | SSH hosts (ssh target only), comma-separated |
 | `--ssh-user`, `--ssh-key`, `--ssh-port` | SSH credentials (ssh target only) |
-| `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only |
+| `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only. `--credential-env`: hetzner takes the token's env var name; aws, gcp and azure take repeated `<key>=<ENV_VAR>` (e.g. `secret_access_key=MY_SECRET`), keys not named default to `<PROVIDER>_<KEY>` |
+| `--zone` | gcp only; required, no default (a zone derived from the region can name one that does not exist) |
 | `--db-host`, `--db-port`, `--db-name`, `--db-user`, `--db-password-env` | Optional Postgres backing store |
 | `--firewall` | Firewall preset: `standard`, `restrictive`, `open`, `custom` |
 | `--admin-cidr`, `--internal-cidr` | Restrictive firewall preset only |
 | `--tls`, `--tls-cert-env`, `--tls-key-env` | TLS mode: `auto` (default) or `env` |
 | `--secret`, `--secret-env` | Cluster secret mode: `auto` (default) or `env` |
 
-When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
+When `--non-interactive` is set without `--target`, the command applies `--target=docker` as the default. Missing required flags (e.g. `--core-nodes` for docker target) produce a `MissingField` failure and a non-zero exit code rather than dropping into prompts.
+
+**Behaviour change (#1019): `--core-nodes` is now required for an `ssh` target too.** Previously an `ssh` batch run needed no count — the whole of `--hosts` became the cluster and the core/worker split was derived from its length. That derivation is what #1019 removed, so the split is now stated: `--core-nodes` names the consensus tier and the worker tier is whatever `--hosts` holds beyond it. An `ssh` invocation that passed only `--hosts` before will now fail with `Required field missing or invalid: --core-nodes`. `--worker-nodes` is refused on an `ssh` target rather than ignored, since the remainder is not a free choice there.
+
+#### Re-running against an existing file (#311)
+
+The file is the operator's. Without `--force`, `init` rewrites **only the lines holding keys it
+generates**, and every other line — comments, blank lines, section order, value spelling, hand-added
+keys, sections and `[[…]]` tables — is left byte-for-byte. Concretely:
+
+- **Same answers → byte-identical file, not rewritten.** Re-running with unchanged flags changes
+  nothing (`Merged into <path>: already matches the answers, nothing changed` / `Unchanged <path>`);
+  the file is not written, so its mtime and mode stay.
+- **Every other edit needs consent.** The merge first lists what it would do — `section.key: <old>
+  → <new>` for a generated key whose value you changed by hand, `+ section.key` or
+  `+ …allow_ingress[port=…, protocol=…, source_cidr=…]` for a generated key, section or rule the
+  file lacks. Batch mode (`--non-interactive` or `--target`) **refuses** with that list and exits
+  non-zero unless `--merge` is given; interactive mode prints it and asks once (`[y/N]`, default
+  leaves the file untouched). With consent, a differing value is rewritten on its own line — the
+  key's spelling and any trailing `# comment` stay — and missing keys are appended into their
+  section (under a new header when the section exists only through dotted keys), missing sections
+  after the nearest preceding generated section the file has.
+- **Why an addition needs consent:** generated `[[source.primary.firewall.allow_ingress]]` rules are
+  matched by port, protocol and CIDR (a rule you re-described is not duplicated). A rule you
+  narrowed from `0.0.0.0/0` to your CIDR, or deleted, is to the merge a *missing* generated rule,
+  and appending it would re-open the port — so it is listed by CIDR and refused without consent.
+  Rules `init` does not generate are kept. **Nothing is ever removed:** a changed `--admin-cidr`
+  adds the new admin rules (with consent) and keeps the old ones, listed as kept — remove them by
+  hand, or use `--force`.
+- **Keys `init` does not generate are listed** (`kept N key(s) init does not generate — …`), because
+  a merge cannot tell a hand-added key from one `init` used to generate and no longer does.
+- **A file the merge cannot read is refused, never clobbered** — including valid TOML using a
+  feature the reader does not support (dates and times); the message names the reason and
+  `--force`.
+- The generated header comments (`# Topology: …`) are comments and are not rewritten; after a
+  changed answer they may describe the previous answers.
 
 ### `aether cluster scaffold`
 
 Emit a deployment-manifest template with `aether.cluster` and `aether.node-id` labels pre-set. Operators get a working starting point that's correct-by-construction — no chance of forgetting to label containers, which would otherwise leave cross-cluster tooling unable to distinguish two clusters sharing infrastructure.
 
 ```bash
-aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N] [--image IMG] \
+aether cluster scaffold --name <cluster-name> --template docker-compose [--nodes N] [--image IMG] \
                         [--mgmt-port-base 5150] [--app-port-base 8070] [--cluster-port 6000] > compose.yml
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--name` | Cluster name (regex `^[a-z][a-z0-9-]{0,62}$`) |
-| `--format` | Output format. Currently `docker-compose` |
-| `--nodes` | Compose-fixed node count (default 5) |
+| `--template` | Output template. Currently `docker-compose` |
+| `--nodes` | Compose-fixed node count (default 5, minimum 5) |
 | `--image` | Container image (default `aether-node:local`) |
 | `--mgmt-port-base` | Host port base for management API (default 5150) |
 | `--app-port-base` | Host port base for application HTTP (default 8070) |
@@ -1870,7 +2053,7 @@ aether cluster scaffold --name <cluster-name> --format docker-compose [--nodes N
 
 Example:
 ```bash
-aether cluster scaffold --name us-prod --format docker-compose --nodes 5 > compose.yml
+aether cluster scaffold --name us-prod --template docker-compose --nodes 5 > compose.yml
 docker compose -f compose.yml up -d
 ```
 
@@ -1879,6 +2062,11 @@ The generated manifest:
 - Sets `aether.node-id=node-N` on each compose-fixed service
 - Uses `restart: "no"` per the CTM auto-heal contract (see `aether/docs/operators/deployment-recovery.md`)
 - Provisions a per-cluster bridge network `aether-<name>-network`
+- Emits `AETHER_CLUSTER_SECRET` as a required `${AETHER_CLUSTER_SECRET:?...}` shell reference, never
+  a literal — `export AETHER_CLUSTER_SECRET=<your-secret>` before `docker compose up` (#684). A file
+  generated before this fix instead has the value baked in as
+  `AETHER_CLUSTER_SECRET: "change-me-cluster-secret"`; see `SECURITY.md`'s `cluster_secret` hygiene
+  section for the migration steps and for what this fix does and does not close.
 
 See `aether/docs/operators/multi-cluster-deployment.md` for the full labeling model.
 
@@ -1935,6 +2123,19 @@ Role 'core' is declared by 2 sources (hetzner-eu, aws-us). Re-run naming one wit
 A `(source, role)` the topology does not declare is also refused rather than created — otherwise a
 mistyped source name would become a real provisioning target. Add the pair to the config and use
 `aether cluster apply` instead.
+
+Scaling a cluster with no stored config (e.g. right after a `docker compose down -v` volume wipe and
+fresh bootstrap — #335) is refused the same way, not created from the scale request: a `--count`
+alone has no source but the operator for the version or deployment settings a config needs (cluster
+name is the one exception the node already knows in-process, but the route has no way to read it).
+The error names the actual recovery:
+
+```
+No cluster configuration stored. A scale request cannot create one — it carries only
+source/role/count, not the cluster name, version, or deployment settings a config requires. Run
+'aether cluster bootstrap <aether-cluster.toml>' first, then retry 'aether cluster scale --role core
+--count 7'.
+```
 
 **Quorum safety is validated by the server, not the CLI.** A per-source count is not the cluster
 total: scaling one core source to 1 is legal when another source carries 2. Only the server holds
@@ -2003,6 +2204,8 @@ Example output:
 
 Show whether CTM auto-heal (deficit-driven replacement provisioning) is currently enabled. Operator-controlled gate, distinct from the failure-driven circuit breaker.
 
+The toggle is a durable cluster fact (#685), stored in the consensus-replicated KV, not in the leader process's memory — a leader failover no longer reverts an operator's disable. **A read reflects the log applied LOCALLY; the disable becomes visible on a node when that node applies the committed Put — bounded by consensus latency, not zero; a node behind on apply answers the previous value until then.**
+
 ```bash
 aether cluster topology auto-heal status
 ```
@@ -2014,7 +2217,7 @@ Example output:
 
 ### `aether cluster topology auto-heal disable`
 
-Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion.
+Disable CTM auto-heal — `handleDeficit` becomes a no-op until re-enabled. Use during disruption-budget testing, planned maintenance windows, or scenarios where the cluster must not automatically rebuild after node loss. Already-in-flight provisioning attempts continue to completion. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
 
 ```bash
 aether cluster topology auto-heal disable
@@ -2027,7 +2230,7 @@ Example output:
 
 ### `aether cluster topology auto-heal enable`
 
-Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately.
+Re-enable CTM auto-heal. If a deficit is pending, the next reconcile picks it up immediately on the node applying the write. Writes through the consensus-backed command path (see the staleness note under `status`); a same-state call (per this node's local, possibly stale view) still writes through unconditionally rather than short-circuiting.
 
 ```bash
 aether cluster topology auto-heal enable
@@ -2038,9 +2241,50 @@ Example output:
 {"enabled": true, "previousState": false}
 ```
 
+### `aether cluster topology role-mismatches`
+
+List provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted label (`AETHER_ROLE` → `aether-role`); a blank or unknown label is classified **CORE** by every peer, deliberately, so an intended worker whose label never arrived silently joins the core set and every community-tier mechanism gated on "positively not a core" is suppressed on it. This is that fact without log access; the leader also logs it at WARN on every join of such a node. Leader-scoped and intent-based: only nodes this leader provisioned are compared, the intent is kept until the node is decommissioned, a still-mislabelled restart under the same id is re-listed and a correctly relabelled rejoin clears the entry. See `GET /api/v1/cluster/topology/role-mismatches` in `management-api.md` for the full scope statement.
+
+```bash
+aether cluster topology role-mismatches
+```
+
+| Option | Description |
+|--------|-------------|
+| `--format` | Output format: `table` (default), `json`, `value`, `csv` |
+
+Example:
+```bash
+aether cluster topology role-mismatches
+
+# Output (table):
+# NODE                      INTENDED    ADVERTISED    CLASSIFIED
+# worker-3                  worker                    CORE
+```
+
+Example output (`--format json`):
+```json
+{"mismatches": [{"nodeId": "worker-3", "intendedRole": "worker", "advertisedRole": "", "classifiedAs": "CORE"}]}
+```
+
+### `aether cluster communities`
+
+Show worker communities: lifecycle state (`FORMING` / `ACTIVE` / `DEGRADED` / `DISSOLVED`), target size,
+roster and the leader's live-member count. Wraps `GET /api/v1/cluster/communities`, or
+`GET /api/v1/cluster/communities/{id}` when an id is given.
+
+```bash
+aether cluster communities
+aether cluster communities default:local:0
+```
+
+`liveMembers` is the leader's instantaneous observation, not committed state, and is `null` when it cannot
+be observed. A worker that fenced itself after losing the core is shown as `DEGRADED`, never `DISSOLVED`;
+see `GET /api/v1/cluster/communities` in the management API reference.
+
 ### `aether cluster governors`
 
-Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/cluster/governors`.
+Show the per-slice governor assignment across the cluster — which node currently owns the governor role for each slice. Wraps `GET /api/v1/cluster/governors`.
 
 ```bash
 aether cluster governors
@@ -2048,7 +2292,7 @@ aether cluster governors
 
 ### `aether cluster provisioning`
 
-Show leader provisioning diagnostics — why a core-membership deficit is or is not being filled (configured vs counted-core membership, effective capacity, deficit, the arm + reached-full-membership latches, quorum safety, deficit-run age, the precise suppression reason, the provisioning circuit-breaker state, and the most recent provisioning failure). Surfaced only on the leader that owns a Cluster Topology Manager; against any other node it returns a `leader: false` body with zeroed counters and an explanatory reason. Wraps `GET /api/cluster/provisioning`.
+Show leader provisioning diagnostics — why a core-membership deficit is or is not being filled (configured vs counted-core membership, effective capacity, deficit, the arm + reached-full-membership latches, quorum safety, deficit-run age, the precise suppression reason, the provisioning circuit-breaker state, and the most recent provisioning failure). Surfaced only on the leader that owns a Cluster Topology Manager; against any other node it returns a `leader: false` body with zeroed counters and an explanatory reason. Wraps `GET /api/v1/cluster/provisioning`.
 
 ```bash
 aether cluster provisioning
@@ -2063,7 +2307,7 @@ aether cluster provisioning --format json
 
 ### `aether cluster membership`
 
-Show the queried node's membership diagnostics — the responding node's authoritative membership-FSM lifecycle view plus its quorum-loss self-drain readiness. Renders a per-peer table (each tracked peer's FSM state, role, incarnation, and whether it is in the strict `Member`-only quorum set and the counted `Member`+`Suspect` set) followed by the summary counts (strict member count, quorum threshold, below-threshold flag, armed latch). Use to diagnose SWIM-under-concurrent-loss — per survivor, which peers are SUSPECT/DEAD and whether this node's self-drain window is armed and below threshold. **Per-node local view** (not leader-forwarded) — target a specific node (`-c <host>`) to read its view. Wraps `GET /api/cluster/membership`.
+Show the queried node's membership diagnostics — the responding node's authoritative membership-FSM lifecycle view plus its quorum-loss self-drain readiness. Renders a per-peer table (each tracked peer's FSM state, role, incarnation, and whether it is in the strict `Member`-only quorum set and the counted `Member`+`Suspect` set) followed by the summary counts (strict member count, quorum threshold, below-threshold flag, armed latch). Use to diagnose SWIM-under-concurrent-loss — per survivor, which peers are SUSPECT/DEAD and whether this node's self-drain window is armed and below threshold. **Per-node local view** (not leader-forwarded) — target a specific node (`-c <host>`) to read its view. Wraps `GET /api/v1/cluster/membership`.
 
 Since #590 the response also carries `coreAbsence` — the **community tier's** fence, alongside the core tier's. It answers "is this node about to dissolve because it has lost the core", with `remainingMs` counting down to the local dissolve. Like the quorum-loss summary fields, it lives at the response root, so it is shown by `--format json` rather than in the per-peer table:
 
@@ -2100,7 +2344,7 @@ strict=2  threshold=3  below=true  armed=true
 
 ### `aether cluster ownership`
 
-Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-TERM`/`HW-CTR`, and `FENCED`). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/ownership/{domain}`.
+Show the queried node's committed ownership + fence view (#345 item 1f) for a domain — for every partition/key the responding node has committed in that domain: the owner `NodeId`, the committed fence `Epoch`, the node's LOCAL per-domain epoch high-water, and whether the entry is `fenced`. Renders a per-entry table (`identity`, `owner`, the committed epoch split into `EPOCH-INC`/`EPOCH-TERM`/`EPOCH-CTR`, the local high-water split into `HW-INC`/`HW-TERM`/`HW-CTR`, and `FENCED`; the cluster incarnation leads each epoch, #1529). Use to verify the ownership fence engaged after a takeover: the committed epoch is the fencing token the Rabia applier uses to reject a deposed owner's strictly-older epoch, and `FENCED=true` pinpoints the node/arc that has already observed a newer epoch than the still-committed owner (the deposed-owner window). **Per-node local view** (not leader/owner-forwarded) — target a specific node (`-c <host>`) to read its committed + high-water view. Wraps `GET /api/v1/ownership/{domain}`.
 
 The `<domain>` argument is one of `community` (governor ownership — identity is the community id, owner is the governor), `dht` (DHT partition ownership — identity is the partition id), or `stream` (stream-partition ownership — identity is `{stream}:{partition}`). Any other value is rejected with an error.
 
@@ -2120,18 +2364,18 @@ aether cluster ownership community --format json
 | `<domain>` | Ownership domain: `community`, `dht`, or `stream` (required positional argument) |
 | `--format` | Output format: `table` (default), `json`, `value`, `csv` |
 
-`FENCED` is `true` when the local high-water is strictly after the committed epoch — this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here. In steady state `HW-TERM`/`HW-CTR` equal `EPOCH-TERM`/`EPOCH-CTR` and `FENCED` is `false`.
+`FENCED` is `true` when the local high-water is strictly after the committed epoch — this node has observed a newer epoch than the committed owner record shows, so the committed owner would be rejected as stale here. In steady state `HW-INC`/`HW-TERM`/`HW-CTR` equal `EPOCH-INC`/`EPOCH-TERM`/`EPOCH-CTR` and `FENCED` is `false`.
 
 Example output (table):
 ```
-IDENTITY  OWNER   EPOCH-TERM  EPOCH-CTR  HW-TERM  HW-CTR  FENCED
-orders:0  core-1  7           3          7        3       false
-orders:1  core-2  7           1          8        0       true
+IDENTITY  OWNER   EPOCH-INC  EPOCH-TERM  EPOCH-CTR  HW-INC  HW-TERM  HW-CTR  FENCED
+orders:0  core-1  1          7           3          1       7        3       false
+orders:1  core-2  1          7           1          1       8        0       true
 ```
 
 ### `aether cluster journal`
 
-Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/cluster/journal`.
+Dump the target node's transition journal (cluster-topology-overhaul spec, Wave 1) — a bounded per-node ring buffer recording every membership-FSM transition (layer `FSM`) and every transport peer-lifecycle transition (layer `PEER`), plus the dialer expected-vs-actual Hello diagnostic and the boot future-history detection. Wraps `GET /api/v1/cluster/journal`.
 
 **Per-node scope:** the journal is local to the node serving the request — target a specific node (`-c <host>`) to read its view (e.g. the leader's view AND the victim's view during a chaos window).
 
@@ -2241,7 +2485,7 @@ Example:
 aether cluster generation
 
 # Output (table):
-# Epoch:              7:142
+# Epoch:              1:7:142
 # Mode:               HIERARCHICAL
 # Quiescence:         QUIESCED
 # Rabia term:         7
@@ -2251,19 +2495,19 @@ aether cluster generation
 # Partitions:         2
 ```
 
-JSON output returns the full snapshot shape exposed by `GET /api/cluster/generation`.
+JSON output returns the full snapshot shape exposed by `GET /api/v1/cluster/generation`.
 
 ### `aether cluster await-quiesced`
 
 Block until the queried node observes the requested cluster generation epoch AND the snapshot reports cluster-wide quiescence. Use this in test harnesses or operator scripts that depend on a deterministic settled state before proceeding.
 
 ```bash
-aether cluster await-quiesced --epoch <T:C> [--timeout 30s]
+aether cluster await-quiesced --epoch <I:T:C> [--timeout 30s]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--epoch` | Required, epoch in `term:counter` form (e.g. `7:142`). |
+| `--epoch` | Required, epoch in `incarnation:term:counter` form (e.g. `1:7:142`); the cluster incarnation leads (#1529). |
 | `--timeout` | Optional, default `30s`, capped at `120s`. |
 | `--format` | Output format: `table` (default) — concise one-liner; `json` — raw response body. |
 
@@ -2271,23 +2515,29 @@ Exit codes: `0` on success, non-zero on timeout (HTTP 408) or other failure.
 
 Example:
 ```bash
-aether cluster await-quiesced --epoch 7:142 --timeout 60s
-# Output: Quiesced at 7:142 (response: {"epoch":"7:142","quiescence":"QUIESCED","waitedMs":1234})
+aether cluster await-quiesced --epoch 1:7:142 --timeout 60s
+# Output: Quiesced at 1:7:142 (response: {"epoch":"1:7:142","quiescence":"QUIESCED","waitedMs":1234})
 ```
 
 See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
 
 ### `aether cluster upgrade`
 
-Initiate a cluster version upgrade.
+Roll the cluster to a new version by replacement (#1543). The command rewrites `[cluster] version` in the committed TOML (the version replacements and scale-ups boot) and stores the same version beside it; the leader then starts a rolling-upgrade run that replaces every node not on the target version, one at a time: cores first, the current leader last among them, then workers. Each node is replaced under a new NodeId through the node-replacement machinery; no node is restarted under its own id. Never two replacements at once. A re-issued command is idempotent. Workers are replaced serially (one live replacement cluster-wide); parallel community batches come in a later release.
 
 ```bash
-aether cluster upgrade --version <X.Y.Z>
+aether cluster upgrade --version <version> [--wait] [--wait-timeout-minutes <N>]
 ```
+
+`<version>` is SemVer `MAJOR.MINOR.PATCH` with an optional pre-release (`1.0.0`, `1.0.0-rc5`); anything else, build metadata included, is refused (HTTP 400 from the route) before any read or write. The upgrade is refused (HTTP 409) when a runtime profile used by a source role pins `image` (container) or `jar_url` (JVM) literally: the pin would win over the version, so nothing would change. A docker source is refused the same way (`UpgradeDockerImageUnversioned`) when any of its roles has no runtime profile image carrying `{version}`: a docker replacement boots the image its profile pins at the committed version, so without one the nodes would be replaced by the same image. Write the pin with `{version}` (`image = "registry/aether-node:{version}"`) and it follows the upgrade; the placeholder has to be in the config the cluster was bootstrapped with, since `aether cluster apply` does not currently change runtime-profile content. A version change inside a file given to `aether cluster apply` is likewise refused, with a pointer back to this command — `cluster upgrade` is the only way to change the version.
+
+`GET /api/v1/nodes/lifecycle` shows the `version` each node advertises.
 
 | Option | Description |
 |--------|-------------|
 | `--version` | Target version in X.Y.Z format |
+| `--wait` | Block until the run ends. Exit code `0` completed, `1` aborted or paused (the reason is printed), `2` timed out (the run continues on the cluster) |
+| `--wait-timeout-minutes` | Timeout for `--wait`, in minutes (default 180) |
 | `-o json` | Output raw JSON (`-o=<format>`; `--json` never existed — corrected 2026-08-09) |
 
 Example:
@@ -2304,6 +2554,48 @@ If the cluster is already at the target version:
 ```
 Already at version 0.26.0. No upgrade needed.
 ```
+
+See the [Rolling Upgrade guide](../guides/rolling-upgrade.md) for the procedure and failure handling.
+
+### `aether cluster upgrade-status`
+
+Show the rolling-upgrade run started by `aether cluster upgrade` (`GET /api/v1/upgrade/status`).
+
+```bash
+aether cluster upgrade-status
+```
+
+Reports the target version, the run state (`RUNNING`, `PAUSED`, `COMPLETED`, `ABORTED`), the pending stop request (`NONE`, `PAUSE`, `ABORT`), the number of nodes done out of the total, the node being replaced now, the replacement order, and the reason a run is paused or ended. When there never was a run, `present` is false and the other fields are empty.
+
+### `aether cluster upgrade-pause`
+
+Ask the run to pause (`POST /api/v1/upgrade/pause`). OPERATOR.
+
+```bash
+aether cluster upgrade-pause
+```
+
+A pause is a request: it takes effect when the replacement in flight reaches a terminal state (immediately when none is in flight), never mid-replacement. Refused (HTTP 409) when the run is not `RUNNING`.
+
+### `aether cluster upgrade-resume`
+
+Continue a `PAUSED` run (`POST /api/v1/upgrade/resume`). OPERATOR.
+
+```bash
+aether cluster upgrade-resume
+```
+
+A node whose replacement was rolled back is tried again. A replacement that stopped with both nodes kept (`FAILED_KEPT_BOTH`) pauses the run again until it is settled with `POST /api/v1/nodes/replacements/settle/{id}`. Refused (HTTP 409) when the run is not `PAUSED`.
+
+### `aether cluster upgrade-abort`
+
+End the run (`POST /api/v1/upgrade/abort`). OPERATOR.
+
+```bash
+aether cluster upgrade-abort
+```
+
+Like a pause it is a request that waits for the replacement in flight to reach a terminal state. Nodes already replaced stay replaced; the others stay as they are. Not resumable: a new `aether cluster upgrade --version ...` starts a new run. Refused (HTTP 409) when the run has already ended.
 
 ### `aether cluster bootstrap`
 
@@ -2330,11 +2622,20 @@ aether cluster bootstrap <config-file> [--cluster <name>] [--yes] [--resume] [--
 
 Seven-phase flow: Validate → Upload SSH Keys → Provision → Collect Addresses → Deploy Runtime → Cluster Formation → Post-Bootstrap. State persisted to `~/.aether/clusters/<name>/bootstrap-state.json` after each phase.
 
+**Existing cluster name.** A fresh bootstrap (without `--resume`) refuses, before minting a secret or writing any state, when the registry (`~/.aether/clusters.toml`) already holds the name, a local `bootstrap-state.json` exists for it, or a cloud source's provider lists an instance labelled `aether-cluster=<name>`; a check that cannot be made refuses too. The error names the check that matched; use `--resume` to continue an interrupted bootstrap, or `aether cluster destroy --cluster <name>` first to re-create it. There is no override flag. What the check does not cover is listed in [known limitations](known-limitations.md#re-running-bootstrap-with-a-live-clusters-name).
+
 **Runtime modes** (`[runtime.default] type = "container" | "jvm"`):
-- **container** — VMs install Docker, pull `ghcr.io/.../aether-node:<tag>` (from `[runtime.default] image`), run with the composed `aether.toml` bind-mounted over `/app/aether.toml`. Restart via `--restart unless-stopped`.
+- **container** — VMs install Docker, pull `ghcr.io/.../aether-node:<tag>` (from `[runtime.default] image`), run with the composed `aether.toml` bind-mounted over `/app/aether.toml`. Started with `--restart no` on purpose: a node that exits is replaced under a fresh NodeId, never restarted in place (see [Deployment & Recovery](../operators/deployment-recovery.md)).
 - **jvm** — VMs install Eclipse Temurin 25 from Adoptium, download `aether-node.jar` from `[runtime.default] jar_url` (or auto-derived `https://github.com/pragmaticalabs/pragmatica/releases/download/v<version>{-candidate?}/aether-node.jar` — pin `jar_url` explicitly whenever that derivation doesn't match a published release tag, see [Bootstrap Config Reference](bootstrap-config.md#b-jar_url-pinning)), run via `nohup java -jar … & disown`. No process supervision (consider auto-heal for crash recovery).
 
 After provisioning, the deploy phase SSHes each cloud node (via `cloud-init status --wait` preflight) and restarts the runtime with the finalized 3-part PEERS list (`nodeId:host:port`). On default (`--keep-on-failure` not set), all tracked resources (VMs, SSH keys, firewall rules, floating IPs) are cleaned up automatically on failure.
+
+**Post-bootstrap registration (#584).** A successful bootstrap registers the cluster in
+`~/.aether/clusters.toml` with the management endpoint it actually serves (`<scheme>://<ip>:<management
+port>`) and **makes it the active context**, printing `Active cluster context: <name>`. Every command
+that follows without an explicit `--connect`/`--config` (`cluster scale`, `cluster destroy`, `deploy`,
+`status`, …) targets the cluster just bootstrapped — see *Endpoint precedence* under Options; switch
+back with `aether cluster use <name>` or pass `--connect` for a local node.
 
 ### `aether cluster destroy`
 
@@ -2351,27 +2652,42 @@ aether cluster destroy --cluster=my-cluster --yes
 | `--keep-resources` | Skip cloud resource termination — remove the registry entry only |
 | `-q`, `--no-color`, `-o <format>`, `--field <field>` | Standard output controls |
 
+Destroy takes every slice below its `minAvailable` floor by definition (it drains and shuts down every node without undeploying), so it sends `force=true` on every drain and shutdown request. The operator-drain slice floor (`aether nodes drain`, #1720) therefore never refuses it, and each node's breach is reported as a `slice-floor-breached-by-force` operator warning.
+
 > **Cleanup failure is loud (#521).** If cloud resource termination fails, `destroy` exits
 > non-zero (`ExitCode.CLEANUP_FAILED`) and deliberately **keeps** the registry entry — the
 > summary prints `Registry entry: KEPT` with the retry command — so the cluster stays
 > addressable while its VMs may still be billing. Just re-run the command. From a repo
 > checkout, `tools/cloud-reaper.sh --cluster <name>` (dry-run; add `--destroy` to delete)
 > is the label-driven safety net that finds resources no local state knows about.
+>
+> **The exit code is a retry signal (#587).** Non-zero means the registry entry was **kept** and a
+> re-run has work to do — and if the VMs were already deleted when it failed (the registry save
+> after cleanup), that re-run needs `--force-undrained`, because enumeration finds no nodes. When
+> cloud cleanup completes, `destroy` exits `0` even if some drains or shutdowns failed first: the
+> VMs are gone, the entry is removed, and a retry would find nothing — the failures are reported by
+> node with their reason on stderr (`Warning: 2 of 3 drain operations failed (core-2: refused with
+> HTTP 409; core-3: timed out after 120s waiting for DECOMMISSIONED) … nothing is left to retry`).
+> The drain phase prints each node's start and outcome as it happens. Draining a whole cluster necessarily hits the disruption budget below the quorum
+> floor; that refusal is tracked as #1032 and is not overridden by `destroy`.
 
 ### `aether cluster apply`
 
 Apply cluster configuration changes with desired-state reconciliation.
 
+A change of a source role's runtime profile name is refused (#1543): rolling it meant stopping a node and starting another in its place under the same id, and a node id never returns. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, or `POST /api/v1/nodes/replace/{id}` for one node). There is no supported way today to change a source role's runtime profile on a running cluster.
+
 ```bash
-aether cluster apply <config-file> [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
+aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `--cluster <name>` | Target the named cluster instead of the active-context one, and rewrite the file's `[cluster].name` to `<name>` before applying — the same rewrite as `aether cluster bootstrap --cluster`, so a cluster bootstrapped under an override accepts its own TOML (`cluster.name` is immutable) |
 | `--dry-run` | Show planned changes without executing |
 | `--yes` | Skip confirmation prompt |
-| `--resume` | Resume a halted apply from first unfinished wave |
-| `--rollback` | Rollback completed waves to pre-apply state |
+| `--resume` | Resume a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below) |
+| `--rollback` | Roll back a halted wave rollout. **Dormant in rc4, see #686**: aborts with "No apply state found" (below); even when reached, it lists the recorded resources and destroys nothing |
 | `--full-check` | Run full network pre-flight checks |
 
 **Plain `apply` (no `--resume`/`--rollback`) actuates scale changes only.** It diffs the config
@@ -2385,10 +2701,29 @@ a valid scale with an unsupported action is rejected in full; the scale is not a
 Recovery: split the file so scale changes go through plain `apply` and everything else is handled
 separately, or wait for the change to be supported.
 
-**The terraform-style plan (`[+]`/`[~]`/`[-]`) and wave-based rollout (additions → modifications →
-removals, respecting `maxUnavailable` for core nodes) is the `--resume`/`--rollback` path**
-(`ApplyOrchestrator` → `WaveExecutor`), not plain `apply` — reachable only by first halting an
-apply and then resuming or rolling it back.
+**Non-scale changes — sources, roles, runtime, source fields, cluster-level fields — are not
+applicable through `apply` in rc4.** `apply` performs scale-only plans via the leader (a fenced
+desired-count write that the leader's reconciler actuates); a rollout of the other changes needs a
+new cluster. There is no first-time path to a wave rollout: the terraform-style plan and the
+wave-based executor (`ApplyOrchestrator` → `WaveExecutor`, actuating from the operator's machine
+through the cloud provider) are entered only through `--resume`/`--rollback`, and they are
+deliberately not wired to plain `apply` — a client-side rollout would be a second actuation
+authority over the same fleet next to the leader's reconciler (#686; the server-side wave design
+is a separate ticket).
+
+**In rc4 `--resume` and `--rollback` have nothing to act on.** Both begin by loading the apply
+state for the cluster and abort without it (`No apply state found for cluster '<name>'. Nothing to
+resume.` / `... Nothing to rollback.`). That state is written only by the unwired client-side
+rollout itself, so no rc4 command creates it: unless a pre-rc4 CLI left a state file behind, both
+options report that message and the wave executor is unreachable end to end.
+
+**Dormant in rc4 (#686): applies only if a wave rollout runs through `--resume`/`--rollback`.** **If a wave rollout fails part-way,** it destroys the VMs of the failing step, best-effort. Its error then lists
+each VM the rollout created (node id, provider, server id, IP), because the apply records none of them:
+- `destroyed`: gone, nothing to do;
+- `STILL RUNNING AND BILLED` (its destroy failed): remove it with the printed steps, `aether cluster drain <node-id>
+  --wait --yes`, then the provider's delete (for Hetzner, `hcloud server delete <server-id>`);
+- `kept` (created by an earlier, completed step, so it belongs to the desired configuration): keep it if it joined
+  (`aether nodes`), or remove it the same way.
 
 ### `aether cluster rotate-key`
 
@@ -2406,11 +2741,40 @@ aether cluster rotate-key [--grace-period <duration>] [--role <role>] [--key-id 
 
 Generates new key, pushes to cluster, marks old key REVOKED with grace period, updates local `~/.aether/clusters/<name>/api-key`.
 
-The key to retire is chosen by reading each record's own `status` in `GET /api/cluster/keys`, so
+The key to retire is chosen by reading each record's own `status` in `GET /api/v1/cluster/keys`, so
 listing order never decides which credential is revoked. With exactly one `ACTIVE` key the command
 retires it and names it in the output. With several, it refuses and lists the candidates — re-run
 with `--key-id` naming the one to retire. A key listing that cannot be read fails the rotation
 rather than resolving to some key.
+
+### `aether cluster rotate-gossip-key`
+
+Rotate the SWIM gossip encryption key in place (#683). ADMIN only.
+
+```bash
+aether cluster rotate-gossip-key
+```
+
+The leader generates 32 bytes of fresh key material and publishes it through consensus
+(`POST /api/v1/cluster/gossip-key/rotate`); every running node switches to the new key and keeps
+accepting the previous one for the overlap. Use it after a suspected `cluster_secret` or gossip-key
+leak: the daily key is derived from `cluster_secret`, so this is the only mitigation that does not
+require reconfiguring every node and replacing each one under a fresh node id (or a whole-cluster cold restart). The output carries key ids only, never key material.
+
+**Before you run this, know two limits — SECURITY.md has the detail.** The **first** rotation has no
+overlap, because there is no prior record whose key could be carried; it replaces the boot key
+outright. And a rotated cluster **cannot grow until you act**: any node booting afterwards holds only
+the derived key, cannot complete SWIM in either direction, and so never reaches the consensus replay
+that would hand it the cluster key. **Auto-heal replacements and scale-up nodes are included, so an
+emergency rotation leaves the cluster unable to self-heal** until new nodes are given the rotated key
+material out of band. Existing running nodes keep working.
+
+**Troubleshooting a node that will not join after a rotation — check the SEED nodes' logs, not the
+new node's.** Look for `Failed to decrypt gossip from <id>` on the seeds. A node the cluster has
+never heard of logs nothing about the cause: it prints `Aether node <id> started, cluster forming...`
+and then stays quiet, because an unreachable quorum is retried and never exits. A **restarted
+existing member** is the exception — it refuses to boot with a `FATAL` line naming gossip-key
+divergence, because its peers still probe it and it can see the mismatched key id.
 
 ### `aether cluster revoke-key`
 
@@ -2438,11 +2802,35 @@ aether cluster list-keys [--audit]
 
 ---
 
+## Backup
+
+The KV backup (#1532) is written by the leader to a git repository under `[backup] path`
+(`<path>/kv-backup`, branch `kv-backup`) whenever cluster-state keys change, and pushed as a
+fast-forward to `[backup] remote` when one is configured. It is enabled only with `[backup] enabled = true`
+and a path.
+
+### `aether backup declare-genesis`
+
+Make this cluster's state the KV backup head, superseding a backup of another lineage. ADMIN only.
+
+```bash
+aether backup declare-genesis
+```
+
+A freshly started cluster mints its own lineage and will not overwrite a backup that belongs to another
+cluster history: its backup is **gated**, and the node logs `BACKUP_GATED` naming this command. Run it
+only when this cluster's state — not the backup's — is the one to keep; the superseded head stays in the
+git history. It is refused when the backup head already belongs to this cluster's lineage, and when that
+head is **newer** than the cluster — restore it instead (`POST /api/v1/backup/declare-genesis`, see the
+Management API reference for the refusals).
+
+---
+
 ## TTM (Foundation Model)
 
 ### `aether ttm status`
 
-Show the foundation-model / TTM (training & model) runtime status. Wraps `GET /api/ttm/status`.
+Show the foundation-model / TTM (training & model) runtime status. Wraps `GET /api/v1/ttm/status`.
 
 ```bash
 aether ttm status
@@ -2450,7 +2838,7 @@ aether ttm status
 
 ### `aether ttm training-data`
 
-Show the foundation-model / TTM training-data snapshot. Wraps `GET /api/ttm/training-data`.
+Show the foundation-model / TTM training-data snapshot. Wraps `GET /api/v1/ttm/training-data`.
 
 ```bash
 aether ttm training-data
@@ -2464,7 +2852,7 @@ aether ttm training-data
 
 Show the active DHT replication map — which keys live on which nodes under
 the current replication factor. Operator-facing inspection. Wraps
-`GET /api/dht/replication-map`.
+`GET /api/v1/dht/replication-map`.
 
 Options:
 - `-l`, `--limit N` — max entries to return (default 100, capped at 10000).
@@ -2489,7 +2877,7 @@ node and union the results.
 
 Show this node's durable-entity checkpoint progress (#345 I3).
 
-Reads `GET /api/entity/checkpoints`, which is LOCAL — each node checkpoints only the partitions it folds,
+Reads `GET /api/v1/entity/checkpoints`, which is LOCAL — each node checkpoints only the partitions it folds,
 so this reports the node you queried. Point `--node` / the management endpoint at a specific node to see
 that node's view.
 
@@ -2501,7 +2889,10 @@ A checkpoint is the only thing that bounds an entity log: until a partition is c
 floor reclaims nothing for it. **`writes` climbing is the signal that the driver is alive** — writes and
 reads keep succeeding even when checkpointing has stopped, so a flat `writes` under load is the fault to
 act on. `failures` and `checkpointedThrough` say which partitions are stuck; a partition this node has
-never folded is absent rather than reported as offset 0.
+never folded is absent rather than reported as offset 0. `checkpointLag` (#1302) is, per folded partition,
+the log head minus the COMMITTED checkpoint in consensus KV, for partitions this node OWNS — how far a
+recovery would replay; its node-wide
+maximum drives the `entity.checkpoint.lag.max` threshold alert (default WARNING 5,000 / CRITICAL 10,000).
 
 Output is the endpoint's JSON, pretty-printed:
 
@@ -2509,7 +2900,8 @@ Output is the endpoint's JSON, pretty-printed:
 {
   "keyspaces": [
     {"keyspace": "orders", "partitionCount": 8, "writes": 214, "failures": 0,
-     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502}}
+     "checkpointedThrough": {"0": 1841, "3": 990, "5": 1502},
+     "checkpointLag": {"0": 59, "3": 12, "5": 0}}
   ]
 }
 ```
@@ -2518,7 +2910,7 @@ Output is the endpoint's JSON, pretty-printed:
 
 Show durable-entity keyspaces with their hosting node sets (#634-3).
 
-Reads [`GET /api/entity/keyspaces`](management-api.md#entity-keyspaces-hosting-view). Assembled from
+Reads [`GET /api/v1/entity/keyspaces`](management-api.md#entity-keyspaces-hosting-view). Assembled from
 replicated KV, so any caught-up node answers identically — no need to sweep ports (unlike
 `checkpoints` above, which is per-node).
 
@@ -2540,15 +2932,15 @@ node). Full schema in the Management API section linked above.
 
 Inspect and snapshot the node's Hierarchical Storage Engine instances (#207) — the
 content-addressed block stores backing content, artifact, and stream storage.
-Wraps the [`/api/storage`](management-api.md#storage-hierarchical-storage-engine)
+Wraps the [`/api/v1/storage`](management-api.md#storage-hierarchical-storage-engine)
 Management-API surface.
 
 ### `aether storage list [--node <id>]`
 
 List storage instances with their tier utilisation and readiness. By default
 returns the **cluster-wide** rollup (per-instance totals + a per-node breakdown,
-via the leader, `GET /api/cluster/storage`). With `--node <id>` it returns a single
-node's local view (`GET /api/storage`).
+via the leader, `GET /api/v1/cluster/storage`). With `--node <id>` it returns a single
+node's local view (`GET /api/v1/storage`).
 
 Options:
 - `--node <id>` — target a specific node's local storage view instead of the cluster rollup.
@@ -2562,8 +2954,8 @@ aether storage list --format json
 ### `aether storage status <name> [--node <id>]`
 
 Show one named instance's tier topology, snapshot marker, and readiness. By default
-returns the cluster-wide per-node breakdown (`GET /api/cluster/storage/{name}`);
-with `--node <id>` it returns that node's local detail (`GET /api/storage/{name}`).
+returns the cluster-wide per-node breakdown (`GET /api/v1/cluster/storage/{name}`);
+with `--node <id>` it returns that node's local detail (`GET /api/v1/storage/{name}`).
 
 Options:
 - `--node <id>` — target a specific node's local view instead of the cluster rollup.
@@ -2576,7 +2968,7 @@ aether storage status content --node node-1
 ### `aether storage snapshot <name>`
 
 Force an immediate metadata snapshot of the named instance
-(`POST /api/storage/snapshot/{name}`). Prints the epoch and timestamp of the
+(`POST /api/v1/storage/snapshot/{name}`). Prints the epoch and timestamp of the
 snapshot just taken. Routed to the `STORAGE` task-group owner.
 
 ```bash
@@ -2586,7 +2978,7 @@ aether storage snapshot content
 ### `aether storage retention`
 
 Show the per-partition tri-floor retention view (#634-3/4):
-[`GET /api/storage/retention`](management-api.md#get-apistorageretention). LOCAL — WAL, ring, and
+[`GET /api/v1/storage/retention`](management-api.md#get-apiv1storageretention). LOCAL — WAL, ring, and
 segment offsets describe the node you query; the `checkpointFloor` comes from replicated KV, so it
 agrees everywhere.
 
@@ -2599,16 +2991,21 @@ Per `(stream, partition)` row (offsets are `-1` when the source/floor is absent)
 WAL counters (`sizeBytes`, replayable window `(truncatedUpto, lastOffset]`, fsync count/latency),
 `null` when the partition has no WAL; `ringTail` — earliest offset still in the in-memory ring;
 `sealedThrough` / `earliestSegment` — the durable sealed bound and the earliest retained sealed
-segment; `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest offset reachable from
+segment; `reclaimedThrough` — the highest offset retention reclaimed (`-1` when none); `checkpointFloor` — the entity checkpoint; `coveredFrom` — earliest offset reachable from
 any local source; `violated` / `violation` — the tri-floor invariant verdict. `walTotalBytes` at the
-root is this node's total live WAL footprint. Full schema and the precise invariant in the
+root is this node's total live WAL footprint; `walRecoveryHeadsLost` counts WAL recoveries refused because a WAL file
+started above the durable sealed watermark, which already counts what retention reclaimed (any
+non-zero value is lost records — the ERROR log names the range);
+`walReclamationHeldBackTicks` counts consecutive truncation ticks in which the on-disk sealed watermark
+sat below the live one without advancing (non-zero and climbing means the streams metadata snapshot
+cannot be written or read, and WAL reclamation is halted until it can). Full schema and the precise invariant in the
 Management API section linked above.
 
 **A `violated: true` row means this node cannot rebuild that partition from its checkpoint** — the
 records in `[checkpointFloor + 1, coveredFrom - 1]` are on no local source, so a fold here would
 refuse. Recovery: restore the missing range from a replica that still holds it (re-replication via
 partition backfill); if no replica holds it, accept the documented loss and re-baseline the
-checkpoint — see the [operator recovery action](management-api.md#get-apistorageretention). The flag
+checkpoint — see the [operator recovery action](management-api.md#get-apiv1storageretention). The flag
 clears on the next read after local sources again cover `checkpoint + 1`. A periodic watch re-checks
 every 5 minutes and raises the `retention-invariant` alert (severity `CRITICAL`) once per
 newly-violated partition — see `aether alerts active`.

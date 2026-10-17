@@ -267,7 +267,7 @@ Verification passed.
 
 Drain source nodes one at a time, respecting disruption budget:
 
-- REQ-DRAIN-01: Drain nodes sequentially using existing `POST /api/node/drain/{nodeId}` endpoint.
+- REQ-DRAIN-01: Drain nodes sequentially using existing `POST /api/v1/nodes/drain/{nodeId}` endpoint.
 - REQ-DRAIN-02: Respect disruption budget: never drain more nodes simultaneously than the budget allows.
 - REQ-DRAIN-03: Wait for each node to reach `DECOMMISSIONED` before draining the next.
 - REQ-DRAIN-04: Timeout per node: `drain_timeout` (default 300s).
@@ -327,7 +327,7 @@ This information is **not** stored in a KV-Store node-state record. Node members
 presence-derived (SWIM/QUIC via NTT); node readiness/drain is heartbeat-reported and
 leader-cached. This state is NEVER stored in or committed to the KV-Store. The provider
 identifier travels with the node's presence/heartbeat signals and is exposed through the
-management API (`GET /api/nodes?provider=…`) for migration tooling. See
+management API (`GET /api/v1/nodes?provider=…`) for migration tooling. See
 `aether/docs/specs/membership-architecture-v2-spec.md` for the authoritative model.
 
 ### 5.1 Provider Identifiers
@@ -689,18 +689,18 @@ aether cluster destroy --provider aws [--yes]
 aether cluster status --provider gcp
 ```
 
-**Implementation:** These commands filter nodes by the provider identifier carried with each node's presence/heartbeat signals (never a KV-Store node-state record). The `--provider` flag maps to a query parameter on the management API: `GET /api/nodes?provider=aws`.
+**Implementation:** These commands filter nodes by the provider identifier carried with each node's presence/heartbeat signals (never a KV-Store node-state record). The `--provider` flag maps to a query parameter on the management API: `GET /api/v1/nodes?provider=aws`.
 
 ### 8.5 Management API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/cluster/migrate` | Start migration (body: migration config JSON) |
-| `GET` | `/api/cluster/migrate/status` | Get current migration status |
-| `POST` | `/api/cluster/migrate/rollback` | Initiate rollback |
-| `POST` | `/api/cluster/migrate/pause` | Pause migration (finish current step, hold) |
-| `POST` | `/api/cluster/migrate/resume` | Resume paused migration |
-| `GET` | `/api/nodes?provider={id}` | List nodes filtered by provider |
+| `POST` | `/api/v1/cluster/migrate` | Start migration (body: migration config JSON) |
+| `GET` | `/api/v1/cluster/migrate/status` | Get current migration status (proposed; not implemented) |
+| `POST` | `/api/v1/cluster/migrate/rollback` | Initiate rollback (proposed; not implemented) |
+| `POST` | `/api/v1/cluster/migrate/pause` | Pause migration (finish current step, hold) (proposed; not implemented) |
+| `POST` | `/api/v1/cluster/migrate/resume` | Resume paused migration (proposed; not implemented) |
+| `GET` | `/api/v1/nodes?provider={id}` | List nodes filtered by provider |
 
 ---
 
@@ -1176,7 +1176,7 @@ aether cluster migrate --config reverse-migration.toml
 
 **Scope:**
 - Carry the `provider` identifier with each node's presence/heartbeat signals (never a KV-Store node-state record)
-- Add `?provider=` query parameter to `GET /api/nodes`
+- Add `?provider=` query parameter to `GET /api/v1/nodes`
 - Add `--provider` flag to `ClusterDrainCommand`, `ClusterDestroyCommand`, `ClusterStatusCommand`
 - Update tests
 
@@ -1277,9 +1277,9 @@ aether cluster migrate --config reverse-migration.toml
 
 ### Internal References
 
-- [Cloud Integration SPI Spec](cloud-integration-spi-spec.md) -- SPI architecture for ComputeProvider, LoadBalancerProvider, DiscoveryProvider, SecretsProvider
-- [Cluster Management Spec](cluster-management-spec.md) -- Declarative cluster management, TOML config format, CLI commands
-- [Canary & Blue-Green Spec](canary-blue-green-spec.md) -- Deployment strategies (rolling, canary, blue-green)
+- [Cloud Integration SPI Spec](../cloud-integration-spi-spec.md) -- SPI architecture for ComputeProvider, LoadBalancerProvider, DiscoveryProvider, SecretsProvider
+- [Cluster Management Spec](../cluster-management-spec.md) -- Declarative cluster management, TOML config format, CLI commands
+- [Canary & Blue-Green Spec](../../archive/canary-blue-green-spec.md) -- Deployment strategies (rolling, canary, blue-green)
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/EnvironmentIntegration.java` -- Faceted SPI entry point
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/ComputeProvider.java` -- Compute provisioning SPI
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/LoadBalancerProvider.java` -- Load balancer SPI

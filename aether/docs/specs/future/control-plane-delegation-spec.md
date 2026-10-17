@@ -3,7 +3,7 @@
 > ⚠️ **Design only — not implemented in the 1.0.0 line.** This is a design specification with no shipped implementation. It describes intended future work, not current Aether behavior — do not use it as a reference for what currently-shipping Aether does. The `Status` field below reflects design maturity, not build status.
 
 **Status:** Implementation-Ready
-**Issue:** [#102](https://github.com/pragmatica-io/pragmatica/issues/102)
+**Issue:** [#102](https://github.com/pragmaticalabs/pragmatica/issues/102)
 **Branch:** release-1.0.0-rc1
 **Last Updated:** 2026-04-04
 
@@ -888,18 +888,18 @@ Every existing integration test suite (12 suites, 183+ tests) MUST pass with del
 ### Internal References
 
 - [Investigation Document](../../.internal/control-plane-delegation-investigation.md) --- architecture assessment confirming feasibility
-- [CDM Source](../../aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterDeploymentManager.java) --- Dormant/Active pattern reference
-- [LoadBalancerManager Source](../../aether-deployment/src/main/java/org/pragmatica/aether/deployment/loadbalancer/LoadBalancerManager.java) --- Dormant/Active pattern reference
-- [AetherNode Source](../../node/src/main/java/org/pragmatica/aether/node/AetherNode.java) --- current wiring and leader change routing
+- [CDM Source](../../../aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterDeploymentManager.java) --- Dormant/Active pattern reference
+- [LoadBalancerManager Source](../../../aether-deployment/src/main/java/org/pragmatica/aether/deployment/loadbalancer/LoadBalancerManager.java) --- Dormant/Active pattern reference
+- [AetherNode Source](../../../node/src/main/java/org/pragmatica/aether/node/AetherNode.java) --- current wiring and leader change routing
 - [KVNotificationRouter](../../../../integrations/cluster/src/main/java/org/pragmatica/cluster/state/kvstore/KVNotificationRouter.java) --- key-based dispatch mechanism
-- [GovernorFailoverHandler](../../aether-stream/src/main/java/org/pragmatica/aether/stream/replication/GovernorFailoverHandler.java) --- streaming governor failover
-- [RetentionEnforcer](../../aether-stream/src/main/java/org/pragmatica/aether/stream/segment/RetentionEnforcer.java) --- segment retention enforcement
+- [GovernorFailoverHandler](../../../aether-stream/src/main/java/org/pragmatica/aether/stream/replication/GovernorFailoverHandler.java) --- streaming governor failover
+- [RetentionEnforcer](../../../aether-stream/src/main/java/org/pragmatica/aether/stream/segment/RetentionEnforcer.java) --- segment retention enforcement
 - [DemotionManager](../../../../integrations/storage/src/main/java/org/pragmatica/storage/DemotionManager.java) --- AHSE tier demotion
 - [StorageGarbageCollector](../../../../integrations/storage/src/main/java/org/pragmatica/storage/StorageGarbageCollector.java) --- AHSE garbage collection
 
 ### Architecture References
 
-- [Architecture Overview](../architecture/00-overview.md)
-- [Consensus Architecture](../architecture/01-consensus.md) --- Rabia protocol, no leader check on proposals
+- [Architecture Overview](../../architecture/00-overview.md)
+- [Consensus Architecture](../../architecture/01-consensus.md) --- Rabia protocol, no leader check on proposals
 - [Hierarchical Storage Spec](hierarchical-storage-spec.md) --- AHSE storage tiers
-- [Streaming Spec](../specs/streaming-spec.md) --- streaming subsystem
+- [Streaming Spec](../streaming-spec.md) --- streaming subsystem

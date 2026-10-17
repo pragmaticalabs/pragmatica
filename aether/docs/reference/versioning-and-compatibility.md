@@ -6,7 +6,7 @@ each other because they all use the word "version"; they are independent by desi
 
 | Surface | What it versions | Status |
 |---|---|---|
-| Product release (`1.0.0-rc3`) | The whole codebase, as a release artifact | rc series, pre-GA; SemVer committed from GA (#321) |
+| Product release (`1.0.0-rcN`) | The whole codebase, as a release artifact | rc series, pre-GA; SemVer committed from GA (#321) |
 | Envelope format (`ENVELOPE_FORMAT_VERSION`) | Slice-processor generated-code structure | Built, frozen at `1000` until GA |
 | Slice HTTP API versions (`v1`, `v2`, ...) (#198) | An individual slice's own routes | Built |
 | Management HTTP API (`/api/v1/...`) (#300) | The cluster's control-plane routes | Prefix scheme built (Commit 1, 2026-08-28); stream-route consolidation still in flight |
@@ -17,7 +17,7 @@ version skew."
 
 ## Product release versioning
 
-Aether is pre-GA — `1.0.0-rc3` at this writing — with one active release line
+Aether is pre-GA (`1.0.0-rcN`; the root `pom.xml` carries the current version) with one active release line
 [mechanism: `CHANGELOG.md`, current branch]. **Aether commits to semantic versioning for the
 product release from GA (`v1.0.0`) onward** [owner ruling 2026-08-28, #321]: minor releases
 (`1.x.0`) are additive only — no removed or renamed public surface, no breaking behavior change;
@@ -31,7 +31,7 @@ an additive management-API change never mints a new API version, and an API majo
 with one).
 
 **Pre-GA, this commitment does not apply.** Every rc may still break compatibility with the
-previous one until GA ships — treat `1.0.0-rc3` and any later rc that way until the product
+previous one until GA ships — treat every `1.0.0-rcN` that way until the product
 version itself reaches `1.0.0`.
 
 **Not decided by the ruling, and still an open gap:** the *compatibility window* once a major
@@ -106,9 +106,11 @@ effort; this page does not describe it until it lands.
 
 ## Rolling upgrades and node version skew
 
-The operator-facing procedure exists and is real: `rolling-aether-upgrade.sh` drains a node,
-shuts it down, has the operator restart it on the new binary, and canary-watches it before moving
-to the next node [mechanism: [`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md)]. That
+The operator-facing procedure exists and is real: `aether cluster upgrade --wait` stores the target
+version and the leader replaces every node not on it, one at a time and each under a new NodeId
+(no node is restarted under its own id), with a canary confirming each replacement before the old
+node retires [mechanism: [`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md)]. The old
+`rolling-aether-upgrade.sh` script was removed (#1543). That
 guide states the cluster "remains in a valid mixed-version state" during the rollout, and the part
 of that claim this page can verify is the slice-loading layer: envelope-format compatibility
 (above) is exactly what lets an old-format and new-format slice coexist across nodes mid-rollout.

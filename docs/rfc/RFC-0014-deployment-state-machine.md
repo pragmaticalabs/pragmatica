@@ -136,7 +136,7 @@ CDM (leader only)                    KV-Store (consensus)                   NDM 
 4. Track state transitions via `NodeArtifactKey` put notifications
 5. Issue `ACTIVATE` when slice reaches `LOADED` and dependencies are met
 6. Issue `UNLOAD` for scale-down, node removal, or failure cleanup
-7. Run periodic reconciliation (default: 30s)
+7. Run periodic reconciliation (default: 5s — `TimeoutsConfig.ClusterTimeouts.reconciliationInterval`; this line said 30s until #1068)
 8. Gate activation on schema migration completion
 
 #### 2.4 NDM Responsibilities (Every Node)
@@ -309,6 +309,7 @@ When NDM fails to write `FAILED` state specifically, it retries up to `MAX_TRANS
 1. `ActiveNodeDeploymentState.suspendSlices()`:
    - For each `ACTIVE` deployment: unpublish HTTP routes (local), unregister from invocation handler
    - Does **NOT** unload slices from `SliceStore` (kept in memory)
+   - Writes **no** transition: without quorum no write can commit, so the committed `NodeArtifactKey` keeps reading `ACTIVE` until the quorum returns (#1452)
    - Collects `SuspendedSlice` list
 2. Transition to `DormantNodeDeploymentState(suspendedSlices)`
 3. All subsequent `NodeArtifactKey` notifications are silently ignored
@@ -321,7 +322,7 @@ When NDM fails to write `FAILED` state specifically, it retries up to `MAX_TRANS
 4. Reactivate suspended slices:
    - Re-register with invocation handler
    - Re-publish endpoints, HTTP routes, topic subscriptions, scheduled tasks
-   - On reactivation failure: cleanup and remove from deployments
+   - On reactivation failure, including a suspended slice no longer in `SliceStore`: unregister and unpublish locally, and commit a non-fatal `FAILED` for this node (#1660). The leader's failure path unloads and re-drives the instance, and the committed `FAILED` surfaces as a WARNING `DeploymentFailed` event. The deployment stays in the map until that unload, so a second quorum loss before the write commits re-suspends it and the next restoration retries.
 
 #### 6.3 CDM Behavior on Leader Loss
 
@@ -414,8 +415,8 @@ InFlightBlueprint:
 
 - Created when `AppBlueprintValue` is received (unless `BEST_EFFORT` or restoring)
 - `pendingSlices` initialized from all slices in `expanded.loadOrder()`
-- As slices reach `ACTIVE`, moved from `pendingSlices` to `activeSlices`
-- When `pendingSlices` is empty: blueprint fully deployed, removed from tracking
+- As slices reach `ACTIVE`, moved from `pendingSlices` to `activeSlices`: the FIRST ACTIVE instance of a slice moves it, so "reached ACTIVE" means "has at least one ACTIVE instance" (#1117)
+- When `pendingSlices` is empty: every declared slice has at least one ACTIVE instance (the leader logs it with the per-slice "n of m instances ACTIVE"), and the blueprint is removed from tracking. This is not "every instance ACTIVE" and says nothing about any node's local state
 
 #### 8.3 Rollback Protocol
 

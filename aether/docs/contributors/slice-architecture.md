@@ -316,7 +316,6 @@ dependency.1.artifact=org.example:inventory
 dependency.1.version=1.0.0
 
 # Metadata
-generated.timestamp=2024-01-15T10:30:00Z
 processor.version=0.4.8
 ```
 
@@ -403,16 +402,16 @@ id = "org.example:commerce:1.0.0"
 
 [[slices]]
 artifact = "org.example:inventory-service:1.0.0"
-instances = 1
+instances = 3
 # transitive dependency
 
 [[slices]]
 artifact = "org.example:commerce-payment-service:1.0.0"
-instances = 1
+instances = 3
 
 [[slices]]
 artifact = "org.example:commerce-order-service:1.0.0"
-instances = 1
+instances = 3
 ```
 
 ## Version Resolution

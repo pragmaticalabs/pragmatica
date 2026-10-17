@@ -34,8 +34,10 @@ provider = "hetzner"
 api_token = "${env:HCLOUD_TOKEN}"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 ```
 
@@ -47,10 +49,12 @@ provider = "aws"
 [cloud.credentials]
 access_key_id = "${env:AWS_ACCESS_KEY_ID}"
 secret_access_key = "${env:AWS_SECRET_ACCESS_KEY}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 
 [cloud.compute]
 ami_id = "ami-0abcdef1234567890"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 subnet_id = "subnet-abc123"
 ```
@@ -62,11 +66,13 @@ provider = "gcp"
 
 [cloud.credentials]
 project_id = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-central1-a"
 service_account_email = "aether@my-project.iam.gserviceaccount.com"
 private_key_pem = "${env:GCP_PRIVATE_KEY}"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 machine_type = "e2-medium"
 source_image = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
 network = "default"
@@ -84,9 +90,11 @@ client_id = "${env:AZURE_CLIENT_ID}"
 client_secret = "${env:AZURE_CLIENT_SECRET}"
 subscription_id = "${env:AZURE_SUBSCRIPTION_ID}"
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "eastus"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 vm_size = "Standard_B2s"
 image = "Canonical:0001-com-ubuntu-server-jammy:24_04-lts:latest"
 admin_username = "aether"
@@ -148,12 +156,12 @@ When `aether cluster bootstrap` runs against a cluster TOML containing `credenti
 
 Consequence: **every cluster node holds a copy of the cloud API token on disk.**
 
-Why: any core node may become the consensus leader at any time. The leader is the only node that calls `ComputeProvider.provision()` to grow the cluster on a `/api/cluster/scale` request. If only the operator machine held the token, leader-failover would silently disable runtime auto-scaling. Distributing the token to every node keeps the scale path leader-failover safe.
+Why: any core node may become the consensus leader at any time. The leader is the only node that calls `ComputeProvider.provision()` to grow the cluster on a `/api/v1/cluster/scale` request. If only the operator machine held the token, leader-failover would silently disable runtime auto-scaling. Distributing the token to every node keeps the scale path leader-failover safe.
 
 Trade-off: compromise of any single cluster node leaks the cloud API token. The blast radius depends on how the token is scoped (see provider sections below). Mitigations:
 - **Use a dedicated project/account for the cluster** so a leaked token is contained.
 - **Restrict the token's permissions** where the provider supports it (AWS IAM, GCP service-account roles, Azure RBAC).
-- **Rotate the token periodically.** Rotation requires re-running `aether cluster bootstrap` against the existing cluster (or re-pushing per-node TOML out-of-band) so every node receives the new value.
+- **Rotate the token periodically.** Rotation means re-pushing the per-node TOML (`/etc/aether/aether-config.toml`, `[cloud.credentials]`) to every node out-of-band. Do not re-run `aether cluster bootstrap` for this: a fresh bootstrap against an existing cluster name is refused (see [Existing cluster name](cli.md#aether-cluster-bootstrap)).
 - **Restrict file system access** to `/etc/aether/aether-config.toml` (mode `0600`, owned by the aether process user).
 
 For higher-security deployments, configure a `[cloud.secrets]` backend (e.g., Vault, AWS Secrets Manager) and reference the credential via `${secrets:hcloud/api_token}` instead of `${env:...}`. With a secrets backend, only nodes that can authenticate to the secrets backend resolve the actual token at runtime; the per-node TOML carries the placeholder only.
@@ -172,13 +180,13 @@ Provider name: `hetzner`
 |-----|----------|-------------|
 | `api_token` | Yes | Hetzner Cloud API token |
 
-> **Hetzner-specific security note.** Hetzner Cloud tokens are project-scoped and grant **full read+write access** to every resource in the project (servers, networks, firewalls, SSH keys, load balancers, billing-affecting actions). Hetzner does not currently expose finer-grained scopes (e.g., read-only or compute-only). Per the [Credential Propagation to Nodes](#credential-propagation-to-nodes) section, this token is written to each cluster node's local `aether-config.toml` so the consensus leader can auto-provision new nodes during scale-up. **Use a dedicated Hetzner project per Aether cluster** so a leaked node-side token cannot affect unrelated infrastructure. Token rotation is done in the Hetzner Console; after issuing a new token, re-run `aether cluster bootstrap` (or re-push per-node TOML) to propagate the new value.
+> **Hetzner-specific security note.** Hetzner Cloud tokens are project-scoped and grant **full read+write access** to every resource in the project (servers, networks, firewalls, SSH keys, load balancers, billing-affecting actions). Hetzner does not currently expose finer-grained scopes (e.g., read-only or compute-only). Per the [Credential Propagation to Nodes](#credential-propagation-to-nodes) section, this token is written to each cluster node's local `aether-config.toml` so the consensus leader can auto-provision new nodes during scale-up. **Use a dedicated Hetzner project per Aether cluster** so a leaked node-side token cannot affect unrelated infrastructure. Token rotation is done in the Hetzner Console; after issuing a new token, re-push the per-node TOML to every node out-of-band to propagate the new value (a fresh `aether cluster bootstrap` against the existing cluster name is refused; see [Existing cluster name](cli.md#aether-cluster-bootstrap)).
 
 #### Compute
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `server_type` | Yes | Server type (e.g., `cx22`, `cx32`) |
+| `server_type` | Yes | Server type. The values shown are EXAMPLES (e.g., `cx22`, `cx32`) — providers retire instance types, so take yours from Hetzner's current catalogue. |
 | `image` | Yes | OS image name or ID (e.g., `ubuntu-24.04`) |
 | `region` | Yes | Datacenter location (e.g., `fsn1`, `nbg1`) |
 | `user_data` | No | Cloud-init user data script |
@@ -216,8 +224,10 @@ provider = "hetzner"
 api_token = "${env:HCLOUD_TOKEN}"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 server_type = "cx22"
 image = "ubuntu-24.04"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "fsn1"
 user_data = "#!/bin/bash\ncurl -sSL https://example.com/install.sh | bash"
 ssh_key_ids = "12345,67890"
@@ -252,7 +262,7 @@ Authentication uses IAM access keys. All AWS API calls use SigV4 request signing
 | Key | Required | Description |
 |-----|----------|-------------|
 | `ami_id` | Yes | AMI ID for EC2 instances |
-| `instance_type` | Yes | EC2 instance type (e.g., `t3.medium`) |
+| `instance_type` | Yes | EC2 instance type. The value shown is an EXAMPLE (e.g., `t3.medium`) — providers retire instance types, so take yours from AWS's current catalogue. |
 | `key_name` | No | EC2 key pair name for SSH access |
 | `security_group_ids` | No | Comma-separated security group IDs |
 | `subnet_id` | Yes | VPC subnet ID |
@@ -288,10 +298,12 @@ provider = "aws"
 [cloud.credentials]
 access_key_id = "${env:AWS_ACCESS_KEY_ID}"
 secret_access_key = "${env:AWS_SECRET_ACCESS_KEY}"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 region = "us-east-1"
 
 [cloud.compute]
 ami_id = "ami-0abcdef1234567890"
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 instance_type = "t3.medium"
 key_name = "aether-key"
 security_group_ids = "sg-abc123,sg-def456"
@@ -325,7 +337,7 @@ Authentication uses service account credentials with JWT-based OAuth2 token mana
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `machine_type` | Yes | VM machine type (e.g., `e2-medium`) |
+| `machine_type` | Yes | VM machine type. The value shown is an EXAMPLE (e.g., `e2-medium`) — providers retire machine types, so take yours from GCP's current catalogue. |
 | `source_image` | Yes | Source image URL or family reference |
 | `network` | Yes | VPC network name |
 | `subnetwork` | Yes | Subnetwork name |
@@ -361,11 +373,13 @@ provider = "gcp"
 
 [cloud.credentials]
 project_id = "my-project"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 zone = "us-central1-a"
 service_account_email = "aether@my-project.iam.gserviceaccount.com"
 private_key_pem = "${env:GCP_PRIVATE_KEY}"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 machine_type = "e2-medium"
 source_image = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
 network = "default"
@@ -402,7 +416,7 @@ Authentication uses service principal (OAuth2 client credentials). Azure require
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `vm_size` | Yes | VM size (e.g., `Standard_B2s`) |
+| `vm_size` | Yes | VM size. The value shown is an EXAMPLE (e.g., `Standard_B2s`) — providers retire VM sizes, so take yours from Azure's current catalogue. |
 | `image` | Yes | VM image reference (publisher:offer:sku:version) |
 | `admin_username` | Yes | VM admin username |
 | `ssh_public_key` | Yes | SSH public key for VM access |
@@ -444,9 +458,11 @@ client_id = "${env:AZURE_CLIENT_ID}"
 client_secret = "${env:AZURE_CLIENT_SECRET}"
 subscription_id = "${env:AZURE_SUBSCRIPTION_ID}"
 resource_group = "aether-rg"
+# EXAMPLE region — the region decides where your data resides; choose it deliberately.
 location = "eastus"
 
 [cloud.compute]
+# EXAMPLE instance type — providers retire types; check your provider's current catalogue.
 vm_size = "Standard_B2s"
 image = "Canonical:0001-com-ubuntu-server-jammy:24_04-lts:latest"
 admin_username = "aether"
@@ -476,7 +492,7 @@ The CDM (ClusterDeploymentManager) monitors cluster size and automatically provi
 > with auto-restart **disabled** (`docker run --restart no`, systemd `Restart=no`). Do not
 > configure instance- or container-level auto-restart for aether-node — reviving a crashed node
 > under the same identity resurrects a terminally-removed NodeId and corrupts membership. See
-> [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md).
+> [`../operators/deployment-recovery.md`](../operators/deployment-recovery.md).
 
 ### Peer Discovery
 
@@ -525,7 +541,7 @@ After a graceful drain completes (all slices evicted respecting disruption budge
 
 ### ServiceLoader SPI
 
-Each provider module contains a `META-INF/services/org.pragmatica.aether.environment.EnvironmentIntegrationFactory` file pointing to its factory class. At startup, `Main.wireCloudIfConfigured` reads the `[cloud]` config, calls `EnvironmentIntegrationFactory.createFromConfig(cloudConfig)`, which uses ServiceLoader to find the factory matching the configured provider name.
+Each provider module contains a `META-INF/services/org.pragmatica.aether.environment.EnvironmentIntegrationFactory` file pointing to its factory class. At startup, `Main.resolveEnvironment` reads the `[cloud]` config (`AetherConfig::cloud`), calls `EnvironmentIntegrationFactory.createFromConfig(cloudConfig)`, which uses ServiceLoader to find the factory matching the configured provider name.
 
 ### Faceted Design
 
@@ -540,4 +556,4 @@ Each provider returns only the facets it supports. The rest of Aether checks for
 
 ### CloudConfig
 
-The generic `CloudConfig` record holds provider name plus five string maps (`credentials`, `compute`, `loadBalancer`, `discovery`, `secrets`). Each factory knows how to interpret its provider-specific keys from these maps. This keeps the config layer provider-agnostic.
+The generic `CloudConfig` record holds provider name plus six string maps (`credentials`, `compute`, `loadBalancer`, `discovery`, `secrets`, `security`). Each factory knows how to interpret its provider-specific keys from these maps. This keeps the config layer provider-agnostic.

@@ -1,6 +1,6 @@
-<!-- SPDX-License-Identifier: BUSL-1.1 -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko -->
-<!-- Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0. -->
+<!-- Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms. -->
 
 # RFC-0015 — Cluster-Label Scoping
 
@@ -73,7 +73,7 @@ docker ps --filter label=aether.cluster=${CLUSTER_ID} --filter network=aether-${
 
 ### Scaffolding
 
-`aether cluster scaffold --name <name> --format docker-compose --nodes N` generates a ready-to-use compose file with all labels correctly set. The label structure is correct-by-construction; operators can't forget to set it.
+`aether cluster scaffold --name <name> --template docker-compose --nodes N` generates a ready-to-use compose file with all labels correctly set. The label structure is correct-by-construction; operators can't forget to set it.
 
 ## Alternatives considered
 
@@ -94,7 +94,7 @@ Container hostnames like `aether-a-node-1` carry the cluster name structurally. 
 - `DockerComputeProvider` / `HetznerComputeProvider` / `AwsComputeProvider` / `GcpComputeProvider` / `AzureComputeProvider`: emit `aether-cluster` label from `ProvisionContext.clusterName()` with `AETHER_CLUSTER_NAME` env fallback when context-side is empty — landed with this RFC
 - `docker-compose-{a,b}.yml`: `aether.cluster: a/b` labels on all 10 node services + `AETHER_CLUSTER_NAME: "a"/"b"` in the shared env so CTM replacements carry matching labels — landed with this RFC
 - `aether/tests/integration/lib/cluster.sh`: `_docker_container_by_node_id_label` filters on both label and network — landed with this RFC
-- `aether cluster scaffold --format docker-compose`: generates a correct-by-construction compose template — landed with this RFC
+- `aether cluster scaffold --template docker-compose`: generates a correct-by-construction compose template — landed with this RFC
 - `ContainerLabelInspector` + `Main.verifyClusterLabelConsistency`: first-boot consistency check via `/var/run/docker.sock` Unix-socket HTTP (JDK-native `UnixDomainSocketAddress`); fail-closed on `aether.cluster` label vs `AETHER_CLUSTER_NAME` env mismatch — landed with this RFC
 - `aether/docs/operators/multi-cluster-deployment.md`: operator playbook — landed with this RFC
 

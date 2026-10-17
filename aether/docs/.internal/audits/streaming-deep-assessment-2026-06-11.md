@@ -73,7 +73,7 @@ Kill mid-publish / acked-then-killed; replica failover read correctness; dropped
 
 ## 5. Prior-analysis delta (streaming-performance-analysis.md, 2026-04-10)
 
-Still hold: QUIC forward latency, push notification, sync-rep ack API, adaptive polling, consumer-group registry, partial zero-copy read. **No longer hold:** "batch replication complete" (unwired); "STRONG complete" (dead, all its latency/throughput rows describe nonexistent behavior); "tiered read complete" (no segments ever sealed); §7 memory model (HEAD reality is index-dominated eager floor + lazy growth); "configurable budget" (env-var only). **Missed entirely:** the O(streams×partitions×nodes) follower hydration — the actual binding memory constraint.
+Still hold: QUIC forward latency, push notification, sync-rep ack API, adaptive polling, consumer-group registry, partial zero-copy read. *[#1248, 2026-09-19: no zero-copy read exists — `readSlice` returns a heap segment over a copy and has no production caller; delivery copies to heap.]* **No longer hold:** "batch replication complete" (unwired); "STRONG complete" (dead, all its latency/throughput rows describe nonexistent behavior); "tiered read complete" (no segments ever sealed); §7 memory model (HEAD reality is index-dominated eager floor + lazy growth); "configurable budget" (env-var only). **Missed entirely:** the O(streams×partitions×nodes) follower hydration — the actual binding memory constraint.
 
 ## 6. Recommended priorities
 

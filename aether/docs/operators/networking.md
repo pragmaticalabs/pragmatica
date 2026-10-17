@@ -8,13 +8,13 @@ multiplexing, built-in TLS 1.3, and zero head-of-line blocking between message t
 | Port | Protocol | Purpose |
 |------|----------|---------|
 | 8090 | UDP | Cluster transport (QUIC -- consensus, KV-Store, HTTP forwarding, DHT) |
-| 8091 | UDP | SWIM failure detection |
+| 8190 | UDP | SWIM failure detection |
 | 8080 | TCP (+ optional UDP for HTTP/3) | Management API |
 | 8070 | TCP (+ optional UDP for HTTP/3) | App HTTP (slice endpoints) |
 
 ## Firewall Rules
 
-All cluster nodes must be able to reach each other on **UDP ports 8090 and 8091**.
+All cluster nodes must be able to reach each other on **UDP ports 8090 and 8190**.
 Ensure your firewall, security groups, or network policies allow bidirectional UDP
 traffic between all nodes on these ports.
 
@@ -30,7 +30,7 @@ Security group inbound rules:
 
 ```
 Type: Custom UDP    Port: 8090    Source: <cluster security group>
-Type: Custom UDP    Port: 8091    Source: <cluster security group>
+Type: Custom UDP    Port: 8190    Source: <cluster security group>
 Type: Custom TCP    Port: 8080    Source: <management CIDR>
 Type: Custom TCP    Port: 8070    Source: <load balancer security group>
 ```
@@ -41,7 +41,7 @@ Firewall rule:
 
 ```bash
 gcloud compute firewall-rules create aether-cluster \
-    --allow udp:8090,udp:8091 \
+    --allow udp:8090,udp:8190 \
     --source-tags aether-node \
     --target-tags aether-node
 ```

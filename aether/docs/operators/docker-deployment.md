@@ -19,30 +19,58 @@ Two container images are available:
 
 ## Quick Start
 
-### Build Images
+### Single machine (three containers)
+
+A cluster is at least three nodes — there is no supported single-node topology. On one
+machine, this compose file runs all three as containers. Requires a cluster secret; there is
+no shipped default:
 
 ```bash
-# Build from project root
-
-# Build JARs first
-mvn package -DskipTests
-
-# Build container images
-docker build -f docker/aether-node/Dockerfile -t aether-node:latest .
-docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
+cd aether/docker                              # from the repository root; the compose file lives in aether/docker/
+export AETHER_CLUSTER_SECRET=<your-secret>
+export AETHER_VERSION=<image-tag>             # required, no default is shipped
 ```
 
-### Run 3-Node Cluster
+`AETHER_VERSION` is the image tag. There is deliberately no default: a hard-coded one silently
+runs a previous release from a newer checkout. For the pull path set it to a **published** release
+(an unpublished tag fails with a 404 rather than substituting another). For the `--build` path set
+it to the checkout's own version (the root `pom.xml` project version):
 
 ```bash
-cd docker
-docker compose up --build
+export AETHER_VERSION=$(sed -n 's:.*<version>\(.*\)</version>.*:\1:p' ../../pom.xml | head -1)
+```
+
+Pull the published images (no local build):
+
+```bash
+docker compose up -d
+```
+
+Or build from source instead:
+
+```bash
+docker compose up -d --build
 ```
 
 This starts:
 - `aether-node-1` on ports 8080 (API), 8090 (cluster)
 - `aether-node-2` on ports 8081 (API), 8091 (cluster)
 - `aether-node-3` on ports 8082 (API), 8092 (cluster)
+
+### Build images from source (developers)
+
+Only needed for the `--build` path above; the pull path needs neither Java nor Maven.
+
+```bash
+# From the repository root: build the JARs first
+mvn package -DskipTests
+
+# Then build the container images from aether/ -- the Docker build context, which is
+# where docker/aether-node/Dockerfile and the COPY targets (node/target, forge/...) resolve
+cd aether
+docker build -f docker/aether-node/Dockerfile -t aether-node:latest .
+docker build -f docker/aether-forge/Dockerfile -t aether-forge:latest .
+```
 
 ### Run with Forge Simulator
 
@@ -54,7 +82,7 @@ Access Forge dashboard at http://localhost:8888
 
 ## Docker Compose Configuration
 
-The `docker/docker compose.yml` defines a 3-node cluster:
+The `aether/docker/docker-compose.yml` defines a 3-node cluster:
 
 ```yaml
 version: "3.9"
@@ -70,15 +98,17 @@ services:
       NODE_ID: "node-1"
       CLUSTER_PORT: "8090"
       MANAGEMENT_PORT: "8080"
-      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      CLUSTER_PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      AETHER_CLUSTER_NAME: "aether-dev"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
       JAVA_OPTS: "-Xmx256m -XX:+UseZGC"
     ports:
       - "8080:8080"
-      - "8090:8090"
+      - "8090:8090/udp"
     networks:
       - aether-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health/live"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -100,8 +130,10 @@ networks:
 | `NODE_ID` | (auto) | Unique node identifier |
 | `CLUSTER_PORT` | 8090 | Port for cluster communication |
 | `MANAGEMENT_PORT` | 8080 | Port for REST API |
-| `PEERS` | (required) | Cluster peer list |
-| `JAVA_OPTS` | `-Xmx512m` | JVM options |
+| `CLUSTER_PEERS` | (required) | Cluster peer list |
+| `AETHER_CLUSTER_NAME` | (required) | Cluster name; boot aborts if unset. Lowercase DNS-label format (`[a-z]([-a-z0-9]{0,61}[a-z0-9])?`), e.g. `aether-dev` |
+| `AETHER_CLUSTER_SECRET` | (required) | Shared secret used to generate TLS certificates; boot aborts if unset and no `cluster_secret` is configured in the `[tls]` TOML section |
+| `JAVA_OPTS` | `-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true` | JVM options |
 
 ### Peer List Format
 
@@ -121,22 +153,13 @@ node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090
 | `FORGE_PORT` | 8888 | Dashboard port |
 | `CLUSTER_SIZE` | 5 | Simulated cluster size |
 | `LOAD_RATE` | 1000 | Requests per second |
-| `JAVA_OPTS` | `-Xmx1g` | JVM options |
+| `JAVA_OPTS` | `-Xmx1g -XX:+UseZGC` | JVM options |
 
 ## Running Individual Containers
 
-### Single Node
-
-```bash
-docker run -d \
-  --name aether-node-1 \
-  -e NODE_ID=node-1 \
-  -e CLUSTER_PORT=8090 \
-  -e PEERS="node-1:localhost:8090" \
-  -p 8080:8080 \
-  -p 8090:8090 \
-  aether-node:latest
-```
+For a single machine, use the compose quick start above — it already runs the required three
+containers. The manual `docker run` form below is for wiring nodes across separate hosts (or a
+hand-built bridge network) without compose.
 
 ### Multi-Node with Docker Network
 
@@ -147,17 +170,23 @@ docker network create aether-net
 # Start nodes
 docker run -d --name node1 --network aether-net \
   -e NODE_ID=node-1 \
-  -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8080:8080 aether-node:latest
 
 docker run -d --name node2 --network aether-net \
   -e NODE_ID=node-2 \
-  -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8081:8080 aether-node:latest
 
 docker run -d --name node3 --network aether-net \
   -e NODE_ID=node-3 \
-  -e PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e CLUSTER_PEERS="node-1:node1:8090,node-2:node2:8090,node-3:node3:8090" \
+  -e AETHER_CLUSTER_NAME=aether-dev \
+  -e AETHER_CLUSTER_SECRET=change-me-dev-secret \
   -p 8082:8080 aether-node:latest
 ```
 
@@ -166,8 +195,8 @@ docker run -d --name node3 --network aether-net \
 Containers include health checks:
 
 ```dockerfile
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
-    CMD wget --spider -q http://localhost:8080/health || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/health/live || exit 1
 ```
 
 Check health status:
@@ -208,17 +237,29 @@ volumes:
 
 ### TLS Configuration
 
-For production, enable TLS:
+For production, enable TLS. There are no `TLS_*` environment variables — TLS is a TOML setting
+(`[cluster] tls`, `[tls]` section), with `AETHER_CLUSTER_SECRET` the only TLS-related env var (a
+fallback for `tls.cluster_secret`):
 
 ```yaml
 services:
   aether-node-1:
     environment:
-      TLS_ENABLED: "true"
-      TLS_CERT_PATH: "/config/cert.pem"
-      TLS_KEY_PATH: "/config/key.pem"
+      AETHER_CLUSTER_SECRET: "${AETHER_CLUSTER_SECRET:?export AETHER_CLUSTER_SECRET before docker-compose up}"
     volumes:
-      - ./certs:/config:ro
+      - ./aether.toml:/config/aether.toml:ro
+      - ./certs:/config/certs:ro
+```
+
+```toml
+[cluster]
+tls = true
+
+[tls]
+auto_generate = false
+cert_path = "/config/certs/cert.pem"
+key_path = "/config/certs/key.pem"
+ca_path = "/config/certs/ca.pem"
 ```
 
 ### Logging
@@ -266,7 +307,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
-        - name: PEERS
+        - name: CLUSTER_PEERS
           value: "aether-cluster-0:aether-cluster-0.aether:8090,aether-cluster-1:aether-cluster-1.aether:8090,aether-cluster-2:aether-cluster-2.aether:8090"
         resources:
           limits:
@@ -329,9 +370,9 @@ jobs:
 
 1. Verify all nodes can reach each other:
    ```bash
-   docker exec aether-node-1 wget -q -O- http://aether-node-2:8080/health
+   docker exec aether-node-1 wget -q -O- http://aether-node-2:8080/health/live
    ```
-2. Check PEERS environment variable format
+2. Check CLUSTER_PEERS environment variable format
 3. Ensure health checks are passing
 
 ### Performance Issues
@@ -344,7 +385,8 @@ jobs:
 
 ### Base Image
 
-Both images use `eclipse-temurin:25-alpine` for:
+`aether-node` uses `eclipse-temurin:25-noble`; `aether-forge` still uses `eclipse-temurin:25-alpine`
+(the two Dockerfiles have not been aligned). Both are chosen for:
 - Small image size (~200MB)
 - Latest Java 25 features
 - Security patches

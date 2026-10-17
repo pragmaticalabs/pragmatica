@@ -90,6 +90,14 @@ After `?`, separated by `&`:
 
 Implicit for `POST`, `PUT`, `PATCH` - the slice method's request type.
 
+**Binding failure (#772):** a missing, empty, or malformed body — or one that structurally fails to
+bind to the declared request type — never reaches the slice method. It answers `400 Bad Request`
+(RFC 9457 problem body, `detail` naming the expected type) before the `[errors]` mapping below ever
+runs; a slice's own `[errors]` glob patterns have no say over this response, since the request never
+became a domain call. A body that binds successfully but is then rejected by validation the slice
+method performs itself is an ordinary domain `Cause` and goes through `[errors]` (or `HTTP_400`'s
+default, `500`) like any other.
+
 ### 3. Parameter Binding
 
 Generated route handler extracts and binds parameters:

@@ -113,7 +113,7 @@ Per-method depth overrides in KV store (same pattern as `DynamicAspectRegistry`)
 /config/observability/depth/PaymentService.charge = 2
 ```
 
-Management API: `GET/PUT /api/observability/depth`
+Management API: `GET/PUT /api/v1/observability/depth`
 
 This enables a runtime "microscope" — an operator investigating `PaymentService.charge` increases its depth to 3, observes the full subtree (resource calls, downstream slices), then resets to 1. No restart, no config file change, no redeployment.
 
@@ -131,7 +131,7 @@ Adapted from RFC-0009 for the unified model:
 
 ### Trace Endpoints
 
-- `GET /api/traces` — recent entries with filters
+- `GET /api/v1/traces` — recent entries with filters
 
   | Parameter | Type | Default | Description |
   |-----------|------|---------|-------------|
@@ -143,17 +143,17 @@ Adapted from RFC-0009 for the unified model:
   | `minDepth` | int | — | Minimum depth filter |
   | `maxDepth` | int | — | Maximum depth filter |
 
-- `GET /api/traces/{requestId}` — full call tree for one request, sorted by depth then timestamp
-- `GET /api/traces/stats` — aggregated statistics (counts, error rates, timing by slice/method)
+- `GET /api/v1/traces/{requestId}` — full call tree for one request, sorted by depth then timestamp
+- `GET /api/v1/traces/stats` — aggregated statistics (counts, error rates, timing by slice/method)
 
 ### Depth Configuration Endpoints
 
-- `GET /api/observability/depth` — current depth configuration (default + per-method overrides)
-- `PUT /api/observability/depth` — update depth thresholds
+- `GET /api/v1/observability/depth` — current depth configuration (default + per-method overrides)
+- `POST /api/v1/observability/depth` — update depth thresholds
 
 ### Runtime Configuration
 
-- `POST /api/traces/config` — runtime sampling rate adjustment
+- `POST /api/v1/traces/config` (proposed; not implemented) — runtime sampling rate adjustment
 
   ```json
   { "samplingRate": 0.5 }

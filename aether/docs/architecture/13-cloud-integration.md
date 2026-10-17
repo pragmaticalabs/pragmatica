@@ -102,7 +102,7 @@ Provisions, terminates, lists, and manages cloud instances.
 | `listInstances()` | List all managed instances |
 | `listInstances(Map/TagSelector)` | Filter by tags/labels |
 | `instanceStatus(InstanceId)` | Get current status |
-| `restart(InstanceId)` | Reboot an instance |
+| ~~`restart(InstanceId)`~~ | Removed (#1543): a node is replaced under a fresh NodeId, never restarted under its old one |
 | `applyTags(InstanceId, Map)` | Apply metadata tags |
 
 Status mapping is provider-specific:
@@ -186,7 +186,6 @@ graph LR
     subgraph Actions["NodeAction"]
         Start["StartNode(ProvisionSpec)"]
         Stop["StopNode(NodeId)"]
-        Restart["RestartNode(NodeId)"]
         Migrate["MigrateSlices(src, dst)"]
     end
 

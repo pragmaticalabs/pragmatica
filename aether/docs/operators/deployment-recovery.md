@@ -85,7 +85,7 @@ Aether takes the second view. Empirically, the second view is right for distribu
 
 The single argument for `--restart unless-stopped` is "if the Docker daemon restarts (host reboot), the container should come back automatically."
 
-Aether's answer: that's a host-level concern, handled at host level. If the host reboots, CTM observes the node missing and provisions a replacement. If the operator wants the same VM to come back, they provision a systemd unit at host level — but that systemd unit must also have `Restart=no`. The job of "make the host bring up an aether-node on boot" is distinct from "auto-restart the process if it exits."
+Aether's answer: a reboot is a process death, and a dead NodeId never returns under the same id. If the host reboots, CTM observes the node missing and provisions a replacement under a FRESH node id. A host-level unit must therefore neither restart the process (`Restart=no`) nor start it on boot (`systemctl start`, never `enable`) while the node id is fixed per host. Relaunching under the old id is refused once the node has been removed (§4.4). A host that should serve again after a reboot rejoins under a NEW node id.
 
 In practice, most production deployments use immutable VMs/pods: hosts are cattle, not pets. A host that needs to be rebooted to restore a service is replaced, not nursed.
 
@@ -95,7 +95,7 @@ In practice, most production deployments use immutable VMs/pods: hosts are cattl
 
 Aether's recovery flow:
 
-1. **Failure detection** — SWIM gossip detects a peer is unreachable and QUIC transport confirms the disconnect; the node drops out of the presence-derived membership view (SWIM/QUIC via NTT). Node membership is never stored in or committed to the KV-Store. See `aether/docs/specs/membership-architecture-v2-spec.md`.
+1. **Failure detection** — SWIM gossip detects a peer is unreachable and QUIC transport confirms the disconnect; the node drops out of the presence-derived membership view (SWIM/QUIC via NTT). Node membership is never stored in or committed to the KV-Store. See `aether/docs/specs/archive/membership-architecture-v2-spec.md`.
 2. **Departure** — once presence is lost, the node is removed from the cluster's membership view. There is no node-state KV write; the node-id simply ceases to be a present member.
 3. **CTM reaction** — CTM observes the membership change, computes `actual = present-and-ready core count, desired = configured`, sees a deficit, and calls `provisionSingleNode()`.
 4. **Replacement provisioning** — for cloud providers, this issues a `CreateServer` API call; for `manual` provisioning, this is a no-op and operator intervention is expected; for `docker` runtime (test fixtures), this runs `docker run` against the local daemon.
@@ -113,9 +113,9 @@ A Docker `--restart unless-stopped` short-circuits steps 1–3, prevents step 4,
 ### 4.1 Bootstrap
 
 `aether cluster bootstrap` produces:
-- For Hetzner / AWS / GCP / Azure — VMs whose cloud-init runs `docker run --restart no aether-node ...` (current implementation as of `1.0.0-rc1`).
+- For Hetzner / AWS / GCP / Azure — VMs whose cloud-init runs `docker run --restart no aether-node ...` (current implementation as of `1.0.0-rc1`). When cores span several sources, cloud-init only installs and pulls; the bootstrap's SSH push performs the first start (`docker run`, no `docker rm -f`) and refuses a host that already holds an `aether-node` container (#1543). The bootstrap also renders `cluster.genesis_voters` — the provisioned initial core ids — into each initial core's config; replacements never carry it.
 - For docker / docker-compose test fixtures — `restart: "no"` on the aether-node service.
-- For JVM mode (`type = "jvm"`) — no container at all; cloud-init runs `nohup java -jar aether-node.jar` directly. Process supervision is via `pkill` for restart, not a supervisor.
+- For JVM mode (`type = "jvm"`) — no container. Cloud-init installs an `aether-node.service` systemd unit with `Restart=no`, whose launcher (`/opt/aether/run-node.sh`) runs `exec java -XX:+ExitOnOutOfMemoryError …` (§4.5). When cores span several sources the cloud-init script only installs the unit; the bootstrap's SSH push then writes the final peers into the unit's env file and runs `systemctl start aether-node` — the node's one and only start. The start writes a durable marker (`/etc/aether/node.started`) before `systemctl start`, and a host whose unit is active, failed, has ever been active, or carries the marker is refused with a typed error (a node id is launched once; destroy the cluster or replace the node). Consequence: in JVM mode a start that fails after the marker is written makes `--resume` refuse that node with `NodeAlreadyStarted` — recover by destroy/replace (fails closed by design). Nothing pattern-matches a `java` process (#1021, #1543). A failed node is never started again under its old id: CTM auto-heal replaces it under a fresh id, or the operator replaces it with `POST /api/v1/nodes/replace/{id}`.
 
 If you write your own deployment manifests (Kubernetes Pod spec, Nomad job, ECS task definition), apply the equivalent setting. See §5 for k8s.
 
@@ -153,7 +153,37 @@ Restart=no
 # DO NOT use Restart=on-failure or Restart=always
 ```
 
-The operator-supplied systemd may be appropriate for launching aether-node on host boot (same role as cloud-init's `docker run`), but it must not respawn on exit.
+The unit must not respawn on exit, and it must not start on host boot either (`systemctl start`, never `enable`) while the node id is fixed per host. A node that has been gone long enough is removed for good, so a rebooted host that relaunched it under the same id would be refused and never rejoin (#1467, #1543). A host that should come back after a reboot rejoins under a NEW node id. Aether's own cloud-init starts the unit without enabling it, and runs its container with `--restart no`.
+
+### 4.5 Heap exhaustion exits the process — exit code 3
+
+Every node launcher Aether ships (`aether-node` image entrypoint, `install.sh`/`upgrade.sh` wrappers, the
+JVM-mode cloud launcher, the dist launcher, `aether-node.sh`, and the local `start.sh` generated by the
+`aether-setup` module's `aether-up`) runs the JVM with `-XX:+ExitOnOutOfMemoryError` on the `java` token
+itself, ahead of `JAVA_OPTS`, so replacing `JAVA_OPTS` cannot drop it. It can still be switched off
+deliberately: HotSpot takes the last occurrence, so `-XX:-ExitOnOutOfMemoryError` inside `JAVA_OPTS` /
+`AETHER_JAVA_OPTS` / `jvm_args` disables it, and `_JAVA_OPTIONS` in the environment overrides the token
+outright — no shipped template does either; that is the operator's explicit opt-out.
+
+**What it guarantees:** when HotSpot itself reports an out-of-memory condition — a Java-heap or Metaspace
+allocation it cannot satisfy after GC, or a single request it can never satisfy (`Requested array size
+exceeds VM limit`) — the JVM `_exit(3)`s from inside the VM: the error never reaches a `catch (Throwable)`,
+a Netty event loop, or a shutdown hook (hooks are skipped). The process is then dead the same way a
+`kill -9` makes it dead: SWIM pings go unanswered, peers mark the node SUSPECT then FAULTY (~11 s), and it
+is terminally removed (#966 — without the flag an exhausted node kept answering pings from the SWIM
+thread, held its membership slot for ten days, and `Restart=no` had nothing to react to).
+
+**What it does not cover:** an `OutOfMemoryError` thrown from Java code rather than reported by the VM —
+direct/`Unsafe` memory exhaustion, `unable to create native thread`, or an explicit `throw` — behaves
+exactly as before; a JVM that thrashes in GC without ever throwing is not detected.
+
+**What happens next depends on whether the cluster has a compute provider.** In a cluster that has one
+(a cloud bootstrap, or the published image's `[cloud] provider = "docker"`), CTM sees the deficit and
+provisions a replacement under a new node id — expect that, and do not restart the old process by hand.
+The other launchers above ship no `[cloud]` section: there nobody provisions anything, the exit is final
+by design (`Restart=no`, §1), and the operator starts a replacement themselves — **with a new node id**;
+the old id has been terminally removed (§2.1). Either way, a process or container that exited with code 3
+was killed by this flag: the tail of its log reads `Terminating due to java.lang.OutOfMemoryError`.
 
 ---
 

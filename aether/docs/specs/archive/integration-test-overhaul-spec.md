@@ -1768,15 +1768,15 @@ aether/tests/
 
 ### Technical Documentation
 
-- [Cluster Bootstrap Spec](cluster-bootstrap-spec.md) -- ClusterBootstrapConfig model, source types, runtime profiles
-- [ClusterBootstrapConfig.java](../../aether-config/src/main/java/org/pragmatica/aether/config/cluster/ClusterBootstrapConfig.java) -- Config record
-- [SourceType.java](../../aether-config/src/main/java/org/pragmatica/aether/config/cluster/SourceType.java) -- CLOUD, SSH, FORGE, DOCKER
-- [SourceProfile.java](../../aether-config/src/main/java/org/pragmatica/aether/config/cluster/SourceProfile.java) -- Source profile record
-- [OutputFormatter.java](../../cli/src/main/java/org/pragmatica/aether/cli/OutputFormatter.java) -- CLI output formatting (JSON, table, CSV, value)
-- [OutputOptions.java](../../cli/src/main/java/org/pragmatica/aether/cli/OutputOptions.java) -- Picocli mixin for --format, --field, --quiet
-- [ClusterBootstrapCommand.java](../../cli/src/main/java/org/pragmatica/aether/cli/cluster/ClusterBootstrapCommand.java) -- Bootstrap command (needs OutputFormatter wiring)
-- [EmberCluster.java](../../ember/src/main/java/org/pragmatica/aether/ember/EmberCluster.java) -- Forge cluster with `killNode()` and `addNode()` APIs
-- [ChaosRoutes.java](../../forge/forge-api/src/main/java/org/pragmatica/aether/forge/api/ChaosRoutes.java) -- REST API for chaos operations
+- [Cluster Bootstrap Spec](../cluster-bootstrap-spec.md) -- ClusterBootstrapConfig model, source types, runtime profiles
+- [ClusterBootstrapConfig.java](../../../aether-config/src/main/java/org/pragmatica/aether/config/cluster/ClusterBootstrapConfig.java) -- Config record
+- [SourceType.java](../../../aether-config/src/main/java/org/pragmatica/aether/config/cluster/SourceType.java) -- CLOUD, SSH, FORGE, DOCKER
+- [SourceProfile.java](../../../aether-config/src/main/java/org/pragmatica/aether/config/cluster/SourceProfile.java) -- Source profile record
+- [OutputFormatter.java](../../../cli/src/main/java/org/pragmatica/aether/cli/OutputFormatter.java) -- CLI output formatting (JSON, table, CSV, value)
+- [OutputOptions.java](../../../cli/src/main/java/org/pragmatica/aether/cli/OutputOptions.java) -- Picocli mixin for --format, --field, --quiet
+- [ClusterBootstrapCommand.java](../../../cli/src/main/java/org/pragmatica/aether/cli/cluster/ClusterBootstrapCommand.java) -- Bootstrap command (needs OutputFormatter wiring)
+- [EmberCluster.java](../../../ember/src/main/java/org/pragmatica/aether/ember/EmberCluster.java) -- Forge cluster with `killNode()` and `addNode()` APIs
+- [ChaosRoutes.java](../../../forge/forge-api/src/main/java/org/pragmatica/aether/forge/api/ChaosRoutes.java) -- REST API for chaos operations
 
 ### Internal References
 

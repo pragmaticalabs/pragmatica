@@ -891,8 +891,8 @@ This is by design -- external propagation must be explicit because:
 Audit log entries use structured logging via SLF4J MDC. The `principal` and `originNode` keys are added alongside `requestId`:
 
 ```
-2026-02-23T10:15:32.456Z INFO  [req=2aBcDe...] [principal=api-key:cluster-admin] [origin=node-1] Security: authenticated via API key for GET /api/status
-2026-02-23T10:15:33.789Z WARN  [req=3fGhIj...] [principal=anonymous] [origin=node-2] Security: missing API key for POST /api/blueprint
+2026-02-23T10:15:32.456Z INFO  [req=2aBcDe...] [principal=api-key:cluster-admin] [origin=node-1] Security: authenticated via API key for GET /api/v1/nodes/status
+2026-02-23T10:15:33.789Z WARN  [req=3fGhIj...] [principal=anonymous] [origin=node-2] Security: missing API key for POST /api/v1/blueprints
 2026-02-23T10:15:34.012Z INFO  [req=4kLmNo...] [principal=api-key:deploy-bot] [origin=node-1] Management: POST /scale {"artifact":"org.example:my-slice:1.0.0","instances":3} -> 200
 ```
 
@@ -1008,7 +1008,7 @@ All security error responses use RFC 9457 Problem Detail format (already used by
   "title": "Unauthorized",
   "status": 401,
   "detail": "X-API-Key header required",
-  "instance": "/api/status",
+  "instance": "/api/v1/nodes/status",
   "requestId": "2aBcDeFgHiJk..."
 }
 ```
@@ -1020,7 +1020,7 @@ All security error responses use RFC 9457 Problem Detail format (already used by
   "title": "Forbidden",
   "status": 403,
   "detail": "Invalid API key",
-  "instance": "/api/blueprint",
+  "instance": "/api/v1/blueprints",
   "requestId": "3fGhIjKlMnOp..."
 }
 ```

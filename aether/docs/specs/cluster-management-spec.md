@@ -78,6 +78,8 @@ Same logical cluster can deploy to any supported environment without changing th
 type = "hetzner"                              # REQ-CFG-01: required, one of: hetzner | aws | gcp | azure | kubernetes | on-premises | embedded
 
 [deployment.instances]
+# EXAMPLE instance types. `cx21` and `cx11` have since been RETIRED by Hetzner and will NOT
+# provision — take the values from Hetzner's current catalogue.
 core = "cx21"                                 # REQ-CFG-02: provider-specific instance size for core nodes
 worker = "cx11"                               # REQ-CFG-03: provider-specific instance size for workers (future)
 
@@ -175,6 +177,8 @@ strategy = "rolling"                          # REQ-CFG-22: rolling | blue-green
 type = "hetzner"
 
 [deployment.instances]
+# EXAMPLE instance types. `cx21` and `cx11` have since been RETIRED by Hetzner and will NOT
+# provision — take the values from Hetzner's current catalogue.
 core = "cx21"           # 2 vCPU, 4 GB RAM
 worker = "cx11"         # 1 vCPU, 2 GB RAM
 
@@ -221,6 +225,7 @@ Cloud credentials: `HCLOUD_TOKEN` environment variable. Maps to existing `Hetzne
 type = "aws"
 
 [deployment.instances]
+# EXAMPLE instance types — providers retire types; check your provider's current catalogue.
 core = "t3.medium"      # 2 vCPU, 4 GiB RAM
 worker = "t3.small"     # 2 vCPU, 2 GiB RAM
 
@@ -270,6 +275,7 @@ Cloud credentials: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`.
 type = "gcp"
 
 [deployment.instances]
+# EXAMPLE instance types — providers retire types; check your provider's current catalogue.
 core = "e2-medium"
 worker = "e2-small"
 
@@ -303,6 +309,7 @@ Cloud credentials: `GOOGLE_APPLICATION_CREDENTIALS` (path to service account JSO
 type = "azure"
 
 [deployment.instances]
+# EXAMPLE instance types — providers retire types; check your provider's current catalogue.
 core = "Standard_B2s"
 worker = "Standard_B1s"
 
@@ -500,7 +507,7 @@ The optimistic concurrency flow:
 
 1. CLI reads current `ClusterConfigValue` from cluster
 2. CLI computes diff, confirms with user
-3. CLI sends `POST /api/cluster/config` with `expected_version` field
+3. CLI sends `POST /api/v1/cluster/config` with `expected_version` field
 4. Server compares `expected_version` against stored `configVersion`
 5. If match: apply changes, increment version, write
 6. If mismatch: return `ClusterConfigError.VersionConflict` with current version
@@ -562,7 +569,7 @@ Step 6: Wait for DNS/Network (REQ-BOOT-06)
   |
 Step 7: Update Seed Peers (REQ-BOOT-07)
   |  Now that all IPs are known, push updated seed-peer list to each node
-  |  via management API: POST /api/config with seed-peers value
+  |  via management API: POST /api/v1/config with seed-peers value
   |  [ASSUMPTION] Alternatively, use DiscoveryProvider for tag-based discovery
   |  so seed-peers are not needed in config
   |
@@ -572,7 +579,7 @@ Step 8: Wait for Quorum (REQ-BOOT-08)
   |  Timeout: 10 minutes total
   |
 Step 9: Store Cluster Config in KV-Store (REQ-BOOT-09)
-  |  POST /api/cluster/config to leader node
+  |  POST /api/v1/cluster/config to leader node
   |  Body: full aether-cluster.toml content + extracted fields
   |  configVersion = 1
   |
@@ -611,7 +618,7 @@ REQ-BOOT-SSH-01: Spec'd for completeness. Implementation deferred to Phase 2 / s
 
 ### 4.3 Bootstrap Idempotency
 
-REQ-BOOT-IDEMP-01: Running `bootstrap` against an existing cluster name fails with `ClusterAlreadyExists`. User must `destroy` first or use `apply`.
+REQ-BOOT-IDEMP-01: Running a fresh `bootstrap` (not `--resume`) against an existing cluster name fails with `ClusterAlreadyExists`, which names the check that matched (registry, local bootstrap state, or labelled cloud instances). User must `destroy` first or use `--resume`.
 
 REQ-BOOT-IDEMP-02: If bootstrap fails partway (e.g., 3 of 5 nodes provisioned), the CLI outputs the partial state and instructions:
 ```
@@ -642,7 +649,7 @@ REQ-APPLY-01: `apply` compares the new TOML against the `ClusterConfigValue` sto
 
 | Changed Field | Action | Mechanism | Risk |
 |---------------|--------|-----------|------|
-| `cluster.core.count` (increase) | Scale up | `CTM.setDesiredSize(newCount)` via `POST /api/cluster/scale` | Low |
+| `cluster.core.count` (increase) | Scale up | `CTM.setDesiredSize(newCount)` via `POST /api/v1/cluster/scale` | Low |
 | `cluster.core.count` (decrease) | Scale down | `CTM.setDesiredSize(newCount)` -- drains excess nodes | Medium |
 | `cluster.version` | Rolling upgrade | `RollingUpdateManager.startUpdate()` via management API | High |
 | `cluster.core.min` | Update limits | Store in KV-Store, CTM reads on next reconcile | Low |
@@ -669,7 +676,7 @@ To change deployment type, destroy and re-bootstrap the cluster.
 
 ```
 1. Parse and validate new config
-2. Fetch current ClusterConfigValue from GET /api/cluster/config
+2. Fetch current ClusterConfigValue from GET /api/v1/cluster/config
 3. Compute diff (field-by-field comparison)
 4. If --dry-run: print planned actions and exit
 5. Validate immutability constraints (REQ-APPLY-02)
@@ -714,7 +721,7 @@ aether cluster export --format json            # Emit the JSON envelope (tomlCon
 
 ### 6.2 Behavior
 
-REQ-EXPORT-01: Fetch `ClusterConfigValue` from `GET /api/cluster/config`. Return the `tomlContent` field as-is.
+REQ-EXPORT-01: Fetch `ClusterConfigValue` from `GET /api/v1/cluster/config`. Return the `tomlContent` field as-is.
 
 REQ-EXPORT-02: With `--with-status`, append runtime state as comments:
 
@@ -732,7 +739,7 @@ type = "hetzner"
 
 REQ-EXPORT-03: The exported TOML is a valid `aether-cluster.toml` that can be used with `apply` or `bootstrap` (for a new cluster).
 
-REQ-EXPORT-04: With `--format json` (and `--field`, which implies JSON), emit the raw management-API envelope verbatim — the JSON object returned by `GET /api/cluster/config` (`tomlContent`, `clusterName`, `configVersion`, `coreCount`). The TOML body remains accessible as the `tomlContent` field for downstream tooling. `--with-status` is a TOML-format affordance and is ignored under JSON.
+REQ-EXPORT-04: With `--format json` (and `--field`, which implies JSON), emit the raw management-API envelope verbatim — the JSON object returned by `GET /api/v1/cluster/config` (`tomlContent`, `clusterName`, `configVersion`, `coreCount`). The TOML body remains accessible as the `tomlContent` field for downstream tooling. `--with-status` is a TOML-format affordance and is ignored under JSON.
 
 ---
 
@@ -771,7 +778,7 @@ REQ-SCALE-03: Scale-down drains excess nodes before terminating. Node selection 
 ### 7.3 REST Flow
 
 ```
-CLI: POST /api/cluster/scale { "source": "hetzner-eu", "role": "core", "count": 7, "expectedVersion": 5 }
+CLI: POST /api/v1/cluster/scale { "source": "hetzner-eu", "role": "core", "count": 7, "expectedVersion": 5 }
 Server:
   1. Check expectedVersion against the stored configVersion
   2. Resolve the source (infer when blank; refuse if ambiguous or undeclared)
@@ -803,6 +810,8 @@ aether cluster upgrade --version 0.22.0 --strategy blue-green  # Override strate
 
 REQ-UPGRADE-01: Upgrade modifies `cluster.version` in the config and triggers a rolling upgrade of the Aether node software itself (not slice upgrades -- those use the existing `RollingUpdateManager`).
 
+> **Superseded by #1543 (2026-10-09):** REQ-UPGRADE-02 below (drain, update binary, restart, activate) is not how upgrades run. A node id never returns, so no node is restarted on a new binary under its own id. `aether cluster upgrade --version X.Y.Z [--wait]` stores the version and the leader replaces every node not on it, one at a time, each under a new NodeId (cores first, the current leader last, then workers). See [`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md).
+
 REQ-UPGRADE-02: Node upgrade sequence (rolling):
 1. For each node (starting with non-leader nodes):
    a. Drain the node (`POST /api/node/drain/<nodeId>`)
@@ -815,7 +824,7 @@ REQ-UPGRADE-02: Node upgrade sequence (rolling):
 3. Update `cluster.version` in KV-Store `ClusterConfigValue`
 
 REQ-UPGRADE-03: For cloud deployments, "update the node" means:
-- Container runtime: `ComputeProvider.restart(instanceId)` with updated user-data containing new image tag
+- Container runtime: ~~`ComputeProvider.restart(instanceId)` with updated user-data containing new image tag~~ — withdrawn (#1543): a node is replaced under a fresh NodeId, never restarted under its old one; `ComputeProvider.restart` was removed. The replacement boots from the new image tag via CTM provisioning.
 - JVM runtime: SSH to node, replace JAR, restart process (Phase 2)
 
 REQ-UPGRADE-04: Upgrade is non-atomic. If it fails mid-way, the cluster is in a mixed-version state. The `status` command shows per-node versions. Re-running `upgrade` retries from where it left off (skipping already-upgraded nodes).
@@ -859,14 +868,14 @@ REQ-STATUS-01: Status aggregates from multiple management API endpoints:
 
 | Data | Source Endpoint |
 |------|----------------|
-| Cluster info, leader, uptime | `GET /api/status` |
-| Node list, roles | `GET /api/nodes` |
-| Health, quorum | `GET /api/health` |
-| Node lifecycle states | `GET /api/nodes/lifecycle` |
-| Topology (core count, limits) | `GET /api/cluster/topology` |
-| Certificate expiry | `GET /api/certificate` |
-| Cluster config (desired state) | `GET /api/cluster/config` (new) |
-| Slice deployment info | `GET /api/slices` |
+| Cluster info, leader, uptime | `GET /api/v1/cluster/status` |
+| Node list, roles | `GET /api/v1/nodes` |
+| Health, quorum | `GET /api/v1/health` |
+| Node lifecycle states | `GET /api/v1/nodes/lifecycle` |
+| Topology (core count, limits) | `GET /api/v1/cluster/topology` |
+| Certificate expiry | `GET /api/v1/certificates` |
+| Cluster config (desired state) | `GET /api/v1/cluster/config` (new) |
+| Slice deployment info | `GET /api/v1/slices` |
 
 REQ-STATUS-02: Desired vs actual comparison:
 - If `core.count` in config != actual healthy core count: show `(desired: N, actual: M)`
@@ -882,7 +891,7 @@ REQ-STATUS-02: Desired vs actual comparison:
 aether cluster drain <node-id>                 # Graceful drain single node
 ```
 
-REQ-DRAIN-01: Delegates to existing `POST /api/node/drain/<nodeId>`. No new logic.
+REQ-DRAIN-01: Delegates to existing `POST /api/v1/nodes/drain/<nodeId>`. No new logic.
 
 ### 10.2 Destroy
 
@@ -894,7 +903,7 @@ aether cluster destroy --force --keep-instances # Remove registry only
 
 REQ-DESTROY-01: Destroy sequence:
 1. Confirm: `This will permanently destroy cluster "production". Type the cluster name to confirm:`
-2. Drain all nodes (parallel): `POST /api/node/drain/<nodeId>` for each
+2. Drain all nodes (parallel): `POST /api/v1/nodes/drain/<nodeId>` for each
 3. Wait for all drains to complete (slices unloaded)
 4. Terminate all instances (parallel): `ComputeProvider.terminate(instanceId)` for each
 5. Remove cluster from local registry (`~/.aether/clusters.toml`)
@@ -1079,7 +1088,7 @@ function merge(base: TomlDocument, overlay: TomlDocument) -> TomlDocument:
 
 These endpoints are added to `ManagementServer` via a new `ClusterConfigRoutes` route source.
 
-#### POST /api/cluster/config
+#### POST /api/v1/cluster/config
 
 Store or update the cluster configuration in KV-Store.
 
@@ -1106,7 +1115,7 @@ Store or update the cluster configuration in KV-Store.
 - `400 Bad Request`: Invalid TOML or validation failure
 - `401 Unauthorized`: Missing or invalid API key
 
-#### GET /api/cluster/config
+#### GET /api/v1/cluster/config
 
 Retrieve the current cluster configuration.
 
@@ -1128,7 +1137,7 @@ Retrieve the current cluster configuration.
 **Errors:**
 - `404 Not Found`: No cluster config stored (cluster not bootstrapped via declarative config)
 
-#### GET /api/cluster/status
+#### GET /api/v1/cluster/status
 
 Full cluster status including desired vs actual state.
 
@@ -1161,15 +1170,18 @@ Full cluster status including desired vs actual state.
 }
 ```
 
-#### POST /api/cluster/scale
+#### POST /api/v1/cluster/scale
 
-Adjust core node count.
+Adjust the desired count of one `(source, role)`. The body is `ManagementApiResponses.ScaleRequest`
+(see the scale flow above); a blank `source` is inferred when exactly one source declares the role.
 
 **Request:**
 ```json
 {
-  "core_count": 7,
-  "expected_version": 6
+  "source": "hetzner-eu",
+  "role": "core",
+  "count": 7,
+  "expectedVersion": 6
 }
 ```
 
@@ -1177,17 +1189,21 @@ Adjust core node count.
 ```json
 {
   "success": true,
-  "previous_count": 5,
-  "new_count": 7,
-  "config_version": 7
+  "source": "hetzner-eu",
+  "role": "core",
+  "previousCount": 5,
+  "newCount": 7,
+  "configVersion": 7
 }
 ```
 
 **Errors:**
-- `400 Bad Request`: Quorum safety violation, invalid count
-- `409 Conflict`: Version mismatch
+- `400 Bad Request`: invalid core count (even), core count above `coreMax`, undeclared `(source, role)`,
+  ambiguous blank `source`, or a body the decoder cannot map to `ScaleRequest`
+- `409 Conflict`: version mismatch, quorum safety violation (resulting core total below 3 or `coreMin`),
+  no cluster configuration stored
 
-#### POST /api/cluster/upgrade
+#### POST /api/v1/cluster/upgrade
 
 Initiate a version upgrade.
 
@@ -1211,7 +1227,7 @@ Initiate a version upgrade.
 }
 ```
 
-#### GET /api/cluster/upgrade/{upgradeId}
+#### GET /api/v1/upgrade/status
 
 Poll upgrade progress.
 
@@ -1231,18 +1247,18 @@ Poll upgrade progress.
 
 | Endpoint | Used By |
 |----------|---------|
-| `GET /api/status` | `status` command |
-| `GET /api/nodes` | `status` command |
-| `GET /api/health` | `status`, bootstrap health polling |
+| `GET /api/v1/cluster/status` | `status` command |
+| `GET /api/v1/nodes` | `status` command |
+| `GET /api/v1/health` | `status`, bootstrap health polling |
 | `GET /health/ready` | Bootstrap quorum check |
 | `GET /health/live` | Bootstrap liveness check |
-| `GET /api/nodes/lifecycle` | `status` command |
-| `GET /api/cluster/topology` | `status` command |
-| `GET /api/certificate` | `status` command |
-| `POST /api/node/drain/{nodeId}` | `drain`, `destroy`, `upgrade` commands |
-| `POST /api/node/activate/{nodeId}` | `upgrade` command |
-| `POST /api/node/shutdown/{nodeId}` | `destroy` command |
-| `GET /api/slices` | `status` command |
+| `GET /api/v1/nodes/lifecycle` | `status` command |
+| `GET /api/v1/cluster/topology` | `status` command |
+| `GET /api/v1/certificates` | `status` command |
+| `POST /api/v1/nodes/drain/{nodeId}` | `drain`, `destroy`, `upgrade` commands |
+| (none: activate step removed, superseded by #1543) | `upgrade` command |
+| `POST /api/v1/nodes/shutdown/{nodeId}` | `destroy` command |
+| `GET /api/v1/slices` | `status` command |
 
 ### 14.3 Route Source
 
@@ -1258,12 +1274,12 @@ public final class ClusterConfigRoutes implements RouteSource {
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(
-            Route.post("/api/cluster/config").withBody(...).to(this::storeConfig).asJson(),
-            Route.get("/api/cluster/config").toJson(this::getConfig),
-            Route.get("/api/cluster/status").toJson(this::getClusterStatus),
-            Route.post("/api/cluster/scale").withBody(...).to(this::scale).asJson(),
-            Route.post("/api/cluster/upgrade").withBody(...).to(this::startUpgrade).asJson(),
-            Route.get("/api/cluster/upgrade").withPath(aString()).to(this::getUpgrade).asJson()
+            Route.post("/api/v1/cluster/config").withBody(...).to(this::storeConfig).asJson(),
+            Route.get("/api/v1/cluster/config").toJson(this::getConfig),
+            Route.get("/api/v1/cluster/status").toJson(this::getClusterStatus),
+            Route.post("/api/v1/cluster/scale").withBody(...).to(this::scale).asJson(),
+            Route.post("/api/v1/cluster/upgrade").withBody(...).to(this::startUpgrade).asJson(),
+            Route.get("/api/v1/upgrade/status").toJson(this::getUpgrade)
         );
     }
 }
@@ -1280,12 +1296,12 @@ All new endpoints require OPERATOR or ADMIN role (existing RBAC Tier 1):
 
 | Endpoint | Method | Required Role |
 |----------|--------|---------------|
-| `/api/cluster/config` | GET | VIEWER |
-| `/api/cluster/config` | POST | OPERATOR |
-| `/api/cluster/status` | GET | VIEWER |
-| `/api/cluster/scale` | POST | OPERATOR |
-| `/api/cluster/upgrade` | POST | ADMIN |
-| `/api/cluster/upgrade/{id}` | GET | VIEWER |
+| `/api/v1/cluster/config` | GET | VIEWER |
+| `/api/v1/cluster/config` | POST | OPERATOR |
+| `/api/v1/cluster/status` | GET | VIEWER |
+| `/api/v1/cluster/scale` | POST | OPERATOR |
+| `/api/v1/cluster/upgrade` | POST | ADMIN |
+| `/api/v1/upgrade/status` | GET | VIEWER |
 
 ---
 
@@ -1311,9 +1327,9 @@ public sealed interface ClusterConfigError extends Cause {
         }
     }
 
-    record ClusterAlreadyExists(String name) implements ClusterConfigError {
+    record ClusterAlreadyExists(String name, String matched) implements ClusterConfigError {
         @Override public String message() {
-            return "Cluster '" + name + "' already exists. Use 'apply' to modify or 'destroy' first.";
+            return "Cluster '" + name + "' already exists: " + matched + ". To continue an interrupted bootstrap re-run with --resume; to re-create the cluster run 'aether cluster destroy --cluster " + name + "' first.";
         }
     }
 
@@ -1577,10 +1593,10 @@ This eliminates the need for Step 7 (Update Seed Peers) in the bootstrap flow.
 |-----------|--------|-------------|
 | `ClusterStatusCommand` | `aether/cli` | Aggregates data from multiple API endpoints |
 | `ClusterExportCommand` | `aether/cli` | Fetches and prints `ClusterConfigValue.tomlContent` |
-| `ClusterConfigRoutes` (partial) | `aether/node` | `GET /api/cluster/config`, `GET /api/cluster/status` |
+| `ClusterConfigRoutes` (partial) | `aether/node` | `GET /api/v1/cluster/config`, `GET /api/v1/cluster/status` |
 
 **Deliverables:**
-- `GET /api/cluster/config` and `GET /api/cluster/status` endpoints
+- `GET /api/v1/cluster/config` and `GET /api/v1/cluster/status` endpoints
 - CLI `status` and `export` commands
 - `--with-status` flag on export
 - `--json` flag on status
@@ -1593,7 +1609,7 @@ This eliminates the need for Step 7 (Update Seed Peers) in the bootstrap flow.
 |-----------|--------|-------------|
 | `ClusterApplyCommand` | `aether/cli` | Parse, diff, confirm, execute |
 | `ClusterConfigDiff` | `aether-config` | Computes field-level diff between two configs |
-| `ClusterConfigRoutes` (complete) | `aether/node` | `POST /api/cluster/config`, `POST /api/cluster/scale` |
+| `ClusterConfigRoutes` (complete) | `aether/node` | `POST /api/v1/cluster/config`, `POST /api/v1/cluster/scale` |
 
 **Deliverables:**
 - Diff algorithm with field-to-action matrix
@@ -1610,7 +1626,7 @@ This eliminates the need for Step 7 (Update Seed Peers) in the bootstrap flow.
 |-----------|--------|-------------|
 | `ClusterScaleCommand` | `aether/cli` | Thin wrapper around apply |
 | `ClusterUpgradeCommand` | `aether/cli` | Initiate and monitor rolling upgrade |
-| Upgrade endpoint | `aether/node` | `POST /api/cluster/upgrade`, `GET /api/cluster/upgrade/{id}` |
+| Upgrade endpoint | `aether/node` | `POST /api/v1/cluster/upgrade`, `GET /api/v1/upgrade/status` |
 | `NodeUpgradeOrchestrator` | `aether-deployment` | Coordinates per-node drain/update/restart/activate |
 
 **Deliverables:**
@@ -1775,7 +1791,7 @@ Layers 1-3 can be delivered independently. Layer 4 depends on 1-3. Layers 5-7 de
 - [SecretsProvider SPI](/aether/environment-integration/src/main/java/org/pragmatica/aether/environment/SecretsProvider.java) -- Secret resolution for `${secrets:xxx}`
 - [ClusterTopologyManager](/aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterTopologyManager.java) -- Node count reconciliation state machine
 - [NodeLifecycleManager](/aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/NodeLifecycleManager.java) -- Cloud instance lifecycle operations
-- [RollingUpdateManager](/aether/aether-invoke/src/main/java/org/pragmatica/aether/update/RollingUpdateManager.java) -- Two-stage rolling update orchestration
+- RollingUpdateManager -- Two-stage rolling update orchestration
 - [AetherKey](/aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherKey.java) -- KV-Store key types
 - [AetherValue](/aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java) -- KV-Store value types
 - [AetherConfig](/aether/aether-config/src/main/java/org/pragmatica/aether/config/AetherConfig.java) -- Existing runtime configuration

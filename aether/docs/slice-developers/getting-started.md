@@ -13,16 +13,20 @@ modify it to make it your own, and deploy it to a local Forge.
 | Java     | 25+      | `java --version` |
 | Maven    | 3.8+     | `mvn --version`  |
 | JBCT CLI | 0.20.0+  | `jbct --version` |
+| Aether (Forge) | same release as the JBCT CLI | `aether-forge --help` |
 
 > **Network requirements:** Aether uses QUIC (UDP) for inter-node cluster communication.
-> When running a multi-node cluster, ensure UDP ports 8090 (cluster transport) and 8091
+> When running a multi-node cluster, ensure UDP ports 8090 (cluster transport) and 8190
 > (SWIM failure detection) are open between nodes. For local development with Forge,
 > no special configuration is needed. See
 > [Networking Requirements](../operators/networking.md) for details.
 
-> **Don't have the JBCT CLI?** Install it with `mvn dependency:copy` or download from Maven Central.
+> **Don't have the JBCT CLI or Forge?** Install both from the GitHub release with the unified installer:
+> `curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh`.
+> Aether alone (including Forge) is `.../main/aether/install.sh`, the command the [Quick Start](../../../README.md#quick-start) uses.
+> Forge always comes from the release; you never build it to follow this guide.
 
-All JBCT and Aether artifacts (including the annotation processor and Maven plugin) are
+The artifacts a slice project builds against (the slice APIs, the annotation processor and the Maven plugin) are
 published to Maven Central. The generated POM references them automatically — no additional
 repository configuration needed.
 
@@ -724,6 +728,34 @@ Error responses follow the pattern mapping:
 | `UnsupportedLanguage` | 400 | `*Unsupported*` |
 | Everything else | 500 | `default` |
 
+A cause that implements `Cause.Transient` and that no explicit mapping claims answers **503** instead of
+the `default` 500, so a client can tell a retryable condition from a server fault (#1737). No
+`Retry-After` header is set.
+
+**503 means "transient, retry later" — it does NOT mean "not executed".** `Cause.Transient` covers
+refusals that happen before execution (e.g. a stream partition not yet promoted on this node) and also
+timeouts where the call may already have run: a slice invocation `TimeoutError`, an `HttpClient` or JDBC
+timeout, `CoreError.Timeout`. A client that retries a 503 on a **non-idempotent** operation can repeat
+its effect. Retry such calls only with an idempotency key or server-side dedup, or only for refusals the
+API documents as pre-execution. `PublishOutcomeUnknown` stays 500 precisely because its outcome is
+unknown and it is not retry-safe without a message ID.
+
+**Entity owner-forward refusals (#1973): two different 503s, told apart by the body.** A durable-entity operation on a node that
+is not the key's owner is forwarded to the owner. Both of these answer **503** (they are `Cause.Transient`):
+
+| Cause | Body says | Guarantee |
+|-------|-----------|-----------|
+| `EntityOwnerForward.ForwardNotSent` | "refused at send ... the owner was never reached and nothing was applied; safe to retry" (also "request budget exhausted — the command was never sent") | The command **never left this node** (the transport refused the send, or the caller's budget was already spent): nothing was applied, a retry is safe. |
+| `EntityOwnerForward.ForwardTimedOut` | "timed out after the send — outcome unknown: the owner may have applied the command ... retry only an idempotent operation" | The command **was sent** and no answer came in time: the owner may or may not have applied it. A blind retry of a non-idempotent command can repeat its effect. |
+
+`ForwardNotSent` is the only one a client or harness may retry blindly; the 02w harness allow-lists exactly that failure type. A slice that
+reports causes as data (the test fixture does) shows them as `failureType` `ForwardNotSent` / `ForwardTimedOut`.
+
+Which mapping wins: an explicit mapping to a status **other than 500** is kept. An explicit `500`
+mapping of a transient cause still answers 503, because the runtime cannot tell an explicit 500 from the
+generated `default` 500. A failure that is not classified transient (including a transient cause hidden
+under a non-transient wrapper) stays 500.
+
 ### Inheriting Common Configuration
 
 If multiple slices share error mappings or a common prefix, create a
@@ -963,10 +995,44 @@ Routes can be:
 - **String** (uses default security): `shorten = "POST /"`
 - **Array** (explicit security): `resolve = ["GET /{shortCode}", "public"]`
 
-The `[security]` section is optional -- routes without it default to `public`.
+The `[security]` section is optional. A route with no `[security]` section at all does **not**
+default to `public` (#763) -- it inherits the app HTTP server's global `security_mode` (see
+"Securing Your Endpoints" below), the same as an authenticated route with no per-route override.
+Only an explicit `"public"` -- via `default = "public"` or a per-route `["...", "public"]` array --
+bypasses the global policy for that route.
+
+> **Action required if you run `api-key` or `jwt` mode today.** Before this change, a route with
+> no `[security]` section answered `200` unauthenticated -- it was silently treated as `public`.
+> After upgrading, the same route answers `401`/`403`, because it now inherits the global
+> `security_mode` instead. This affects any deployment where `security_mode` is `api-key` or `jwt`
+> (the default is `api-key` -- see "Securing Your Endpoints") and at least one slice's `routes.toml`
+> has no `[security]` section. As of this release, 16 non-test `routes.toml` files in this repo are
+> in that state, all under `examples/` and `aether/e2e-tests/`. **Remedy:** add
+> `[security]` / `default = "public"` to any `routes.toml` whose routes should stay open. Deployments
+> running `security_mode = "none"` are unaffected -- that mode does not enforce any policy either
+> way.
+>
+> **The trigger is rebuilding your slice with the new `jbct/slice-processor`, not upgrading the
+> node runtime.** `.withSecurity(...)` is codegen output baked into your slice's generated Java
+> source at *compile* time -- the node reads it from your already-compiled JAR, it never
+> re-parses your `routes.toml` at deploy time. Upgrading only the aether-node runtime and
+> redeploying an OLD, already-built slice JAR changes nothing: that JAR still carries the old
+> `SecurityPolicy.publicRoute()` literal from whichever processor version built it, and stays
+> silently public exactly as before. The behavior only flips the moment you **recompile that slice
+> against this (or a later) processor version** -- a `mvn clean package` (or your build's
+> equivalent) that regenerates `*Routes.java` -- and then deploy the resulting JAR. Two separate
+> moments; only the second is under your control at your own schedule, and only the second is
+> where this note's "action required" applies.
 
 The `override_policy` controls what operators can change at deploy time via blueprint.toml:
-- **`strengthen_only`** (default) -- operators can only make routes more restrictive
+- **`strengthen_only`** (default) -- operators can only make routes more restrictive. On a route
+  with no `[security]` section, strength is not comparable (what it enforces is the global
+  `security_mode`), so only the direction is judged: an override to `public` is refused, any other
+  override is applied. Note that an accepted override governs requests arriving at OTHER nodes; on the
+  node hosting the route the local check still uses the route's declared policy. Declare `[security]`
+  in `routes.toml` rather than relying on an override alone. See the
+  [Management API reference](../reference/management-api.md#undeclared-routes) for the scope limit and
+  the residuals this leaves open.
 - **`full`** -- operators can change security in any direction
 - **`none`** -- no overrides allowed
 

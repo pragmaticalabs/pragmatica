@@ -23,7 +23,7 @@ graph TB
     subgraph Outputs["Output Channels"]
         Prom["/metrics/prometheus"]
         WS["/ws/dashboard<br/>(WebSocket)"]
-        REST["/api/metrics"]
+        REST["/api/v1/metrics"]
     end
 
     MC1 -->|"MetricsPong<br/>(every 1s)"| MAG
@@ -108,7 +108,7 @@ Runtime-configurable per-method instrumentation via `DynamicAspectInterceptor`:
 
 ```mermaid
 graph LR
-    API["/api/aspects"] -->|"PUT"| KV["KV-Store<br/>AspectConfigKey"]
+    API["/api/v1/observability/config"] -->|"POST"| KV["KV-Store<br/>AspectConfigKey"]
     KV -->|"Notification"| DAI["DynamicAspectInterceptor"]
     DAI --> Slice["Slice Method"]
 

@@ -199,7 +199,7 @@ SliceNotFoundException: org.example:order-service:1.0.0
 **Cause:** Slice JAR not deployed or wrong artifact coordinates.
 
 **Fix:**
-1. Check deployed slices: `curl http://localhost:5150/api/slices/status`
+1. Check deployed slices: `curl http://localhost:5150/api/v1/slices/status`
    ```bash
    # Or use the CLI:
    aether -c localhost:5150 slices status
@@ -299,7 +299,7 @@ TimeoutException: Timeout after 30000ms waiting for org.example:inventory-servic
 - Deadlock in slice code
 
 **Fix:**
-1. Check target slice health: `curl http://localhost:5150/api/slices/status`
+1. Check target slice health: `curl http://localhost:5150/api/v1/slices/status`
 2. Increase timeout if needed:
 ```toml
 [[slices]]

@@ -60,7 +60,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `activating` | `1m` | Maximum time for slice activation (dependency resolution + start) |
 | `deactivating` | `30s` | Maximum time for slice deactivation (stop + cleanup) |
 | `unloading` | `2m` | Maximum time for slice unloading (classloader teardown) |
-| `activation_chain` | `5m` | Maximum time for the full activation chain (all dependencies) |
+| `activation_chain` | `90s` | Maximum time for the full activation chain (all dependencies) |
 | `transition_retry_delay` | `2s` | Delay between lifecycle state transition retries |
 | `reconciliation_interval` | `30s` | Interval for deployment state reconciliation (CDM) |
 | `max_lifecycle_retries` | `60` | Maximum number of lifecycle transition retries |
@@ -72,7 +72,9 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `kv_operation` | `30s` | Timeout for KV-Store operations during rolling updates |
 | `terminal_retention` | `1h` | How long completed/failed rolling update records are retained |
 | `cleanup_grace_period` | `5m` | Grace period before cleaning up old version artifacts |
-| `rollback_cooldown` | `5m` | Minimum time between automatic rollback attempts |
+
+The automatic-rollback cooldown is not a node timeout: it is cluster-wide policy, set in the committed
+cluster TOML under `[rollback] cooldown` (see the deploy guide).
 
 ### `[timeouts.cluster]`
 
@@ -83,6 +85,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `ping_interval` | `1s` | Interval for cluster health check pings |
 | `channel_protection` | `15s` | Grace period before closing an idle cluster channel |
 | `core_absence` | `10s` | #590 — silence after which a node concludes it has lost the core and **dissolves itself locally** (stops serving, drains). Measured from the last term-accepted `ClusterSyncPing`; a node that has never heard the core is cold-starting and never fences. Must clear the worst-case leader-election gap, since pings originate from the leader and an election is a legitimate silence |
+| `offline_buffer_cap` | `30s` (minimum `5s`, refused below) | #1996 — longest **any** frame may wait in a peer's offline buffer while the peer is unreachable; nothing is held for ever. A request with a caller deadline (invocation, HTTP/stream forward, stream replication, command forward) is dropped at the flush once that deadline has passed; every other frame (consensus, DHT, responses, fire-and-forget invocation) is bounded by this cap alone. A dropped frame raises the `offline-frames-expired` operator warning |
 | `community_absence` | `20s` | #590 — silence after which the **core** stops counting a member as live and re-places its community's slices. Measured from the last `ClusterSyncPong`. Replaces the community's own self-reported member count, which freezes rather than expires under partition |
 
 > **`core_absence` must be strictly less than `community_absence`** — the config load **refuses** an
@@ -97,7 +100,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 |----------|---------|-------------|
 | `sync_retry_interval` | `5s` | Interval for retrying consensus state synchronization |
 | `cleanup_interval` | `60s` | Interval for cleaning up old consensus phases |
-| `proposal_timeout` | `3s` | Maximum time to wait for a consensus proposal to complete |
+| `proposal_timeout` | `8s` | Maximum time to wait for a consensus proposal to complete |
 | `phase_stall_check` | `500ms` | Interval for checking stalled consensus phases |
 | `git_persistence` | `30s` | Interval for persisting consensus state to git backup |
 
@@ -115,7 +118,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 |----------|---------|-------------|
 | `period` | `1s` | SWIM protocol round period |
 | `probe_timeout` | `500ms` | Timeout for direct and indirect SWIM probes |
-| `suspect_timeout` | `5s` | Duration a node stays in SUSPECT state before being declared DEAD |
+| `suspect_timeout` | `10s` | Duration a node stays in SUSPECT state before being declared DEAD |
 
 ### `[timeouts.observability]`
 
@@ -133,7 +136,7 @@ All configurable timeouts in a single table, grouped by TOML section.
 
 | TOML Key | Default | Description |
 |----------|---------|-------------|
-| `operation` | `10s` | Timeout for individual DHT get/put operations |
+| `operation` | `30s` | Timeout for individual DHT get/put operations |
 | `anti_entropy_interval` | `30s` | Interval for anti-entropy digest exchange between replicas |
 
 ### `[timeouts.worker]`
@@ -167,15 +170,25 @@ All configurable timeouts in a single table, grouped by TOML section.
 | `warmup_period` | `30s` | Suppression period after slice activation before scaling decisions |
 | `slice_cooldown` | `10s` | Minimum time between scaling actions for a single slice |
 | `community_cooldown` | `60s` | Minimum time between scaling actions for a worker community |
-| `auto_heal_retry` | `10s` | Parsed, discarded — no code path reads this field's accessor outside `ConfigLoader`. Tracked in #675. |
-| `auto_heal_startup_cooldown` | `15s` | Parsed, discarded — no code path reads this field's accessor outside `ConfigLoader`. Tracked in #675. |
+| `auto_heal_startup_cooldown` | `15s` | Delay before the leader's first formation check after activation (`ClusterTopologyManagerRecord.activateWithFormation`). Reaches the runtime via `Main.resolveAutoHeal` (#675). |
+| `auto_heal_provisioning_timeout` | `60s` | Window an auto-heal replacement is granted to boot and join; also the provisioning-circuit backoff once three consecutive provisions fail, the drain grace before the leader reaps a drained node, and the reap re-check interval (`ClusterTopologyManagerRecord`). Reaches the runtime via `Main.resolveAutoHeal` (#675). |
+| `auto_heal_swim_hints_ttl` | `15s` | How long a one-shot SWIM suspect keeps a node SUSPECTED in the quiesce health hint before the hint decays (`MembershipFsm`, #68); the membership state itself is unaffected. Reaches the runtime via `Main.resolveAutoHeal` (#675). |
 
-**`auto_heal_retry` / `auto_heal_startup_cooldown` are dead tunables.** They parse
-(`TimeoutsConfig.java`) and validate cleanly, but nothing calls their accessors outside the parser
-itself — a distinct config surface from, and the same underlying defect as, the eight discarded
-`[operations.auto_heal]` bootstrap fields (see [Bootstrap Config Reference](bootstrap-config.md), Traps
-section). **Tracked as #675**, which scopes collapsing all three duplicated auto-heal config surfaces
-into one live one. Setting either field currently has no observable effect.
+**`auto_heal_retry` was removed (#675).** It parsed into `TimeoutsConfig` and no code path read it;
+the runtime's auto-heal reconcile cadence is not a configured value. A leftover `auto_heal_retry` line
+is ignored like any other unknown key in `aether.toml` (the node config has no unknown-key gate);
+`[operations.auto_heal]` tunables in the CLUSTER config, by contrast, are refused at bootstrap (PF-26)
+because that parser can. The three `auto_heal_*` keys above are the three auto-heal timings the runtime
+honours, and all three are wired: `auto_heal_startup_cooldown = "42s"` reaches `AutoHealConfig.startupCooldown()`,
+`auto_heal_provisioning_timeout = "42s"` reaches the provisioning-circuit backoff and
+`auto_heal_swim_hints_ttl = "42s"` reaches the SUSPECTED-hint decay (`MainAutoHealResolutionTest`). Their
+defaults are `AutoHealConfig`'s own constants, so an absent key and the runtime default cannot disagree.
+
+### `[timeouts.storage_maintenance]`
+
+| TOML Key | Default | Description |
+|----------|---------|-------------|
+| `interval` | `5m` | Cadence of the periodic storage maintenance tick (`StorageMaintenanceDriver`) that runs tier demotion and garbage collection; on startup `AetherNode` logs `Storage maintenance enabled: demotion+GC cadence=<interval>, storage setups=<names>` |
 
 ### Other Timeout-Related Configuration
 
@@ -239,7 +252,7 @@ keeps the full per-layer defaults.
 SWIM provides failure detection with sub-second accuracy:
 
 ```
-period (1s)  ──> probe_timeout (500ms) ──> suspect_timeout (5s) ──> DEAD
+period (1s)  ──> probe_timeout (500ms) ──> suspect_timeout (10s) ──> DEAD
 ```
 
 Every `period`, each node probes one random peer. If the direct probe fails within `probe_timeout`, indirect probes are sent through K other nodes. If all probes fail, the target enters SUSPECT state. After `suspect_timeout` without a successful probe, the node is declared DEAD and removed from the cluster.
@@ -250,7 +263,7 @@ Typical detection latency: 1-2 seconds (vs 15s-2min with TCP disconnect detectio
 
 | Timeout | Purpose |
 |---------|---------|
-| `proposal_timeout` (3s) | Maximum time for a single Rabia consensus round |
+| `proposal_timeout` (8s) | Maximum time for a single Rabia consensus round |
 | `phase_stall_check` (500ms) | Detects stuck phases and triggers recovery |
 | `sync_retry_interval` (5s) | Catches up nodes that fell behind |
 | `cleanup_interval` (60s) | Removes phases older than 100 behind current |
@@ -286,7 +299,7 @@ If any transition exceeds its timeout, the slice transitions to FAILED. The `max
 
 ### Activation Chain
 
-`activation_chain` (5m) is the total time budget for activating a slice and all its dependencies. This covers loading (up to 2m) + activating (up to 1m) plus headroom for dependency resolution. A slice with many dependencies needs the chain timeout to cover the cumulative activation time.
+`activation_chain` (90s) is the time budget for the slice's post-loading activation sub-chain (registering for invocation, publishing topic/stream subscriptions and scheduled tasks, config registration, route publication, and transitioning to ACTIVE) — it does not include the separate `loading` phase timeout. A slice with many dependencies needs the chain timeout to cover the cumulative activation time across that sub-chain.
 
 ### Rolling Updates
 
@@ -295,7 +308,6 @@ If any transition exceeds its timeout, the slice transitions to FAILED. The `max
 | `kv_operation` (30s) | KV-Store reads/writes during update orchestration |
 | `cleanup_grace_period` (5m) | Old version artifact cleanup after successful update |
 | `terminal_retention` (1h) | How long completed update records stay visible in API |
-| `rollback_cooldown` (5m) | Prevents rollback thrashing |
 
 ## Scaling and Control
 
@@ -305,14 +317,15 @@ If any transition exceeds its timeout, the slice transitions to FAILED. The `max
 | `warmup_period` (30s) | Suppresses scaling decisions for newly activated slices |
 | `slice_cooldown` (10s) | Prevents rapid scale up/down oscillation per slice |
 | `community_cooldown` (60s) | Prevents rapid scaling across a worker community |
-| `auto_heal_retry` (10s) | Parsed, discarded — see `[timeouts.scaling]` above. Tracked in #675. |
-| `auto_heal_startup_cooldown` (15s) | Parsed, discarded — see `[timeouts.scaling]` above. Tracked in #675. |
+| `auto_heal_startup_cooldown` (15s) | Formation-check delay after leader activation — see `[timeouts.scaling]` above (#675). |
+| `auto_heal_provisioning_timeout` (60s) | Replacement boot window, provisioning-circuit backoff, drain grace — see `[timeouts.scaling]` above (#675). |
+| `auto_heal_swim_hints_ttl` (15s) | SUSPECTED-hint decay in the quiesce gate — see `[timeouts.scaling]` above (#675). |
 
 ## Data Layer
 
 | Timeout | Purpose |
 |---------|---------|
-| `dht.operation` (10s) | Timeout for individual DHT get/put operations |
+| `dht.operation` (30s) | Timeout for individual DHT get/put operations |
 | `dht.anti_entropy_interval` (30s) | How often replicas exchange CRC32 digests to detect drift |
 | `dht.replication.cooldown_delay` (10s) | Startup delay before upgrading from RF=1 to target RF |
 
@@ -450,7 +463,6 @@ max_lifecycle_retries = 120
 kv_operation = "60s"
 terminal_retention = "6h"
 cleanup_grace_period = "15m"
-rollback_cooldown = "10m"
 
 [timeouts.cluster]
 hello = "10s"
@@ -467,10 +479,9 @@ probe_timeout = "1s"
 suspect_timeout = "15s"
 
 [timeouts.scaling]
-# Both fields below parse but are currently discarded — no effect on runtime behavior. See
-# "Other Timeout-Related Configuration" above and #675.
-auto_heal_retry = "30s"
 auto_heal_startup_cooldown = "30s"
+auto_heal_provisioning_timeout = "90s"
+auto_heal_swim_hints_ttl = "20s"
 
 [timeouts.security]
 cert_renewal_retry = "30m"
@@ -497,7 +508,6 @@ Certain timeouts have ordering constraints. Violating these constraints may caus
 | `scaling.warmup_period` > `scaling.evaluation_interval` | Multiple evaluations should occur during warmup |
 | `scaling.community_cooldown` >= `scaling.slice_cooldown` | Community-level decisions should be less frequent |
 | `election.base_delay` > `election.retry_delay` | Initial election should take longer than retries |
-| `rolling_update.rollback_cooldown` >= `rolling_update.cleanup_grace_period` | Prevent cleaning up artifacts that might be needed for rollback |
 
 ---
 

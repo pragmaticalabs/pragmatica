@@ -62,7 +62,7 @@ The two `*_STATUS` enum entries had names inverted from their semantics — `CLU
 
 These were discovered after the first sweep and would have silently broken the system if missed:
 - **`RoutePermissionRegistry.java`** — RBAC permission registry was keyed off old singular paths. After the rename, the registry's path-prefix matching would have failed to resolve permissions for the new plural paths, falling through to ADMIN_ONLY default for every authenticated mutation. **Fixed.**
-- **`aether/script/rolling-aether-upgrade.sh`** — 8 live curl calls to old paths in production rolling-upgrade script. **Fixed.**
+- ~~`aether/script/rolling-aether-upgrade.sh`~~ — script removed (#1543); replaced by `aether cluster upgrade --wait`. (Its 8 old-path curl calls were fixed before removal.)
 - **Dashboard JS** (`index.html`, `app.js`, `stores/requests.js`, `stores/cluster.js`, `stores/events.js`) — live RestClient calls to old paths. **Fixed.**
 - **`forge/Dockerfile` + `forge/docker-compose.yml`** — healthcheck commands hitting `/api/status` (now `/api/nodes/status`). **Fixed.**
 - **`aether/docker/scaling-test/*.sh`** — scaling-test scripts with live API curl. **Fixed.**
@@ -141,7 +141,7 @@ Resolved in commit (Phase B.1 — error envelope standardization). The framework
 
 Resolved in commit (Phase B.2 — state authority cleanup). Original framing of "fix the projection OR demote it" was reframed by deeper investigation: **both endpoints are needed by design**; the real issues were silent inconsistencies and missing documentation.
 
-**Foundational spec**: the `state-authority.md` spec (removed; see git history) — declared the two-endpoint contract. **Note (membership-v2):** the FSM/`kvState`-as-KV-direct model below has since been scrapped; `kvState` is now a node-reported readiness field (`NodeReportedState`) and is never read from the KV-Store. See [`../specs/membership-architecture-v2-spec.md`](../specs/membership-architecture-v2-spec.md).
+**Foundational spec**: the `state-authority.md` spec (removed; see git history) — declared the two-endpoint contract. **Note (membership-v2):** the FSM/`kvState`-as-KV-direct model below has since been scrapped; `kvState` is now a node-reported readiness field (`NodeReportedState`) and is never read from the KV-Store. See [`../specs/membership-architecture-v2-spec.md`](../specs/archive/membership-architecture-v2-spec.md).
 
 **What landed**:
 - **F1**: `/api/nodes/lifecycle` (mass form) switched from MembershipView-derived to KV-direct, matching the `/{id}` single form. Both list and get share authority now.

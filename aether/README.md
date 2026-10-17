@@ -2,22 +2,30 @@
 
 Unified Application Runtime for Java -- scale horizontally without microservices complexity.
 
-> **Release status: `1.0.0-rc3` (release candidate).** This RC validates the distributed
+> **Release status: `1.0.0-rc4` (release candidate).** This RC validates the distributed
 > foundation — consensus, leader election, failure detection, membership, and topology
 > management — under sustained cloud load. Scope for this RC:
 > - **Single trust domain.** Aether assumes all cluster nodes and management clients are
 >   operated by one trusted party. It is **not** hardened for multi-tenant or hostile-network
 >   deployment.
-> - **Security is built in but OFF by default in this RC.** The management API supports
->   API-key auth with role-based access (viewer / operator / admin), and inter-node transport
->   runs over TLS (self-signed by default, or operator-supplied certificates) — but the default
->   `SecurityMode` is `NONE`, so auth must be **explicitly enabled**. Making security default-on
->   is a hard gate for the 1.0.0 (GA) release. Separately, `AETHER_INSECURE_DEV_MODE` is an explicit opt-in that
+> - **Security is on by default in this RC.** The management API supports API-key auth with
+>   role-based access (viewer / operator / admin), and inter-node transport runs over TLS
+>   (self-signed by default, or operator-supplied certificates); the default `SecurityMode` is
+>   `API_KEY`, not `NONE` — a fresh cluster with no configured key mints a one-time ADMIN key and
+>   prints it once in the startup log (look for the `AETHER BOOTSTRAP ADMIN API KEY` banner), or
+>   you can preset one via `AETHER_API_KEYS=<key>` or an `[app-http.api-keys.<name>]` table in
+>   `aether.toml`. For local experiments, set `security_mode = "none"` under `[app-http]` in
+>   `aether.toml` to disable auth entirely. Separately, `AETHER_INSECURE_DEV_MODE` is an explicit opt-in that
 >   enables test-injection endpoints; it is **refused at boot** when operator TLS certificates
 >   are configured, and logs a loud startup warning whenever it is active.
 > - **Not yet production-hardened.** Some background reconcilers are tuned for settled clusters
 >   and can be transiently slower to converge under heavy churn; these are tracked for the next
 >   milestones. Use this release candidate for evaluation and non-critical workloads.
+> - **Known limitations are listed in
+>   [docs/reference/known-limitations.md](docs/reference/known-limitations.md) — read before
+>   evaluating.** Among them: a network cut that leaves no core majority halts every core,
+>   node-binary version skew has no join-time check, and the dashboard does not work against a
+>   real node.
 
 ## Overview
 
@@ -45,10 +53,11 @@ public interface PlaceOrder {
 # Check cluster status
 aether status
 
-# Deploy a slice
-aether deploy org.example:my-slice:1.0.0
+# Push the artifacts of a blueprint, then deploy the blueprint (coordinates are the blueprint's)
+aether artifacts push org.example:my-blueprint:1.0.0
+aether blueprints deploy org.example:my-blueprint:1.0.0 --wait
 
-# Scale it
+# Scale a slice
 aether scale org.example:my-slice:1.0.0 -n 3
 ```
 
@@ -59,15 +68,29 @@ aether-forge
 # Open http://localhost:8888
 ```
 
-Forge provides a visual dashboard, cluster operations, chaos testing, and per-node management API access.
+To run an example application on Forge, follow the [Quick Start](../README.md#quick-start): install, clone, start
+PostgreSQL, `./run-forge.sh`, then `curl`. The example scripts use the installed Forge; nothing is built from source but
+the example.
+
+Forge provides a dashboard, cluster operations, chaos testing, and per-node management API access.
+**rc4 limitation:** on Forge only `/ws/status` has a publisher (`/ws/dashboard` and `/ws/events` send nothing), and
+Forge serves only a subset of the dashboard's unversioned `/api/...` REST calls, so several panels (governors,
+strategies, streams, schema, storage, desired topology, among others) are empty; against a real node, whose router
+serves `/api/v1` only, every REST-fed panel is empty. See
+[Known Limitations](docs/reference/known-limitations.md#dashboard-against-a-real-node--rest-fed-panels-are-empty);
+use the CLI or the `/api/v1` REST API for the data behind the empty panels.
 
 ### Installation
 
-Requires **Java 25**.
+Installs `aether`, `aether-node` and `aether-forge` from the GitHub release into `~/.aether` (self-contained archives
+bundle a JRE; the jar-only fallback needs **Java 25**):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/aether/install.sh | sh
 ```
+
+`--version VERSION` pins a release (`curl ... | sh -s -- --version VERSION`). To install the JBCT CLI as well, use the
+unified installer, `https://raw.githubusercontent.com/pragmaticalabs/pragmatica/main/install.sh`.
 
 ### Build from Source
 

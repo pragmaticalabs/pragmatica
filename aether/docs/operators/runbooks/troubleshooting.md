@@ -157,9 +157,10 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
 
 3. Analyze with MAT or VisualVM
 
-4. Temporary fix: restart node
+4. Temporary fix: replace the node. A restart under the same id is refused (a node id never
+   returns); the replacement joins under a new id and the old node drains and retires
    ```bash
-   systemctl restart aether
+   curl -X POST http://node:8080/api/v1/nodes/replace/<node-id>
    ```
 
 ### Issue: Slow Response Times
@@ -187,6 +188,12 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
    ping -c 10 node2
    ```
 
+### Issue: `cluster apply --resume`/`--rollback` Failed Part-Way
+
+The wave rollout behind `--resume`/`--rollback` is dormant in rc4 (#686); plain `cluster apply` performs scale-only writes and never reaches this.
+
+The failing step's VMs are destroyed. The error names any VM still running and billed (a failed destroy, or one kept from an earlier step), each with its removal steps: remove each `STILL RUNNING AND BILLED` VM as printed, and keep or remove each `kept` one (see `aether cluster apply` in `reference/cli.md`).
+
 ### Issue: Split Brain
 
 **Symptoms:** Different nodes report different cluster states
@@ -210,7 +217,14 @@ grep -i "load\|activate\|deactivate" /var/log/aether/aether.log | tail -50
    done
    ```
 
-3. Resolution: Restart minority partition nodes
+3. Resolution: heal the network partition. A minority-side node that self-fenced has left for good
+   (its id does not return); replace it under a fresh id with
+   `POST /api/v1/nodes/replace/<node-id>`, or let CTM auto-heal do it. Replacement needs a committed
+   quorum, so this holds only while a majority of the cores is alive
+
+4. If the cores are gone (every core process exited with code 2, `reason=QUORUM_LOSS`), or no group of
+   cores held a majority, healing the network does not bring them back and replacement cannot run. Follow
+   [No-majority partition / every core halted](incident-response.md#no-majority-partition--every-core-halted)
 
 ## Log Levels
 

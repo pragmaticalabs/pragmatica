@@ -1,19 +1,226 @@
 # Backup & Recovery Runbook
 
 ## Overview
-Aether's KV-Store durable backup serializes cluster metadata to a single TOML file (`state.toml`) managed in a local git repository. Git provides versioning, history, diffs, integrity checking, and optional remote push for offsite backup.
 
-## What Gets Backed Up
-- Slice deployment targets and scaling state
-- Node lifecycle states
-- Cluster configuration
-- Leader election state
-- Worker pool assignments
-- Gossip key rotation state
+With `[backup] enabled = true` and a `path`, the **leader** keeps a git backup of the cluster's
+**declared state** — every `ClusterStateKey` in the KV store: blueprints, slice targets, stream
+configs, API keys, cluster config, schema versions, communities, operator settings, and the cluster's
+lineage and incarnation (#1532). It lives in the repository `<path>/kv-backup` on branch `kv-backup`, as
+one readable document (`kv-backup.txt`, one entry per line), and is pushed to `[backup] remote` as a
+fast-forward — never forced.
 
-**Not backed up** (ephemeral, reconstructed on restart):
-- Application blueprints (re-deployed from repositories)
-- Runtime metrics and invocation traces
+- **When it is written:** on change. A change to a backed-up key marks the backup dirty; it is flushed
+  after 500 ms of quiet and at most 5 s after the first change, and an incarnation change is flushed at
+  once. Runtime state (placements, partition owners, leases, node registrations) is never backed up
+  `[mechanism: sealed AetherKey = ClusterStateKey | RuntimeKey; BackupKeyClassificationTest]`.
+- **RPO:** changes made after the last successful push. With the remote unreachable, commits queue in the
+  leader's local repository, so they also depend on that node's disk surviving; `BACKUP_PUSH_FAILING`
+  fires after 60 s of lag.
+- **Consensus itself is in memory** on every node. There is no per-node consensus snapshot any more (the
+  old `state.toml` path was removed by #1533); the KV backup is the only thing a whole-cluster restart
+  restores from.
+
+> **Production prerequisite.** A multi-core production cluster should configure `[backup]` with a `remote`
+> before it takes traffic: after a total core loss (see
+> [No-majority partition](incident-response.md#no-majority-partition--every-core-halted)) the backup is the
+> only recovery source for declared state, and without a remote it needs the old leader's disk. How to
+> configure it and check that it is pushing: [deployment](deployment.md#production-prerequisite-backup-with-a-remote).
+
+## Restarting a whole cluster — a regular start, then the restore
+
+A whole-cluster restart is a **regular cluster start with a fresh set of core nodes** (new NodeIds, the
+same cluster configuration and the same `[backup]` remote), followed by the restore. Restarting the same
+NodeIds with empty state is not a supported restart mode (#1543).
+
+1. Stop every node.
+2. Start the fresh cores with `[backup] restore = "auto"` (the default). Genesis forms exactly as on a
+   first start.
+3. The leader decides once, and commits the decision (`Backup restore decision: …` in the log):
+   - **RESTORED** — the backup head is applied, then the incarnation moves past every incarnation the
+     backup history records for the lineage `[verified: ApiKeyFullRestartForgeTest — fresh cores
+     restore, the minted key is accepted on every node, the incarnation rises]`;
+   - **FRESH** — the backup is empty, or `restore = "fresh"`;
+   - **SKIPPED_EXISTING_STATE** — the KV already holds cluster state (a running cluster is never restored
+     over);
+   - **DISABLED** — the deciding leader has no `[backup]`.
+4. Until the decision commits, every backup-enabled node **refuses writes to cluster state**
+   (`RestorePending`, retryable), so nothing seeds over the restore `[verified:
+   EmberKvBackupRestoreTest]`. Runtime work (DHT partition ownership, membership) proceeds.
+5. Placement is **rebuilt, not restored**: slices from the restored slice targets are deployed onto the
+   fresh nodes, streams from the restored stream configs get owners among them, and the worker
+   communities re-form `[verified: ApiKeyFullRestartForgeTest — the restored slice is ACTIVE on the fresh
+   nodes only; every stream owner is a fresh node]`. An in-flight rolling update is resumed as after a
+   leader failover (the split resumes once both versions are ACTIVE on the new nodes); promote, rollback
+   and complete work on it `[verified: DeploymentRestoreReloadTest, unit level]`.
+
+**What the restore changes on the way in** (the only normalisation, in `BackupRestoreCoordinator.normalised`):
+
+| Entry | Restored as | Why |
+|---|---|---|
+| Community ACTIVE / DEGRADED | FORMING | those states observed the old cluster's members |
+| Deployment outcome IN_PROGRESS | not restored | it names an apply that died with the old cluster |
+| Schema version MIGRATING | PENDING | the database survives, the migration lock does not; PENDING re-runs the migration's check |
+| Entity checkpoint pointer | **not restored** (interim) | its offsets belong to the old cluster's log; see below |
+
+**Data-plane limits — what a whole-cluster restart does NOT bring back:**
+- **Entity state restarts empty.** The backup keeps entity checkpoint pointers, but a restore withholds
+  them and raises `BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED` naming each partition: the pointer carries
+  no incarnation, and seeding a fresh log from it could skip new records `[verified:
+  BackupRestoreCoordinatorTest#aBackedUpEntityCheckpoint_isNotRestored_andTheWithholdingIsWarned]`.
+- **Acked stream records survive a whole-cluster restart only with `[backup]` configured and restored,
+  and only onto the same NodeIds and volumes; in the supported restart (fresh NodeIds) they are not
+  recovered.** Why: a stream's log lives in a directory named by the stream's incarnation
+  (`<stream>@<incarnation>`, under the node's own directory), the incarnation is minted when the stream is
+  created and held only in the cluster state, and consensus is in memory. Without `[backup]` the restarted
+  cluster starts with no stream and creates it again with a new incarnation, so the old log is never
+  looked up; with `[backup]` the restore brings the stream's configuration back with the same
+  incarnation, but fresh NodeIds have fresh directories (storage-identity adoption, #1569, is not in this
+  release). Either way the records are **not recovered: the files remain on the old volumes, unread.**
+  `[verified: StreamCrashDurabilityTest — same node ids and volumes, backup restored: 50 of 50 events recovered;
+  its tripwire, no backup: 0 recovered, the old WAL still on disk]`
+  `[unverified: the fresh-NodeId case is read from the code and the storage-identity spec, not run]`
+  `[unverified: whether a fresh cluster re-reads sealed segments that survive in a remote storage tier —
+  their index lived in the old nodes' metadata snapshots; not tested]`
+- DHT artifact caches are node-local and re-fetch from the artifact repository.
+
+**When the restore cannot read the backup** (remote unreachable, head undecodable): the cluster stays up
+and GATED — no fresh boot, no crash loop. One `BACKUP_RESTORE_BLOCKED` warning names the remote and the
+two exits; the restore retries with backoff capped at 60 s. Exits: fix the remote, or restart with
+`[backup] restore = "fresh"` to abandon the backup `[verified: BackupRestoreCoordinatorTest.Blocked,
+EmberKvBackupRestoreTest]`.
+
+**Hazard — restoring the same backup into two live clusters.** Each restore mints a new incarnation id
+(#1529 part 2), so two clusters restored from the same head at the same time reach the same lineage and
+incarnation under different incarnation ids. The backup refuses to let either one replace the other's head:
+whichever cluster finds the other's head raises `BACKUP_FORKED`, naming both incarnation ids, and backs up
+nothing from then on; a push race is settled by git's fast-forward check, and the loser ends FORKED.
+`[verified: KvBackupServiceTest.Fork]` **Detection is on the second writer only:** `BACKUP_FORKED` on a
+cluster means another live cluster with the same lineage and incarnation owns the backup head; that other
+cluster shows NOTHING and keeps backing up. The FORKED cluster's state is not being backed up. Resolve it
+on the FORKED cluster in one of three ways:
+
+| Resolution | Consequence |
+|---|---|
+| Point its `[backup]` at a **different** `path` / `remote`, and restart it | Both clusters back up, each to its own remote. The FORKED cluster's new remote starts with its own history. |
+| Run `aether backup declare-genesis` on it | A **takeover**: it moves to a new incarnation (and incarnation id) of the SAME lineage, and its state replaces the other cluster's head. The other cluster then stops backing up — for good — and raises `BACKUP_HEAD_AHEAD` after 30 s, saying the head is at a higher incarnation it will never pass `[verified: KvBackupServiceTest.Fork]`. Do this only for the cluster whose state should continue, and then stop the other one or re-point it. |
+| Stop it | Nothing changes for the other cluster, which keeps backing up. |
+
+**`restore = "fresh"` against an existing backup** starts a new lineage, and its backup is then GATED
+(`BACKUP_GATED`) until `aether backup declare-genesis` makes it the head; the old lineage stays in git
+history.
+
+**No `[backup] remote`:** the restore reads only the local repository of whichever node leads the cold
+start, which may be older than another node's. A startup `BACKUP_RESTORE_SOURCE_LOCAL` warning says so.
+`[unverified: picking the newest head across nodes is not implemented — configure a remote]`
+
+**Every core should carry the same `[backup]` section.** Mixed configurations are unsupported: a leader
+without `[backup]` commits DISABLED, which opens the restore gate on the others.
+
+**Replacements carry it too (#1968).** A core that auto-heal replaces is rendered from the committed cluster configuration, so
+put `[backup]` in the source's `node_config` (`[source.<name>.node_config.backup]`): seeds and replacements then boot with the same
+section. The renderer also provides the directory the repository needs: a container node gets the host directory
+`/opt/aether/backups` (owned by the in-container `aether` user) bind-mounted at `[backup] path`, so the repository outlives the
+container; a JVM node gets `path` created on the host before it starts. A **Docker** node has no node TOML of its own: its
+`[backup]` is the four variables `AETHER_BACKUP_ENABLED`, `AETHER_BACKUP_PATH`, `AETHER_BACKUP_REMOTE` and `AETHER_BACKUP_RESTORE`,
+which the Docker provider hands to every replacement from the leader's EFFECTIVE `[backup]` (its TOML or its environment, whichever it
+runs on), together with a per-node volume for the repository (mounted at `/data` when `path` is under it, else at `path`).
+`[verified: MainEffectiveBackupTest, DockerComputeProviderTest]`
+
+**Every way a node is started carries it.** The CLI's own first-start command (`aether cluster bootstrap`) gives a cloud or SSH
+node the same host directory (`/opt/aether/backups`, bind-mounted at `[backup] path`; a JVM node gets `path` created) and the
+Docker provisioner hands a Docker source's `[source.<name>.node_config.backup]` to the nodes it starts.
+`[verified: BootstrapPhaseDeployCloudSshRestartTest, BootstrapPhaseDeploySshSourceTest, ProviderResolverTest]`
+Without the mount a container node cannot write its repository at all (the image has no writable `/var/aether`).
+
+**Precedence: the environment beats the TOML, key by key.** `AETHER_BACKUP_ENABLED/PATH/REMOTE/RESTORE` each override the same
+`[backup]` key; a blank variable counts as unset (it cannot clear a TOML value). A stale variable in a node's process environment
+therefore silently beats a deliberate TOML change, so the node logs one WARN line per key at startup when the environment value
+differs from the TOML value (the key and both sources, never the values: a remote can carry a credential).
+`[verified: ConfigLoaderBackupEnvTest]`
+
+**Bind-mount ownership.** For a cloud or SSH container node the renderer creates the host directory `/opt/aether/backups` owned by uid 1000
+(the in-container `aether` user) before `docker run`. If you create or change that directory yourself, it must stay writable by uid 1000: a repository
+the node cannot write backs up nothing (`BACKUP_COMMIT_FAILED`). For a **Docker** source the repository must be under `/data`
+(validated at load, see `bootstrap-config.md`): the named volume is owned by uid 1000 only there.
+
+**The dead node's volume is kept on purpose.** A Docker replacement mounts `<container name>-backup`; the node that died keeps its
+own volume, and nothing removes it (old volumes are meant to be reattached, which belongs to the #1569 storage adoption, not this
+change). The repository on the backup REMOTE, not the node's local copy, is what a restore reads. To reclaim a volume you are sure
+you will not need: `docker volume rm <dead-node-container-name>-backup` (it refuses while a container still mounts it). A cloud host's
+`/opt/aether/backups` goes with the VM.
+
+**A leader without `[backup]` over a committed backup is loud, not silent.** If this node becomes leader with no `[backup]` while the
+cluster's committed state says the backup is in use (a committed restore decision other than DISABLED, or a committed cluster
+configuration that enables it), it keeps the committed setting, commits nothing, and raises `BACKUP_CONFIG_MISSING` (CRITICAL,
+once per leadership term). It raises `BACKUP_CONFIG_RESTORED` (INFO, only after the warning) when it stops leading. It does not
+refuse the decision: that would hold the restore gate closed and refuse every cluster-state write for as long as the node leads.
+Fix it by restarting the node with the cluster's `[backup]`, or by moving leadership to a node that has it.
+
+## Storage metadata snapshots — a separate mechanism, per node, per storage instance
+
+Each storage instance (`artifacts`, `content`, `streams`, …) also keeps its OWN metadata snapshots
+under `[storage.<instance>] snapshot_path`: `snapshot-<epoch>.dat` files plus a one-line pointer
+file `LATEST` naming the current one (`DefaultSnapshotManager`, `integrations/storage`). These are
+not consensus state and are not covered by `[backup]`; the WAL truncation of the `streams` instance
+is bounded by the refs in the latest snapshot on disk (#1345).
+
+**How they are written (#1353):** the snapshot goes to `snapshot.partial`, is fsynced
+(`FileChannel.force(true)`) and renamed over `snapshot-<epoch>.dat` in one atomic rename
+(`FileOps.moveAtomic`); `LATEST` is written the same way via `LATEST.partial`. So a write that
+stops part-way — disk full, process killed — leaves the previous snapshot and the previous `LATEST`
+intact and removes its partial
+(`SnapshotDurableWriteTest#forceSnapshot_latestWriteInterrupted_previousSnapshotStillRestores`,
+`#forceSnapshot_snapshotWriteInterrupted_leavesNoTornFileUnderAnyName`). Snapshot writes are
+serialised (`forceSnapshot()` holds a lock; the tick and the HTTP `POST …/snapshot` route can call
+it at once), so one writer owns the partial names at a time
+(`#forceSnapshot_concurrentCallers_leaveOnlyCompleteCorrectlyNamedFiles`). Before #1353 both files
+were truncated in place, and a torn `LATEST` restored NOTHING although a complete snapshot sat
+beside it. `[unverified: power loss — the rename's directory entry is not fsynced; the pinned property is
+torn-file behaviour.]`
+
+**How they are read at boot:** the file `LATEST` names is tried first. If it is missing, torn or
+fails its content-hash check, the retained snapshots are tried newest-first and the first complete
+one is restored, at WARN:
+
+    Snapshot <dir>/snapshot-000042.dat named by LATEST is unreadable; restored another retained
+    snapshot snapshot-000041.dat (epoch=41) instead. Metadata recorded only in the unreadable
+    file is lost unless a WAL replays it. See docs/operators/runbooks/backup-recovery.md
+
+A torn snapshot is never restored. If something is on disk — a `LATEST` file, or any
+`snapshot-*.dat` — and none of it restores, the node REFUSES to boot (#1013): `createAll` fails with
+
+    Failed to create storage '<instance>': Storage '<instance>' has a metadata snapshot that does not
+    restore, readiness not signalled: Snapshot <dir>/snapshot-000042.dat named by LATEST is
+    unreadable and none of the 0 other retained snapshot(s) restores; refusing to start with EMPTY
+    metadata. See docs/operators/runbooks/backup-recovery.md
+
+and the instance's readiness gate never leaves `LOADING_SNAPSHOT`. Only a directory holding neither
+`LATEST` nor a snapshot file (or no directory at all) boots with empty metadata, as a first boot
+does; a directory that exists but cannot be listed refuses too, since absence cannot be established
+from a failed read. Before #1013 every one of these booted read-ready on empty metadata with at most
+a WARN, and replayed the WAL as if the metadata had never existed.
+
+**Operator action on the refusal:** the boot names the file. Restore the snapshot directory from a
+backup of the volume, or — if the metadata is genuinely expendable (a `content` or `artifacts`
+instance whose blocks can be re-fetched) — stop the node, move the unreadable `snapshot-*.dat` files
+and `LATEST` out of the directory, and start it: an empty directory is a first boot. For the
+`streams` instance the refs in the snapshot are how sealed segments are indexed at boot
+(`SegmentIndex.rebuildFromRefs`); started empty, the segments on disk are not indexed, so treat the
+refusal as data loss until the file is recovered.
+
+**Operator action on the fallback WARN (an older snapshot restored):**
+1. Nothing is required for the node to run: the next snapshot write repoints `LATEST` at a fresh
+   complete file. The read path does not rewrite `LATEST` and does not delete the unreadable file.
+2. Keep the unreadable file until you have decided whether the mutations between the two epochs
+   matter; it is the only evidence of what was lost. For the `streams` instance, segment refs that
+   existed only in the torn snapshot are unreachable until it is repaired; the WAL replays whatever
+   it still holds, and a WAL that starts above the restored watermark is accepted as reclaimed
+   history with its own WARN (#1258; with #1345 truncation reads the snapshot through this same
+   fallback, so truncation and recovery agree on which file is current).
+3. To remove it by hand: stop the node, delete the named `snapshot-<epoch>.dat`, start the node.
+   Never edit `LATEST` while the node runs — it is rewritten on every snapshot.
+4. Recurring WARNs after a clean shutdown mean the disk is tearing completed writes; check the
+   volume before trusting any snapshot on it.
 
 ## Enabling Backups
 
@@ -22,113 +229,51 @@ Aether's KV-Store durable backup serializes cluster metadata to a single TOML fi
 ```toml
 [backup]
 enabled = true
-interval = "5m"
 path = "/data/backups"
-remote = ""
+remote = "git@backups.example.com:ops/cluster-a-kv.git"
+restore = "auto"
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Enable/disable backup |
-| `interval` | `"5m"` | Backup interval |
-| `path` | env-dependent | Backup directory |
-| `remote` | `""` | Git remote URL for offsite backup |
+| `enabled` | `false` | Enable the KV backup and the restore. Also requires a non-blank `path`. |
+| `path` | env-dependent | Directory holding the backup repository `<path>/kv-backup` |
+| `remote` | `""` | Git remote the leader pushes to (fast-forward only). Strongly recommended: without it a restore reads only the deciding leader's local repository |
+| `restore` | `"auto"` | What a cold start does with the backup: `auto` restores the head (or starts fresh when it is empty); `fresh` ignores it |
 
-**Default paths by environment:**
-- LOCAL: `./aether-backups`
-- DOCKER: `/data/backups`
-- KUBERNETES: `/var/aether/backups`
+**Default paths by environment:** LOCAL `./aether-backups`, DOCKER `/data/backups`, KUBERNETES
+`/var/aether/backups`.
 
-### Setting Up Remote Backup
-1. Create a private git repository
-2. Set the `remote` field to the repository URL
-3. Ensure the Aether process has SSH/HTTPS credentials
+Git never prompts: https credential prompts are disabled (`GIT_TERMINAL_PROMPT=0`) and ssh runs in batch
+mode; a remote that needs credentials the process does not hold fails, and the backup reports
+`BACKUP_PUSH_FAILING` (push) or `BACKUP_RESTORE_BLOCKED` (restore).
 
-## Intentionally resetting a cluster — clear per-node persistence first
+## Warnings
 
-**With `[backup] enabled = true`, wiping the cluster is not enough on its own.** Enabling backup
-gives each node durable consensus persistence, and a node that keeps its old backup directory across
-an intentional reset carries consensus history the reset cluster never had.
+| Code | Meaning | Operator action |
+|------|---------|-----------------|
+| `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
+| `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
+| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533) | Fix the backup source, or restart with `[backup] restore = "fresh"` to abandon it |
+| `backup-restore-unblocked` (INFO) | The block ended: the backup was read and the restore decided, or the blocked node stopped leading or is stopping (a restart is a stop first) | None. A crash of the blocked node cannot raise it (see `backup-config-restored`); a leader that still cannot read the backup raises `backup-restore-blocked` again |
+| `backup-config-missing` (cluster event, `OPERATOR_WARNING`) | This leader has no `[backup]` while the committed state says the backup is in use; nothing is backed up while it leads (#1968) | Restart it with the cluster's `[backup]` (or `AETHER_BACKUP_*`), or move leadership |
+| `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads, or its node is stopping (graceful stop, drain, self-fence) | None; a new leader without `[backup]` raises the warning again. A crash (`kill -9`, power loss, OOM kill) cannot raise it: that node's `backup-config-missing` then stays the last event for the code, and only another node's event layer could close it, which the event design does not allow. Treat a `backup-config-missing` whose node is gone as closed |
+| `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s; nothing is backed up meanwhile | If the warning names a **higher incarnation**, another cluster took over this lineage's backup (a `declare-genesis` or a later restore) and this cluster will never write again: stop it or point its `[backup]` elsewhere. At the **same** incarnation, a later revision of this cluster holds the head; it writes again once its revision passes the head's |
+| `BACKUP_HEAD_REPLACED` | This cluster's state replaced a newer head | The replaced commit is in git history; inspect it |
+| `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |
+| `BACKUP_PUSH_FAILING` | Commits have not reached the remote for 60 s | Check remote, credentials, network |
+| `BACKUP_COMMIT_FAILED` | The local repository cannot take a commit | Check disk, permissions, git |
+| `BACKUP_RESTORE_BLOCKED` | A cold start cannot read the backup; cluster-state writes are refused | Fix the remote, or restart with `restore = "fresh"` |
+| `BACKUP_RESTORE_SOURCE_LOCAL` | No remote: the restore reads one node's local repository | Configure `remote` |
+| `BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED` | A restore withheld entity checkpoints; entity state restarts empty | None — this is the documented limit |
+| `BACKUP_RECOVERED` | A failing backup is current again | — |
 
-Since #660, sync adoption refuses to install a state older than what the node already holds. That is
-the correct safety behaviour — committed state must not be discardable by a sync — but it means the
-old-disk node **no longer converges by silently discarding its history**. It activates on its own
-old state and diverges from the freshly-reset cluster. (Before #660 it regressed onto the cluster's
-state and the reset appeared to "just work", which was the same divergence hazard hidden behind a
-detect-only WARN — see D9 in `aether/docs/specs/cluster-topology-overhaul-spec.md`.)
+## Inspecting the backup
 
-**The node names this condition itself.** Look for:
-
-```
-Node <id> BOOT FUTURE-HISTORY detected (§6.4, detect-only): persisted Rabia phase <N> exceeds
-cluster-reported sync phase <M> — this node carries history the joined cluster never saw
-```
-
-**Recovery action.** On every node, before restarting into the reset cluster, remove the backup
-directory configured as `[backup] path` (`./aether-backups`, `/data/backups`, or
-`/var/aether/backups` by default — see the table above). Then start the cluster. If the WARN above
-appears after a reset, that node's persistence was not cleared: stop it, clear its `[backup] path`,
-and restart it.
-
-This applies only to a DELIBERATE reset. Do not clear persistence to "fix" the warning during a
-genuine recovery — there the node's history is the thing you are trying to keep, and
-`Recovery from Total Cluster Loss` below is the correct procedure.
-
-## Manual Backup
-
-### Via CLI
 ```bash
-aether backups trigger
+cd /data/backups/kv-backup
+git log --oneline                  # "kv backup lineage=… incarnation=… revision=…" per commit
+git show HEAD:kv-backup.txt        # header, then one "<base64 value> <key>" line per entry, sorted by key
 ```
 
-### Via API
-```bash
-curl -X POST http://localhost:8080/api/backups
-```
-
-## Listing Backups
-
-### Via CLI
-```bash
-aether backups list
-```
-
-### Via API
-```bash
-curl http://localhost:8080/api/backups
-```
-
-## Recovery from Total Cluster Loss
-
-### Step-by-step:
-1. Stop all nodes
-2. Ensure `state.toml` is present in the backup directory
-3. Start a single node with backup enabled
-4. The node will load state from `state.toml` during sync
-5. Start remaining nodes — they will sync from the restored node
-
-### Restoring a Specific Backup
-```bash
-aether backups restore <commit-id>
-```
-
-## Inspecting Backup History
-
-Since backups are stored in git:
-```bash
-cd /data/backups
-git log --oneline          # List all backups
-git diff HEAD~1            # See what changed in last backup
-git show HEAD:state.toml   # View current backup content
-cat state.toml             # Human-readable TOML
-```
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Backup fails | No write permission on backup dir | Check directory permissions |
-| Push fails | Invalid remote or credentials | Verify remote URL and SSH keys |
-| Restore fails | Cluster still active | Stop all nodes before restoring |
-| Empty backup | KV-Store has no entries | Normal for fresh cluster |
-| `BOOT FUTURE-HISTORY` WARN after an intentional reset | Node kept its old `[backup] path` across the reset | Stop the node, clear its backup directory, restart — see "Intentionally resetting a cluster" above |
+Keys are readable, so `git diff` between two commits shows which entries changed.
