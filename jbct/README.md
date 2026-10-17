@@ -26,7 +26,7 @@ jbct verify-slice                  # Validate slice configuration
 jbct upgrade                       # Self-update to latest version
 ```
 
-`jbct --help` lists the full command set, including the slice scaffolding and reporting commands.
+`jbct --help` lists the full command set, including the slice scaffolding and reporting commands. To install the CLI, run [`install.sh`](install.sh); it installs to `$JBCT_HOME` (default `~/.jbct`) and requires JDK 25+.
 
 **Exit codes** are the same for `lint`, `check`, `score` and `format --check`, and they separate the
 two things a gate needs to tell apart:
