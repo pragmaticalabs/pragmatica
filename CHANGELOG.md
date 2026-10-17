@@ -238,7 +238,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **A stream read served by a remote owner did not fail the way a local read does.** `ReadForwardResponse` carried a refusal as text only, and the caller rebuilt it as `ReadForwardFailed`, a `StreamForwardError` that `StreamErrorStatus` cannot classify. The `CursorExpired` retry of a default read (#1921) and the 410 of an expired offset never saw their cause; a `StreamNotFound`, `PartitionOutOfRange` or not-yet-activated owner was not the 404, 400 or 503 a local read gives. On the routed GOVERNOR and NEAREST paths the caller then fell back to a local read of a ring it does not hold, so the same refusals surfaced as `PARTITION_NOT_LOCAL` (503) instead of their own status.
 - **The response now carries the refusal typed.** `ReadForwardResponse` gains `refusal`, a `ReadRefusal`: a code (`ReadRefusal.Kind`) and the values the cause is built from, never a message to parse and never the cause chain. The owner puts it on the wire from the one `sendReadFailure` that already logs the chain (#2105); the caller rebuilds the same `Cause` a local read of the owner gives, so every route maps it as it maps a local refusal. The set is what a read can raise on the serving node, read off the code: `StreamNotFound`, `PartitionOutOfRange`, `PARTITION_NOT_LOCAL`, `BUFFER_CLOSED`, `CursorExpired`, `OwnerNotActivated`, `ReplicaNotVerified`, `StaleEpochRead`, `NotCurrentOwner`, `OwnerCatchupPending`, `LinearizableRoundTimeout`, `PartitionHeldNotMaterialized`, `RingIndexCorrupted`, `SealInFlight`, `SealedRangeMissing`; `EpochDiverged` keeps its own slots. `ReadRefusal.readRefusal` is an exhaustive switch over `StreamError` with no default, so a new stream error cannot be added without deciding whether a read raises it. A failure outside the set (a failed tier read, a consensus failure) still travels as text and is rebuilt as `ReadForwardFailed`.
 - **"Stream partition is not owned by this node" from the target of a forward arrives as `PARTITION_NOT_LOCAL`**, the same retryable 503 a local miss is, and the forward still degrades to the local read for it, as for a timeout or a text-only failure. Every other typed refusal is returned as the owner's answer instead of being replaced by a local read that can only fail with `PARTITION_NOT_LOCAL`. [guess, marked: a transient owner refusal on a `NEAREST` read (for example `OwnerNotActivated`) is now a 503 where it used to degrade to the local read's empty page]
-- **Wire change** (pre-GA, owner ruling 2026-09-16): `ReadForwardResponse` gains a trailing component, and `ReadRefusal` / `ReadRefusal.Kind` take wire tags 2140 / 2141; the wire-assignment baseline is re-recorded. A code this node does not know (a newer peer) is rebuilt as the owner's text.
+- **Wire change** (pre-GA, maintainer decision 2026-09-16): `ReadForwardResponse` gains a trailing component, and `ReadRefusal` / `ReadRefusal.Kind` take wire tags 2140 / 2141; the wire-assignment baseline is re-recorded. A code this node does not know (a newer peer) is rebuilt as the owner's text.
 - [verified: `ForwardedReadRefusalTest` (two real nodes in one JVM, every message through the production codec, one test per refusal), `ForwardedStreamReadRouteTest` (the real `STREAM_READ` and `STREAMS_EVENTS` routes over a forwarding router: default read retried, expired offset 410, out-of-range 400, not-owned 503), `ReadRefusalTest`; reverting each changed line turns a test red]
 
 ### Fixed (2026-10-11 — #1734: durable-entity ownership converged late, or never, under a changing hosting set)
@@ -273,7 +273,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   ordinary stream: it is no longer served at the system address and no longer refused as the system stream.
   [mechanism: `BlueprintPublishOwnershipTest$StreamBindings#publish_externalSystemSource_resolvesToTheNameTheSystemStreamIsCreatedUnder`
   and `SystemStreamManagementReadTest`; reverting `engineKey` turns both red]
-- **System streams are READ-ONLY to blueprints, slices and the Management API** (owner ruling, #1338). A `system:`
+- **System streams are READ-ONLY to blueprints, slices and the Management API** (maintainer decision, #1338). A `system:`
   `External` source stays allowed (spec `event-stream-namespaces-spec.md` §6.1, §11.2) and binds read-only. Every
   write into a `system:` stream through `StreamWriteRouter` (slice `StreamAccess.publish`, `StreamPublisher`
   `publish`/`publishBatch`, the Management-API publish) or `DefaultStreamPublisher` is refused with
@@ -771,7 +771,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `200 {"outcome":"failed","failureType":"simpleCause"}`, which a client or the harness read as a final failure. A `Cause.Transient` answers 503 through the
   existing app-route mappers (#1737); the message says "safe to retry". The 02w harness allow-list gains `ForwardNotSent`.
 - The owner refusing an arrived-expired command without touching the entity (`ForwardBudgetExhausted` over the wire) is retyped to the same transient instead of the terminal `ForwardRefused` carrier.
-- A forward that was SENT and timed out is now typed too, `EntityOwnerForward.ForwardTimedOut`, `Cause.Transient` and therefore 503 like every app-route timeout (owner ruling 2026-09-30, bcfb04232: 503 is "transient, retry later", not "not executed").
+- A forward that was SENT and timed out is now typed too, `EntityOwnerForward.ForwardTimedOut`, `Cause.Transient` and therefore 503 like every app-route timeout (maintainer decision 2026-09-30, bcfb04232: 503 is "transient, retry later", not "not executed").
   Its body says the outcome is UNKNOWN and the command may have been applied, in different words from `ForwardNotSent`'s "safe to retry", so the two 503s are told apart by the body. The 02w harness allow-lists `ForwardNotSent` only, with a producer tripwire (`test-entity-create-retry.sh` T1-T3).
 - Not changed: owner resolution still names the COMMITTED owner, dead or not, until ownership is re-minted; dropping it would fall to the non-transient `NotCurrentOwner`.
   `[verified: EntityForwardServiceTest, EntityOwnerForwardTest, AppHttpServerLocalRouteFailureStatusTest (real service cause through the real HTTP path: 503 + body, timed-out 500)]`
@@ -920,7 +920,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The old LEADER is replaced by a seat swap**: `CoreVoterReconciler` may now swap the leader's own seat when a pairing authorizes
   it (one out, one in; the electorate size is unchanged and the #1946 disruption budget is never bypassed); a successor is elected by
   the ordinary election and the drain then passes because the old node no longer votes.
-- **Operator events (owner rule: transition + recovery)**, one per committed transition, subject = the original node:
+- **Operator events (maintainer rule: transition + recovery)**, one per committed transition, subject = the original node:
   `node-replacement-started` → `-completed` / `-rolled-back`; `-join-overdue` → `-joined`; `-drain-blocked` →
   `-drain-unblocked`; `-failed-kept-both` → `-settled`.
 - `NodeReplacementService` (`begin` / `status` / `all` / `settle`) is the interface the rolling upgrade builds on; no REST route yet
@@ -1029,7 +1029,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and is still reported. [mechanism: the KV applier dispatches ValuePut only for an accepted put, inside its apply;
   pinned in-JVM on the real applier by `DurableProjectionRebuildTest.rewindCommitted_thenOvertaken…`, not
   multi-node]
-  [residual, owner ruling 2026-10-05 option (b)] A competing rewind whose record is byte-identical to the loser's (same token, same epoch, same offset, same-millisecond `commitTimestamp`) satisfies the loser's witness, so the loser reports Success. The read-back arm has had the same limit since rev1369. Accepted without a wire change (no attemptNonce).
+  [residual, maintainer decision 2026-10-05 option (b)] A competing rewind whose record is byte-identical to the loser's (same token, same epoch, same offset, same-millisecond `commitTimestamp`) satisfies the loser's witness, so the loser reports Success. The read-back arm has had the same limit since rev1369. Accepted without a wire change (no attemptNonce).
 
 ### Fixed (2026-10-05 — #1937: stream max-event-size had no bound, and two stream catch-up alarms hid each other)
 
@@ -1492,7 +1492,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   slice-floor 409, within the existing drain bound, instead of aborting the wave on the first refusal. Any other refusal
   returns at once, and a floor refusal that outlasts the bound still names the slice. Without this the smallest
   supported cluster (3 cores, default floor 2) could not complete a rolling restart.
-- **A refusal is an event, and so is its recovery** (owner rule: every warning-worthy condition raises a flood-guarded event on
+- **A refusal is an event, and so is its recovery** (maintainer rule: every warning-worthy condition raises a flood-guarded event on
   the transition and a recovery event). The first floor refusal of a target raises operator warning
   `slice-floor-drain-refused` (once per transition, not per request; the aggregator's per-`(code, subject)` window also
   applies); when that target's drain or shutdown is next admitted, because the floor cleared or the operator forced it,
@@ -1664,7 +1664,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   path reaches. The two test-only backings (`InMemoryDurableEntity`, `FencedDurableEntity`) now refuse a timer with
   `StorageFailed`. Pre-GA, so no migration path.
   [mechanism: `EntityError` is not wire-pinned (no tag in `SystemTags`, no line in the wire baseline); a repo-wide `git grep` of the name
-  finds only history (CHANGELOG, handovers, changelog fragments).]
+  finds only history (CHANGELOG, changelog fragments).]
 - **Breaking (source):** a slice naming `EntityError.TimerNotSupported` no longer compiles; delete that arm. `EntityError` is
   `DurableEntity`'s public sealed type.
 
@@ -1872,7 +1872,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **`jwks_url` must be usable, not merely present.** Config load and PF-34 apply one rule (`JwksUrl`): a non-blank
   absolute URL with a host and the `https` scheme; plain `http` is accepted only to a loopback host (`localhost`,
   `127.0.0.1`, `::1`) for local development. A blank, relative, unparseable or remote-`http` URL is refused. This rule
-  (https, loopback-http exception) is a stated default, not an owner ruling; say if it should differ.
+  (https, loopback-http exception) is a stated default, not a maintainer decision; say if it should differ.
 - **A padded `jwks_url` is stored trimmed** (`JwtConfig` trims), so the string the predicate judged is the string the node fetches.
 - **The jwt check has its own bootstrap id, PF-34.** `PF-28` is #2059's cloud-credentials check; no open branch or spec table held PF-34.
 - **The message says what is required:** `jwks_url is required (issuer/audience optional)`.
@@ -2168,7 +2168,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   still on an older `[replication]` change is refused with the retryable `ReplicationChangeStale` by every replica that
   applied the newer one [verified: DHTReplicationChangeTest
   `removeFromAWriterOnTheOldChange_isRefused_untilItAppliesTheChange`, in-JVM 5-node].
-- [limit: the deposed-writer residual from #1820 stays open; tombstones do not close it (owner ruling Q8).]
+- [limit: the deposed-writer residual from #1820 stays open; tombstones do not close it (maintainer decision Q8).]
 
 ### Changed (2026-10-03 — #1777 track 1: the DHT takes its replication from the cluster's `[replication]` section)
 - **The DHT's replication factor was a node-local setting** (`[dht.replication] target_rf`, majority quorums), so two
@@ -2198,7 +2198,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Liveness:** a member that never reports keeps the change unsettled. Reads stay at the stricter quorum, so they
     become unavailable sooner, but they never return a false "absent". A change unsettled for 5 minutes emits
     `DHT_REPLICATION_UNSETTLED`, and its settling or replacement emits `DHT_REPLICATION_SETTLED`.
-  - **Write fence (CTO ruling R1c):** every put carries the writer's applied replication change, and a replica that
+  - **Write fence (maintainer decision R1c):** every put carries the writer's applied replication change, and a replica that
     has applied a newer one refuses it with the retryable `ReplicationChangeStale`. A put in flight across the whole
     change, or from a writer the roster missed, never lands an old-quorum write after the settle
     [verified: DHTReplicationChangeTest `straddlingPut_startedUnderTheOldFactors_isRefusedAfterTheChange_andTheRetrySucceeds`
@@ -2274,7 +2274,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - **Failover:** elects only from the live ISR. With no ISR member live, the partition stays unavailable,
     reported as the `NoInSyncReplica` block. Unclean failover is off, and there is no opt-in yet.
     The refusal is announced once as the CRITICAL cluster event `STREAM_FAILOVER_REFUSED`, and
-    `STREAM_FAILOVER_RESOLVED` follows when an owner is elected or returns (owner ruling). The ownership record
+    `STREAM_FAILOVER_RESOLVED` follows when an owner is elected or returns (maintainer decision). The ownership record
     gains `failoverRefused` (BREAKING wire shape, pre-GA).
   - **Placement:** ISR members stay placed as replicas, so they keep receiving the partition.
   - **Activation:** owner activation is bound to the ownership (owner, epoch, term), not the ISR, so an ISR
@@ -2361,7 +2361,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   history (#1014).
 - **A WAL that starts above the watermark is now REFUSED with the typed `WalHeadLost`**, naming the lost range,
   instead of being accepted with a WARN. This supersedes the accept-with-WARN rulings for #1258 and #1345, per
-  the owner ruling of 2026-10-03. Retention reclaiming every segment of a partition restarts cleanly with no
+  the maintainer decision of 2026-10-03. Retention reclaiming every segment of a partition restarts cleanly with no
   warning.
   - Operator action: keep the WAL file, then either restore the node's streams metadata snapshot if a newer
     copy exists, or serve the partition from a replica that holds it. Data written before this change has no
@@ -2404,8 +2404,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **The autoscaled count is the same defect.** The republish also replaced `targetInstances` with the blueprint's
   declared count, and the rollout allocates from that value (`handleSliceTargetChange` reads
   `value.targetInstances()`), so a redeploy of a scaled-up slice restarted it at the declared scale and could
-  overload it. Owner ruling: the autoscaled count is carried. It is clamped into the NEW blueprint's
-  `[minAvailable, maxInstances]` (the CTO's reading of that ruling): a count the new bounds exclude moves to the
+  overload it. Maintainer decision: the autoscaled count is carried. It is clamped into the NEW blueprint's
+  `[minAvailable, maxInstances]` (the maintainers' reading of that decision): a count the new bounds exclude moves to the
   nearest bound, and where `min > max` the minimum wins. The declared count applies only to a first deploy.
 - **Fixed structurally.** New `SliceTargetValue.withBlueprintDeclaration(...)` re-applies a blueprint onto the
   committed value and threads `placement` and the clamped `targetInstances` through from it;
@@ -2601,7 +2601,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   [verified: `DHTDepartureReceiverViewTest` (120 topologies, 0 lost keys in every drain-set view; 527 with the
   carried set ignored), `DHTDepartureConcurrentJoinTest` (0 lost at 0–3 concurrent joins; 1172 and 2075 at 2 and 3
   joins with `view` ignored), `DHTMigrationResponseAuthenticityTest.departurePush_newcomerOnlyInThePushersView_*`]
-- **A deposed owner's DHT write could survive its own refusal (owner ruling, the Dynamo stance).**
+- **A deposed owner's DHT write could survive its own refusal (maintainer decision, the Dynamo stance).**
   - A put whose quorum was lost to owner-epoch fences now fails `DHTError.WriteIndeterminate`: transient, and "may
     have been applied". `PutResponse` gains `fenced`.
   - The coordinator compare-and-deletes its own accept (`StorageEngine.removeIfExactly`), so anti-entropy cannot
@@ -2653,7 +2653,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Not changed:** instances forgotten at the in-flight ceiling (#1787) are live members and are still not terminated.
 
 ### Added (2026-10-02 — #1778 / #1102: `DELETE /repository/{group}/{artifact}/{version}` archives a version; retention is configurable)
-- **Archive instead of delete.** `ARTIFACT_DELETE` was declared and served by nobody (#1102). `DELETE /repository/{groupPath}/{artifactId}/{version}` now archives the version (OPERATOR or ADMIN, as a push): it writes an `archived` marker key and flags the version in the versions list, keeping every key, so "absent" still means "never written". An archived version answers `410 Gone` on `GET` (files and `.sha1`/`.md5` sidecars), is delisted from `maven-metadata.xml`, refuses new files and any `PUT` (`409`), and the built-in repository reports it as "not in store" so other repositories can still serve it. Nothing is archived before the version has been stored for the minimum retention period; a younger version answers `409`, a version never stored answers `404`, archiving twice is a no-op, and an interrupted archive completes on re-run. The minimum retention is **7 days by owner ruling**, set with `[slice] artifact_archive_retention` (`"7d"`, `"36h"`, ...); an unparseable or non-positive value fails config validation. Chunk bytes of archived versions are not reclaimed. `aether artifacts archive <group:artifact:version>` replaces `artifacts delete` (kept as an alias). `[verified: ArtifactStoreWriteOnceTest#Archive, #NeverResurrected, MavenProtocolHandlerWriteOnceTest, MavenProtocolRoutesArchiveTest, ArtifactArchiveCommandTest — archive marker ignored on resolve: 5 red; ignored on deploy: 4 red; retention check removed: 3 red; DELETE route unclaimed: 3 red; admission bypassed: 2 red]`
+- **Archive instead of delete.** `ARTIFACT_DELETE` was declared and served by nobody (#1102). `DELETE /repository/{groupPath}/{artifactId}/{version}` now archives the version (OPERATOR or ADMIN, as a push): it writes an `archived` marker key and flags the version in the versions list, keeping every key, so "absent" still means "never written". An archived version answers `410 Gone` on `GET` (files and `.sha1`/`.md5` sidecars), is delisted from `maven-metadata.xml`, refuses new files and any `PUT` (`409`), and the built-in repository reports it as "not in store" so other repositories can still serve it. Nothing is archived before the version has been stored for the minimum retention period; a younger version answers `409`, a version never stored answers `404`, archiving twice is a no-op, and an interrupted archive completes on re-run. The minimum retention is **7 days by maintainer decision**, set with `[slice] artifact_archive_retention` (`"7d"`, `"36h"`, ...); an unparseable or non-positive value fails config validation. Chunk bytes of archived versions are not reclaimed. `aether artifacts archive <group:artifact:version>` replaces `artifacts delete` (kept as an alias). `[verified: ArtifactStoreWriteOnceTest#Archive, #NeverResurrected, MavenProtocolHandlerWriteOnceTest, MavenProtocolRoutesArchiveTest, ArtifactArchiveCommandTest — archive marker ignored on resolve: 5 red; ignored on deploy: 4 red; retention check removed: 3 red; DELETE route unclaimed: 3 red; admission bypassed: 2 red]`
 - **State order never-written < present < archived.** Reads obey the archive marker, a key of its own that any replica holding it wins ("present beats absent"), so a replica that missed the archive write cannot make an archived version resolve; the versions index in consensus can only be raised, never lowered. `[verified: ArtifactStoreWriteOnceTest#NeverResurrected.resolve_staysArchived_whenOneReplicaMissedTheArchiveWrite (three replicas, read quorum two, the real QuorumCollector), ArtifactVersionsConsensusTest.archive_keepsItsFlag_whenAnotherVersionIsPublishedAtOnce_andAStaleAddCannotUndoIt]`
 - `[slice] artifact_archive_retention` is parsed and reaches the store policy through `RepositoryFactory.archivePolicy`. `[verified: ConfigLoaderTest (4 pins incl. validation), RepositoryFactoryArchivePolicyTest, ArtifactStoreWriteOnceTest#Archive.archive_honoursANonDefaultRetention — parse ignored: 2 red; seam ignores config: 1 red; retention check removed: 3 red]`
 
@@ -2664,9 +2664,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed (2026-10-02 — #1778: the built-in artifact store is write-once, takes no SNAPSHOT, and archives instead of deleting)
 - **A coordinate in the built-in artifact store is written once, compared by content.** `PUT /repository/...` of IDENTICAL content (size, MD5, SHA-1 and SHA-256) is idempotent (`200`, `"status":"already-present"`, nothing uploaded or rewritten; it also re-asserts the file and version registrations, so a first deploy that died between the metadata write and the index write completes on retry). `PUT` of DIFFERENT content to a stored coordinate was answered `already-present` while silently keeping the old bytes; it is now refused with `409` naming the stored and the offered SHA-1, and the stored content is kept. A failed existence check never deploys (`503` + `Retry-After` when transient, #1795). `[verified: ArtifactStoreWriteOnceTest, MavenProtocolHandlerWriteOnceTest — each pin reddens when its hunk is reverted (conflict check reverted: 3 red; failed check treated as absent: 1 red; re-assertion removed: 1 red)]`
-- **`-SNAPSHOT` versions are refused (`400`) by the built-in store**, for every file including Maven's timestamped names, before anything is written. SNAPSHOTs stay available in development and Forge through the Local repository. **This breaks the documented scaffold flow:** `jbct init` generates `deploy-test.sh`/`deploy-prod.sh` that `aether artifacts push …:1.0.0-SNAPSHOT`, and the project's default version is `1.0.0-SNAPSHOT`; a cluster deploy now needs a release version (docs updated in `getting-started.md`). The generated scripts are NOT changed here, pending the owner's ruling. `[verified: ArtifactStoreWriteOnceTest#NoSnapshot, MavenProtocolHandlerWriteOnceTest, MavenFileRoundTripTest#timestampedSnapshotDeploy_isRefusedForEveryFile_andStoresNothing — SNAPSHOT check reverted: 3 red]`
+- **`-SNAPSHOT` versions are refused (`400`) by the built-in store**, for every file including Maven's timestamped names, before anything is written. SNAPSHOTs stay available in development and Forge through the Local repository. **This breaks the documented scaffold flow:** `jbct init` generates `deploy-test.sh`/`deploy-prod.sh` that `aether artifacts push …:1.0.0-SNAPSHOT`, and the project's default version is `1.0.0-SNAPSHOT`; a cluster deploy now needs a release version (docs updated in `getting-started.md`). The generated scripts are NOT changed here, pending a maintainer decision. `[verified: ArtifactStoreWriteOnceTest#NoSnapshot, MavenProtocolHandlerWriteOnceTest, MavenFileRoundTripTest#timestampedSnapshotDeploy_isRefusedForEveryFile_andStoresNothing — SNAPSHOT check reverted: 3 red]`
 - **The versions of each artifact moved into the consensus KV plane**, so concurrent publishes are serialized and grow-only by construction. New key `AetherKey.ArtifactVersionsKey` and value `AetherValue.ArtifactVersionsValue` (wire tags 2114-2116); a publish or archive is one `Put` of the entry it adds, and the Rabia applier merges it into the committed set (`GrowOnlyMergeable`: union, higher state per version), so no writer can lose another's version or un-archive one. `maven-metadata.xml` is rendered from that set. The DHT keeps the artifact bytes, the per-version metadata, the archive marker and the per-version file list. The merge is an applier change and is not version gated (RFC-0018 O1: rc releases do not support mixed-version operation). `[verified: ArtifactVersionsConsensusTest (three nodes, one consensus log, every publish in flight before any applies; real applier and KV-backed index), KVStoreGrowOnlyMergeTest, ArtifactVersionsPutCodecTest, SystemCodecPinningTest — applier overwrites instead of merging: 3 red; merge drops the archived flag: 1 red; wire tags unpinned: 3 red]`
-- **The consensus versions set is bounded (`[slice] artifact_max_versions`, default 10,000 present versions per artifact).** The scaffold's `deploy-test.sh` creates a version per push, so an unbounded set would grow one KV value (and the snapshot) forever. The applier refuses a NEW present version past the cap and the writer re-reads and reports `409` (`VersionLimitReached`), before anything is uploaded; a present version is never dropped, an archive is always accepted and frees room, an archived version is never un-archived. Archived entries are kept forever and never compacted (owner ruling): one small KV entry per archived version for the cluster's life; revisit only if a real cluster shows the size matters. `ArtifactVersionsValue` gained `maxLive` (a shape change to a type that exists only in this PR; wire baseline re-recorded). `[verified: ArtifactVersionsValueBoundTest, ArtifactVersionsConsensusTest (refusals under the real applier, concurrent publishes at the cap, archive frees room, stale add cannot resurrect), ArtifactStoreWriteOnceTest#VersionBound, MavenProtocolHandlerWriteOnceTest, ConfigLoaderTest, RepositoryFactoryArtifactStoreTest]`
+- **The consensus versions set is bounded (`[slice] artifact_max_versions`, default 10,000 present versions per artifact).** The scaffold's `deploy-test.sh` creates a version per push, so an unbounded set would grow one KV value (and the snapshot) forever. The applier refuses a NEW present version past the cap and the writer re-reads and reports `409` (`VersionLimitReached`), before anything is uploaded; a present version is never dropped, an archive is always accepted and frees room, an archived version is never un-archived. Archived entries are kept forever and never compacted (maintainer decision): one small KV entry per archived version for the cluster's life; revisit only if a real cluster shows the size matters. `ArtifactVersionsValue` gained `maxLive` (a shape change to a type that exists only in this PR; wire baseline re-recorded). `[verified: ArtifactVersionsValueBoundTest, ArtifactVersionsConsensusTest (refusals under the real applier, concurrent publishes at the cap, archive frees room, stale add cannot resurrect), ArtifactStoreWriteOnceTest#VersionBound, MavenProtocolHandlerWriteOnceTest, ConfigLoaderTest, RepositoryFactoryArtifactStoreTest]`
 - **Nothing in the store is ever removed or rewritten.** `ArtifactStore.delete` is gone; the metadata key and the archive marker are written once, and the file list is a grow-only set. `[verified: ArtifactStoreWriteOnceTest#NeverResurrected.store_neverRemovesOrRewritesAKey_acrossDeployArchiveAndRedeploy, #GrowOnlySetTests, #GrowOnlyFiles — marker rewritten: 2 red; flag-clearing add: 1 red; merge as overwrite: 2 red; file-list sequencing removed: 1 red]`
 - **`GET maven-metadata.xml` lists only versions that are stored and not archived**; the Forge `PUT /api/repository` route now reports a refused push (`400`/`409`) as a failure instead of "Deployed". `[verified: MavenProtocolHandlerWriteOnceTest, DeploymentRoutesRepositoryPutTest — Forge status check reverted: 2 red]`
 - `[unverified: against a real multi-node cluster — the consensus path is exercised through the real applier and KV-backed index over a simulated shared log; the DHT read rule "present beats absent" through the real QuorumCollector in a three-replica test double; anti-entropy was read (it pulls missing keys, it does not delete) but not run]`
@@ -3680,7 +3680,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed (2026-09-29 — #1564: one replication policy for streams, durable topics and durable entities)
 - **BREAKING: streams, durable topics and durable entities declare `replication_factor` (RF) and
-  `confirmation_factor` (CF) — the same two keys in every section (owner ruling, know 267792392).** RF is the
+  `confirmation_factor` (CF) — the same two keys in every section (maintainer decision, know 267792392).** RF is the
   number of copies of each partition, the owner included; CF is how many of them, the owner included, hold a
   write before it is acknowledged (the owner appends, then awaits `CF − 1` distinct non-self acks). Valid iff
   `1 ≤ CF ≤ RF`. The old keys are removed without aliases (pre-GA): `[streams.X]` `replicas` /
@@ -3696,7 +3696,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   succeeds.
   [mechanism: `ReplicationDeclaration.resolve` fills an undeclared CF from the cluster default; pinned by
   `FreshStreamFirstPublishTest`, `StreamApiRoutesPublishPartitionTest`]
-- **Cluster-wide defaults live in the committed cluster TOML** (owner ruling, know 596bdfd07(2)): an optional
+- **Cluster-wide defaults live in the committed cluster TOML** (maintainer decision, know 596bdfd07(2)): an optional
   `[replication]` section (`replication_factor`, default 3, at least 3; `confirmation_factor`, default 2) and
   `[replication.cluster_events] confirmation_factor` (default 1, the `system:cluster-events` stream, pending the
   owner's acked-but-lost decision). Invalid values or unknown keys refuse the cluster-config apply, and so does a
@@ -4422,7 +4422,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Dead listener hooks.** Removed: `NodeLifecycle.addStateListener`, `BootstrapModule.onBootstrapCommitted` and `SliceInvoker.setFailureListener`. `ObservabilityRegistry.registerNodeCount` and `registerSliceCount` are now registered, so the `aether_cluster_nodes` and `aether_slices_active` gauges the soak dashboards query exist. `LeaderReconciler.setReconcileListener` stays, narrowed to a package-private test seam.
 - **Does not detect:** a version that fails only through returned Causes — it is never auto-rolled back, whatever HTTP status those Causes map to (a downstream outage fails the same way, and must not roll a healthy version back); partial failure, business-logic regressions, hangs and deadlocks, asynchronous exceptions inside a slice's own Promise chain, or a version with no traffic.
   - A dead hosting node stops counting as a host only once membership declares it DEAD. Until then its stale metrics make the version undecidable. That includes the cold-boot window, where a never-healthy peer reads UNKNOWN.
-- **Automatic rollback is ON by default** (owner ruling).
+- **Automatic rollback is ON by default** (maintainer decision).
   - It triggers only on the narrow rule above: every live instance of a version recent enough to be inside its bake window reports bridge-level defects with no success.
   - To turn it off, commit this in the cluster TOML; it takes effect at the next decision, with no restart:
     ```toml
@@ -4650,7 +4650,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   which the node calls for the volumes it owns. Each log gains a durable owner-epoch history (`<log>.epochs`,
   written by temp, force, rename and directory force) for ranking replicas after an ownership move; the
   WAL record format is unchanged, and nothing records epochs yet.
-- `AppendLog` and its test were relicensed from BUSL-1.1 to Apache-2.0 per owner ruling as they moved
+- `AppendLog` and its test were relicensed from BUSL-1.1 to Apache-2.0 per maintainer decision as they moved
   into `integrations/storage`.
 - `FileOps` gains `writeBytesForced`, `forceDirectory` and `createDirectoriesDurable`.
 - `RemoteTierConfig` validates its inputs through `Option` rather than null checks, which reports every invalid
@@ -4957,7 +4957,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   deleted. Reclassified to runtime: `TopicSubscriptionKey`, `EntityKeyspaceRegistrationKey`,
   `StreamRegistrationKey`, `ConsumerAssignmentKey`, `StreamCursorCheckpointKey`,
   `ScheduledTaskStateKey`, `StreamRegistryKey`, `ScheduledTaskKey`, `WorkerSliceDirectiveKey`,
-  `GossipKeyRotationKey`. `EntityCheckpointKey` stays backed up (owner ruling): the checkpoint pointer
+  `GossipKeyRotationKey`. `EntityCheckpointKey` stays backed up (maintainer decision): the checkpoint pointer
   is carried in the backup and is to be validated at restore — applied only if its block exists and the
   local log covers its offset (#1533). `BackupKeyClassificationTest` fails if any backed-up key or value can reach a
   `NodeId` outside a commented allowlist — a unit-level pin; no restore path exists yet
@@ -5041,7 +5041,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   read a term above 1). [mechanism: route registration order in `AetherNode`; `LeaderReconciler.activate`]
 
 ### Changed (2026-09-26 — #1525 / #1528, resolves #1519: nodes aborted at boot on cloud for want of a consensus_path)
-- **#1525 — #1390's durable control storage is removed; cores and workers run in-memory Rabia** (owner ruling, session 28). The vote write-ahead log, local boot recovery and the `cluster.consensus_path` requirement are gone, so a node assembles from the shipped image config with no control-storage path. [verified: aether/node/src/test/java/org/pragmatica/aether/node/ShippedConfigBootTest.java] (single-node assembly; a cloud bootstrap has not been re-run)
+- **#1525 — #1390's durable control storage is removed; cores and workers run in-memory Rabia** (maintainer decision). The vote write-ahead log, local boot recovery and the `cluster.consensus_path` requirement are gone, so a node assembles from the shipped image config with no control-storage path. [verified: aether/node/src/test/java/org/pragmatica/aether/node/ShippedConfigBootTest.java] (single-node assembly; a cloud bootstrap has not been re-run)
 - **#1468's fail-closed outcome is preserved:** a node whose own persisted snapshot cannot be restored never activates, logs the failure at ERROR, and reports it as the authority failure in its voter reconfiguration status. What no longer holds: under #1390 such a node never started a sync round; it now enters synchronization (and stays fenced). The assertions pinning "no sync round" were removed because they pinned #1390's boot-recovery mechanism, which no longer exists — not the ruled outcome. [verified: integrations/consensus/src/test/java/org/pragmatica/consensus/rabia/RabiaOwnRestoreFailureTest.java] (single engine)
 - **Superseded within this release by #1533:** #1525 made a configured `[backup]` path the consensus persistence again. #1533 removed that path (`GitBackedPersistence` and `ConsensusSnapshotEncodingTest` with it); a whole-cluster restart now restores the change-triggered KV backup instead (see `1533-kv-backup-restore.md`).
 - **#1528 — terminal removal is the identity model: a per-process random boot token replaces the durable producer counter.** SWIM ANNOUNCE and membership updates, metric observations, cluster-sync pongs, community health and worker admission carry it, compared by equality only. A same-token process heals as before; a different token for a known NodeId marks the known process dead and refuses the new one. Membership DEAD/DEPARTING ignore process evidence, and refusals are counted and logged. `[mechanism: SwimProtocol boot-token gate; MembershipFsm process-evidence gate]` — pinned by `SwimBootTokenTest` and `MembershipEvidenceDomainTest`, not yet run on a multi-node cluster. **Recovery action:** replace a dead node under a fresh NodeId; restarting it under the old NodeId is refused. A whole-cluster restart is unaffected.
@@ -5089,7 +5089,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   rather than stopping the batch (review F3).
   [verified: `OffHeapRingBufferAppendAtTest`; `ReplicationReceiveHandlerTest.overlappingBatch_evictedPrefix_appliesNewTail_andAcks`;
   `GovernorFailoverHandlerTest$OffsetAlignedReplay.handleFailover_evictedOffsets_arePassedOver_restAreReplayed`]
-- **A divergent held entry QUARANTINES the partition on that replica (review F2, CTO ruling: quarantine, not
+- **A divergent held entry QUARANTINES the partition on that replica (review F2, maintainer decision: quarantine, not
   repair).** When an offered event differs from the one held at offset `N`:
   - The partition manager records `N`, inside the same section that found it. From then on, every offer at
     an offset `>= N` is refused as `StreamError.ReplicaQuarantined`, live or duplicate, from any path. So
@@ -5231,7 +5231,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   keeps the typed cause as its `origin` and quotes its message, so the body names the floor
   `[verified: aether/node BlueprintServiceTest.PublishRefusalStatusTests — real route + real service]`.
   `POST /api/v1/blueprints/validate` is unchanged: it answers 200 with `valid: false` by contract.
-- **BREAKING (pre-GA, allowed): the floor is a runtime invariant too (owner ruling).**
+- **BREAKING (pre-GA, allowed): the floor is a runtime invariant too (maintainer decision).**
   - `POST /api/v1/scale` and `aether scale` refuse fewer than 3 instances with `400`
     (`ScaleRouteError.InstancesBelowFloor`, which names the floor), checked before the node is read. A count
     below the slice's own `minAvailable` now also answers `400` (`ScaleRouteError.InstancesBelowMinAvailable`)
@@ -5641,7 +5641,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
 - **`integrations/consensus` was failing `jbct:check` on 4 format issues and 3 lint errors, and
   nothing reported it.** The root pom sets `jbct.skip=true`, `aether/pom.xml` overrides it to
   `false`, and no module under `integrations/` or `core/` overrides anything — so the gate skips
-  these modules silently and exits green. Only an agent invoking it locally with
+  these modules silently and exits green. Only a local invocation of it with
   `-Djbct.skip=false` ever sees the result. This is #1442's abstract claim with a concrete instance
   attached; **#1442 itself stays open**, because the defect is the CI configuration, not these files.
 - Gate result for the module: **69 files checked, 0 format issues, 0 lint errors** (was 4 and 3).
@@ -6229,7 +6229,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   names #1013 as the ticket that may legitimately flip it, so the change cannot be made silently.
   [verified: `RabiaOwnRestoreFailureTest#ownRestoreFails_logsAtErrorNamingTheConsequence` — 1 red of
   813 when the bare-cause log is restored; the wedge tripwire it paired with was superseded when
-  #1468 was decided for this arm (owner ruling, session 27: fail closed, merge of #1390) and is now
+  #1468 was decided for this arm (maintainer decision: fail closed, merge of #1390) and is now
   `#ownRestoreFails_failsClosed_neverActivates`;
   `#ownRestoreSucceeds_activates` is the control that makes the tripwire's negative assertion mean
   "genuinely did not activate" rather than "fixture never got there"]
@@ -6785,7 +6785,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   `ConsumerRuntimeCheckpointPredecessorRaceTest.detachFlush_arrivingWhileThePeriodicCommitIsBeingIssued_waitsForThatCommit`]
 - Assigning before the cancellation check also closes the narrower sibling interleaving
   check(not cancelled) → `cancel()` → flush reads the settled slot → the checkpoint is issued anyway
-  (CTO ruling 2026-09-20: in scope). [mechanism: slot assigned before `closed`/`isCancelled()` are read;
+  (maintainer decision 2026-09-20: in scope). [mechanism: slot assigned before `closed`/`isCancelled()` are read;
   pinned by `ConsumerRuntimeCheckpointPredecessorRaceTest.detachFlush_arrivingBeforeTheCancellationCheck_isIssuedAsSoonAsTheCheckpointBails`]
 - `close()` orders detach the other way round — flush first (`awaitFinalCursorCommits`), cancel after — and the
   same ordering covers it: its flush reads the pending slot and waits, and `close()` returns once both commits
@@ -7004,13 +7004,13 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   / `OUTCOME_UNKNOWN` / `NOT_ATTEMPTED`, returned with 200 for every batch that ran — partial included.
   **Hazard: `200` means the batch RAN, not that every event landed. A client that reads only the status
   misreads a partial batch; read `notPublished`.** A typed non-2xx that carries structured offsets needs
-  `ManagementRouter` to support typed success statuses — ticket to be filed by the CTO. The former `Result.allOf`
+  `ManagementRouter` to support typed success statuses — ticket to be filed. The former `Result.allOf`
   fold returned only the first failure and discarded the offsets of the items that had landed. An item
   rejected before writing for a PARTITION-level reason (out of range) is `NOT_ATTEMPTED`; an item the
   write router refused is `OUTCOME_UNKNOWN` (#1236). A STREAM-LEVEL admission failure — a reserved name (`400`,
   #1282) or an unavailable stream (`409`) — is checked ONCE before the fan-out and fails the whole batch with its
   own typed status, writing nothing; an all-items-rejected-by-partition batch is still `200` with `published: 0`
-  (CTO ruling, #1342 × #1299).
+  (maintainer decision, #1342 × #1299).
   [verified: `StreamApiRoutesPublishBatchTest`, 4 tests, including
   `partialBatch_overHttpDispatch_answers200_withNotPublishedAndTheLandedOffset` — the real route through
   `ManagementRouter`, asserting the written status 200 and the JSON body
@@ -7207,7 +7207,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   count: the request count is what a "one commit per batch" contract can be pinned on, because
   coalescing hides per-record requests behind an fsync count of anywhere from 1 to N.
 - **The two failover paths, `DefaultFailoverRecovery` and `GovernorFailoverHandler`, now commit through
-  the replica WAL barrier once per run, after their last recovered append** (CTO ruling 2026-09-20,
+  the replica WAL barrier once per run, after their last recovered append** (maintainer decision 2026-09-20,
   replacing the 2026-09-19 waiver). With the advance at the barrier, a WAL-backed record those paths
   recovered would otherwise have stayed invisible on that replica until an unrelated live batch's barrier
   happened to cover it. Recovered records are visible after the run with no live batch, at exactly one
@@ -7876,7 +7876,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
 - Corrected the stale "30 seconds" checkpoint cadence in `ClusterCursorStore`, `StreamConsumerManager`
   and feature-catalog row 488. The time bound is the group's checkpoint interval: 1s for declarative
   consumers, 500ms for durable-topic groups.
-- **Monotonicity is enforced in the consumer runtime, not the store (CTO ruling, 2026-09-19).** The
+- **Monotonicity is enforced in the consumer runtime, not the store (maintainer decision, 2026-09-19).** The
   ticket asked for a store-level guard. That premise was wrong: `CursorStore` is also the public pull
   API's writer (`StreamAccessFactory` takes it as an SPI extension), and committing a lower offset there
   is a legitimate rewind. The runtime's in-memory cursor only moves forward, and every commit reads it
@@ -8561,7 +8561,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
     deleting the consensus backup dir — the marker lives elsewhere and still reads PARTICIPATED. **HOLDS.**
   - `[verified: FileBackedParticipationMarkerTest.aDeletedMarkerWithNoCreationAssertionReadsParticipated]`
     deleting the whole node data dir — absence is conservative. **HOLDS.**
-  - `[unverified: out of scope, accepted by owner ruling session 20]` deleting the node data dir **AND**
+  - `[unverified: out of scope, accepted by maintainer decision]` deleting the node data dir **AND**
     re-running node creation so the creation assertion is supplied again — the node presents as new
     having voted. **FAILS.** A node cannot refuse an identity its own operator asserts. Peer attestation
     does not rescue it: a sole responder partitioned while the joiner voted attests "new" wrongly.
@@ -9595,7 +9595,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
 - [unverified: no cluster run — the deleted route was never fired, so no runtime behaviour changes; inferred
   from the zero call sites, not observed. Root build evidence is `mvn clean install -Dmaven.test.skip=true`
   145/145 because the rc4 tip's `aether-deployment` test sources do not compile independently of this change
-  (`SchemaOrchestratorLockClaimRaceTest` vs `ArtifactStore.metadata`, #1132 × #1138 — reported to the CTO);
+  (`SchemaOrchestratorLockClaimRaceTest` vs `ArtifactStore.metadata`, #1132 × #1138 — reported to the maintainers);
   `aether/node`, the touched test module, ran its suite.]
 
 ### Removed (2026-09-14 — #691: `QuicDisconnectListener` was inert — its only consumer went with the HealthSignal bus)
@@ -9805,7 +9805,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   topology from core decisions, and workers pong `SpokesmanPingLoop`, which folds DRAINING into a count]`
 
 ### Changed (2026-09-14 — #686: `cluster apply` is documented as scale-only in rc4 in both references; the client-side wave rollout is registered as known-unwired)
-- CTO ruling (b): plain `aether cluster apply` / `POST /api/v1/cluster/config` perform scale-only plans via the leader
+- maintainer decision (b): plain `aether cluster apply` / `POST /api/v1/cluster/config` perform scale-only plans via the leader
   (a fenced desired-count write the leader's reconciler actuates); non-scale changes — sources, roles, runtime, source
   fields, cluster-level fields — are not applicable through `apply` in rc4, and a rollout of them needs a new cluster.
   `cli.md` and `management-api.md` now say exactly this (the CLI page previously pointed at `--resume`/`--rollback`
@@ -9892,7 +9892,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   rotation leaves the cluster unable to self-heal.** Existing running nodes are unaffected. This cost
   is accepted for rc4 and disclosed in SECURITY.md, the CLI and the endpoint docs; a general
   key-delivery path for joiners is an architecture change (a second trust root, or a deliberately
-  weakened revocation) and the choice is an open owner decision tracked as **#1200**.
+  weakened revocation) and the choice is an open maintainer decision tracked as **#1200**.
   `GossipKeyDivergenceGuard` turns the detectable half into a refused boot: gossip arriving under one
   unheld key id, repeatedly, with no datagram ever having decrypted, is the divergence signature, and
   the node exits with a `FATAL` line naming the cause and the remedy rather than proceeding into a
@@ -9991,7 +9991,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   through the reflective `ConfigService.config(section, StreamConfig.class)` binding and reads only `name`;
   `StreamConfigParser` is the one parser. No consolidation was needed.
 - Post-GA wiring epic (compression sink, per-consumer tuning through `StreamConsumerManager`, encryption
-  once #253 lands) is a ticket draft in the report; the CTO files it.
+  once #253 lands) is a ticket draft in the report.
 - **Feature-catalog rows 141, 142 and 143 now state the descope.** Row 141 (consumer read-preference) and row 142
   (segment compression) both read as *accepted-but-partial* while their `[streams.X]` TOML keys are refused;
   each now says so and names the refusing symbol. Two stale citations in row 141 were corrected in passing
@@ -10080,7 +10080,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   changes; listing is `git log`, restore is a `git checkout <commit> -- state.toml` with all nodes stopped.
   [mechanism: the trigger sites are the four `persistence.save` calls in `RabiaEngine`; the payload hooks are
   `AetherNode::snapshotToBase64`/`::base64ToSnapshot`]
-- Out of scope, noted for the CTO: `BackupConfig.interval` is a dead config key (#675's class); retiring wire
+- Out of scope, noted for the maintainers: `BackupConfig.interval` is a dead config key (#675's class); retiring wire
   tags 258/259; `GitBackedPersistence.load()` still turns a parse failure into "no saved state" (`.option()`),
   so a corrupted `state.toml` from any other cause boots empty rather than refusing; `LocalDiskTier.writeThenRename`
   (`integrations/storage`) renames its partial over the block with the same non-atomic `moveReplace` this round
@@ -10276,11 +10276,11 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   Decision, and a gap beyond `MAX_PHASE_AHEAD` buffers the Decision and calls `triggerResync`. No
   consumer of the adopted state requires it to be the maximum available.
   [mechanism: `RabiaEngine.advancePhase` / `isFarFuturePhase` / `triggerResync`]
-- **An accepted, owner-ruled cost — read this before tightening the rule again.** At n=3 with one node
+- **An accepted, maintainer-decided cost — read this before tightening the rule again.** At n=3 with one node
   down at most ONE responder exists, and one is never a majority of three. Closing #667's hole requires
   the responders to be a majority **alone**, because an amnesiac self contributes nothing. So in a
   degraded 3-node cluster **#667's safety property and joiner liveness are mathematically
-  incompatible**, and the owner chose liveness: a self holding durable state counts toward the
+  incompatible**, and the maintainers chose liveness: a self holding durable state counts toward the
   majority.
   What that spends is a property the system **does not in fact hold**. #660's cold rule — shipping
   today, untouched by every version of #667 — already activates a self whose durable snapshot is STALE
@@ -10314,7 +10314,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   and answers nothing). [unverified: Ember n=5 restart-into-live-cluster]
 
 ### Fixed (2026-09-14 — #665: in-process `AppHttpConfig` builders defaulted to `SecurityMode.NONE`; now `API_KEY`, insecurity only by name)
-- **Owner ruling 2026-08-27: insecurity is explicit, never a default.** `ConfigLoader.populateAppHttpConfig`
+- **Maintainer decision 2026-08-27: insecurity is explicit, never a default.** `ConfigLoader.populateAppHttpConfig`
   already defaulted an `aether.toml` with no `security_mode` to `API_KEY` (#290), but the four bare builders
   — `appHttpConfig()`, `appHttpConfig(boolean)`, `appHttpConfig(int)`, `appHttpConfig(int, ApiVersioningDetection,
   String)` — hard-coded `NONE`, and `appHttpConfig(int, Set<String>)` mapped an empty key set to `NONE`. Under
@@ -10523,8 +10523,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   `AtomicReference`, so `stop()` cancelled the probe tick but not the join-announce loop, and a
   protocol stopped within 30 s of joining kept sending ANNOUNCE to every seed every 500 ms until
   its 60-attempt cap. The ticket's "9 futures in `AetherNode.periodicTasks`" is stale: all 15
-  `AetherNode` sites now go through `PeriodicTasks.defer`, cancelled in `stop()`. The full table is
-  in `oss/internal/fix-501-report-2026-09-14.md`.
+  `AetherNode` sites now go through `PeriodicTasks.defer`, cancelled in `stop()`. 
 - **The announce loop's lifetime is now `stop()`'s alone, not the probe tick's.** `SwimProtocol`
   retains the loop's handle (`announceFuture`), and `stop()` cancels it **before** its
   `PROTOCOL_NOT_RUNNING` guard — a protocol whose tick was never armed previously returned that
@@ -10816,7 +10815,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   never-deployed sibling is 404 (red at `2005ea7d2`); `#timestampedSnapshotDeploy_keysEveryFileSeparately`
   — jar/pom/sources/javadoc of one timestamped deploy each under their own `<file>/meta`,
   `<versions>` lists `1.0.0-SNAPSHOT` once (red at `70059cfb6`)]
-- **Storage format (CTO ruling, session 19):** one metadata key per file,
+- **Storage format (maintainer decision):** one metadata key per file,
   `artifacts/<group>/<artifact>/<version>/<[classifier.]extension>/meta` — `…/jar/meta`,
   `…/pom/meta`, `…/sources.jar/meta` — the primary included, no special case. The pre-#281
   `…/<version>/meta` key is **not read**: artifact-store contents are cluster DHT state with no
@@ -10829,11 +10828,11 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
   FILES — a standard deploy adds four.
 - **`delete` removed only the metadata key and left the version listed.** It now also drops the
   file from the version's file list and, when that was the version's LAST file — primary or not —
-  the version from the versions list (CTO ruling, round 2: a pom-only version is delisted with its
+  the version from the versions list (maintainer decision, round 2: a pom-only version is delisted with its
   pom; a version keeps its listing while any file of it exists). The content chunks are still not
   released: `[known: chunks are content-addressed and shared across artifacts and the
   cluster-shared DHT tier — a re-deploy of unchanged bytes under a new version shares every chunk,
-  so releasing them safely needs a cluster-wide reference index; filed separately by the CTO]`.
+  so releasing them safely needs a cluster-wide reference index; filed separately]`.
   Note `ArtifactStore.delete` has no production caller today (`ARTIFACT_DELETE` is unserved, #1102).
   [verified: `ArtifactStoreTest.FileDeleteTests` — primary-with-pom-remaining and pom-with-jar-remaining
   keep the listing, the last file delists, a pom-only version delists with its pom, one of two
@@ -10892,13 +10891,13 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
 ### Fixed (2026-09-14 — #279: the cache interceptor failed closed, `max_entries` capped nothing, and a shared section captured one method's `@Key` for every method)
 - **(1) Fail-closed.** `CacheMethodInterceptor.cacheAside` chained `cache.get(key).flatMap(…)` and `writeThrough` chained `cache.put(…)`, so a backend failure — a DHT outage — failed the business call: a cache outage was a service outage. A backend `get` failure now reads as a **miss** (the method runs, its value is returned) and a `put` failure is absorbed (the completed write's result stands), for every strategy — `cacheAside` and `writeBack` puts go through the same `store` as `writeThrough` and are logged the same way. After a failed put a best-effort `remove(key)` follows, also absorbed, so a value-specific refusal does not leave the pre-write value to be served (a full outage fails the remove too). All logged at DEBUG through SLF4J, deliberately: a per-call WARN during an outage would be an unbounded log on the hottest path (#718's measured lesson). `WRITE_AROUND` was already fire-and-forget. **The fail-open covers a backend failure that arrives as a failed promise AND the DHT backend's codec throws**: `DHTCacheBackend` lifts `decode`/`encode` into `Result`s, because `SliceCodec.read` throws on an unknown type tag (a stale entry written by a codec that no longer knows its type — and distributed entries never expire, item 3) and `write` on an unregistered class, and a throw inside a promise mapper is neither a miss nor a failure: with the real client the slice call hung, the method never ran. Lifted, a stale-codec entry is a miss and an unencodable value a dropped put. [verified: `CacheFailOpenTest` (`aether/resource/interceptors`) — `cacheAside`/`readThrough` with a backend whose `get` fails: method called once, value returned, backend consulted once; `writeThrough` with a failing `put`: value returned, put attempted; a put-refusing backend pre-seeded with `OLD`: `NEW` returned and `OLD` removed; control: a failing METHOD still fails. `DHTCacheBackendCodecFailureTest` — the real `DHTCacheBackend` over a fake `DHTClient` and a codec that throws: `cacheAside` on a stale entry runs the method once and returns its value, `writeThrough` on an unencodable value returns the method's value, and the backend's own `get`/`put` are failed promises, not throws. Red at the base with `must be fail-open, got get: backend down`; reverting the interceptor reddens the 3 fail-open pins, removing the invalidation reddens the stale-entry pin, reverting the DHT lift reddens the 3 codec pins with `IllegalArgument Unknown type tag 4242` / `No codec registered` escaping raw]
 - **(4) Unbounded `InMemoryCache`.** `put` evicted only EXPIRED entries when full and then inserted regardless, so `max_entries` bounded nothing for a hot cache. The store is now an access-ordered `LinkedHashMap` evicting its least-recently-used entry on overflow (expired entries go first), guarded by the instance monitor. [verified: `InMemoryCacheTest$Bound` — 10 puts into a cap of 3 with nothing expired leave ≤ 3 present (was 10); the touched entry survives and the untouched one is the victim; an overwrite at the bound evicts nothing. Reverting `InMemoryCache` reddens the first two. The monitor is pinned deterministically by `InMemoryCacheTest$ConcurrentAccess#mixedOperations_underContention_neverThrow_andHonourTheCap` — 16 threads × 20,000 get/put/remove over 200 keys into a cap of 64: no exception and ≤ 64 present; with the `synchronized` blocks removed it reddens every run (`ConcurrentModificationException` from the access-ordered map), where the pre-existing 8-thread no-data-loss test reddened only 2 runs in 3]
-- **(2) Shared-section `@Key` capture.** The generator deduplicated interceptor provisions by `(type, config)` and `findKeyInfoForInterceptor` returned the FIRST matching method's extractor, so two `@Key` methods under one config section shared one instance keyed by the first method's request type — a `ClassCastException` on the second method's first call, or a wrong key when the types coincided. A key-bearing method now gets its own provision (`provisionKey` = `(type, config)` + method name), carrying its own extractor; key-less methods keep sharing one instance per section, because sharing is the point for rate limits and circuit breakers. What is shared underneath — the named cache or idempotency store — is shared by the factory's `SharedByName` registry (#894), not by the generated variable, so per-method instances do not duplicate caches. [verified: `SliceProcessorTest#should_provision_a_key_bearing_interceptor_per_method_when_the_config_section_is_shared` (`jbct/slice-processor`) — two `@Key` methods under `cache.shared` generate two `provide(MethodInterceptor.class, "cache.shared", …)` calls with `GetUserRequest::userId` AND `GetOrderRequest::orderId`; red at the base (second extractor absent); reverting the generator reddens it]. No envelope bump: `ENVELOPE_FORMAT_VERSION` is frozen at 1000 until GA (owner ruling on #386). [mechanism: root `mvn clean install -DskipTests` compiles every regenerated factory in the tree — see the report for the reactor result]
+- **(2) Shared-section `@Key` capture.** The generator deduplicated interceptor provisions by `(type, config)` and `findKeyInfoForInterceptor` returned the FIRST matching method's extractor, so two `@Key` methods under one config section shared one instance keyed by the first method's request type — a `ClassCastException` on the second method's first call, or a wrong key when the types coincided. A key-bearing method now gets its own provision (`provisionKey` = `(type, config)` + method name), carrying its own extractor; key-less methods keep sharing one instance per section, because sharing is the point for rate limits and circuit breakers. What is shared underneath — the named cache or idempotency store — is shared by the factory's `SharedByName` registry (#894), not by the generated variable, so per-method instances do not duplicate caches. [verified: `SliceProcessorTest#should_provision_a_key_bearing_interceptor_per_method_when_the_config_section_is_shared` (`jbct/slice-processor`) — two `@Key` methods under `cache.shared` generate two `provide(MethodInterceptor.class, "cache.shared", …)` calls with `GetUserRequest::userId` AND `GetOrderRequest::orderId`; red at the base (second extractor absent); reverting the generator reddens it]. No envelope bump: `ENVELOPE_FORMAT_VERSION` is frozen at 1000 until GA (maintainer decision on #386). [mechanism: root `mvn clean install -DskipTests` compiles every regenerated factory in the tree — see the report for the reactor result]
 - **(3) DHT TTL and cross-node invalidation — NOT fixed here, stated.** `DHTClient` has no expiry primitive (`put(byte[], byte[])` only; repo grep for ttl/expire in `integrations/dht`: none), so honouring `ttl_seconds` on `DISTRIBUTED` is a DHT feature, not an interceptor fix; cross-node invalidation for `TIERED` is owner-deferred post-GA (ticket comment 2026-08-26). The doc's `TIERED` row already carried the gap; the `ttl_seconds` and `max_entries` rows now say which store each governs, and the `DISTRIBUTED` row states the fail-open behaviour. [design intent — unverified]
 - **What is NOT verified.** [unverified: fail-open against a real DHT outage on a cluster — the pins use a fake `DHTClient`; the real client's failure shapes (timeouts vs. refusals) arrive as failed promises (`DHTError`, now `Cause.Transient` in #1088) and are covered by the same `recover` by reading, not by a live run.]
 
 ### Fixed (2026-09-14 — #276 R20: the legacy `ConfigService` facade threw on a malformed numeric value)
 - **`NodeDeploymentManager.ConfigServiceConfigFacade` parsed `requireLong`/`requireDouble`/`getLong`/`getDouble` with `Long.parseLong` / `Double.parseDouble` inside `.map`**, so a config value that is not a number (`pool.size = "twelve"`) escaped as `NumberFormatException` out of a facade whose whole contract is `Result`/`Option`. `ConfigService` exposes no numeric getter beyond `getInt`, so the adapter must parse; it now parses through core's `Number.parseLong` / `Number.parseDouble` — the exception boundary — and maps a parse failure at the `Result` boundary to a cause that **names the key and the value** (`Config key pool.size is not a long: "twelve"`); `Number.parseX`'s own cause is a `Causes.fromThrowable` whose message is the stack trace with the key nowhere in it, and on the live path that landed verbatim in the generated slice's `configLog.warn` (review of #1092, SF-2). On `requireLong`/`requireDouble` a malformed value is therefore a named failure distinct from the absent-key failure (`requireInt` routes through `ConfigService.getInt`, which folds a malformed value into absent — pre-existing, outside R20, unchanged). On the `Option`-returning `get*` it reads as absent — the same behaviour `ConfigurationProvider`'s own `getLong`/`getDouble` give the slice-api `ConfigProviderFacade`, and a conflation of malformed with absent that is tracked under #1098, not changed here. This facade is what `NodeDeploymentState.buildConfigFacade` hands a slice when its per-slice config service is absent. [verified: `ConfigServiceConfigFacadeNumericTest` (`aether/aether-deployment`) — four pins asserting no throw and a failed `Result` / empty `Option` for `"twelve"` and `"half"`; the two `require*` pins also assert the message names the value AND the key and has no newline; red at the base with `NumberFormatException: For input string: "twelve"`. Mutations: reverting `NodeDeploymentManager` reddens exactly the four pins; folding `requireDouble`'s malformed value into `MISSING_KEY` reddens its pin (round 1 had left that reader unpinned); dropping the named-cause mapping reddens `requireLong`'s pin on the missing key]
-- **R21 — RateGuard is node-local: documented scope, not a defect, and left** — by the CTO's scope ruling for #276, not by the doc alone: `resource-reference.md`'s RateGuard section states `Scope today: Local (type="local"); distributed is #144` but not "cluster rate = limit × instances", and `type` is neither implemented nor removed. Two of the ticket's R21 sub-claims are stale at this tip: `DefaultRateGuard` DOES honour `burst` (`RateLimiter.builder().burst(config.burst())`), and `remaining = 0` on the `LimitExceeded` path is the true value at the moment a token-bucket refusal is issued. `requireStringList` remains refused by name in the legacy adapter (`ConfigProviderFacade` implements it for the slice path); not in this ticket's acceptance and not changed.
+- **R21 — RateGuard is node-local: documented scope, not a defect, and left** — by the maintainers' scope decision for #276, not by the doc alone: `resource-reference.md`'s RateGuard section states `Scope today: Local (type="local"); distributed is #144` but not "cluster rate = limit × instances", and `type` is neither implemented nor removed. Two of the ticket's R21 sub-claims are stale at this tip: `DefaultRateGuard` DOES honour `burst` (`RateLimiter.builder().burst(config.burst())`), and `remaining = 0` on the `LimitExceeded` path is the true value at the moment a token-bucket refusal is issued. `requireStringList` remains refused by name in the legacy adapter (`ConfigProviderFacade` implements it for the slice path); not in this ticket's acceptance and not changed.
 - **What is NOT verified.** [unverified: dependents' test suites (`aether/node`, `aether/aether-control`) — the change is confined to four method bodies with no signature change; the module's own 1,021 tests are green.]
 
 ### Fixed (2026-09-14 — #275: slice-to-slice routing had no liveness filter, so a call to a dead node hung for the invoker timeout)
@@ -11018,7 +11017,7 @@ line; `WireAssignmentTripwireTest` reddened on it and `SystemCodecPinningTest` c
 - **Both paths store identical bindings for the same blueprint, by construction.** They call one derivation (`BlueprintServiceInstance.streamBindings`), and the jbct plugin packages one module `resources.toml` as both the blueprint jar's and every slice jar's `META-INF/resources.toml`, so the distinct slice declarations are exactly the text the artifact path reads. [verified: `StreamBindings.publish_andPublishFromArtifact_storeIdenticalBindings_forTheSameBlueprint`]
 - **No fallback was reintroduced.** An alias no slice declares still fails with `StreamAddressError.UnboundStreamAlias` once bindings exist. [verified: `StreamBindings.publish_leavesAnUndeclaredAliasFailingLoudly`]
 - New refusals on the body publish, both before any command is applied: slices from different modules that bind one alias to different addresses (`conflicting-stream-declaration`) — `addressFor` would otherwise answer with the first and misbind the other slice silently — and a slice jar that cannot be read for its declarations, which would otherwise bind a subset. [verified: `StreamBindings.publish_isRefused_whenSlicesBindOneAliasToDifferentAddresses`, `publish_isRefused_whenASliceJarCannotBeReadForBindings`]
-- **Heavy stream fixtures now address the ring by its engine key.** Once the body publish wrote bindings, seven of the nine Heavy stream classes reached lookups that had been unreachable since #1041: `replicaSnapshot`/`read` by the bare `[streams.X]` alias — for which HRW still names an "owner" whose replica set is empty forever, so placement never settled and four classes timed out — a WAL filter on a directory named `test-events` where the engine writes `<namespace>:test-events:1.0.0`, and a placement assertion premised on "one host owns at most one of five partitions", which HRW never promised (under the qualified key `dcp-5` owns two). The first correction, `0f27e5540`, qualified only the two declarative-consumer classes' constants — the ones whose `setUp` gate was the first to fail — and left the other seven at the bare alias; all nine now derive the key from their blueprint id through one helper (`TestArtifacts.streamEngineKey`), and the placement test asserts the forwarded count against the owner map the cluster itself reports (`StreamReadRouter.replicaSnapshot` per partition, a different read path from the endpoint's assignment rows) plus a placement-independent floor of one forwarded partition, instead of the pigeonhole. `DeclarativeStreamConsumerTest` additionally waits, in `setUp`, until every node reports every partition consumed by its own owner: instances reach ACTIVE seconds to minutes apart, and until the last one does the manager legitimately assigns its partitions to a node that is active (#535 rule 2) — the Heavy run at `683b9dd7a` published every order twice because a late owner attached while that temporary assignee never let go, and the suite's exact-count assertions had begun before the co-located configuration they describe existed. Its exact-count failures now print each node's assignment rows, which the manager's attach/detach log lines (no node id) cannot. Test-only; the production bare-alias fallback in `BlueprintStreamAddresses.engineKeyFor` is untouched. **Disclosure: at this head `DeclarativeStreamConsumerTest` is RED in Heavy (run 34796254753) on #1119 — a product defect, the temporary assignee never detaches (two nodes held stale candidate views for 240 s) — not on #1066; the gate now fails with every node's assignment rows named instead of a bare count mismatch.** [unverified: the non-detaching temporary assignee itself (#1119), and instances stalling in ACTIVATING until the activation timeout (~90 s, `NodeDeploymentState.forceActivatingToActive`) while the leader already reports the blueprint fully deployed — both observed, neither fixed here; ticket drafts in `oss/internal/fix-1066-r2-report-2026-09-14.md`] [verified: all nine `@Tag("Heavy")` stream classes green in-JVM, one class per fork; the `StreamCrashDurabilityTest` qualification reverted alone reproduces the CI red at its WAL assertion; the placement sensor pointed at the bare alias reddens `placement_leavesMostPartitionOwnersWithoutTheSlice` (expected 4, measured 3)]
+- **Heavy stream fixtures now address the ring by its engine key.** Once the body publish wrote bindings, seven of the nine Heavy stream classes reached lookups that had been unreachable since #1041: `replicaSnapshot`/`read` by the bare `[streams.X]` alias — for which HRW still names an "owner" whose replica set is empty forever, so placement never settled and four classes timed out — a WAL filter on a directory named `test-events` where the engine writes `<namespace>:test-events:1.0.0`, and a placement assertion premised on "one host owns at most one of five partitions", which HRW never promised (under the qualified key `dcp-5` owns two). The first correction, `0f27e5540`, qualified only the two declarative-consumer classes' constants — the ones whose `setUp` gate was the first to fail — and left the other seven at the bare alias; all nine now derive the key from their blueprint id through one helper (`TestArtifacts.streamEngineKey`), and the placement test asserts the forwarded count against the owner map the cluster itself reports (`StreamReadRouter.replicaSnapshot` per partition, a different read path from the endpoint's assignment rows) plus a placement-independent floor of one forwarded partition, instead of the pigeonhole. `DeclarativeStreamConsumerTest` additionally waits, in `setUp`, until every node reports every partition consumed by its own owner: instances reach ACTIVE seconds to minutes apart, and until the last one does the manager legitimately assigns its partitions to a node that is active (#535 rule 2) — the Heavy run at `683b9dd7a` published every order twice because a late owner attached while that temporary assignee never let go, and the suite's exact-count assertions had begun before the co-located configuration they describe existed. Its exact-count failures now print each node's assignment rows, which the manager's attach/detach log lines (no node id) cannot. Test-only; the production bare-alias fallback in `BlueprintStreamAddresses.engineKeyFor` is untouched. **Disclosure: at this head `DeclarativeStreamConsumerTest` is RED in Heavy (run 34796254753) on #1119 — a product defect, the temporary assignee never detaches (two nodes held stale candidate views for 240 s) — not on #1066; the gate now fails with every node's assignment rows named instead of a bare count mismatch.** [unverified: the non-detaching temporary assignee itself (#1119), and instances stalling in ACTIVATING until the activation timeout (~90 s, `NodeDeploymentState.forceActivatingToActive`) while the leader already reports the blueprint fully deployed — both observed, neither fixed here] [verified: all nine `@Tag("Heavy")` stream classes green in-JVM, one class per fork; the `StreamCrashDurabilityTest` qualification reverted alone reproduces the CI red at its WAL assertion; the placement sensor pointed at the bare alias reddens `placement_leavesMostPartitionOwnersWithoutTheSlice` (expected 4, measured 3)]
 - Corrected three comments that placed Forge outside blueprint deployment (`BlueprintStreamAddresses.engineKeyFor`, `StreamAddressResolver`) or named only the artifact path in the same-batch argument (`StreamAddressError`). Forge's Ember nodes are real `AetherNode`s that register the resolver and deploy through the body publish, which is why this defect reached Forge.
 - [unverified: role hints] Both paths derive with EMPTY role hints. `publishFromArtifact` aggregates hints from `META-INF/slice/*.manifest` inside the blueprint jar, and neither `GenerateBlueprintMojo` nor `PackageBlueprintMojo` puts manifests there (0 of the 50 `*-blueprint.jar` in a local repository carry one). So the spec §11.1.1 consumer default (`latest`) never applies at deploy; every unpinned alias binds at `1.0.0`. The body path matches that deliberately, because taking hints from slice manifests would make the two paths disagree on exactly those aliases. This is pre-existing and unchanged here; fixing it means changing both paths together.
 - [unverified: resourcesConfig embedding] The body publish still does not embed the slice `resources.toml` into the stored `ExpandedBlueprint` the way `publishFromArtifact` does (`applyResourcesConfig`). Only the bindings key is brought to parity.
@@ -11925,7 +11924,7 @@ what let `0/0` read as success in the first place.
   without limit. The figure now lives in one place, `ConsensusTierBounds.MAXIMUM_CORE_NODES`, and is
   enforced at both — CL-04 and REQ-3.3.3 in the bootstrap validator, and the CORE branch of
   `setDesiredCount`. `[verified: ClusterBootstrapConfigValidatorTest$ConsensusTierMaximum (5 tests), ClusterTopologyManagerActuatorTest.setDesiredSize_aboveConsensusMaximum_rejectedWithoutAtomWrite, .setDesiredSize_nine_acceptedAtTheConsensusMaximum, .setDesiredSize_workerRoleAboveConsensusMaximum_isAccepted]`
-- **No NEW enforcement is added on the boot path** (CTO ruling, session 19). `ConfigValidator`'s
+- **No NEW enforcement is added on the boot path** (maintainer decision). `ConfigValidator`'s
   `[cluster] nodes` bound is pre-existing — it refused above 7 before — and is only RAISED to 9, never
   introduced; per the note above, a failure there does not refuse a boot in any case. The structural
   floor of 3 stays at `ClusterSizeGate`, `ConfigValidator` and `ClusterBootstrapConfigValidator`.
@@ -12651,7 +12650,7 @@ that was removable without reddening a single test.
 - **Explicitly NOT coupled to the 60-second higher-id grace** in `QuicClusterNetwork` (#491). The two
   values are numerically equal and serve unrelated purposes — that grace exists to avoid a cold-boot
   dual-Hello race for a never-connected peer. No evidence of a real relationship was found, and per
-  owner ruling none was assumed; neither value is derived from the other.
+  maintainer decision none was assumed; neither value is derived from the other.
   [mechanism: `ForgeServer.clusterStartFailureMessage` renders only values read from
   `EmberCluster.status()` at the deadline — `ForgeServerMessageTest.ClusterStartFailure` (9 tests),
   `EmberConfigStartTimeoutTest` (5 tests); mutation-probed, see the PR for the reddened sets]
@@ -12768,10 +12767,6 @@ that was removable without reddening a single test.
   not by a jar-level run — reaching that line through the fat jar requires a real cloud provision.]
 
 ### Fixed (2026-09-10 — `know: 8f02cd3cf`: `aether cluster bootstrap` could not authenticate against the cluster it had just formed)
-
-<!-- Heading cites the owner ruling, not an issue: this work landed as the direct push `f25f14327`
-     with no issue and no PR. The filename's "980" is a collision from a speculatively-named branch —
-     issue #980 is the pg-parser walk race. Left as-is; do not substitute a guessed number. -->
 
 - **Phase 7 tore down healthy clusters.** `CLUSTER_FORMATION` cleared its all-nodes `/health/live`
   gate, then polled `/api/v1/health` for the quorum check and received
@@ -13651,7 +13646,7 @@ that was removable without reddening a single test.
 
 ### Fixed (2026-09-10 — `aether cluster init` produced configs that could not bootstrap, and silently swallowed input it ignored)
 
-**Owner ruling:** the cloud placement parameters — **zone and instance type — are mandatory.** They
+**Maintainer decision:** the cloud placement parameters — **zone and instance type — are mandatory.** They
 are not defaultable, and the reason is that the two fail in opposite and equally unacceptable ways:
 a defaulted **instance type fails late**, at the provider API, after the operator has waited; a
 defaulted **region or zone succeeds wrongly**, provisioning perfectly into a jurisdiction nobody
@@ -13704,7 +13699,7 @@ plus a sixth, reported and not fixed, that explains why the first one was so har
   `serverType`, ssh-key count, firewall count and labels that were sent, and throws them away. The
   node jar binds log4j2 (`org.apache.logging.slf4j.SLF4JServiceProvider`), so the two disagree.
   **Reported, deliberately NOT fixed here** — adding a binding is a packaging decision affecting
-  every CLI command, and it is the owner's call whether to ship one behind `--verbose` or to accept
+  every CLI command, and it is the maintainers' call whether to ship one behind `--verbose` or to accept
   a log-silent CLI and require every operator-relevant fact to reach stdout.
   [verified: a probe run against each jar — the CLI reports `NOPLoggerFactory` with
   `isErrorEnabled=false` and emits nothing between markers; the same probe on `aether-node.jar`
@@ -13993,8 +13988,8 @@ plus a sixth, reported and not fixed, that explains why the first one was so har
 
 ### Changed (2026-09-08 — #945: the feature catalog gains a `Cluster-tested` maturity tier, and `Complete` says what it actually evidences)
 
-- **The catalog can now answer "what has actually been run in a cluster?", which it previously could not.** The status legend becomes a three-rung maturity ladder ordered by the evidence that earns each rung: `Complete` — implemented and unit-tested, not run in a cluster; `Cluster-tested` — deployed and exercised in a real multi-node cluster on the happy path; `Battle-tested` — cluster-tested, and survives failure injection. `Partial` and `Planned` are unchanged. This is a structural gain, not a walk-back: it adds the verification column the catalog never had, at the cost of one line of wording. `Battle-tested` already meant cluster-verified under failure injection — only the legend's phrasing stopped `Complete`-versus-`Battle-tested` from reading as "unit-tested versus actually run". The tiers become a work queue rather than a claim, and the 171 `Complete` rows are its backlog. `[mechanism: owner ruling 2026-09-08, `know:` commit cb73d21c7]`
-- **The middle tier is named for its evidence, not its venue, and the name is load-bearing.** "Cloud tested" would have meant only paid cloud runs could earn the tier, throttling re-grading to whatever budget existed at the time; "cluster tested" means a free always-available host qualifies and the tier can actually be populated. A tier nobody can afford to earn stays empty — which is how `Battle-tested` stalled at 23 rows out of 227. `[mechanism: owner ruling; the naming choice is recorded as deliberate in cb73d21c7]`
+- **The catalog can now answer "what has actually been run in a cluster?", which it previously could not.** The status legend becomes a three-rung maturity ladder ordered by the evidence that earns each rung: `Complete` — implemented and unit-tested, not run in a cluster; `Cluster-tested` — deployed and exercised in a real multi-node cluster on the happy path; `Battle-tested` — cluster-tested, and survives failure injection. `Partial` and `Planned` are unchanged. This is a structural gain, not a walk-back: it adds the verification column the catalog never had, at the cost of one line of wording. `Battle-tested` already meant cluster-verified under failure injection — only the legend's phrasing stopped `Complete`-versus-`Battle-tested` from reading as "unit-tested versus actually run". The tiers become a work queue rather than a claim, and the 171 `Complete` rows are its backlog. `[mechanism: maintainer decision 2026-09-08, `know:` commit cb73d21c7]`
+- **The middle tier is named for its evidence, not its venue, and the name is load-bearing.** "Cloud tested" would have meant only paid cloud runs could earn the tier, throttling re-grading to whatever budget existed at the time; "cluster tested" means a free always-available host qualifies and the tier can actually be populated. A tier nobody can afford to earn stays empty — which is how `Battle-tested` stalled at 23 rows out of 227. `[mechanism: maintainer decision; the naming choice is recorded as deliberate in cb73d21c7]`
 - **The previous `Complete` definition undercut itself.** It read "Production-ready, tested (unit tests, possibly basic E2E)" across 171 of 227 rows — it claimed production-readiness and then named unit tests as the evidence, and unit tests cannot establish production-readiness. Eight public pages carry "Not yet production-ready" while the public catalog page links to this file as the complete list, so the contradiction was publicly reachable in two clicks: the document offered as proof of completeness disagreed with the disclaimer on the page that sent readers to it. `[mechanism: the old legend text and the public pages, both quoted in cb73d21c7]`
 - **The reason for the redefinition is that we cannot support the old claim — not a measured defect rate.** The findings that prompted it (row 39's `AlertForwarder` never constructed in production; #943's `AetherMaps` accessors with zero production callers; #926's zero `NodeFailed` events across 3,350,175 log lines in ten days; #944's 91 documented CLI invocations that do not exist) are a **sample from the subsystems under active investigation, not a rate across 171 rows**. Nobody has established that rate, and not knowing it is precisely why the old claim could not stand. No number is published here for a reader to inherit. `[mechanism: stated as a constraint in cb73d21c7 — record the inability to support the claim, never a rate nobody measured]`
 - **Not one row was re-graded.** All 171 `Complete` rows stay `Complete`; `Cluster-tested` starts at **0** and is rendered as an honest zero row rather than omitted, because a category that disappears when empty is how a reader concludes it does not exist. A tier is earned by a run, never by an argument. `[verified: rule-independent census — the `(id, status)` pair of every table line outside the generated block, 283 lines, is byte-identical before and after (sha256 2d2c96c6…6c63a both sides). The census was itself mutation-checked: promoting one row to `Cluster-tested` makes it report ` 5 | Complete ` → ` 5 | Cluster-tested `, so a re-grade cannot pass it unseen]`
@@ -14331,7 +14326,7 @@ plus a sixth, reported and not fixed, that explains why the first one was so har
 - **The check cannot pass vacuously.** If the legend parses to fewer than two entries, or the counting rule matches no rows, the script fails rather than reporting a green count over nothing. `[verified: mutation — deleting all four legend bullets fails with "parsed 0 status legend entries; the legend is the allowed-status authority and cannot be empty" rather than emitting a table of zeroes]`
 - **Adding or removing a feature row moves the published total.** `[verified: mutation — inserting one `Planned` row turns `--check` red with `Planned` 9→10 and `Total` 227→228]`
 - **Row 58 (Web dashboard) is `Partial`, not `Critical`, and `Critical` is retired as a status (#931).** `Critical` named an effort/priority axis rather than a completion level, so the row sat in the total while belonging to no status category. Its own note records the Forge dashboard as complete and enumerates the node-management dashboard's missing pieces, which is exactly the legend's definition of `Partial` — "Core implemented, gaps noted". The priority signal it carried is preserved in the callout below the table, relabelled so it cannot be read as a completion level. `[mechanism: judgement against the legend's own definitions; no row now uses `Critical`, and the generated check would reject one that did]`
-- **The published counts are labelled claimed, not verified, in the document itself.** Every figure counts what a row asserts about itself; none is checked against the code. The counting rule is stated next to the table so a reader can reproduce the number instead of trusting it. `[mechanism: owner ruling 2026-09-07, `know:` commit 4607e86d0]`
+- **The published counts are labelled claimed, not verified, in the document itself.** Every figure counts what a row asserts about itself; none is checked against the code. The counting rule is stated next to the table so a reader can reproduce the number instead of trusting it. `[mechanism: maintainer decision 2026-09-07, `know:` commit 4607e86d0]`
 - **The stale "173 features" belief is retired from the four website-correction notes that carried it.** One of them recorded the site's "173 documented features" as verified — "Feature catalog shows 173. This matches" — an exoneration that had since become false. `[verified: `grep -rn '173' aether/docs/.internal/website-corrections/` returns 5 hits — the quoted website claim, three dated retirement notes naming it, and the `#166-173` issue range — where before the change the same command returned 7, of which 6 were live count-uses and none was a retirement note]`
 
 ### Added (2026-09-08 — #926: a node-health alerting path, which did not exist)
@@ -14741,7 +14736,7 @@ plus a sixth, reported and not fixed, that explains why the first one was so har
 - **One parked assertion is deliberately REVERSED, and the reason is recorded so it does not read as
   lost coverage.** Round 3b's parked
   `aSliceThatCameUpUnderAPartiallyDeployedBlueprint_isNotCondemned`
-  (`oss/internal/park-924-round3b-2026-09-08.patch`) asserted that a slice which came up under a
+  asserted that a slice which came up under a
   never-completed `ALL_OR_NOTHING` blueprint must not be condemned, treating it as a workload owed
   convergence. It is replaced by `#partiallyAppliedBlueprint_condemnsTheSliceThatCameUp_andRecordsIt`,
   which asserts the opposite. The blueprint never applied, so the operator was promised
@@ -15023,8 +15018,7 @@ this branch adds +12 lines to `ClusterDeploymentState.java`._
   [mechanism: `ControlLoopContext.applyScaling` 7-arg `sliceTargetValue(version, newInstances,
   newInstances, ...)` vs. `putBlueprint(artifact, newInstances, currentBlueprint.minInstances(),
   ...)` immediately above it; `AetherValue.SliceTargetValue.effectiveMinInstances()` returns
-  `Math.max(1, minInstances)`. Searched open issues for `minInstances` and `applyScaling` via
-  `oss/internal/related-tickets.sh` before filing — only #698 and the generic tech-debt umbrella
+  `Math.max(1, minInstances)`. Searched open issues for `minInstances` and `applyScaling` — only #698 and the generic tech-debt umbrella
   #175 hit].
 
 ### Fixed (2026-09-07 — #916: a transient activation race was classified as permanent and rolled the blueprint back)
@@ -15735,7 +15729,7 @@ passing classes, which establishes it *can* be benign, not that it *was*. And th
   [verified: `SpiResourceProviderLifecycleTest$SliceScopedLifecycle#releaseAll_closesResource_provisionedThroughContextOverload`, `#provide_provisionsOnce_whenOneSliceProvidesTwice`; making the context overload bypass the cache again turns 7 of the module's 138 tests red — the list is in the pull request].
 - **The context overload is cached PER PROVISIONING SLICE — key `(type, section, sliceId)` — deliberately, not per node.** That overload is codec-scoped: `SliceLoadingContext.CodecAwareResourceProvider` injects the deployed slice's own codec as `Serializer`/`Deserializer` on every call, because it is the only codec that knows the application's record types. A key without a slice dimension would hand slice B the resource slice A built with A's codec, making B's application-typed stream events and DHT entries unencodable — #526 reintroduced by a leak fix. `PublisherFactory` is a second, independent reason: it derives a topic's namespace from the provisioning slice's `Artifact`. Not a behaviour change: the context path was uncached before, and generated code provisions once per slice inside its static create path, so each slice already received its own instance; what is new is that the instance is memoized within the slice and released when that slice unloads. **Recorded consequence: DB connection pools are per-slice, not per-node.** That is today's behaviour, so it is not a regression — a genuinely shared pool is a deliberate design change needing its own ticket, not something to acquire from a cache key
   [verified: `SpiResourceProviderLifecycleTest$CodecScopingSurvivesCaching#secondSlice_receivesItsOwnCodec_notTheFirstSlices` — two slices, same type and section, different codecs; drops the slice dimension and slice-b receives codec-a; `$SliceScopedLifecycle#provide_givesEachSliceItsOwnInstance`, `#releaseAll_closesOnlyTheReleasingSlicesResource`].
-- **The plain (context-free) overload keeps its shared `(type, section)` cache, and its resource is never released by any slice's unload.** A plain-overload caller carries no identity the provider can attribute to a slice, so no slice's unload may close its resource — the old code did exactly that, closing a cached resource a plain-path holder still used once the context-path consumer set emptied (#268 R2, use-after-close on a live pool). The unattributed scope is now pinned as a bounded leak, which is the safe direction. **Ruled 2026-09-06 (CTO, `oss/internal/ruling-268-shared-scope-2026-09-06.md`): this scope is process-lifetime.** #268's amended acceptance item 1 asked for refcount and close-on-last-consumer on this path; without a caller identity there is no "last consumer" to count, and the item is rewritten to a node-shutdown close of the shared scope, which is a separate ticket
+- **The plain (context-free) overload keeps its shared `(type, section)` cache, and its resource is never released by any slice's unload.** A plain-overload caller carries no identity the provider can attribute to a slice, so no slice's unload may close its resource — the old code did exactly that, closing a cached resource a plain-path holder still used once the context-path consumer set emptied (#268 R2, use-after-close on a live pool). The unattributed scope is now pinned as a bounded leak, which is the safe direction. **Ruled 2026-09-06 (maintainer decision): this scope is process-lifetime.** #268's amended acceptance item 1 asked for refcount and close-on-last-consumer on this path; without a caller identity there is no "last consumer" to count, and the item is rewritten to a node-shutdown close of the shared scope, which is a separate ticket
   [verified: `SpiResourceProviderLifecycleTest$UnattributedScopeIsSharedAndPinned#provide_sharesOneInstance_acrossPlainOverloadCallers`, `#releaseAll_neverCloses_theUnattributedScopesResource` — releasing the unattributed scope's own literal as a slice id also closes nothing].
 - **Close goes through the factory that built the resource, not the head of the priority list (#268 R3).** `releaseAll` used `factoryList.getFirst()`; for `SqlConnector`, where the async, R2DBC and JDBC factories all answer and are ordered by priority, that is a different object from the one whose `supports()` matched. The matched factory is now remembered alongside the resource and is the one that closes it
   [verified: `SpiResourceProviderLifecycleTest$ClosesThroughTheProvisioningFactory#releaseAll_closesThroughMatchingFactory_notTheHighestPriorityOne`].
