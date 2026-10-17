@@ -279,7 +279,8 @@ class JsonPrimitivesTest {
         for (int i = 0; i < 300_000; i++) {
             var value = i % 2 == 0 ? Double.longBitsToDouble(random.nextLong()) : random.nextGaussian() * Math.pow(10, random.nextInt(30) - 15);
             writer.reset().writeDouble(value);
-            assertEquals(Double.toString(value), new String(writer.toByteArray(), StandardCharsets.US_ASCII));
+            // Non-finite values are written quoted, like Jackson (see JsonReaderValidationTest).
+            assertEquals(Double.isFinite(value) ? Double.toString(value) : "\"" + value + "\"", new String(writer.toByteArray(), StandardCharsets.US_ASCII));
         }
     }
 
@@ -460,7 +461,7 @@ class JsonPrimitivesTest {
 
     @Test
     void skipValue_failsBeyondDepthLimit() {
-        var deep = "{\"zz\":" + "[".repeat(600) + "]".repeat(600) + ",\"customer\":\"c\",\"event\":\"e\",\"seat\":\"s\",\"tier\":\"t\"}";
+        var deep = "{\"zz\":" + "[".repeat(JsonReader.MAX_DEPTH) + "]".repeat(JsonReader.MAX_DEPTH) + ",\"customer\":\"c\",\"event\":\"e\",\"seat\":\"s\",\"tier\":\"t\"}";
         assertFalse(BuyRequestFixture.BuyRequestJson.CODEC.decode(deep.getBytes(StandardCharsets.UTF_8))
                                                       .isSuccess());
     }

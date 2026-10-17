@@ -158,7 +158,15 @@ public final class JsonWriter {
     }
 
     /// Identical to Jackson's default, `Double.toString`, but formatted into a reused builder: no String.
+    /// NaN and the infinities are not JSON numbers; like Jackson, they are written as the strings `"NaN"`,
+    /// `"Infinity"` and `"-Infinity"`, which [JsonReader#readDouble] accepts back.
     public void writeDouble(double value) {
+        if (!Double.isFinite(value)) {
+            writeAsciiString(Double.toString(value));
+
+            return;
+        }
+
         number.setLength(0);
         number.append(value);
         var len = number.length();

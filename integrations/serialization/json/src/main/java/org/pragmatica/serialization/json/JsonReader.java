@@ -23,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Currency;
 import java.util.UUID;
@@ -43,7 +44,11 @@ import org.pragmatica.lang.utils.Causes;
 public final class JsonReader {
     public static final int END_OF_OBJECT = -1;
     public static final int UNKNOWN_FIELD = -2;
-    private static final int MAX_SKIP_DEPTH = 512;
+    /// Deepest nesting of objects and arrays accepted, counted per container, as Jackson's `StreamReadConstraints`
+    /// does. One limit covers generated readers (which recurse once per container) and skipped values (which nest in
+    /// an explicit stack, on top of the reader's current depth). 1000 rather than Jackson's 500: a recursive record
+    /// costs two containers per level (`{"children":[...]}`), and 400 such levels must decode.
+    public static final int MAX_DEPTH = 1000;
 
     private static final double[] POW10 = {1e0,
                                            1e1,
@@ -75,12 +80,26 @@ public final class JsonReader {
 
     private static final byte[] NULL = {'n', 'u', 'l', 'l'};
 
+    private static final byte[] QUOTED_NAN = {'"', 'N', 'a', 'N', '"'};
+
+    private static final byte[] QUOTED_INFINITY = {'"', 'I', 'n', 'f', 'i', 'n', 'i', 't', 'y', '"'};
+
+    private static final byte[] QUOTED_NEGATIVE_INFINITY = {'"', '-', 'I', 'n', 'f', 'i', 'n', 'i', 't', 'y', '"'};
+
+    // Beyond any int: an exponent this large is already out of range for every target type.
+    private static final long EXPONENT_CAP = 1L<< 40;
     private static final Currency DEFAULT_CURRENCY = Currency.getInstance("XXX");
     private static final UUID NIL_UUID = new UUID(0, 0);
 
     private byte[] buf;
     private int pos;
     private int end;
+    // Start of the input region: failure reporting re-scans from here to name the enclosing field.
+    private int begin;
+    // Objects and arrays entered by generated readers and not yet closed.
+    private int depth;
+    // Container kinds of skipped levels 64 and deeper (levels below 64 live in a local bit set); allocated on first use.
+    private boolean[] deepObjects;
     private Cause error;
     private Causes.CompositeCause failures;
     private byte[] scratch = new byte[64];
@@ -99,7 +118,9 @@ public final class JsonReader {
     public JsonReader reset(byte[] buf, int offset, int length) {
         this.buf = buf;
         this.pos = offset;
+        this.begin = offset;
         this.end = offset + length;
+        this.depth = 0;
         this.error = null;
         this.failures = null;
 
@@ -160,8 +181,21 @@ public final class JsonReader {
     }
 
     // ---- objects -------------------------------------------------------------------------------
+    /// Enters an object; [#firstField] / [#nextField] (records) or [#firstEntry] / [#nextEntry] (maps) leave it.
     public boolean beginObject() {
-        return consume('{', "'{'");
+        return consumeValue('{', "'{'") && enter();
+    }
+
+    // Counts a container just opened against MAX_DEPTH.
+    private boolean enter() {
+        if (++depth > MAX_DEPTH) {
+            pos--;
+            nestingTooDeep();
+
+            return false;
+        }
+
+        return true;
     }
 
     /// Reads the first key of an object (just after `{`). Returns the field index,
@@ -174,6 +208,7 @@ public final class JsonReader {
         skipWhitespace();
         if (pos < end && buf[pos] == '}') {
             pos++;
+            depth--;
 
             return END_OF_OBJECT;
         }
@@ -208,6 +243,8 @@ public final class JsonReader {
         var b = buf[pos++];
 
         if (b == '}') {
+            depth--;
+
             return END_OF_OBJECT;
         }
 
@@ -259,43 +296,47 @@ public final class JsonReader {
             return END_OF_OBJECT;
         }
 
+        var index = lookupString(names);
+
+        if (index == -1 || !consume(':', "':'")) {
+            return END_OF_OBJECT;
+        }
+
+        return index;
+    }
+
+    /// Reads the rest of a string whose opening quote was consumed and looks it up in `names`: its index,
+    /// [#UNKNOWN_FIELD] when undeclared, or -1 after recording a failure. A name written with escapes is decoded
+    /// first (the slow path, taken only when the raw bytes hold a backslash), so `"\u0041"` matches `A`.
+    private int lookupString(FieldNames names) {
         var start = pos;
         var close = scanString(start);
 
+        if (error != null) {
+            return -1;
+        }
+
         if (close < 0) {
-            return slowFieldName(names);
+            var decoded = decodeEscaped(start).getBytes(StandardCharsets.UTF_8);
+
+            return error != null
+                   ? -1
+                   : names.lookup(decoded, 0, decoded.length);
+        }
+
+        if (!scannedAscii && !isValidUtf8(start, close)) {
+            return -1;
         }
 
         pos = close + 1;
-        var index = names.lookup(buf, start, close - start);
 
-        if (!consume(':', "':'")) {
-            return END_OF_OBJECT;
-        }
-
-        return index;
-    }
-
-    // A key containing escapes: decode it, then match the decoded bytes.
-    private int slowFieldName(FieldNames names) {
-        var decoded = decodeEscaped(pos).getBytes(StandardCharsets.UTF_8);
-
-        if (error != null) {
-            return END_OF_OBJECT;
-        }
-
-        var index = names.lookup(decoded, 0, decoded.length);
-
-        if (!consume(':', "':'")) {
-            return END_OF_OBJECT;
-        }
-
-        return index;
+        return names.lookup(buf, start, close - start);
     }
 
     // ---- arrays --------------------------------------------------------------------------------
+    /// Enters an array; [#firstElement] / [#nextElement] leave it.
     public boolean beginArray() {
-        return consume('[', "'['");
+        return consumeValue('[', "'['") && enter();
     }
 
     /// True when the array (just after `[`) has a first element.
@@ -303,11 +344,18 @@ public final class JsonReader {
         skipWhitespace();
         if (pos < end && buf[pos] == ']') {
             pos++;
+            depth--;
 
             return false;
         }
 
-        return pos < end;
+        if (pos >= end) {
+            fail("value or ']'");
+
+            return false;
+        }
+
+        return true;
     }
 
     /// True when another element follows the previous one.
@@ -321,6 +369,8 @@ public final class JsonReader {
             }
 
             if (b == ']') {
+                depth--;
+
                 return false;
             }
 
@@ -338,11 +388,18 @@ public final class JsonReader {
         skipWhitespace();
         if (pos < end && buf[pos] == '}') {
             pos++;
+            depth--;
 
             return false;
         }
 
-        return pos < end;
+        if (pos >= end) {
+            fail("map key or '}'");
+
+            return false;
+        }
+
+        return true;
     }
 
     /// True when another entry follows the previous one.
@@ -356,6 +413,8 @@ public final class JsonReader {
             }
 
             if (b == '}') {
+                depth--;
+
                 return false;
             }
 
@@ -369,7 +428,11 @@ public final class JsonReader {
 
     /// Reads a map key naming an enum constant, and the colon after it; -1 after recording a failure.
     public int readEnumKey(FieldNames constants) {
-        var index = readEnum(constants);
+        skipWhitespace();
+        var start = pos;
+        var index = consume('"', "map key")
+                    ? declared(lookupString(constants), start)
+                    : -1;
 
         consume(':', "':'");
 
@@ -378,7 +441,9 @@ public final class JsonReader {
 
     /// Reads a map key and the colon after it.
     public String readKey() {
-        var key = readString();
+        var key = consume('"', "map key")
+                  ? stringBody()
+                  : "";
 
         consume(':', "':'");
 
@@ -388,23 +453,17 @@ public final class JsonReader {
     // ---- scalars -------------------------------------------------------------------------------
     /// Reads an enum constant name; returns its index in `constants`, or -1 after recording a failure.
     public int readEnum(FieldNames constants) {
-        if (!consume('"', "enum constant")) {
-            return -1;
-        }
-
+        skipWhitespace();
         var start = pos;
-        var close = scanString(start);
 
-        if (close < 0 || error != null) {
-            fail("enum constant without escapes");
+        return consumeValue('"', "enum constant")
+               ? declared(lookupString(constants), start)
+               : -1;
+    }
 
-            return -1;
-        }
-
-        pos = close + 1;
-        var index = constants.lookup(buf, start, close - start);
-
-        if (index < 0) {
+    // A looked-up enum constant index, failing at `start` when the name is not declared.
+    private int declared(int index, int start) {
+        if (index == UNKNOWN_FIELD) {
             pos = start;
             fail("one of the declared enum constants");
 
@@ -417,35 +476,29 @@ public final class JsonReader {
     /// Like [#readEnum], but an undeclared name decodes to `fallback` (an enum's `UNKNOWN` constant) instead
     /// of failing, mirroring the binary codec's contract for enums that declare one.
     public int readEnumOr(FieldNames constants, int fallback) {
-        if (!consume('"', "enum constant")) {
+        if (!consumeValue('"', "enum constant")) {
             return -1;
         }
 
-        var start = pos;
-        var close = scanString(start);
+        var index = lookupString(constants);
 
-        if (close < 0) {
-            // An escaped name can never equal a declared constant.
-            decodeEscaped(start);
-
-            return error != null
-                   ? -1
-                   : fallback;
-        }
-
-        if (error != null) {
-            return -1;
-        }
-
-        pos = close + 1;
-        var index = constants.lookup(buf, start, close - start);
-
-        return index < 0
+        return index == UNKNOWN_FIELD
                ? fallback
                : index;
     }
 
+    /// Only the canonical 36-character form `8-4-4-4-12` (hex digits in either case), as RFC 9562 writes it.
+    /// `UUID.fromString` alone would also take `"1-1-1-1-1"`.
     public UUID readUuid() {
+        skipWhitespace();
+        if (end - pos >= 38 && buf[pos] == '"' && buf[pos + 37] == '"') {
+            var fast = fastUuid(pos + 1);
+
+            if (fast != null) {
+                return fast;
+            }
+        }
+
         var start = pos;
         var text = readString();
 
@@ -453,14 +506,71 @@ public final class JsonReader {
             return NIL_UUID;
         }
 
-        try {
-            return UUID.fromString(text);
-        } catch (IllegalArgumentException e) {
+        if (!isCanonicalUuid(text)) {
             pos = start;
-            fail("UUID");
+            fail("UUID in canonical 8-4-4-4-12 form");
 
             return NIL_UUID;
         }
+
+        return UUID.fromString(text);
+    }
+
+    // Straight from bytes; null for anything else (escapes included), leaving the decision to the slow path.
+    private UUID fastUuid(int p) {
+        if (buf[p + 8] != '-' || buf[p + 13] != '-' || buf[p + 18] != '-' || buf[p + 23] != '-') {
+            return null;
+        }
+
+        var a = hexDigits(p, 8);
+        var b = hexDigits(p + 9, 4);
+        var c = hexDigits(p + 14, 4);
+        var d = hexDigits(p + 19, 4);
+        var e = hexDigits(p + 24, 12);
+
+        if ((a | b | c | d | e) < 0) {
+            return null;
+        }
+
+        pos = p + 37;
+
+        return new UUID(a << 32 | b << 16 | c, d << 48 | e);
+    }
+
+    // `count` hex digits at `at` as a number, or -1 if any byte is not a hex digit.
+    private long hexDigits(int at, int count) {
+        var value = 0L;
+
+        for (int k = at; k < at + count; k++) {
+            var digit = Character.digit(buf[k], 16);
+
+            if (digit < 0) {
+                return -1;
+            }
+
+            value = (value << 4) | digit;
+        }
+
+        return value;
+    }
+
+    private static boolean isCanonicalUuid(String text) {
+        if (text.length() != 36) {
+            return false;
+        }
+
+        for (int i = 0; i < 36; i++) {
+            var c = text.charAt(i);
+            var hyphen = i == 8 || i == 13 || i == 18 || i == 23;
+
+            if (hyphen
+                ? c != '-'
+                : c >= 0x80 || Character.digit(c, 16) < 0) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public LocalDate readLocalDate() {
@@ -696,16 +806,20 @@ public final class JsonReader {
             return false;
         }
 
-        fail("boolean");
+        failValue("boolean");
 
         return false;
     }
 
     public String readString() {
-        if (!consume('"', "string")) {
-            return "";
-        }
+        return consumeValue('"', "string")
+               ? stringBody()
+               : "";
+    }
 
+    // The rest of a string whose opening quote was consumed. Non-ASCII bytes are validated as UTF-8 first: the
+    // JDK decoder would silently turn malformed sequences into U+FFFD.
+    private String stringBody() {
         var start = pos;
         var close = scanString(start);
 
@@ -717,11 +831,19 @@ public final class JsonReader {
             return "";
         }
 
+        if (scannedAscii) {
+            pos = close + 1;
+
+            return asciiString(start, close - start);
+        }
+
+        if (!isValidUtf8(start, close)) {
+            return "";
+        }
+
         pos = close + 1;
 
-        return scannedAscii
-               ? asciiString(start, close - start)
-               : new String(buf, start, close - start, StandardCharsets.UTF_8);
+        return new String(buf, start, close - start, StandardCharsets.UTF_8);
     }
 
     // Exact for pure ASCII: the Latin-1 byte constructor copies without the UTF-8 decoder's checks.
@@ -773,7 +895,7 @@ public final class JsonReader {
             pos++;
         }
 
-        if (!isValidIntegerEnd(digitsStart)) {
+        if (!isValidIntegerEnd(digitsStart, negative)) {
             return 0;
         }
 
@@ -788,8 +910,14 @@ public final class JsonReader {
                : -acc;
     }
 
+    /// A JSON number, or one of the three strings Jackson writes for non-finite values: `"NaN"`, `"Infinity"`,
+    /// `"-Infinity"` (exactly these; no other quoted form).
     public double readDouble() {
         skipWhitespace();
+        if (pos < end && buf[pos] == '"') {
+            return readNonFinite();
+        }
+
         var start = pos;
         var number = scanNumber();
 
@@ -800,16 +928,17 @@ public final class JsonReader {
         if (number.digits <= 15 && number.exponent >= -22 && number.exponent <= 22) {
             var mantissa = (double) number.mantissa;
             var value = number.exponent < 0
-                        ? mantissa / POW10[- number.exponent]
-                        : mantissa * POW10[number.exponent];
+                        ? mantissa / POW10[(int) - number.exponent]
+                        : mantissa * POW10[(int) number.exponent];
 
             return number.negative
                    ? -value
                    : value;
         }
-        // Eisel-Lemire for exact significands (up to 18 digits kept); NaN means it could not decide.
-        if (number.digits <= 18 && number.mantissa != 0) {
-            var value = EiselLemire.toDouble(number.mantissa, number.exponent, number.negative);
+        // Eisel-Lemire for exact significands (up to 18 digits kept); NaN means it could not decide. Its table spans
+        // far less than +-400, so a larger exponent goes straight to the JDK, which yields 0 or infinity.
+        if (number.digits <= 18 && number.mantissa != 0 && Math.abs(number.exponent) <= 400) {
+            var value = EiselLemire.toDouble(number.mantissa, (int) number.exponent, number.negative);
 
             if (!Double.isNaN(value)) {
                 return value;
@@ -819,6 +948,26 @@ public final class JsonReader {
         return Double.parseDouble(new String(buf, start, pos - start, StandardCharsets.ISO_8859_1));
     }
 
+    private double readNonFinite() {
+        if (literal(QUOTED_NAN)) {
+            return Double.NaN;
+        }
+
+        if (literal(QUOTED_INFINITY)) {
+            return Double.POSITIVE_INFINITY;
+        }
+
+        if (literal(QUOTED_NEGATIVE_INFINITY)) {
+            return Double.NEGATIVE_INFINITY;
+        }
+
+        fail("number, \"NaN\", \"Infinity\" or \"-Infinity\"");
+
+        return 0;
+    }
+
+    /// Exact: the exponent is accumulated in full, so `1e1234567` is `1E+1234567`. A number whose scale does not fit
+    /// an `int` (beyond what `BigDecimal` represents) fails as [JsonError.OutOfRange].
     public BigDecimal readDecimal() {
         skipWhitespace();
         var start = pos;
@@ -828,20 +977,52 @@ public final class JsonReader {
             return BigDecimal.ZERO;
         }
 
-        if (number.digits <= 18) {
-            var unscaled = number.negative
-                           ? -number.mantissa
-                           : number.mantissa;
+        if (number.digits > 18) {
+            return parseDecimal(start);
+        }
+        // The scale is -exponent and must fit an int, exactly the bound BigDecimal's text constructor enforces.
+        if (number.exponent < - Integer.MAX_VALUE || number.exponent > - (long) Integer.MIN_VALUE) {
+            outOfRange(start, "BigDecimal");
 
-            return BigDecimal.valueOf(unscaled, -number.exponent);
+            return BigDecimal.ZERO;
         }
 
-        return new BigDecimal(new String(buf, start, pos - start, StandardCharsets.ISO_8859_1));
+        var unscaled = number.negative
+                       ? -number.mantissa
+                       : number.mantissa;
+
+        return BigDecimal.valueOf(unscaled, (int) - number.exponent);
     }
 
-    /// Skips one complete value of any kind.
+    // JDK-boundary leaf: BigDecimal's text constructor documents NumberFormatException, here only for scale overflow.
+    @SuppressWarnings("JBCT-EX-03")
+    private BigDecimal parseDecimal(int start) {
+        try {
+            return new BigDecimal(new String(buf, start, pos - start, StandardCharsets.ISO_8859_1));
+        } catch (NumberFormatException exponentOverflow) {
+            outOfRange(start, "BigDecimal");
+
+            return BigDecimal.ZERO;
+        }
+    }
+
+    /// Skips one complete value of any kind, validating it against the full RFC 8259 grammar: brackets match,
+    /// members are `"key":value` pairs separated by commas, literals are exactly `true` / `false` / `null`, numbers
+    /// follow the number grammar, strings hold valid escapes, no control bytes and well-formed UTF-8. Iterative:
+    /// open containers live in a bit stack, never on the call stack, and nesting is bounded by [#MAX_DEPTH] together
+    /// with the reader's current depth. With [#finish] it validates a whole document.
     public void skipValue() {
         skipWhitespace();
+        if (pos < end && (buf[pos] == '{' || buf[pos] == '[')) {
+            skipContainer();
+
+            return;
+        }
+
+        skipScalar();
+    }
+
+    private void skipScalar() {
         if (pos >= end) {
             fail("value");
 
@@ -850,14 +1031,79 @@ public final class JsonReader {
 
         switch (buf[pos]) {
             case '"' -> skipString();
-            case '{', '[' -> skipContainer();
-            case 't', 'f' -> readBoolean();
-            case 'n' -> skipNull();
-            default -> scanNumber();
+            case 't' -> skipLiteral(TRUE);
+            case 'f' -> skipLiteral(FALSE);
+            case 'n' -> skipLiteral(NULL);
+            default -> skipNumber();
         }
     }
 
-    // Scans past a string without building it; escapes are validated, not decoded.
+    private void skipLiteral(byte[] literal) {
+        if (!literal(literal)) {
+            fail(new String(literal, StandardCharsets.ISO_8859_1));
+        }
+    }
+
+    // Consumes `bytes` if they come next.
+    private boolean literal(byte[] bytes) {
+        var len = bytes.length;
+
+        if (end - pos >= len && Arrays.equals(buf, pos, pos + len, bytes, 0, len)) {
+            pos += len;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    // Number grammar only: nothing is accumulated.
+    private void skipNumber() {
+        if (pos < end && buf[pos] == '-') {
+            pos++;
+        }
+
+        var intStart = pos;
+
+        if (!skipDigits() || (buf[intStart] == '0' && pos - intStart > 1)) {
+            pos = intStart;
+            fail("number");
+
+            return;
+        }
+
+        if (pos < end && buf[pos] == '.') {
+            pos++;
+            if (!skipDigits()) {
+                fail("digit after '.'");
+
+                return;
+            }
+        }
+
+        if (pos < end && (buf[pos] == 'e' || buf[pos] == 'E')) {
+            pos++;
+            if (pos < end && (buf[pos] == '-' || buf[pos] == '+')) {
+                pos++;
+            }
+
+            if (!skipDigits()) {
+                fail("exponent digits");
+            }
+        }
+    }
+
+    private boolean skipDigits() {
+        var from = pos;
+
+        while (pos < end && isDigit(buf[pos])) {
+            pos++;
+        }
+
+        return pos > from;
+    }
+
+    // Scans past a string without building it; escapes and UTF-8 are validated, not decoded.
     private void skipString() {
         if (!consume('"', "string")) {
             return;
@@ -869,6 +1115,13 @@ public final class JsonReader {
             var close = scanString(i);
 
             if (error != null) {
+                return;
+            }
+            // Escapes are ASCII, so validating the runs between them validates the whole string.
+            if (!scannedAscii && !isValidUtf8(i,
+                                              close < 0
+                                              ? escapeAt
+                                              : close)) {
                 return;
             }
 
@@ -883,6 +1136,132 @@ public final class JsonReader {
                 return;
             }
         }
+    }
+
+    // An object or array, as a state machine: `expectValue` is false just after a value. Level n's kind is bit n of
+    // `objects` (set: object) below 64, and deepObjects[n] from 64 on.
+    private void skipContainer() {
+        var objects = 0L;
+        var level = 0;
+        var expectValue = true;
+
+        while (error == null) {
+            skipWhitespace();
+            if (pos >= end) {
+                fail(expectValue
+                     ? "value"
+                     : "',' or end of container");
+
+                return;
+            }
+
+            var b = buf[pos];
+
+            if (!expectValue) {
+                level = afterValue(b, level, isObjectLevel(objects, level));
+                expectValue = b == ',';
+            } else if (b == '{' || b == '[') {
+                if (depth + ++level > MAX_DEPTH) {
+                    nestingTooDeep();
+
+                    return;
+                }
+
+                objects = markLevel(objects, level, b == '{');
+                expectValue = openContainer(b == '{');
+                level -= expectValue
+                         ? 0
+                         : 1;
+            } else {
+                skipScalar();
+                expectValue = false;
+            }
+
+            if (level == 0 && !expectValue) {
+                return;
+            }
+        }
+    }
+
+    // Just after `{` or `[` (at pos): false when the container closed at once, true when a value follows (an
+    // object's first key and colon already consumed).
+    private boolean openContainer(boolean object) {
+        pos++;
+        skipWhitespace();
+        if (pos < end && buf[pos] == (object
+                                      ? '}'
+                                      : ']')) {
+            pos++;
+
+            return false;
+        }
+
+        if (object) {
+            skipKey();
+        }
+
+        return true;
+    }
+
+    // `b` (at pos) follows a value at `level`: a comma (and, in an object, the next key) or the closing bracket.
+    // Returns the level after it.
+    private int afterValue(byte b, int level, boolean object) {
+        if (b == ',') {
+            pos++;
+            if (object) {
+                skipKey();
+            }
+
+            return level;
+        }
+
+        if (b == (object
+                  ? '}'
+                  : ']')) {
+            pos++;
+
+            return level - 1;
+        }
+
+        fail(object
+             ? "',' or '}'"
+             : "',' or ']'");
+
+        return level;
+    }
+
+    private void skipKey() {
+        skipWhitespace();
+        if (pos >= end || buf[pos] != '"') {
+            fail("field name");
+
+            return;
+        }
+
+        skipString();
+        consume(':', "':'");
+    }
+
+    private long markLevel(long objects, int level, boolean object) {
+        if (level < 64) {
+            return object
+                   ? objects | 1L << level
+                   : objects & ~(1L << level);
+        }
+
+        if (deepObjects == null) {
+            deepObjects = new boolean[MAX_DEPTH + 1];
+        }
+
+        deepObjects[level] = object;
+
+        return objects;
+    }
+
+    private boolean isObjectLevel(long objects, int level) {
+        return level < 64
+               ? (objects >>> level & 1) != 0
+               : deepObjects[level];
     }
 
     // Validates the escape whose letter is at `at`; returns the index after it, or -1 after failing.
@@ -908,7 +1287,7 @@ public final class JsonReader {
 
     // ---- internals -----------------------------------------------------------------------------
     /// Mantissa digits (up to 18 kept exactly), decimal exponent and sign of a scanned number.
-    private record Scanned(long mantissa, int digits, int exponent, boolean negative) {}
+    private record Scanned(long mantissa, int digits, long exponent, boolean negative) {}
 
     private static final Scanned ZERO_NUMBER = new Scanned(0, 0, 0, false);
 
@@ -938,13 +1317,23 @@ public final class JsonReader {
             pos++;
         }
 
-        if (pos == intStart || (buf[intStart] == '0' && pos - intStart > 1)) {
+        if (pos == intStart) {
+            if (negative) {
+                fail("number");
+            } else {
+                failValue("number");
+            }
+
+            return ZERO_NUMBER;
+        }
+
+        if (buf[intStart] == '0' && pos - intStart > 1) {
             fail("number");
 
             return ZERO_NUMBER;
         }
         // Integer digits beyond the kept 18 scale the mantissa; dropped fraction digits do not.
-        var exponent = dropped;
+        var exponent = (long) dropped;
 
         if (pos < end && buf[pos] == '.') {
             pos++;
@@ -981,10 +1370,10 @@ public final class JsonReader {
             }
 
             var expStart = pos;
-            var exp = 0;
-
+            var exp = 0L;
+            // Exact up to the cap, which already exceeds every target's range.
             while (pos < end && isDigit(buf[pos])) {
-                if (exp < 100_000) {
+                if (exp < EXPONENT_CAP) {
                     exp = exp * 10 + (buf[pos] - '0');
                 }
 
@@ -1010,7 +1399,13 @@ public final class JsonReader {
                            negative);
     }
 
-    private boolean isValidIntegerEnd(int digitsStart) {
+    private boolean isValidIntegerEnd(int digitsStart, boolean negative) {
+        if (pos == digitsStart && !negative) {
+            failValue("integer");
+
+            return false;
+        }
+
         if (pos == digitsStart || (buf[digitsStart] == '0' && pos - digitsStart > 1)) {
             fail("integer");
 
@@ -1139,6 +1534,7 @@ public final class JsonReader {
         var out = scratch;
         var len = 0;
         var i = start;
+        var high = 0;
 
         while (i < end) {
             // One step writes at most 4 bytes (a \\u escape decoded to UTF-8).
@@ -1149,9 +1545,7 @@ public final class JsonReader {
             var b = buf[i++];
 
             if (b == '"') {
-                pos = i;
-
-                return new String(out, 0, len, StandardCharsets.UTF_8);
+                return decoded(out, len, high < 0, i);
             }
 
             if (b != '\\') {
@@ -1162,6 +1556,7 @@ public final class JsonReader {
                     return "";
                 }
 
+                high |= b;
                 out[len++] = b;
                 continue;
             }
@@ -1210,6 +1605,24 @@ public final class JsonReader {
         fail("closing '\"'");
 
         return "";
+    }
+
+    // The decoded bytes as a string; raw non-ASCII bytes were copied as they came, so they are validated first.
+    // Escapes always decode to well-formed UTF-8 (a lone surrogate becomes U+FFFD, as in the JDK's encoder).
+    private String decoded(byte[] out, int len, boolean sawNonAscii, int after) {
+        var invalid = sawNonAscii
+                      ? invalidUtf8(out, 0, len)
+                      : -1;
+
+        if (invalid >= 0) {
+            fail("valid UTF-8 in string");
+
+            return "";
+        }
+
+        pos = after;
+
+        return new String(out, 0, len, StandardCharsets.UTF_8);
     }
 
     private int hex4(int at) {
@@ -1263,41 +1676,76 @@ public final class JsonReader {
         return len;
     }
 
-    private void skipNull() {
-        if (!isNull()) {
-            fail("null");
+    // ---- UTF-8 ---------------------------------------------------------------------------------
+    // Well-formed per RFC 3629 (Unicode Table 3-7); fails at the first offending byte otherwise.
+    private boolean isValidUtf8(int from, int to) {
+        var invalid = invalidUtf8(buf, from, to);
+
+        if (invalid < 0) {
+            return true;
         }
+
+        pos = invalid;
+        fail("valid UTF-8");
+
+        return false;
     }
 
-    // Structural skip of an object or array; strings are scanned so brackets inside them are ignored.
-    private void skipContainer() {
-        var depth = 0;
+    /// Index of the first byte of `bytes[from, to)` that breaks UTF-8 well-formedness (RFC 3629): overlong forms,
+    /// UTF-16 surrogates (ED A0-BF), code points past U+10FFFF and truncated sequences; -1 when well-formed.
+    static int invalidUtf8(byte[] bytes, int from, int to) {
+        var i = from;
 
-        while (pos < end) {
-            var b = buf[pos];
+        while (i < to) {
+            var lead = bytes[i] & 0xFF;
 
-            switch (b) {
-                case '{', '[' -> {
-                    if (++depth > MAX_SKIP_DEPTH) {
-                        fail("nesting depth <= " + MAX_SKIP_DEPTH);
-
-                        return;
-                    }
-
-                    pos++;
-                }
-                case '}', ']' -> {
-                    pos++;
-                    if (--depth == 0) {
-                        return;
-                    }
-                }
-                case '"' -> skipString();
-                default -> pos++;
+            if (lead < 0x80) {
+                i++;
+                continue;
             }
+
+            var length = sequenceLength(lead);
+
+            if (length == 0 || to - i < length || !secondByteFits(lead, bytes[i + 1] & 0xFF)) {
+                return i;
+            }
+
+            for (int k = i + 2; k < i + length; k++) {
+                if ((bytes[k] & 0xC0) != 0x80) {
+                    return i;
+                }
+            }
+
+            i += length;
         }
 
-        fail("end of container");
+        return -1;
+    }
+
+    // Bytes in the sequence a lead byte starts; 0 for a continuation byte or a lead that is never valid (C0, C1, F5+).
+    private static int sequenceLength(int lead) {
+        if (lead >= 0xC2 && lead <= 0xDF) {
+            return 2;
+        }
+
+        if (lead >= 0xE0 && lead <= 0xEF) {
+            return 3;
+        }
+
+        return lead >= 0xF0 && lead <= 0xF4
+               ? 4
+               : 0;
+    }
+
+    // The second byte's range depends on the lead: this is where overlongs, surrogates and > U+10FFFF are excluded.
+    private static boolean secondByteFits(int lead, int second) {
+        return switch (lead) {
+            case 0xE0 -> second >= 0xA0 && second <= 0xBF;
+            case 0xED -> second >= 0x80 && second <= 0x9F;
+            case 0xF0 -> second >= 0x90 && second <= 0xBF;
+            case 0xF4 -> second >= 0x80 && second <= 0x8F;
+            default -> second >= 0x80 && second <= 0xBF;
+        };
     }
 
     private boolean consume(char expected, String description) {
@@ -1309,6 +1757,20 @@ public final class JsonReader {
         }
 
         fail(description);
+
+        return false;
+    }
+
+    // As consume, for the byte that opens a value: a `null` there fails as UnexpectedNull naming the field.
+    private boolean consumeValue(char expected, String description) {
+        skipWhitespace();
+        if (pos < end && buf[pos] == expected) {
+            pos++;
+
+            return true;
+        }
+
+        failValue(description);
 
         return false;
     }
@@ -1332,6 +1794,88 @@ public final class JsonReader {
     private void fail(String expected) {
         if (error == null) {
             error = JsonError.Malformed.FACTORY.apply(pos, expected);
+        }
+
+        pos = end;
+    }
+
+    // A value of the wrong kind at pos. Option fields consume `null` through isNull before reading, so a `null`
+    // reaching here belongs to a non-optional field: it is reported as UnexpectedNull with the field's name.
+    private void failValue(String expected) {
+        if (error == null && end - pos >= 4 && Arrays.equals(buf, pos, pos + 4, NULL, 0, 4)) {
+            var field = enclosingField(pos);
+
+            if (!field.isEmpty()) {
+                error = JsonError.UnexpectedNull.FACTORY.apply(field, pos);
+                pos = end;
+
+                return;
+            }
+        }
+
+        fail(expected);
+    }
+
+    /// The key of the innermost object member whose value contains `at` (an array inherits its member's key), or ""
+    /// at the top level. Re-scans the prefix the reader already accepted, so only a failure pays for it.
+    private String enclosingField(int at) {
+        var keys = new ArrayDeque<String>();
+        var i = begin;
+
+        while (i < at) {
+            var b = buf[i];
+
+            if (b == '"') {
+                var close = closingQuote(i + 1);
+                var next = close + 1;
+
+                while (next < at && (buf[next] == ' ' || buf[next] == '\n' || buf[next] == '\r' || buf[next] == '\t')) {
+                    next++;
+                }
+
+                if (next < at && buf[next] == ':' && !keys.isEmpty()) {
+                    keys.pop();
+                    keys.push(new String(buf, i + 1, close - i - 1, StandardCharsets.UTF_8));
+                }
+
+                i = close + 1;
+                continue;
+            }
+
+            if (b == '{') {
+                keys.push("");
+            } else if (b == '[') {
+                keys.push(keys.isEmpty()
+                          ? ""
+                          : keys.peek());
+            } else if ((b == '}' || b == ']') && !keys.isEmpty()) {
+                keys.pop();
+            }
+
+            i++;
+        }
+
+        return keys.isEmpty()
+               ? ""
+               : keys.peek();
+    }
+
+    // Index of the quote closing a string whose content starts at `from` (escapes skipped); `end` if unterminated.
+    private int closingQuote(int from) {
+        var i = from;
+
+        while (i < end && buf[i] != '"') {
+            i += buf[i] == '\\'
+                 ? 2
+                 : 1;
+        }
+
+        return Math.min(i, end);
+    }
+
+    private void nestingTooDeep() {
+        if (error == null) {
+            error = JsonError.NestingTooDeep.FACTORY.apply(MAX_DEPTH, pos);
         }
 
         pos = end;

@@ -45,4 +45,17 @@ public sealed interface JsonError extends Cause {
         static final Fn2<OutOfRange, Integer, String> FACTORY = Causes.forTwoValues("Number at offset %d does not fit %s",
                                                                                     OutOfRange::new);
     }
+
+    /// A non-optional field, or an element or entry inside it, holds `null`. Only an `Option` field accepts `null`.
+    record UnexpectedNull(String field, int position, String message) implements JsonError {
+        static final Fn2<UnexpectedNull, String, Integer> FACTORY = Causes.forTwoValues("Field %s must not be null (offset %d)",
+                                                                                        UnexpectedNull::new);
+    }
+
+    /// Objects and arrays nest deeper than the reader's limit. A typed failure rather than a stack overflow: generated
+    /// readers recurse once per level, so the limit is what keeps hostile input from exhausting the stack.
+    record NestingTooDeep(int limit, int position, String message) implements JsonError {
+        static final Fn2<NestingTooDeep, Integer, Integer> FACTORY = Causes.forTwoValues("Nesting deeper than %d levels at offset %d",
+                                                                                         NestingTooDeep::new);
+    }
 }
