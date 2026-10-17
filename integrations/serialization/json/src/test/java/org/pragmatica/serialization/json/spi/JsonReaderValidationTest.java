@@ -411,6 +411,22 @@ class JsonReaderValidationTest {
         }
     }
 
+    // A 36-character string between quotes takes the byte fast path, and a value the fast path accepts never reaches
+    // the canonical-form check: each separator test in the fast path is the only thing refusing these, one character
+    // off at exactly one separator, with hex digits on both sides.
+    @Test
+    void readUuid_fastPath_refusesANonHyphenAtEachSeparator() {
+        var canonical = "123e4567-e89b-12d3-a456-426614174000";
+
+        for (var at : new int[]{8, 13, 18, 23}) {
+            for (var replacement : new char[]{'x', '0', '_'}) {
+                var text = canonical.substring(0, at) + replacement + canonical.substring(at + 1);
+
+                assertTrue(readUuid("\"" + text + "\"").isFailure(), text);
+            }
+        }
+    }
+
     // ---- numbers -------------------------------------------------------------------------------
     static Result<BigDecimal> readDecimal(String json) {
         var in = JsonReader.jsonReader()
