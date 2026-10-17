@@ -59,7 +59,11 @@ public record BuyRequest(String customer, EventId event, Option<String> note) {}
 ```
 
 The processor writes `BuyRequestJson` next to it. A nested type gets its enclosing types as a prefix:
-`Ticketing.BuyRequest` becomes `Ticketing_BuyRequestJson`.
+`Ticketing.BuyRequest` becomes `Ticketing_BuyRequestJson`. The levels are joined with `_`, and an `_` or `$` inside a
+simple name is escaped as `_0` or `_1`, so a top-level `A_B` gets `A_0BJson` while a nested `A.B` gets `A_BJson`. Since
+a simple name never starts with a digit, every generated name decodes back to exactly one type: two types of one
+package never need the same generated class, whichever artifacts compile them. The same flat names are used for the
+nested codec interfaces and for the registry name below.
 
 ```java
 Result<BuyRequest> request = BuyRequestJson.decode(bytes);        // byte[] holding UTF-8
@@ -104,7 +108,9 @@ For code that holds a `Class` rather than the entry point (frameworks, generic a
 Result<Option<JsonTypeCodec<BuyRequest>>> codec = JsonCodecs.codecFor(BuyRequest.class);
 ```
 
-Empty means the class is not a `@Json` type its class loader sees. The lookup never throws; it fails in two cases:
+Empty means the class is not a `@Json` type its class loader sees. The lookup never throws, except a
+`VirtualMachineError` (an exhausted stack or heap), which deliberately propagates because no `Cause` can carry it. It
+fails in two cases:
 
 - `JsonCodecs.ConflictingProviders`: two **differently named** providers both list the class, so the lookup refuses
   to pick one by class-path order. That happens when registries overlap (the same `@Json` type compiled into two
@@ -113,26 +119,38 @@ Empty means the class is not a `@Json` type its class loader sees. The lookup ne
   set compiled twice) is not a conflict: registry names are derived from the types they list, and `ServiceLoader`
   loads a provider name once, so the lookup succeeds with the copy found first.
 - `JsonCodecs.ProviderFailed`: no healthy provider lists the class and some provider could not be read (a services
-  entry whose class cannot be loaded or instantiated, a `codecs()` that throws or returns `null`). Absence cannot be
-  told apart from "listed by the broken one", so it is reported instead of an empty success. Classes listed by
-  healthy providers keep resolving.
+  entry whose class cannot be loaded or instantiated, a `codecs()` that throws or returns `null`, a map that throws
+  while it is read or lists a `null` class or codec). Absence cannot be told apart from "listed by the broken one",
+  so it is reported instead of an empty success. Classes listed by healthy providers keep resolving, and a `null`
+  codec is never returned as a found one. An exception that cannot print itself is described by its class name.
 
 The processor generates one registry class per package containing `@Json` types and lists it in
 `META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider`. Its name is
-`<Segment>JsonCodecs<suffix>_<hash>`: for package `com.example.booking`, `BookingJsonCodecs_` followed by the first 8
-hex digits of the SHA-256 of the sorted qualified names it lists; the `codec.registry.suffix` processor option
-supplies `<suffix>`, as it does for the binary `@Codec` registry. Deriving the name from the type set lets two
-artifacts with `@Json` types in one package (`src/main` and `src/test`, or two modules sharing a package) both ship
-a registry that loads, and keeps builds reproducible.
+`<Segment>JsonCodecs<suffix>_<hash>`: for package `com.example.booking`, `BookingJsonCodecs_` followed by the first 16
+hex digits (64 bits) of the SHA-256 of the sorted qualified flat names it lists (`com.example.booking.BuyRequest`, one
+per line); the `codec.registry.suffix` processor option supplies `<suffix>`, as it does for the binary `@Codec`
+registry. Deriving the name from the type set lets two artifacts with `@Json` types in one package (`src/main` and
+`src/test`, or two modules sharing a package) both ship a registry that loads, and keeps builds reproducible. The
+residual risk is a hash collision: two different type sets of one package share a name with probability about
+`2^-64` per pair of artifacts. If it happened, the `ServiceLoader` would load only one of the two registries, and the
+other's types would look up as empty.
+
+Each registry is written with a manifest, `META-INF/pragmatica/json/<registry>.types`, listing its types. When an
+incremental build recompiles only some `@Json` types of a package into the same output, the package's new registry
+also lists the types the previous registry listed that were not recompiled, as long as each type and its entry point
+still resolve; a type whose classes are gone, or that was recompiled without `@Json`, is dropped.
 
 `JsonCodecs` resolves a class against the providers of the class's own loader (`type.getClassLoader()`, the system
 class loader for a JDK class), so a type in a child class loader finds the registry shipped beside it. The answer is
 computed on the first lookup of that class and kept with the class (a `ClassValue`), so later lookups never rescan
 the class path and a discarded class loader is not kept alive by the cache.
 
-A generated name that is already taken (a hand-written `OrderJson` next to `@Json Order`, a nested `A.B` and a
-top-level `A_B` that both need `A_BJson`, a class named like the registry) is a compile error naming both types;
-rename one of them.
+Every generated class carries `@GeneratedFor` (from the `spi` package, class retention) naming what it was generated
+for. A generated name that is already taken is a compile error naming both, never an overwrite: a hand-written
+`OrderJson` next to `@Json Order`, a class named like the registry, or a class generated for a different source (by
+its marker), on the class path or left in the output directory. A class generated for the same source is regenerated.
+Entry points end in `Json`, registries in hex digits and slice route holders in `Codecs`, so the three kinds never
+share a name.
 
 Only `@Json` types are listed. A record or enum reachable only as a component of one has codec code inside that
 type's entry point, but it is not a lookup target: `codecFor` returns an empty success for it. Annotate it to make it one.

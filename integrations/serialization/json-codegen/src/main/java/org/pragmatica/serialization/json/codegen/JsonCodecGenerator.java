@@ -21,7 +21,6 @@ import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.TypeMirror;
-import javax.lang.model.util.ElementFilter;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.util.ArrayList;
@@ -44,6 +43,9 @@ import static org.pragmatica.lang.utils.Causes.cause;
 /// one holder, [#write]), so both emit identical codecs. A root the generator cannot handle is reported, not
 /// generated; its users fall back.
 public final class JsonCodecGenerator {
+    /// The marker annotation every generated JSON class carries, naming what it was generated for.
+    public static final String MARKER = "org.pragmatica.serialization.json.spi.GeneratedFor";
+
     private final Filer filer;
     private final Elements elements;
     private final JsonTypeAnalyzer analyzer;
@@ -104,8 +106,9 @@ public final class JsonCodecGenerator {
     /// The holder: a codec per record and enum (`CODECS`), and a codec per distinct `List` or `Set` body root
     /// (`CONTAINERS`, keyed by the root's reflective generic type), generated with the same container code as a
     /// component of that type.
-    public String source(String holderName, String generatedBy) {
-        return new JsonCodecEmitter(analyzer).emit(packageName, holderName, generatedBy, containerRoots);
+    /// `generatedFor` names the source the holder is generated for (a slice), in its marker.
+    public String source(String holderName, String generatedBy, String generatedFor) {
+        return new JsonCodecEmitter(analyzer).emit(packageName, holderName, generatedBy, generatedFor, containerRoots);
     }
 
     /// The entry point of `root` (the only root added), named `holderName`.
@@ -116,7 +119,11 @@ public final class JsonCodecGenerator {
     /// Writes the holder `packageName.holderName` through the Filer, for `owner` (the type the holder is generated
     /// for, named in a name-clash failure).
     public Result<Unit> write(String holderName, String generatedBy, TypeElement owner) {
-        return writeSource(holderName, source(holderName, generatedBy), owner);
+        return writeSource(holderName,
+                           source(holderName,
+                                  generatedBy,
+                                  owner.getQualifiedName().toString()),
+                           owner);
     }
 
     /// Writes the entry point `packageName.holderName` of `root` (the only root added) through the Filer.
@@ -143,31 +150,63 @@ public final class JsonCodecGenerator {
                          .map(writer -> print(writer, source));
     }
 
-    /// Fails when `qualified`, the class about to be generated for `owner`, already names a type that is not
-    /// generated JSON codec output (a user type that happens to have that name), with one message naming both and
-    /// how to resolve it, instead of the Filer's "attempt to recreate" error with a stack trace or a duplicate-class
-    /// error inside generated source. Generated output (a previous build's class still in the output directory) is
-    /// recognised by its `CODECS` map and may be regenerated.
+    /// Fails when `qualified`, the class about to be generated for `owner`, already names a type that is not the
+    /// same source's own generated output, with one message naming both and how to resolve it, instead of the Filer's
+    /// "attempt to recreate" error with a stack trace, a duplicate-class error inside generated source, or one source's
+    /// codec silently replacing another's. Generated output carries a [GeneratedFor][#MARKER] marker naming its source:
+    /// a class whose marker names `owner` (a previous build's class still in the output directory, or the same
+    /// artifact on the class path) may be regenerated; a class generated for another source, or a user type without
+    /// the marker, is refused.
     public static Result<Unit> ensureFree(Elements elements, String qualified, String owner) {
-        return option(elements.getTypeElement(qualified)).filter(existing -> !isGeneratedOutput(existing))
-                     .map(existing -> cause("Cannot generate " + qualified
-                                           + " for " + owner
-                                           + ": the type " + existing.getQualifiedName()
-                                           + " already exists and is not generated JSON codec code."
-                                           + " Rename " + existing.getQualifiedName()
-                                           + ", or rename or move " + owner
-                                           + "."))
+        return option(elements.getTypeElement(qualified)).flatMap(existing -> clash(existing, qualified, owner))
                      .map(Cause::<Unit> result)
                      .or(Result::unitResult);
     }
 
-    private static boolean isGeneratedOutput(TypeElement existing) {
-        return ElementFilter.fieldsIn(existing.getEnclosedElements())
-                            .stream()
-                            .anyMatch(field -> field.getSimpleName()
-                                                    .contentEquals("CODECS") && field.asType()
-                                                                                     .toString()
-                                                                                     .startsWith("java.util.Map<"));
+    private static Option<Cause> clash(TypeElement existing, String qualified, String owner) {
+        return generatedFor(existing).map(source -> otherSource(source, qualified, owner))
+                           .or(() -> some(notGenerated(existing, qualified, owner)));
+    }
+
+    private static Cause notGenerated(TypeElement existing, String qualified, String owner) {
+        return cause("Cannot generate " + qualified
+                    + " for " + owner
+                    + ": the type " + existing.getQualifiedName()
+                    + " already exists and is not generated JSON codec code."
+                    + " Rename " + existing.getQualifiedName()
+                    + ", or rename or move " + owner
+                    + ".");
+    }
+
+    private static Option<Cause> otherSource(String source, String qualified, String owner) {
+        return source.equals(owner)
+               ? none()
+               : some(cause("Cannot generate " + qualified
+                           + " for " + owner
+                           + ": it already exists, generated for " + source
+                           + " (a class on the class path or in the output directory)."
+                           + " Rename one of the two, or rebuild without the stale class."));
+    }
+
+    /// The marker annotation line for a class generated for `source`, which [#ensureFree] reads back from a class of the
+    /// same name already on the class path: only the same source may regenerate it. `source` is qualified names and
+    /// prose, never a quote or backslash, so it is a valid string literal as is.
+    public static String generatedForMarker(String source) {
+        return "@" + MARKER + "(\"" + source + "\")";
+    }
+
+    /// The source `existing` was generated for, read from its marker; empty for a class without one.
+    public static Option<String> generatedFor(TypeElement existing) {
+        return Option.from(existing.getAnnotationMirrors()
+                                   .stream()
+                                   .filter(mirror -> mirror.getAnnotationType()
+                                                           .toString()
+                                                           .equals(MARKER))
+                                   .flatMap(mirror -> mirror.getElementValues()
+                                                            .values()
+                                                            .stream())
+                                   .map(value -> String.valueOf(value.getValue()))
+                                   .findFirst());
     }
 
     private static Unit print(Writer target, String source) {

@@ -39,9 +39,9 @@ class JsonCodecsTest {
                                      .map(provider -> provider.type().getName())
                                      .toList();
 
-        assertTrue(providers.stream().anyMatch(name -> name.matches("org\\.pragmatica\\.serialization\\.json\\.tests\\.TestsJsonCodecs_[0-9a-f]{8}")),
+        assertTrue(providers.stream().anyMatch(name -> name.matches("org\\.pragmatica\\.serialization\\.json\\.tests\\.TestsJsonCodecs_[0-9a-f]{16}")),
                    providers.toString());
-        assertTrue(providers.stream().anyMatch(name -> name.matches("org\\.pragmatica\\.serialization\\.json\\.tests\\.other\\.OtherJsonCodecs_[0-9a-f]{8}")),
+        assertTrue(providers.stream().anyMatch(name -> name.matches("org\\.pragmatica\\.serialization\\.json\\.tests\\.other\\.OtherJsonCodecs_[0-9a-f]{16}")),
                    providers.toString());
         assertEquals(providers.size(), providers.stream().distinct().count(), providers.toString());
     }

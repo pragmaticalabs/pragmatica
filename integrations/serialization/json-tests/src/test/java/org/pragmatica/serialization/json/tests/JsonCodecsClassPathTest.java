@@ -21,6 +21,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.codec.CodecProcessor;
 import org.pragmatica.serialization.json.JsonCodecs;
+import org.pragmatica.serialization.json.JsonTypeCodec;
 import org.pragmatica.serialization.json.tests.other.Receipt;
 import org.pragmatica.serialization.json.tests.other.ReceiptJson;
 
@@ -39,6 +40,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -95,6 +97,38 @@ class JsonCodecsClassPathTest {
         }
     }
 
+    // A top-level q.A_B in one artifact and a nested q.A.B in a second artifact compiled against the first: the flat
+    // names (A_0BJson, A_BJson) differ, so the second compilation cannot replace the first's entry point, and each type
+    // encodes and decodes with its own codec in either class-path order.
+    @Test
+    void underscoreTypeAndNestedTypeAcrossDependentArtifacts_eachUseTheirOwnCodec() throws Exception {
+        var first = compile("m1", Map.of("q/A_B.java", record("q", "A_B")), List.of());
+        var second = compile("m2",
+                             Map.of("q/A.java",
+                                    "package q;\n\npublic interface A {\n    @org.pragmatica.serialization.json.Json\n    record B(int number) {}\n}\n"),
+                             List.of(first));
+
+        assertTrue(Files.exists(first.resolve("q/A_0BJson.class")));
+        assertTrue(Files.exists(second.resolve("q/A_BJson.class")));
+        assertTrue(Files.notExists(second.resolve("q/A_0BJson.class")));
+        for (var order : List.of(List.of(first, second), List.of(second, first))) {
+            try (var loader = loader(order.toArray(Path[]::new))) {
+                assertOwnCodec(loader, "q.A_B", "x", "{\"value\":\"x\"}");
+                assertOwnCodec(loader, "q.A$B", 7, "{\"number\":7}");
+            }
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void assertOwnCodec(ClassLoader loader, String name, Object component, String json) throws Exception {
+        var type = loader.loadClass(name);
+        var value = type.getDeclaredConstructors()[0].newInstance(component);
+        var codec = (JsonTypeCodec) JsonCodecs.codecFor(type).unwrap().unwrap();
+
+        assertEquals(json, new String(codec.encode(value), StandardCharsets.UTF_8), name);
+        assertEquals(value, codec.decode(json).unwrap(), name);
+    }
+
     // A type of the parent loader still resolves through the parent's providers.
     @Test
     void typeOfTheParentLoader_stillResolves_besideAChildLoader() throws Exception {
@@ -134,6 +168,11 @@ class JsonCodecsClassPathTest {
     }
 
     private Path compile(String artifact, Map<String, String> sources) throws IOException {
+        return compile(artifact, sources, List.of());
+    }
+
+    // `dependencies` are earlier artifacts' class directories, on this compilation's class path.
+    private Path compile(String artifact, Map<String, String> sources, List<Path> dependencies) throws IOException {
         var root = dir.resolve(artifact);
         var classes = Files.createDirectories(root.resolve("classes"));
         var files = sources.entrySet()
@@ -146,7 +185,8 @@ class JsonCodecsClassPathTest {
         try (var fileManager = compiler.getStandardFileManager(collector, null, StandardCharsets.UTF_8)) {
             fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT, List.of(classes));
             fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT, List.of(Files.createDirectories(root.resolve("generated"))));
-            fileManager.setLocationFromPaths(StandardLocation.CLASS_PATH, testClasspath());
+            fileManager.setLocationFromPaths(StandardLocation.CLASS_PATH,
+                                             Stream.concat(testClasspath().stream(), dependencies.stream()).toList());
             var task = compiler.getTask(null,
                                         fileManager,
                                         collector,
