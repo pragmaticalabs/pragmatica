@@ -80,11 +80,33 @@ public interface Cause {
         return Stream.of(this);
     }
 
+    /// True when the condition this cause reports is expected to pass — a timeout, a refused
+    /// connection, an exhausted pool, a 5xx from a peer — so the same operation may succeed if
+    /// retried. The mirror of [#isTerminal]: that one says "never retry", this one says "worth
+    /// retrying". Retry facilities that retry ONLY classified causes consult it (the slice retry
+    /// interceptor's default policy, #280); [org.pragmatica.lang.utils.Retry] itself keeps retrying
+    /// anything non-terminal within its bounds, so an unclassified cause is unchanged there.
+    /// `false` by default — absence means "unknown", and a business verdict such as "insufficient
+    /// funds" is exactly the kind of cause nobody classifies.
+    default boolean isTransient() {
+        return false;
+    }
+
     /// A cause reporting a settled condition: no retry of the failed operation can change the
     /// outcome. Implementing this interface is the classification — no override needed.
     interface Terminal extends Cause {
         @Override
         default boolean isTerminal() {
+            return true;
+        }
+    }
+
+    /// A cause reporting a passing condition: the operation may succeed if retried. Implementing
+    /// this interface is the classification — no override needed. A cause is never both
+    /// [Terminal] and [Transient]; the two say opposite things.
+    interface Transient extends Cause {
+        @Override
+        default boolean isTransient() {
             return true;
         }
     }

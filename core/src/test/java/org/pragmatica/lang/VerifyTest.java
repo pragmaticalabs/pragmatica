@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.utils.Causes;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -387,6 +389,102 @@ class VerifyTest {
             assertTrue(Verify.Is.nonPositive(0));
             assertFalse(Verify.Is.nonPositive(0.1));
             assertFalse(Verify.Is.nonPositive(5));
+        }
+
+        // #669: sign predicates must compare in the operand's own domain. Values below double
+        // precision collapse to +/-0.0 under doubleValue(), so a strictly negative BigDecimal
+        // passed nonNegative and a strictly positive one failed positive.
+        @Test
+        @DisplayName("sign predicates see BigDecimal values below double precision")
+        void signPredicatesSeeBigDecimalBelowDoublePrecision() {
+            var tinyNegative = new BigDecimal("-1E-400");
+            var tinyPositive = new BigDecimal("1E-400");
+
+            assertEquals(-0.0, tinyNegative.doubleValue(), "premise: the value underflows to -0.0");
+            assertEquals(0.0, tinyPositive.doubleValue(), "premise: the value underflows to 0.0");
+
+            assertFalse(Verify.Is.nonNegative(tinyNegative), "nonNegative(-1E-400)");
+            assertTrue(Verify.Is.negative(tinyNegative), "negative(-1E-400)");
+            assertFalse(Verify.Is.positive(tinyNegative), "positive(-1E-400)");
+            assertTrue(Verify.Is.nonPositive(tinyNegative), "nonPositive(-1E-400)");
+
+            assertTrue(Verify.Is.positive(tinyPositive), "positive(1E-400)");
+            assertTrue(Verify.Is.nonNegative(tinyPositive), "nonNegative(1E-400)");
+            assertFalse(Verify.Is.negative(tinyPositive), "negative(1E-400)");
+            assertFalse(Verify.Is.nonPositive(tinyPositive), "nonPositive(1E-400)");
+        }
+
+        @Test
+        @DisplayName("sign predicates handle BigDecimal and BigInteger beyond double range")
+        void signPredicatesHandleBigValuesBeyondDoubleRange() {
+            var hugeNegative = new BigDecimal("-1E+400");
+            var hugePositive = new BigDecimal("1E+400");
+            var hugeNegativeInt = BigInteger.TEN.pow(400).negate();
+            var hugePositiveInt = BigInteger.TEN.pow(400);
+
+            assertTrue(Verify.Is.negative(hugeNegative));
+            assertTrue(Verify.Is.nonPositive(hugeNegative));
+            assertFalse(Verify.Is.positive(hugeNegative));
+            assertFalse(Verify.Is.nonNegative(hugeNegative));
+
+            assertTrue(Verify.Is.positive(hugePositive));
+            assertTrue(Verify.Is.nonNegative(hugePositive));
+            assertFalse(Verify.Is.negative(hugePositive));
+            assertFalse(Verify.Is.nonPositive(hugePositive));
+
+            assertTrue(Verify.Is.negative(hugeNegativeInt));
+            assertFalse(Verify.Is.nonNegative(hugeNegativeInt));
+            assertTrue(Verify.Is.positive(hugePositiveInt));
+            assertFalse(Verify.Is.nonPositive(hugePositiveInt));
+
+            assertTrue(Verify.Is.nonNegative(BigDecimal.ZERO));
+            assertTrue(Verify.Is.nonPositive(BigDecimal.ZERO));
+            assertFalse(Verify.Is.positive(BigDecimal.ZERO));
+            assertFalse(Verify.Is.negative(BigDecimal.ZERO));
+            assertTrue(Verify.Is.nonNegative(BigInteger.ZERO));
+            assertTrue(Verify.Is.nonPositive(BigInteger.ZERO));
+        }
+
+        @Test
+        @DisplayName("sign predicates are exact for long and int extremes")
+        void signPredicatesAreExactForIntegralExtremes() {
+            assertTrue(Verify.Is.positive(Long.MAX_VALUE));
+            assertTrue(Verify.Is.nonNegative(Long.MAX_VALUE));
+            assertTrue(Verify.Is.negative(Long.MIN_VALUE));
+            assertTrue(Verify.Is.nonPositive(Long.MIN_VALUE));
+            assertFalse(Verify.Is.nonNegative(Long.MIN_VALUE));
+            assertFalse(Verify.Is.positive(Long.MIN_VALUE));
+            assertTrue(Verify.Is.positive(1L));
+            assertTrue(Verify.Is.negative(-1L));
+            assertTrue(Verify.Is.positive(Integer.MAX_VALUE));
+            assertTrue(Verify.Is.negative(Integer.MIN_VALUE));
+            assertTrue(Verify.Is.nonNegative(0L));
+            assertTrue(Verify.Is.nonPositive(0L));
+        }
+
+        @Test
+        @DisplayName("sign predicates keep floating-point edge semantics")
+        void signPredicatesKeepFloatingPointEdgeSemantics() {
+            assertTrue(Verify.Is.positive(Double.MIN_VALUE));
+            assertTrue(Verify.Is.negative(-Double.MIN_VALUE));
+            assertFalse(Verify.Is.nonNegative(-Double.MIN_VALUE));
+            assertTrue(Verify.Is.positive(Float.MIN_VALUE));
+            assertTrue(Verify.Is.negative(-Float.MIN_VALUE));
+
+            // -0.0 is zero: neither positive nor negative, both nonNegative and nonPositive
+            assertFalse(Verify.Is.positive(-0.0));
+            assertFalse(Verify.Is.negative(-0.0));
+            assertTrue(Verify.Is.nonNegative(-0.0));
+            assertTrue(Verify.Is.nonPositive(-0.0));
+
+            // NaN is unordered: every sign predicate reports false
+            assertFalse(Verify.Is.positive(Double.NaN));
+            assertFalse(Verify.Is.negative(Double.NaN));
+            assertFalse(Verify.Is.nonNegative(Double.NaN));
+            assertFalse(Verify.Is.nonPositive(Double.NaN));
+
+            assertTrue(Verify.Is.positive(Double.POSITIVE_INFINITY));
+            assertTrue(Verify.Is.negative(Double.NEGATIVE_INFINITY));
         }
 
         @Test

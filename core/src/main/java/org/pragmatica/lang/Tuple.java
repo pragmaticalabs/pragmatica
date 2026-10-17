@@ -19,6 +19,7 @@ import java.util.Map;
 
 import org.pragmatica.lang.Functions.*;
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// Tuples of various sizes (0-15).
@@ -191,6 +192,8 @@ public interface Tuple {
                 try {
                     return Result.success(mapper.apply(param1()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -211,6 +214,8 @@ public interface Tuple {
                 try {
                     return Result.success(mapper.apply(param1(), param2()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -250,6 +255,8 @@ public interface Tuple {
                 try {
                     return Result.success(mapper.apply(param1(), param2(), param3()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -280,6 +287,8 @@ public interface Tuple {
                 try {
                     return Result.success(mapper.apply(param1(), param2(), param3(), param4()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -304,6 +313,8 @@ public interface Tuple {
                 try {
                     return Result.success(mapper.apply(param1(), param2(), param3(), param4(), param5()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -329,6 +340,8 @@ public interface Tuple {
                 try {
                     return Result.success(mapper.apply(param1(), param2(), param3(), param4(), param5(), param6()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -367,6 +380,8 @@ public interface Tuple {
                                                        param6(),
                                                        param7()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -408,6 +423,8 @@ public interface Tuple {
                                                        param7(),
                                                        param8()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -460,6 +477,8 @@ public interface Tuple {
                                                        param8(),
                                                        param9()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -516,6 +535,8 @@ public interface Tuple {
                                                        param9(),
                                                        param10()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -576,6 +597,8 @@ public interface Tuple {
                                                        param10(),
                                                        param11()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -640,6 +663,8 @@ public interface Tuple {
                                                        param11(),
                                                        param12()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -719,6 +744,8 @@ public interface Tuple {
                                                        param12(),
                                                        param13()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -803,6 +830,8 @@ public interface Tuple {
                                                        param13(),
                                                        param14()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }
@@ -892,6 +921,8 @@ public interface Tuple {
                                                        param14(),
                                                        param15()));
                 } catch (Throwable throwable) {
+                    Causes.rethrowIfFatal(throwable);
+
                     return new CoreError.Exception(throwable).result();
                 }
             }

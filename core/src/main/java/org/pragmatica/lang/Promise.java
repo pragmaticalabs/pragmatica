@@ -22,6 +22,9 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -84,11 +87,27 @@ import static org.pragmatica.lang.utils.ResultCollector.resultCollector;
 ///
 /// **Total-mapper contract.** Functions passed to transformation methods (`map`, `flatMap`,
 /// `fold`, `filter`, `replaceResult` and their arity/`With` variants) must be total: they must
-/// return normally for every input. A throw inside a mapper is NOT converted into a failed
-/// promise — the resolution machinery does not catch it, so the resulting promise may never
-/// resolve and every dependent promise (joins, `await` callers) hangs with it. Partial
-/// operations (`getFirst()`, `orElseThrow()`, `Optional.get()`, …) must be lifted to a typed
-/// `Cause` before entering a chain. Enforced statically by the jbct-lint mapper-safety rules.
+/// return normally for every input. Partial operations (`getFirst()`, `orElseThrow()`,
+/// `Optional.get()`, …) must be lifted to a typed `Cause` before entering a chain. Enforced
+/// statically by the jbct-lint mapper-safety rules.
+///
+/// **What happens when a continuation breaks that contract (#1311).** A `Throwable` escaping any
+/// continuation — a mapper, a `fold`, an `onResult`/`onSuccess`/`onFailure` handler, or the consumer
+/// given to `async`/`Promise.promise(consumer)` — is not lost: the dependent promise (for `async`,
+/// the promise the consumer was given) fails with a [CoreError.Exception] whose message names the
+/// continuation and the first non-JDK, non-`org.pragmatica.lang` frame of the escape and whose
+/// `cause()` is the Throwable; the escape is logged at ERROR by the `org.pragmatica.lang.Promise`
+/// logger with its stack trace; and a [VirtualMachineError] is rethrown after both, so an exhausted
+/// stack or heap is never hidden behind a failed `Result`. The behaviour is the same whether the
+/// source resolved before or after the continuation was attached. Every other completion claimed in
+/// the same resolution batch — sibling dependents, handlers queued behind the thrower, threads parked
+/// in `await()` — still runs before the error is rethrown. Where the rethrow goes depends on the
+/// thread: the caller of `succeed()`/`map()`, the virtual thread's uncaught-exception handler for
+/// event handlers and `async` consumers, or — absorbed — the `ScheduledFuture` of the timeout
+/// scheduler for a promise resolved by `.timeout()`/`async(delay, …)`.
+/// `Promise.lift*` map ordinary exceptions through their mapper as before; a `VirtualMachineError` is
+/// rethrown by [Result#lift] and takes the same route as any other escape. This is containment of a
+/// bug, not an error channel: a mapper that relies on it is still wrong.
 /* Implementation notes: this version of the implementation is heavily inspired by the implementation of
 the CompletableFuture. There are several differences, though:
 - Method naming consistent with widely used Optional and Streams.
@@ -375,11 +394,17 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Side Effect]**
-    /// Run an action once the promise is resolved. The action is executed in the order in which transformations
+    /// Run an action once the promise is resolved, as a DEPENDENT step: the action is executed in the order in
+    /// which transformations are written, BEFORE the returned promise resolves, so every transformation chained
+    /// on the returned promise observes the action's effects.
+    ///
+    /// The converse does not hold (#1188): an effect the action makes visible to another thread (a latch
+    /// count-down, a flag) can be observed while the returned promise is still unresolved. To act after this
+    /// step completes, chain on the returned promise or await it — never on a signal raised by the action.
     ///
     /// @param consumer Action to be executed once the promise is resolved.
     ///
-    /// @return New promise instance.
+    /// @return New promise instance, resolved with the same result after the action has run.
     default Promise<T> withResult(Consumer<Result<T>> consumer) {
         return replaceResult(result -> {
             consumer.accept(result);
@@ -631,9 +656,34 @@ public sealed interface Promise<T> permits PromiseImpl {
     ///             .map(this::transformationStep1)     // <-- This transformation will see Timeout error and will be skipped
     ///             .flatMap(this::transformationStep3);// <-- This transformation will see Timeout error and will be skipped
     /// ```
+    ///
+    /// The scheduled failure task is cancelled as soon as the promise resolves by any other means (success,
+    /// application failure, or the timeout itself firing), so early completion does not leave a dead task
+    /// queued in the scheduler for the remainder of the timeout window. #749/#750 follow-up: this method
+    /// deliberately does not delegate to the general-purpose [#async(TimeSpan,Consumer)] -- that overload is
+    /// also used to arm a delayed action on an ALREADY-resolved promise (e.g. cache-entry TTL eviction), where
+    /// cancel-on-resolution would fire immediately and defeat the delay outright.
+    ///
+    /// **#838 review round 1: behavior change.** This method returns a *derived* promise (via [#withResult])
+    /// rather than `this` — needed so the cancellation above observes resolution without itself being the
+    /// resolution. The scheduled failure resolves the ORIGINAL promise (`this`); the derived promise returned
+    /// here is resolved from that, inline, on the same thread that resolved the original -- including when
+    /// that thread is [AsyncExecutor#timeoutScheduler]'s own platform thread on the timeout-fired path. Any
+    /// caller relying on `promise.timeout(t) == promise` (identity, not value) will observe a different
+    /// object than before; a repo-wide sweep found no call site doing this, but it is a genuine change in
+    /// what this method returns, not merely an implementation detail.
+    ///
+    /// A call site that discards the returned derived promise (e.g. `promise.timeout(t);` used as a bare
+    /// statement, as `HttpForwarder` does) still keeps its timeout today, because the scheduled failure
+    /// targets `this` -- the ORIGINAL promise -- not the value returned here. Retargeting that failure to
+    /// the derived promise in a future change would silently disarm every such call site with no
+    /// compile-time signal; grep for `.timeout(` used as a statement before making that change.
     default Promise<T> timeout(TimeSpan timeout) {
-        return async(timeout,
-                     promise -> promise.fail(new CoreError.Timeout("Promise timed out after " + timeout.millis() + "ms")));
+        var future = AsyncExecutor.INSTANCE.runAsync(timeout,
+                                                     () -> fail(new CoreError.Timeout("Promise timed out after " + timeout.millis()
+                                                                                     + "ms")));
+
+        return withResult(_ -> future.cancel(false));
     }
 
     /// **[Resolution]**
@@ -645,13 +695,17 @@ public sealed interface Promise<T> permits PromiseImpl {
     }
 
     /// **[Unsafe Extraction]**
-    /// Await the resolution of the promise.
+    /// Await the resolution of the promise. If the calling thread is interrupted before the promise
+    /// resolves, the wait ends with a [CoreError.Interrupted] failure, the interrupt flag is left
+    /// set, and the promise itself stays unresolved (#914).
     ///
     /// @return Result of the promise resolution.
     Result<T> await();
 
     /// **[Unsafe Extraction]**
-    /// Await the resolution of the promise with the provided timeout.
+    /// Await the resolution of the promise with the provided timeout. Interruption ends the wait
+    /// early with a [CoreError.Interrupted] failure, flag preserved; expiry ends it with
+    /// [CoreError.Timeout]. In both cases the promise stays unresolved.
     ///
     /// @param timeout Timeout to wait for the resolution.
     ///
@@ -673,7 +727,7 @@ public sealed interface Promise<T> permits PromiseImpl {
     ///
     /// @return Current promise instance.
     default Promise<T> async(Consumer<Promise<T>> consumer) {
-        AsyncExecutor.INSTANCE.runAsync(() -> consumer.accept(this));
+        AsyncExecutor.INSTANCE.runAsync(() -> PromiseImpl.runContained(this, consumer));
 
         return this;
     }
@@ -696,7 +750,7 @@ public sealed interface Promise<T> permits PromiseImpl {
     ///
     /// @return Current promise instance.
     default Promise<T> async(TimeSpan delay, Consumer<Promise<T>> action) {
-        AsyncExecutor.INSTANCE.runAsync(delay, () -> action.accept(this));
+        AsyncExecutor.INSTANCE.runAsync(delay, () -> PromiseImpl.runContained(this, action));
 
         return this;
     }
@@ -3127,27 +3181,71 @@ public sealed interface Promise<T> permits PromiseImpl {
 
 enum AsyncExecutor {
     INSTANCE;
+    // #749/#750: .timeout()'s delayed-failure task used to share this pool's virtual-thread carriers with
+    // every other .async() offload in the codebase. A timeout is exactly the guard relied on when the
+    // system is under load -- and CPU-bound work pinning every carrier is a form of load -- so a timeout
+    // that must win a carrier to fire is not actually bounded. This scheduler is dedicated SOLELY to
+    // runAsync(TimeSpan, Runnable): platform threads, scheduled by the OS rather than the JVM's
+    // virtual-thread carrier pool, so they cannot be starved by virtual-thread carrier exhaustion.
+    // General .async() offload work (runAsync(Runnable)) is unchanged and still runs on `executor`.
+    //
+    // Sized at a small fixed pool rather than one thread: firing a timeout resolves its promise inline
+    // on this scheduler's own thread (Promise.allOf's aggregation runs inline via CompletionMap, not
+    // offloaded -- see #749 condition-1 analysis), so a continuation that blocks on that thread would
+    // stall every OTHER pending timeout sharing a single-threaded scheduler. Four lanes bound that blast
+    // radius to "more than four timeouts blocked concurrently", not "any one blocked timeout".
+    //
+    // #838 review round 1: this deliberately does NOT reuse org.pragmatica.lang.utils.VirtualThreadScheduler
+    // (whose own class doc states the opposite principle: timekeeping submits to virtual threads, never
+    // runs a task body inline). The two designs solve different problems -- VirtualThreadScheduler
+    // decouples timing from arbitrary task execution; this pool's job is narrower, to fire the timeout
+    // ITSELF without depending on carrier availability, which is exactly the dependency
+    // VirtualThreadScheduler's own submit-to-virtual-thread step would reintroduce. See
+    // VirtualThreadScheduler's class doc for the full reconciliation of both designs' trade-offs.
+    private static final int TIMEOUT_SCHEDULER_THREADS = 4;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    // ScheduledThreadPoolExecutor (not the ScheduledExecutorService interface) so setRemoveOnCancelPolicy
+    // is reachable: without it, a cancelled task's slot in the internal DelayedWorkQueue is reclaimed only
+    // when its delay elapses, not at cancel() time. .timeout() (below) cancels its scheduled fail task the
+    // moment the promise resolves by any other means -- with the policy off, that cancellation would be a
+    // logical no-op as far as the queue is concerned, and a server minting thousands of 30s-timeout promises
+    // per second would still accumulate thousands of dead-but-queued entries (each holding a closure and a
+    // ContextPropagation snapshot) for up to the full timeout duration. #749/#750 follow-up.
+    private final ScheduledThreadPoolExecutor timeoutScheduler = createTimeoutScheduler();
+    private static ScheduledThreadPoolExecutor createTimeoutScheduler() {
+        var pool = new ScheduledThreadPoolExecutor(TIMEOUT_SCHEDULER_THREADS,
+                                                   Thread.ofPlatform()
+                                                         .name("promise-timeout-scheduler-", 0)
+                                                         .daemon(true)
+                                                         .factory());
+
+        pool.setRemoveOnCancelPolicy(true);
+
+        return pool;
+    }
     @Contract
     void runAsync(Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
-
-        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable));
+        // #1311: execute, not submit. submit() wrapped the task in a Future nobody read, so a Throwable
+        // leaving the task was silently kept there. Continuations now contain their own escapes and
+        // rethrow only a VirtualMachineError, which execute() lets reach the thread's uncaught handler.
+        executor.execute(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable));
     }
     @Contract
-    void runAsync(TimeSpan delay, Runnable runnable) {
+    ScheduledFuture<?> runAsync(TimeSpan delay, Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
 
-        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot,
-                                                                  () -> {
-                                                                      try {
-                                                                      Thread.sleep(delay.duration());
-                                                                  } catch (InterruptedException e) {
-                                                                      Thread.currentThread().interrupt();
-                                                                  }
-
-                                                                      runnable.run();
-                                                                  }));
+        return timeoutScheduler.schedule(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable),
+                                         delay.nanos(),
+                                         TimeUnit.NANOSECONDS);
+    }
+    // Test-only observability: number of tasks still sitting in the scheduler's delay queue. With
+    // setRemoveOnCancelPolicy(true) above, a cancelled task is purged from this count synchronously,
+    // on the cancelling thread -- no polling needed to observe the effect of an early promise resolution.
+    @Contract
+    int pendingTimeoutCount() {
+        return timeoutScheduler.getQueue()
+                               .size();
     }
 }
 
@@ -3178,9 +3276,12 @@ final class PromiseImpl<T> implements Promise<T> {
     @Override
     public Promise<T> onResult(Consumer<Result<T>> action) {
         if (result != null) {
-            action.accept(result);
-
-            return this;
+            try {
+                action.accept(result);
+            } catch (Throwable escape) {
+                escaped(ON_RESULT, escape);
+                rethrowIfFatal(escape);
+            }
         } else {
             push(new CompletionOnResult<>(action));
         }
@@ -3191,7 +3292,15 @@ final class PromiseImpl<T> implements Promise<T> {
     @Override
     public <U> Promise<U> fold(Fn1<Promise<U>, Result<T>> action) {
         if (result != null) {
-            return action.apply(result);
+            try {
+                return action.apply(result);
+            } catch (Throwable escape) {
+                var cause = escaped(FOLD, escape);
+
+                rethrowIfFatal(escape);
+
+                return new PromiseImpl<>(cause.result());
+            }
         } else {
             return chain(action);
         }
@@ -3200,7 +3309,15 @@ final class PromiseImpl<T> implements Promise<T> {
     @Override
     public <U> Promise<U> replaceResult(Fn1<Result<U>, Result<T>> transformation) {
         if (result != null) {
-            return new PromiseImpl<>(transformation.apply(result));
+            try {
+                return new PromiseImpl<>(transformation.apply(result));
+            } catch (Throwable escape) {
+                var cause = escaped(REPLACE_RESULT, escape);
+
+                rethrowIfFatal(escape);
+
+                return new PromiseImpl<>(cause.result());
+            }
         } else {
             var dependency = new PromiseImpl<U>(null);
 
@@ -3231,6 +3348,12 @@ final class PromiseImpl<T> implements Promise<T> {
 
         push(new CompletionJoin<>(thread));
         while (result == null) {
+            // #914: park() returns at once, flag intact, on an interrupted thread -- without this
+            // check the loop re-parked forever at 100% CPU and no supervisor could end the wait.
+            if (thread.isInterrupted()) {
+                return interruptedUnlessResolved();
+            }
+
             LockSupport.park();
         }
 
@@ -3266,6 +3389,10 @@ final class PromiseImpl<T> implements Promise<T> {
         var deadline = System.nanoTime() + timeout.nanos();
 
         while (result == null && System.nanoTime() < deadline) {
+            if (thread.isInterrupted()) {
+                return interruptedUnlessResolved();
+            }
+
             LockSupport.parkNanos(deadline - System.nanoTime());
         }
 
@@ -3276,12 +3403,43 @@ final class PromiseImpl<T> implements Promise<T> {
         return result;
     }
 
+    /// #914 policy: interruption ENDS the wait with this failure and PRESERVES the flag (the
+    /// interrupt addressed the thread, not this wait, so an outer loop that checks it stops too);
+    /// the promise itself stays unresolved, exactly as on a timeout. Chosen over
+    /// "uninterruptible but non-spinning" because every test backstop and executor shutdown in
+    /// the codebase relies on interrupt actually ending a wait, and every `await()` caller already
+    /// handles a failed `Result`.
+    private static final CoreError.Interrupted AWAIT_INTERRUPTED = new CoreError.Interrupted("Thread interrupted while awaiting Promise resolution");
+
+    /// A resolution that landed between the loop condition and the interrupt check still wins —
+    /// the same re-read the timed variant does after its loop.
+    private Result<T> interruptedUnlessResolved() {
+        var resolved = result;
+
+        return resolved != null
+               ? resolved
+               : AWAIT_INTERRUPTED.result();
+    }
+
     @Override
     public Promise<T> resolve(Result<T> value) {
         if (RESULT.compareAndSet(this, null, value)) {
+            VirtualMachineError fatal = null;
+            // #1311, defensive and NOT exercised by a test (rev1362 R2-M2 reddened nothing): a completion
+            // pushed while a batch was running is drained by push()'s own lost-wakeup guard, so this loop
+            // rarely has a second round to protect. It stays so that a VME out of one round cannot orphan a
+            // round that does exist.
             do {
-                processActions();
+                try {
+                    processActions();
+                } catch (VirtualMachineError escape) {
+                    fatal = fatal == null
+                            ? escape
+                            : fatal;
+                }
             } while (this.stack != null);
+
+            rethrowIfFatal(fatal);
         }
 
         return this;
@@ -3339,40 +3497,44 @@ final class PromiseImpl<T> implements Promise<T> {
         }
 
         runEventHandlers(events);
-        runSequentialActions(actions);
-        runJoins(joins);
+        rethrowIfFatal(runAll(joins, runAll(actions, null)));
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private void runJoins(Completion current) {
+    // JBCT-RET-06 waived on the two list walkers: Completion is an intrusive singly-linked list whose
+    // terminator is null; wrapping each node in an Option would allocate on the completion hot path (#1356).
+    /// #1311: a VirtualMachineError rethrown by one completion must not abandon the rest of the batch this
+    /// call CAS-claimed — the sibling dependents would never resolve and a thread parked in `await()` would
+    /// never be unparked, which is the ticket's own wedge re-created for a StackOverflowError in one mapper.
+    /// Every completion of the batch runs; the first error is returned and rethrown by the caller once the
+    /// joins have been unparked, so "rethrown after logging" still holds, one batch later. The call site
+    /// nests the two calls: the inner (argument) runs the sequential actions first, the outer the joins
+    /// after — the original order.
+    @SuppressWarnings({"rawtypes", "unchecked", "JBCT-RET-06"})
+    private VirtualMachineError runAll(Completion current, VirtualMachineError first) {
+        var fatal = first;
+
         while (current != null) {
-            current.complete(result);
+            try {
+                current.complete(result);
+            } catch (VirtualMachineError escape) {
+                fatal = fatal == null
+                        ? escape
+                        : fatal;
+            }
+
             current = current.next;
         }
+
+        return fatal;
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private void runSequentialActions(Completion current) {
-        while (current != null) {
-            current.complete(result);
-            current = current.next;
-        }
-    }
-
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings({"rawtypes", "unchecked", "JBCT-RET-06"})
     private void runEventHandlers(Completion asyncEvents) {
         if (asyncEvents == null) {
             return;
         }
 
-        AsyncExecutor.INSTANCE.runAsync(() -> {
-            var current = asyncEvents;
-
-            while (current != null) {
-                current.complete(result);
-                current = current.next;
-            }
-        });
+        AsyncExecutor.INSTANCE.runAsync(() -> rethrowIfFatal(runAll(asyncEvents, null)));
     }
 
     private <U> Promise<U> chain(Fn1<Promise<U>, Result<T>> transformer) {
@@ -3409,6 +3571,82 @@ final class PromiseImpl<T> implements Promise<T> {
         }
     }
 
+    static final String FOLD = "fold";
+    static final String REPLACE_RESULT = "replaceResult";
+    static final String ON_RESULT = "onResult";
+    static final String ASYNC = "async";
+
+    /// #1311: the one place a Throwable escaping a continuation is handled. Before it, an escape on an
+    /// executor thread vanished into the Future that [AsyncExecutor#runAsync(Runnable)] discarded: the
+    /// dependent promise never resolved, nothing was logged, and every completion claimed in the same
+    /// batch — handlers behind the thrower, joins of threads already parked in `await()` — was skipped.
+    ///
+    /// Logs the escape at ERROR with its origin and returns the cause the dependent promise fails
+    /// with. The origin is the top frame of the escape's own stack trace: for a mapper that is the
+    /// line that threw, which the continuation's class name (a `Promise$$Lambda` for `map`/`flatMap`)
+    /// could not give. The caller resolves the dependent, THEN calls [#rethrowIfFatal(Throwable)]:
+    /// a [VirtualMachineError] must not be hidden behind a failed Result, but the dependent must not
+    /// stay wedged either, so both happen, in that order. Not classified [Cause.Terminal] or
+    /// [Cause.Transient]: an escape is a bug, and whether a retry can help is the caller's call
+    /// (#1297's sealer retries its drain after a pause by design).
+    static Cause escaped(String continuation, Throwable escape) {
+        var cause = new CoreError.Exception("Throwable escaped " + continuation
+                                           + " continuation at " + originOf(escape)
+                                           + ": " + escape,
+                                            escape);
+
+        log.error("{}", cause.message(), escape);
+
+        return cause;
+    }
+
+    /// The origin named in the Cause is the first frame that belongs to neither the JDK nor this library:
+    /// a mapper that calls `Integer.parseInt` throws from `NumberFormatException.forInputString`, and that
+    /// frame would tell a reader nothing about which continuation broke. This finds the continuation's own
+    /// line only when the continuation HAS a frame — a method reference straight into the JDK
+    /// (`map(Integer::parseInt)`) has none, so the frame named is the next caller below: the line that
+    /// RESOLVED the source (or the executor's frame when that was the timeout scheduler), not the `map`
+    /// line. Falls back to the top frame when every frame is framework (a JDK-internal recursion), and
+    /// says so when the trace is empty.
+    private static String originOf(Throwable escape) {
+        var trace = escape.getStackTrace();
+
+        if (trace.length == 0) {
+            return "unknown origin (empty stack trace)";
+        }
+
+        for (var frame : trace) {
+            if (!isFrameworkFrame(frame.getClassName())) {
+                return frame.toString();
+            }
+        }
+
+        return trace[0].toString();
+    }
+
+    private static boolean isFrameworkFrame(String className) {
+        return className.startsWith("java.") || className.startsWith("jdk.") || className.startsWith("sun.") || className.startsWith("org.pragmatica.lang.");
+    }
+
+    /// Also the rethrow-after-the-batch primitive: `Causes.rethrowIfFatal(null)` is a no-op, so the
+    /// batch loops hand it whatever they collected without a null check of their own.
+    private static void rethrowIfFatal(Throwable escape) {
+        Causes.rethrowIfFatal(escape);
+    }
+
+    /// The consumer given to `async`/`Promise.promise(consumer)` is entrusted with resolving the promise
+    /// it receives, so an escape fails that promise (a no-op if the consumer already resolved it).
+    static <T> Unit runContained(Promise<T> promise, Consumer<Promise<T>> consumer) {
+        try {
+            consumer.accept(promise);
+        } catch (Throwable escape) {
+            promise.resolve(escaped(ASYNC, escape).result());
+            rethrowIfFatal(escape);
+        }
+
+        return Unit.unit();
+    }
+
     sealed interface CompletionMarker permits CompletionOnResult, CompletionFold, CompletionMap, CompletionResolve, CompletionJoin {}
 
     abstract static class Completion<T> {
@@ -3431,7 +3669,16 @@ final class PromiseImpl<T> implements Promise<T> {
         @SuppressWarnings("unchecked")
         @Contract
         public void complete(Result<T> value) {
-            var inner = transformer.apply(value);
+            Promise<U> inner;
+
+            try {
+                inner = transformer.apply(value);
+            } catch (Throwable escape) {
+                dependency.resolve(escaped(FOLD, escape).result());
+                rethrowIfFatal(escape);
+
+                return;
+            }
 
             if (inner instanceof PromiseImpl<?> impl) {
                 if (impl.result != null) {
@@ -3457,7 +3704,18 @@ final class PromiseImpl<T> implements Promise<T> {
         @Override
         @Contract
         public void complete(Result<T> value) {
-            dependency.resolve(transformer.apply(value));
+            Result<U> mapped;
+
+            try {
+                mapped = transformer.apply(value);
+            } catch (Throwable escape) {
+                dependency.resolve(escaped(REPLACE_RESULT, escape).result());
+                rethrowIfFatal(escape);
+
+                return;
+            }
+
+            dependency.resolve(mapped);
         }
     }
 
@@ -3485,7 +3743,12 @@ final class PromiseImpl<T> implements Promise<T> {
         @Override
         @Contract
         public void complete(Result<T> value) {
-            consumer.accept(value);
+            try {
+                consumer.accept(value);
+            } catch (Throwable escape) {
+                escaped(ON_RESULT, escape);
+                rethrowIfFatal(escape);
+            }
         }
     }
 

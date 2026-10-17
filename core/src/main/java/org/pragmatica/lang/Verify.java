@@ -1,5 +1,6 @@
 package org.pragmatica.lang;
 
+import java.math.BigDecimal;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
@@ -176,7 +177,10 @@ public sealed interface Verify {
     ///
     /// @return a success result containing the value if the predicate is satisfied,
     ///         or a failure result with the generated cause if not
-    static <T, P1> Result<T> ensure(T value, Fn2<Boolean, T, P1> predicate, P1 param1, Fn1<? extends Cause, ? super T> causeProvider) {
+    static <T, P1> Result<T> ensure(T value,
+                                    Fn2<Boolean, T, P1> predicate,
+                                    P1 param1,
+                                    Fn1<? extends Cause, ? super T> causeProvider) {
         return ensure(value, v -> predicate.apply(v, param1), causeProvider);
     }
 
@@ -311,7 +315,9 @@ public sealed interface Verify {
     ///
     /// @return success with Option.none() if empty, success with Option.some(value) if present and valid,
     ///         or failure with the generated cause if present and invalid
-    static <T> Result<Option<T>> ensureOption(Option<T> value, Predicate<T> predicate, Fn1<? extends Cause, ? super T> causeProvider) {
+    static <T> Result<Option<T>> ensureOption(Option<T> value,
+                                              Predicate<T> predicate,
+                                              Fn1<? extends Cause, ? super T> causeProvider) {
         return value.fold(() -> Result.success(Option.none()),
                           v -> ensure(v, predicate, causeProvider).map(Option::some));
     }
@@ -467,7 +473,7 @@ public sealed interface Verify {
         ///
         /// @return true if the value is positive, false otherwise
         static <T extends Number> boolean positive(T value) {
-            return value.doubleValue() > 0;
+            return signum(value) > 0;
         }
 
         /// Checks if a number is negative (less than zero).
@@ -477,7 +483,7 @@ public sealed interface Verify {
         ///
         /// @return true if the value is negative, false otherwise
         static <T extends Number> boolean negative(T value) {
-            return value.doubleValue() < 0;
+            return signum(value) < 0;
         }
 
         /// Checks if a number is non-negative (greater than or equal to zero).
@@ -487,7 +493,7 @@ public sealed interface Verify {
         ///
         /// @return true if the value is non-negative, false otherwise
         static <T extends Number> boolean nonNegative(T value) {
-            return value.doubleValue() >= 0;
+            return signum(value) >= 0;
         }
 
         /// Checks if a number is non-positive (less than or equal to zero).
@@ -497,7 +503,19 @@ public sealed interface Verify {
         ///
         /// @return true if the value is non-positive, false otherwise
         static <T extends Number> boolean nonPositive(T value) {
-            return value.doubleValue() <= 0;
+            return signum(value) <= 0;
+        }
+
+        /// Sign of the value taken in its own domain. `doubleValue()` collapses a BigDecimal below
+        /// double precision to +/-0.0 (`-1E-400` reads as non-negative), so BigDecimal reports its
+        /// own `signum()`. Every other JDK `Number` is sign-exact under `doubleValue()`: an integral
+        /// value (BigInteger included) never rounds to zero or changes sign, and float/double convert
+        /// losslessly, keeping the `-0.0` and NaN semantics of a primitive comparison.
+        private static double signum(Number value) {
+            return switch (value) {
+                case BigDecimal decimal -> decimal.signum();
+                default -> Math.signum(value.doubleValue());
+            };
         }
 
         /// Checks if a value is greater than a boundary.
@@ -578,6 +596,8 @@ public sealed interface Verify {
         /// @param value The value to check
         /// @param <T>   The type of the value
         /// @return true if the value is not null, false otherwise
+        // JBCT-RET-06 waived: this predicate exists to test for null at the validation boundary (#1356).
+        @SuppressWarnings("JBCT-RET-06")
         static <T> boolean notNull(T value) {
             return value != null;
         }
@@ -604,6 +624,8 @@ public sealed interface Verify {
         /// @param <T> the type of char sequence being checked
         /// @param value the char sequence to check
         /// @return true if the char sequence is blank, false otherwise
+        // JBCT-RET-06 waived: a validation predicate that must answer for a null input as well (#1356).
+        @SuppressWarnings("JBCT-RET-06")
         static <T extends CharSequence> boolean blank(T value) {
             return value == null || value.isEmpty() || value.chars()
                                                             .allMatch(Character::isWhitespace);

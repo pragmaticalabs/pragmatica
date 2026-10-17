@@ -185,7 +185,7 @@ public interface CircuitBreaker {
     }
 
     sealed interface CircuitBreakerError extends Cause {
-        record CircuitBreakerOpenError(String message, TimeSpan retryTime) implements CircuitBreakerError {
+        record CircuitBreakerOpenError(String message, TimeSpan retryTime) implements CircuitBreakerError, Cause.Transient {
             public static CircuitBreakerOpenError circuitBreakerOpenError(String message, TimeSpan retryTime) {
                 return new CircuitBreakerOpenError(message, retryTime);
             }

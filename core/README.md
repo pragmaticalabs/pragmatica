@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-Apache%202-blue.svg)
 ![Java](https://img.shields.io/badge/Java-25-orange.svg)
-![Maven Central](https://img.shields.io/badge/Maven-1.0.0-rc3-blue.svg)
+![Maven Central](https://img.shields.io/badge/Maven-1.0.0--rc4-blue.svg)
 
 ## Modern Functional Programming for Java 25
 
@@ -27,7 +27,7 @@ public User getUser(String id) throws UserNotFoundException, DatabaseException {
 // Clean, safe, composable
 public Promise<User> getUser(String id) {
     return database.findUser(id)
-                   .filter(user -> user.isActive())
+                   .filter(Causes.cause("User is inactive"), User::isActive)
                    .map(this::enrichUserData);
 }
 ```
@@ -36,14 +36,16 @@ public Promise<User> getUser(String id) {
 
 ### Eliminate Null Pointer Exceptions
 ```java
-Option<String> name = Option.option(user.getName())
-                            .map(String::toUpperCase)
-                            .filter(n -> n.length() > 2)
-                            .or("Anonymous");
+String name = Option.option(user.getName())
+                    .map(String::toUpperCase)
+                    .filter(n -> n.length() > 2)
+                    .or("Anonymous");  // or(T) unwraps the Option
 ```
 
 ### Safe Error Handling Without Exceptions
 ```java
+// MathError implements org.pragmatica.lang.Cause (message() is the only method a Cause
+// must define); see "Your First Pragmatica Application" below for a full definition.
 Result<Integer> divide(int a, int b) {
     return b == 0
         ? MathError.DIVISION_BY_ZERO.result()
@@ -87,43 +89,64 @@ Pragmatica Core targets Java 25 and leverages modern language features:
 
 ### Maven Configuration
 
-Pragmatica Core is available on Maven Central. Simply add the dependency to your `pom.xml`:
+Once 1.0.0-rc4 is published to Maven Central, add the dependency to your `pom.xml`:
 
 ```xml
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </dependency>
 ```
 
 For Gradle users:
 
 ```gradle
-implementation 'org.pragmatica-lite:core:1.0.0-rc3'
+implementation 'org.pragmatica-lite:core:1.0.0-rc4'
 ```
 
 ### Your First Pragmatica Application
 
 ```java
+package org.pragmatica.examples;
+
 import org.pragmatica.lang.*;
 
+
 public class Example {
+    // A failure cause: implementing org.pragmatica.lang.Cause requires only message().
+    enum MathError implements Cause {
+        DIVISION_BY_ZERO("Division by zero");
+        private final String message;
+        MathError(String message) {
+            this.message = message;
+        }
+        static MathError divisionByZero() {
+            return DIVISION_BY_ZERO;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
+    }
+
     // Safe division that never throws
     public static Result<Double> safeDivide(double a, double b) {
         return b == 0.0
-            ? MathError.divisionByZero().result()
-            : Result.ok(a / b);
+               ? MathError.divisionByZero().result()
+               : Result.ok(a / b);
     }
 
-    // Chaining operations
-    static void main(String[] args) {
-        safeDivide(10.0, 2.0)
-            .map(result -> result * 2)  // Transform success value
-            .fold(
-                error -> "Error: " + error.message(),
-                success -> "Result: " + success
-            );
+    // Chaining operations. JBCT-RET-01 requires business methods to return one of
+    // T / Option<T> / Result<T> / Promise<T>; the JVM entry point is the sanctioned
+    // exception, suppressed the same way as in aether/aether-setup's AetherUp.main.
+    @SuppressWarnings("JBCT-RET-01")
+    public static void main(String[] args) {
+        var message = safeDivide(10.0, 2.0).map(result -> result * 2)  // Transform success value
+                                .fold(error -> "Error: " + error.message(),
+                                      success -> "Result: " + success);
+
+        System.out.println(message);
     }
 }
 ```
@@ -136,7 +159,7 @@ Handle success and failure without exceptions:
 ```java
 Result<String> result = processData()
     .map(String::trim)
-    .filter(s -> !s.isEmpty())
+    .filter(EMPTY_INPUT, s -> !s.isEmpty())  // EMPTY_INPUT is a Cause constant
     .recover(_ -> "default");
 ```
 
@@ -155,7 +178,7 @@ Composable asynchronous programming:
 ```java
 Promise<String> response = httpClient.get(url)
     .map(Response::body)
-    .timeout(Duration.ofSeconds(5))
+    .timeout(timeSpan(5).seconds())  // static import org.pragmatica.lang.io.TimeSpan.timeSpan
     .onFailure(err -> logger.error("Request failed", err));
 ```
 
@@ -205,7 +228,7 @@ Explore comprehensive examples in the [examples](../examples) directory:
 
 ## Integrations
 
-### Jackson JSON (3.0.0)
+### Jackson JSON (3.0+)
 
 Serialize and deserialize Result, Option, and Promise types:
 
@@ -213,7 +236,7 @@ Serialize and deserialize Result, Option, and Promise types:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jackson</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </dependency>
 ```
 
@@ -241,7 +264,7 @@ Promise-based JPA operations with typed errors:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jpa</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </dependency>
 ```
 
@@ -249,16 +272,19 @@ Promise-based JPA operations with typed errors:
 var ops = JpaOperations.jpaOperations(entityManager);
 
 // Transactional operations
-Promise<User> result = Transactional.withTransaction(
+// withTransaction decorates a function; applying it runs the operation inside the transaction
+var saveUser = Transactional.withTransaction(
     entityManager,
     JpaError::fromException,
-    tx -> ops.persist(newUser)
-        .flatMap(saved -> ops.flush().map(_ -> saved))
+    (User user) -> ops.persist(JpaError::fromException, user)
+        .flatMap(saved -> ops.flush(JpaError::fromException).map(_ -> saved))
 );
 
-// Typed errors: EntityNotFound, OptimisticLock, DatabaseFailure, etc.
+Promise<User> result = saveUser.apply(newUser);
+
+// Typed errors: ConstraintViolation, EntityExists, OptimisticLock, DatabaseFailure, etc.
 result.onFailure(error -> switch (error) {
-    case JpaError.EntityNotFound _ -> handleNotFound();
+    case JpaError.ConstraintViolation violation -> handleConstraint(violation.constraint());
     case JpaError.OptimisticLock lock -> handleConflict(lock.entityType());
     case JpaError.DatabaseFailure db -> handleDatabaseError(db.cause());
     default -> handleUnexpected(error);
@@ -273,26 +299,26 @@ Monitor Result, Option, and Promise operations:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>micrometer</artifactId>
-    <version>1.0.0-rc3</version>
+    <version>1.0.0-rc4</version>
 </dependency>
 ```
 
 ```java
-// Wrap operations with metrics
-var wrappedOperation = ResultMetrics.timed(
-    registry,
-    "user.fetch",
-    Tags.of("service", "user-service"),
-    () -> fetchUser(userId)
-);
+// Timer around a Result-returning operation: duration plus success/failure counts
+var fetchMetrics = ResultMetrics.timer("user.fetch")
+    .registry(registry)
+    .tags("service", "user-service")
+    .build();
 
-// Automatic success/failure tracking
-Promise<Data> monitored = PromiseMetrics.counted(
-    registry,
-    "api.call",
-    Tags.of("endpoint", "/users"),
-    apiClient.fetchData()
-);
+Supplier<Result<User>> fetchUser = fetchMetrics.around(() -> userRepository.fetch(userId));
+
+// Counter around a Promise-returning function: success/failure counts only
+var apiMetrics = PromiseMetrics.counter("api.call")
+    .registry(registry)
+    .tags("endpoint", "/users")
+    .build();
+
+Fn1<Promise<Data>, Query> fetchData = apiMetrics.around(apiClient::fetchData);
 ```
 
 ## Contributing

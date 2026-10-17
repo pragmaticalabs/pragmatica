@@ -1,11 +1,14 @@
 package org.pragmatica.lang.io;
 
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.CopyOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -94,6 +97,9 @@ public sealed interface FileOps {
     }
 
     /// Write a byte array to a file. Creates the file if it doesn't exist, truncates if it does.
+    /// Not durable: nothing is fsynced, so after this returns the bytes may still sit in the page
+    /// cache and a crash can lose them, or the file itself. Use [#writeBytesDurable] when the
+    /// caller's next step assumes the file survives a crash.
     static Result<Unit> writeBytes(Path path, byte[] content) {
         return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
                            () -> {
@@ -106,11 +112,104 @@ public sealed interface FileOps {
                            });
     }
 
+    /// Write a byte array to a file and make it durable before returning: the bytes and the
+    /// file's metadata are forced to the device (`FileChannel.force(true)`), then the parent
+    /// directory is forced so the entry that names the file survives a crash too. Creates the
+    /// file if it doesn't exist, truncates if it does. Durable, not atomic: the write is in place,
+    /// so a crash between open and force can leave a truncated file at `path` -- a caller that
+    /// must never expose a torn file writes a sibling and publishes it with [#moveAtomic].
+    /// [unverified: Windows -- a directory cannot be opened as a channel there, so the directory
+    /// force fails and this returns a failure rather than a silently weaker guarantee; Linux and
+    /// macOS honour both forces.]
+    static Result<Unit> writeBytesDurable(Path path, byte[] content) {
+        // The order is the guarantee, not an accident of composition: the directory force must come
+        // AFTER the file exists, or the entry naming it is never the thing that got synced. Pinned
+        // by FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
+        return writeBytesForced(path, content).flatMap(_ -> forceDirectory(path.toAbsolutePath().getParent()));
+    }
+
+    /// Write a byte array to a file and force the file -- its bytes and its metadata
+    /// (`FileChannel.force(true)`) -- to the device before returning. Creates the file if it doesn't
+    /// exist, truncates if it does. The directory entry naming the file is NOT forced: this is the
+    /// first half of [#writeBytesDurable], for a caller that publishes the file under another name
+    /// (a same-directory sibling renamed with [#moveAtomic]) and must force the directory AFTER
+    /// that rename, with [#forceDirectory] -- forcing it before would sync an entry the rename is
+    /// about to replace.
+    static Result<Unit> writeBytesForced(Path path, byte[] content) {
+        return writeAndForce(path, content);
+    }
+
+    /// Force a directory to the device, so that the entries it holds -- files created, renamed into
+    /// or removed from it -- survive a crash. A file's own force never covers the entry that names
+    /// it. [unverified: Windows -- a directory cannot be opened as a channel there, so this returns a
+    /// failure rather than a silently weaker guarantee; Linux and macOS honour it.]
+    static Result<Unit> forceDirectory(Path directory) {
+        return Result.lift(e -> new FileError.WriteFailed(directory, e.getMessage()),
+                           () -> {
+                               try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+                               channel.force(true);
+                           }
+
+                               return unit();
+                           });
+    }
+
+    private static Result<Unit> writeAndForce(Path path, byte[] content) {
+        return Result.lift(e -> new FileError.WriteFailed(path, e.getMessage()),
+                           () -> {
+                               try (var file = FileChannel.open(path,
+                                                                StandardOpenOption.CREATE,
+                                                                StandardOpenOption.TRUNCATE_EXISTING,
+                                                                StandardOpenOption.WRITE)) {
+                               var buffer = ByteBuffer.wrap(content);
+
+                               while (buffer.hasRemaining()) {
+                               file.write(buffer);
+                           }
+                               // force(true), not force(false): a freshly created file's size and
+                               // link count live in the inode, so fdatasync alone can leave the
+                               // bytes durable and the file itself not. Pinned by
+                               // FileOpsTest.writeBytesDurable_forcesFileAndParentDirectory_beforeReturning.
+                               file.force(true);
+                           }
+
+                               return unit();
+                           });
+    }
+
     // === Directory ===
     /// Create a directory and all parent directories.
     static Result<Path> createDirectories(Path path) {
         return Result.lift(e -> new FileError.DirectoryCreationFailed(path, e.getMessage()),
                            () -> Files.createDirectories(path));
+    }
+
+    /// Create a directory and all missing parents, and make their creation durable: after the
+    /// directories exist, the parent of every directory this call CREATED is forced
+    /// ([#forceDirectory]), so the entries naming them survive a crash. Directories that already
+    /// existed are not forced -- their entries were made durable, or not, by whoever created them.
+    /// Without this, a file made durable inside a freshly created directory can still vanish with
+    /// the directory after a power loss.
+    static Result<Path> createDirectoriesDurable(Path path) {
+        var absolute = path.toAbsolutePath();
+        var created = missingDirectories(absolute);
+
+        return createDirectories(absolute).flatMap(_ -> forceParentsOf(created))
+                                .map(_ -> absolute);
+    }
+
+    private static List<Path> missingDirectories(Path absolute) {
+        var missing = new ArrayList<Path>();
+
+        for (var current = absolute; current != null && !Files.exists(current); current = current.getParent()) {
+            missing.add(current);
+        }
+
+        return List.copyOf(missing);
+    }
+
+    private static Result<Unit> forceParentsOf(List<Path> created) {
+        return Result.allOf(created.stream().map(dir -> forceDirectory(dir.getParent())).toList()).mapToUnit();
     }
 
     // === Copy / Move / Delete ===
@@ -132,10 +231,23 @@ public sealed interface FileOps {
                            () -> Files.move(source, target));
     }
 
-    /// Move a file, replacing target if it exists.
+    /// Move a file, replacing target if it exists. Not atomic: the JDK unlinks the target before the
+    /// rename, and falls back to copy-and-delete across filesystems.
     static Result<Path> moveReplace(Path source, Path target) {
         return Result.lift(e -> new FileError.MoveFailed(source, target, e.getMessage()),
                            () -> Files.move(source, target, StandardCopyOption.REPLACE_EXISTING));
+    }
+
+    /// Move a file over the target as ONE rename: the target is never unlinked first, so a crash
+    /// or a failed rename leaves the old target in place. Source and target must be on the same
+    /// filesystem — across devices this fails (`AtomicMoveNotSupportedException`) instead of
+    /// falling back to copy; use [#moveReplace] for that.
+    static Result<Path> moveAtomic(Path source, Path target) {
+        return Result.lift(e -> new FileError.MoveFailed(source, target, e.getMessage()),
+                           () -> Files.move(source,
+                                            target,
+                                            StandardCopyOption.REPLACE_EXISTING,
+                                            StandardCopyOption.ATOMIC_MOVE));
     }
 
     /// Delete a file if it exists. Returns true if the file was deleted.

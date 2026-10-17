@@ -18,6 +18,7 @@ package org.pragmatica.lang;
 import org.pragmatica.lang.Functions.Fn0;
 import org.pragmatica.lang.Functions.ThrowingFn0;
 import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// From <a href="https://en.wikipedia.org/wiki/Unit_type">Unit type</a> :
@@ -149,6 +150,8 @@ public final class Unit implements Tuple.Tuple0 {
         try {
             return Result.success(mapper.apply());
         } catch (Throwable throwable) {
+            Causes.rethrowIfFatal(throwable);
+
             return new CoreError.Exception(throwable).result();
         }
     }

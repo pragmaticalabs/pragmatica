@@ -47,6 +47,22 @@ import org.slf4j.LoggerFactory;
 /// logic. Failures inside task bodies are logged (never swallowed silently) and, crucially,
 /// never cancel a recurring task — fixing STPE's "a throwing periodic task is silently
 /// cancelled forever" footgun.
+///
+/// **Not used by `Promise#timeout(TimeSpan)`.** #749/#750/#838 give that path its own dedicated,
+/// fixed-size `ScheduledThreadPoolExecutor` (`Promise.AsyncExecutor#timeoutScheduler`, 4 platform
+/// threads) that runs the timeout FIRE action *inline*, on its own thread — the opposite of this
+/// class's "never run inline" principle. The reason is narrower than it looks: a timeout's fire
+/// action must not itself depend on carrier availability, or the original starvation bug (a
+/// timeout that cannot be dispatched because every virtual-thread carrier is pinned) simply
+/// reappears one layer down, inside whatever executes the fire. Handing the fire to a
+/// virtual-thread-per-task executor — this class's normal mode — reintroduces exactly that
+/// dependency. The cost is bounded rather than eliminated: `.timeout()`'s continuation chain
+/// (`.map()`/`.flatMap()`/`withResult()`) dispatches inline per `CompletionMap`/`CompletionFold`'s
+/// resolve-time contract, so a blocking continuation on a fired timeout occupies one of only 4
+/// dedicated threads; more than 4 concurrent blocking continuations starve every *other* pending
+/// timeout process-wide. Small, bounded, and documented, versus the original unbounded
+/// shared-pool risk — but not free, and not eliminable without changing `resolve()`'s inline-dispatch
+/// contract everywhere it is used, which is out of scope for a timeout-specific fix.
 public final class VirtualThreadScheduler {
     private static final Logger log = LoggerFactory.getLogger(VirtualThreadScheduler.class);
 
@@ -127,6 +143,9 @@ public final class VirtualThreadScheduler {
             } catch (Throwable e) {
                 // The single timer thread must be unkillable: a dispatch failure (e.g. a
                 // rejected submit racing shutdown) must never stop scheduling for the whole JVM.
+                // #1311: deliberately NOT Causes.rethrowIfFatal — rethrowing here would turn one
+                // OutOfMemoryError while submitting a task into the permanent, silent loss of every
+                // scheduled task in the JVM. The task body's own guard (runGuarded) does rethrow.
                 log.warn("Scheduler dispatch failed; timer thread continues", e);
             }
         }
@@ -209,12 +228,16 @@ public final class VirtualThreadScheduler {
 
         // Runs the body on a virtual thread; logs and continues on Throwable
         // so a periodic task is never silently cancelled by a thrown exception.
+        // #1311: a VirtualMachineError is rethrown after the log line. Recurrence is still
+        // preserved (dispatch() rescheduled before this ran); what changes is that the error
+        // leaves this frame into the in-flight Future instead of being absorbed as a warning.
         @Contract
         void runGuarded() {
             try {
                 body.run();
             } catch (Throwable e) {
                 log.warn("Scheduled task body threw; task recurrence preserved", e);
+                Causes.rethrowIfFatal(e);
             }
         }
 
