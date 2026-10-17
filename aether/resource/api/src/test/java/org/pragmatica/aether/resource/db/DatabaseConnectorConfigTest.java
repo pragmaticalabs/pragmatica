@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.resource.db;
 
@@ -483,6 +482,196 @@ class DatabaseConnectorConfigTest {
             var str = config.toString();
 
             assertThat(str).doesNotContain("user:pass@");
+        }
+    }
+
+    // #769: resource-reference.md:337,354 documents a URL (async_url, jdbc_url, r2dbc_url) as
+    // highest priority, replacing host/port/database. The effective accessors previously gave
+    // discrete fields unconditional precedence over the URL, so an operator override that only
+    // touched async_url was silently ignored by every consumer of effectiveHost/Port/Database.
+    @Nested
+    class EffectiveComponentsUrlPrecedence {
+
+        @Test
+        void effectiveHost_prefersAsyncUrl_overDiscreteFields_whenBothPresentAndDiffer() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("db")
+                .withHost("intrinsic-host")
+                .withPort(5432)
+                .withDatabase("intrinsic-db")
+                .withAsyncUrl("postgresql://override-host:6543/override-db")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("override-host");
+            assertThat(config.effectivePort()).isEqualTo(6543);
+            assertThat(config.effectiveDatabase()).isEqualTo("override-db");
+        }
+
+        // Real values from examples/comprehensive-persistence/src/main/resources/resources.toml
+        // [database] section, where discrete fields and async_url agree. Proves the precedence
+        // fix changes nothing for the repo's own resources.toml files.
+        @Test
+        void effectiveHost_staysConsistent_whenDiscreteFieldsAndAsyncUrlAgree_realResourcesTomlValues() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("comprehensive-primary")
+                .withHost("localhost")
+                .withPort(5432)
+                .withDatabase("forge")
+                .withAsyncUrl("postgresql://localhost:5432/forge")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("localhost");
+            assertThat(config.effectivePort()).isEqualTo(5432);
+            assertThat(config.effectiveDatabase()).isEqualTo("forge");
+        }
+
+        @Test
+        void effectiveHost_usesDiscreteFields_whenNoUrlPresent() {
+            var config = databaseConnectorConfigBuilder()
+                .withName("db")
+                .withType(DatabaseType.POSTGRESQL)
+                .withHost("discrete-host")
+                .withPort(5555)
+                .withDatabase("discrete-db")
+                .build()
+                .unwrap();
+
+            assertThat(config.effectiveHost()).isEqualTo("discrete-host");
+            assertThat(config.effectivePort()).isEqualTo(5555);
+            assertThat(config.effectiveDatabase()).isEqualTo("discrete-db");
+        }
+
+        @Test
+        void effectiveHost_prefersUrl_overDiscreteFields_forJdbcAndR2dbcUrlsToo() {
+            var jdbcConfig = databaseConnectorConfigBuilder()
+                .withName("jdbc-db")
+                .withHost("intrinsic-host")
+                .withPort(5432)
+                .withDatabase("intrinsic-db")
+                .withJdbcUrl("jdbc:postgresql://override-host:6543/override-db")
+                .build()
+                .unwrap();
+
+            assertThat(jdbcConfig.effectiveHost()).isEqualTo("override-host");
+            assertThat(jdbcConfig.effectivePort()).isEqualTo(6543);
+            assertThat(jdbcConfig.effectiveDatabase()).isEqualTo("override-db");
+
+            var r2dbcConfig = databaseConnectorConfigBuilder()
+                .withName("r2dbc-db")
+                .withHost("intrinsic-host")
+                .withPort(5432)
+                .withDatabase("intrinsic-db")
+                .withR2dbcUrl("r2dbc:postgresql://override-host2:6544/override-db2")
+                .build()
+                .unwrap();
+
+            assertThat(r2dbcConfig.effectiveHost()).isEqualTo("override-host2");
+            assertThat(r2dbcConfig.effectivePort()).isEqualTo(6544);
+            assertThat(r2dbcConfig.effectiveDatabase()).isEqualTo("override-db2");
+        }
+    }
+
+    /// #784 — a datasource may carry several URL kinds, and the transport that connects is the best one on THAT
+    /// slice's classpath, so each connector derives host, port, database, credentials and type from ITS OWN URL
+    /// (`effective*(Transport)`). There is no global "effective" value for a connector to consume: the first version
+    /// of this fix read the URLs in one fixed priority (async, r2dbc, jdbc), which handed a JDBC pool the async URL's
+    /// credentials and a PostgreSQL dialect while it connected to MySQL. The no-argument `effective*()` accessors are
+    /// the datasource-level view for the provisioning log only, taken from `preferredTransport()`.
+    @Nested
+    class EffectiveValuesFollowTheSelectedTransport {
+        private static final String JDBC = "jdbc:postgresql://jdbc-host:5001/jdbc-db";
+        private static final String R2DBC = "r2dbc:postgresql://r2dbc-host:5002/r2dbc-db";
+        private static final String ASYNC = "postgresql://async-user:async-pw@async-host:5003/async-db";
+        private static final String MYSQL_JDBC = "jdbc:mysql://jdbc-user:jdbc-pw@mysql-host:3306/orders";
+
+        /// v-cw2's case: MySQL over JDBC plus PostgreSQL over async. Whichever transport connects gets ITS values.
+        @Test
+        void mysqlJdbcPlusPostgresAsync_eachConnectorGetsItsOwnHostCredentialsAndType() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(MYSQL_JDBC)
+                                                         .withAsyncUrl(ASYNC)
+                                                         .build()
+                                                         .unwrap();
+            var jdbc = DatabaseConnectorConfig.Transport.JDBC;
+            var async = DatabaseConnectorConfig.Transport.ASYNC;
+
+            assertThat(config.effectiveHost(jdbc)).isEqualTo("mysql-host");
+            assertThat(config.effectivePort(jdbc)).isEqualTo(3306);
+            assertThat(config.effectiveDatabase(jdbc)).isEqualTo("orders");
+            assertThat(config.effectiveUsername(jdbc).unwrap()).isEqualTo("jdbc-user");
+            assertThat(config.effectivePassword(jdbc).unwrap()).isEqualTo("jdbc-pw");
+            assertThat(config.effectiveType(jdbc)).isEqualTo(DatabaseType.MYSQL);
+            assertThat(config.effectiveHost(async)).isEqualTo("async-host");
+            assertThat(config.effectivePort(async)).isEqualTo(5003);
+            assertThat(config.effectiveDatabase(async)).isEqualTo("async-db");
+            assertThat(config.effectiveUsername(async).unwrap()).isEqualTo("async-user");
+            assertThat(config.effectivePassword(async).unwrap()).isEqualTo("async-pw");
+            assertThat(config.effectiveType(async)).isEqualTo(DatabaseType.POSTGRESQL);
+        }
+
+        @Test
+        void jdbcAndAsyncBothSet_eachTransportReadsItsOwnUrl() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(JDBC)
+                                                         .withAsyncUrl(ASYNC)
+                                                         .build()
+                                                         .unwrap();
+
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC)).isEqualTo("async-host");
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.JDBC)).isEqualTo("jdbc-host");
+            assertThat(config.effectiveDatabase(DatabaseConnectorConfig.Transport.JDBC)).isEqualTo("jdbc-db");
+        }
+
+        @Test
+        void r2dbcAndJdbcBothSet_eachTransportReadsItsOwnUrl() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(JDBC)
+                                                         .withR2dbcUrl(R2DBC)
+                                                         .build()
+                                                         .unwrap();
+
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.R2DBC)).isEqualTo("r2dbc-host");
+            assertThat(config.effectivePort(DatabaseConnectorConfig.Transport.R2DBC)).isEqualTo(5002);
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.JDBC)).isEqualTo("jdbc-host");
+        }
+
+        /// The datasource-level view (the provisioning log) is the documented-priority transport's: async over r2dbc
+        /// over jdbc.
+        @Test
+        void thePreferredTransportView_followsTheDocumentedPriority() {
+            var all = databaseConnectorConfigBuilder().withName("db").withJdbcUrl(JDBC).withR2dbcUrl(R2DBC).withAsyncUrl(ASYNC).build().unwrap();
+            var noAsync = databaseConnectorConfigBuilder().withName("db").withJdbcUrl(JDBC).withR2dbcUrl(R2DBC).build().unwrap();
+            var jdbcOnly = databaseConnectorConfigBuilder().withName("db").withJdbcUrl(JDBC).build().unwrap();
+
+            assertThat(all.preferredTransport()).isEqualTo(DatabaseConnectorConfig.Transport.ASYNC);
+            assertThat(all.effectiveHost()).isEqualTo("async-host");
+            assertThat(noAsync.preferredTransport()).isEqualTo(DatabaseConnectorConfig.Transport.R2DBC);
+            assertThat(jdbcOnly.preferredTransport()).isEqualTo(DatabaseConnectorConfig.Transport.JDBC);
+        }
+
+        /// The control: a single URL kind is unaffected, whichever it is, and a connector whose own URL is absent
+        /// still gets the values of the URL that IS configured (a JDBC-only classpath with just `async_url`).
+        @Test
+        void aSingleUrlKind_isUsedByEveryTransport() {
+            var asyncOnly = databaseConnectorConfigBuilder().withName("db").withAsyncUrl(ASYNC).build().unwrap();
+
+            assertThat(asyncOnly.effectiveHost(DatabaseConnectorConfig.Transport.JDBC)).isEqualTo("async-host");
+            assertThat(asyncOnly.effectiveUsername(DatabaseConnectorConfig.Transport.JDBC).unwrap()).isEqualTo("async-user");
+        }
+
+        /// A URL that is present but cannot supply a value falls through to the next kind for that value.
+        @Test
+        void anOwnUrlWithoutAPort_fallsThroughToTheNextKindForThePort() {
+            var config = databaseConnectorConfigBuilder().withName("db")
+                                                         .withJdbcUrl(JDBC)
+                                                         .withAsyncUrl("postgresql://async-host/async-db")
+                                                         .build()
+                                                         .unwrap();
+
+            assertThat(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC)).isEqualTo("async-host");
+            assertThat(config.effectivePort(DatabaseConnectorConfig.Transport.ASYNC)).isEqualTo(5001);
         }
     }
 }

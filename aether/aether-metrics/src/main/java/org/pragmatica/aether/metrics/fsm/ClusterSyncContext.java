@@ -1,10 +1,12 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics.fsm;
 
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -14,12 +16,17 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.function.Predicate;
 
+import org.pragmatica.lang.Unit;
 import org.pragmatica.aether.metrics.ClusterSyncCollector;
+import org.pragmatica.aether.worker.metrics.CommunityMetricsSnapshot;
+import org.pragmatica.aether.worker.metrics.SourceMetricsBatch;
 import org.pragmatica.aether.metrics.PeriodicObservationConfig;
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage.ClusterSyncPing;
+import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.cluster.metrics.PeerConnectivityObservation;
 import org.pragmatica.cluster.metrics.PeerHealthObservation;
 import org.pragmatica.consensus.NodeId;
@@ -37,6 +44,7 @@ import org.slf4j.LoggerFactory;
 public final class ClusterSyncContext {
     private static final Logger log = LoggerFactory.getLogger(ClusterSyncContext.class);
     private static final int PER_PEER_BURST = 4;
+    public static final int MAX_METRIC_PRODUCERS_PER_PING = 128;
     private static final int MIN_BUFFER_CAP = 8;
 
     private final Fsm<ClusterSyncState, ClusterFsmEvent> fsm;
@@ -75,6 +83,9 @@ public final class ClusterSyncContext {
     /// (`ClusterSyncScheduler.setDispatchedNodesSupplier`) once the `LeaderReconciler` exists.
     private final AtomicReference<Supplier<Set<NodeId>>> dispatchedNodesSupplier = new AtomicReference<>(Set::of);
 
+    private final AtomicReference<Supplier<List<CommunityMetricsSnapshot>>> sourceMetrics = new AtomicReference<>(List::of);
+
+    private final AtomicReference<Predicate<NodeId>> metricsRecipient = new AtomicReference<>(_ -> false);
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
     private final AtomicLong quorumSequence = new AtomicLong();
     private final Map<NodeId, Epoch> observedEpoch = new ConcurrentHashMap<>();
@@ -88,6 +99,16 @@ public final class ClusterSyncContext {
 
     private static final TimeSpan EVICTION_HINT_TTL = TimeSpan.timeSpan(15).seconds();
 
+    /// #1061 R-a — per-peer missed-pong epoch, advanced when the transport link to the peer is
+    /// (re)established and when a pong from it arrives ([#startMissedPongEpoch]). The ping tick
+    /// counts misses only within the current epoch (`Pinging.missesInEpoch`). A plain concurrent
+    /// write rather than an FSM event, because an FSM transition that loses its CAS to a
+    /// concurrent tick is dropped (`transitionToOrDrop`), and a dropped reset would re-admit the
+    /// stale count behind a PING_TIMEOUT hint. Values are drawn from `missedPongEpochSequence`,
+    /// one process-wide counter, so an epoch is never reused for any peer: `forgetPeer` can drop
+    /// the entry, and a peer that re-joins gets a value no earlier count was recorded against.
+    private final Map<NodeId, Long> missedPongEpochs = new ConcurrentHashMap<>();
+    private final AtomicLong missedPongEpochSequence = new AtomicLong();
     private final PeriodicObservationConfig periodicConfig;
     private final ClusterSyncState dormant;
     private final ClusterSyncState stopped;
@@ -245,6 +266,28 @@ public final class ClusterSyncContext {
     /// periodic connectivity emission reads (`emitPeriodicConnectivityNow`). Used by the ping
     /// tick as a fallback ping-target set when the membership-seeded `topology()` is still empty
     /// (Spike-1 finding: Pinging-but-unseeded → silently dormant ping/pong).
+    private final AtomicReference<Predicate<NodeId>> pingTargetEligibility = new AtomicReference<>(_ -> true);
+
+    private final AtomicReference<Supplier<Boolean>> peerMetricsForwarding = new AtomicReference<>(() -> true);
+
+    public Set<NodeId> pingRecipients() {
+        return connectedPeers().stream()
+                             .filter(pingTargetEligibility.get())
+                             .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    public Unit setPingTargetEligibility(Predicate<NodeId> predicate) {
+        pingTargetEligibility.set(predicate);
+
+        return Unit.unit();
+    }
+
+    public Unit setPeerMetricsForwarding(Supplier<Boolean> predicate) {
+        peerMetricsForwarding.set(predicate);
+
+        return Unit.unit();
+    }
+
     public Set<NodeId> connectedPeers() {
         return network.connectedPeers();
     }
@@ -272,6 +315,20 @@ public final class ClusterSyncContext {
     @Contract
     public void forgetPeer(NodeId peer) {
         observedEpoch.remove(peer);
+        missedPongEpochs.remove(peer);
+    }
+
+    /// Start a new missed-pong epoch for `peer` (#1061 R-a): misses counted before this call no
+    /// longer count toward the ping-timeout threshold. Each call takes the next value of one
+    /// process-wide sequence, so a peer that is forgotten and re-joins can never alias an old count
+    /// even if the FSM's `NodeGone` transition for it was dropped.
+    @Contract
+    public void startMissedPongEpoch(NodeId peer) {
+        missedPongEpochs.put(peer, missedPongEpochSequence.incrementAndGet());
+    }
+
+    public long missedPongEpoch(NodeId peer) {
+        return missedPongEpochs.getOrDefault(peer, 0L);
     }
 
     public ScheduledFuture<?> schedulePingTimer(Runnable tick) {
@@ -327,21 +384,120 @@ public final class ClusterSyncContext {
     /// needed here.
     @Contract
     public void broadcastPing(Epoch currentEpoch, long rabiaTerm) {
-        var ping = new ClusterSyncPing(self,
-                                       collector.allMetrics(),
-                                       rabiaTerm,
-                                       currentEpoch.rabiaTerm(),
-                                       currentEpoch.localCounter(),
-                                       currentEvictionHints(),
-                                       drainTargets.get().get(),
-                                       collector.authoritativeReadinessView(),
-                                       dispatchedNodesSupplier.get().get());
+        var available = collector.allObservations();
+        var observations = peerMetricsForwarding.get().get()
+                           ? available
+                           : available.containsKey(self)
+                             ? Map.of(self, available.get(self))
+                             : Map.<NodeId, MetricObservation> of();
+        var batches = metricBatches(observations);
+        var localObservations = observations.containsKey(self)
+                                ? Map.of(self, observations.get(self))
+                                : Map.<NodeId, MetricObservation> of();
+        var localPing = buildMetricsPing(localObservations, currentEpoch, rabiaTerm, false, isLeader());
+        var corePings = new ArrayList<ClusterSyncPing>();
 
-        log.debug("ClusterSync: broadcasting PING (rabiaTerm={}, epoch={}:{})",
-                  rabiaTerm,
-                  currentEpoch.rabiaTerm(),
-                  currentEpoch.localCounter());
-        var _ = network.broadcast(ping);
+        for (var index = 0; index < batches.size(); index++) {
+            corePings.add(buildMetricsPing(batches.get(index), currentEpoch, rabiaTerm, true, index == 0 && isLeader()));
+        }
+
+        pingRecipients().forEach(peer -> sendScopedPings(peer, corePings, localPing));
+        publishSourceMetrics();
+    }
+
+    private ClusterSyncPing buildMetricsPing(Map<NodeId, MetricObservation> observations,
+                                             Epoch epoch,
+                                             long rabiaTerm,
+                                             boolean coreRecipient,
+                                             boolean carriesAuthority) {
+        return new ClusterSyncPing(self,
+                                   observations,
+                                   rabiaTerm,
+                                   epoch.incarnation(),
+                                   epoch.rabiaTerm(),
+                                   epoch.localCounter(),
+                                   carriesAuthority
+                                   ? currentEvictionHints()
+                                   : Set.of(),
+                                   carriesAuthority
+                                   ? drainTargets.get().get()
+                                   : Set.of(),
+                                   coreRecipient && carriesAuthority
+                                   ? collector.authoritativeReadinessView()
+                                   : Map.of(),
+                                   coreRecipient && carriesAuthority
+                                   ? dispatchedNodesSupplier.get().get()
+                                   : Set.of(),
+                                   false,
+                                   carriesAuthority);
+    }
+
+    private List<Map<NodeId, MetricObservation>> metricBatches(Map<NodeId, MetricObservation> available) {
+        var peers = available.keySet().stream().sorted(Comparator.comparing(NodeId::id)).toList();
+        var batches = new ArrayList<Map<NodeId, MetricObservation>>();
+
+        for (var start = 0; start < peers.size(); start += MAX_METRIC_PRODUCERS_PER_PING) {
+            var batch = new HashMap<NodeId, MetricObservation>();
+
+            for (var index = start; index < Math.min(start + MAX_METRIC_PRODUCERS_PER_PING, peers.size()); index++) {
+                var peer = peers.get(index);
+
+                batch.put(peer, available.get(peer));
+            }
+
+            batches.add(Map.copyOf(batch));
+        }
+
+        return batches.isEmpty()
+               ? List.of(Map.of())
+               : List.copyOf(batches);
+    }
+
+    private void sendScopedPings(NodeId peer, List<ClusterSyncPing> corePings, ClusterSyncPing localPing) {
+        if (peer.equals(self)) {
+            return;
+        }
+
+        if (metricsRecipient.get().test(peer)) {
+            corePings.forEach(ping -> network.send(peer, ping));
+        } else {
+            network.send(peer, localPing);
+        }
+    }
+
+    @Contract
+    public void setSourceMetricsSupplier(Supplier<List<CommunityMetricsSnapshot>> supplier) {
+        sourceMetrics.set(supplier);
+    }
+
+    private void publishSourceMetrics() {
+        var now = System.currentTimeMillis();
+        var snapshots = sourceMetrics.get()
+                                     .get()
+                                     .stream()
+                                     .filter(snapshot -> MetricObservation.isTimestampFresh(snapshot.timestampMs(),
+                                                                                            now))
+                                     .toList();
+        var recipients = pingRecipients().stream()
+                                       .filter(peer -> !peer.equals(self))
+                                       .filter(metricsRecipient.get())
+                                       .toList();
+
+        for (var start = 0; start < snapshots.size(); start += MAX_METRIC_PRODUCERS_PER_PING) {
+            var batch = new SourceMetricsBatch(self,
+                                               snapshots.subList(start,
+                                                                 Math.min(start + MAX_METRIC_PRODUCERS_PER_PING,
+                                                                          snapshots.size())));
+
+            recipients.forEach(peer -> network.send(peer, batch));
+        }
+    }
+
+    @Contract
+    public Unit setMetricsRecipient(Predicate<NodeId> isCore) {
+        metricsRecipient.set(isCore);
+
+        return Unit.unit();
     }
 
     /// Membership v2 (B5b) — inject the leader-local DRAIN target supplier after construction.
@@ -402,11 +558,13 @@ public final class ClusterSyncContext {
             return;
         }
         // Option 1 (S01) — feed the missed-pong observation into SWIM as a transport-unreachable
-        // HINT instead of manufacturing a destructive `network.disconnect`. SWIM already drives the
-        // full SUSPECT → 3s-floored-FAULTY → DepartedObserved → synchronous-DEAD pipeline (the same
-        // path the QUIC `onPeerLeft` listener feeds), and the hint is naturally refuted when pongs
-        // resume — so a transient flap no longer false-evicts a healthy peer. The reporter is wired
-        // in `AetherNode` to `CoreSwimHealthDetector.recordTransportHint(PeerUnreachable)`.
+        // HINT (origin PEER_UNRESPONSIVE) instead of manufacturing a destructive `network.disconnect`.
+        // The hint floors SWIM's suspect window and corroborates a lone first-hand FAULTY even while
+        // the QUIC link is CONNECTED. So `missed` counts only consecutive misses on the current link
+        // since the last pong (#1061 R-a, `Pinging.missesInEpoch`), and a later pong from the peer
+        // retracts the hint (#1061 R-b, `AetherNode.pongResponsiveReporter`). Neither moves SWIM
+        // toward ALIVE: only a SWIM probe-ack or a higher-incarnation ALIVE ends the suspicion. The
+        // reporter is wired in `AetherNode.pingTimeoutReporter`.
         collector.reportUnreachable(peer);
     }
 

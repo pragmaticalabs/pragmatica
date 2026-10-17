@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.TierAwareRetention;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.slice.RetentionPolicy.retentionPolicy;
@@ -148,7 +149,7 @@ class TierAwareRetentionTest {
 
         @Test
         void lastSealedOffset_updatedAutomatically_withEvictionListener() {
-            var sealingBuffer = offHeapRingBuffer("test", 0, 5, 1024, (_, _, _) -> {});
+            var sealingBuffer = offHeapRingBuffer("test", 0, 5, 1024, (_, _, _) -> Result.unitResult());
 
             try {
                 // Fill beyond capacity to trigger eviction with listener

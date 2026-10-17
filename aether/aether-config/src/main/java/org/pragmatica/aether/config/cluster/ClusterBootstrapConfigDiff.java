@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
 import java.util.ArrayList;
@@ -29,6 +28,10 @@ public final class ClusterBootstrapConfigDiff {
 
         diffImmutableFields(stored, desired, immutable);
         diffClusterLevel(stored, desired, modifications);
+        if (!stored.communities().equals(desired.communities())) {
+            modifications.add(new DiffAction.CommunityPlacementChange());
+        }
+
         diffSources(stored.sources(), desired.sources(), additions, modifications, removals);
 
         return diffPlan(additions, modifications, removals, immutable);
@@ -141,6 +144,11 @@ public final class ClusterBootstrapConfigDiff {
                          desired.loadBalancerEndpoint(),
                          modifications);
         checkSourceField(sourceName, "firewallRules", stored.firewallRules(), desired.firewallRules(), modifications);
+        checkSourceField(sourceName,
+                         "replacementCeiling",
+                         stored.replacementCeiling(),
+                         desired.replacementCeiling(),
+                         modifications);
     }
 
     private static void checkSourceField(SourceName sourceName,

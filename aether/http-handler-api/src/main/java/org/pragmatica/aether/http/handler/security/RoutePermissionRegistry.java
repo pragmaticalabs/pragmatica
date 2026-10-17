@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.http.handler.security;
 
 import java.util.List;
@@ -28,28 +27,30 @@ public sealed interface RoutePermissionRegistry {
 
         static final List<String> ADMIN = List.of("/api/v1/blueprints",
                                                   "/api/v1/nodes/shutdown",
-                                                  "/api/v1/backups/restore",
                                                   "/api/v1/logging/levels",
                                                   "/api/v1/observability/depth");
 
         static final List<String> OPERATOR = List.of("/api/v1/nodes/drain",
+                                                     "/api/v1/nodes/replace",
+                                                     "/api/v1/nodes/unconfirmed",
                                                      "/api/v1/nodes/activate",
                                                      "/api/v1/schema",
                                                      "/api/v1/canary",
                                                      "/api/v1/blue-green",
                                                      "/api/v1/rolling-update",
                                                      "/api/v1/ab-tests",
-                                                     "/api/v1/backups",
                                                      "/api/v1/scale",
                                                      "/api/v1/scheduled-tasks",
                                                      "/api/v1/controller",
                                                      "/api/v1/thresholds",
-                                                     "/api/v1/alerts/clear",
                                                      "/api/v1/config",
                                                      "/api/v1/invocations/metrics/strategy",
                                                      "/api/v1/streams",
                                                      "/repository/");
 
+        /// ADMIN is consulted before OPERATOR. Since #676 removed `/api/v1/backups[/restore]` no
+        /// production path is in both lists, so that precedence is exercised by no test — the next
+        /// overlapping pair needs one.
         static RoutePermission resolveMutationPermission(String path) {
             if (matchesAny(path, ADMIN)) {
                 return resolveAdminOverrides(path);

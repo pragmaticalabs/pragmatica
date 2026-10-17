@@ -1,28 +1,28 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.notification;
-
-import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.email.http.EmailBody;
 import org.pragmatica.email.http.EmailMessage;
 import org.pragmatica.email.http.HttpEmailSender;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
+import org.pragmatica.lang.utils.Retry;
 
 import static org.pragmatica.aether.resource.notification.NotificationResult.notificationResult;
-import static org.pragmatica.lang.Unit.unit;
 
 
-final class HttpNotificationSender implements NotificationSender {
+/// `AsyncCloseable` because the email sender it holds owns the `HttpOperations` the factory built for
+/// it, and a closeable held in a field is invisible to `ResourceFactory`'s release dispatch (#1097).
+final class HttpNotificationSender implements NotificationSender, AsyncCloseable {
     private final HttpEmailSender sender;
-    private final RetryConfig retryConfig;
+    private final Retry retry;
 
     HttpNotificationSender(HttpEmailSender sender, RetryConfig retryConfig) {
         this.sender = sender;
-        this.retryConfig = retryConfig;
+        this.retry = retryConfig.retry();
     }
 
     @Override
@@ -32,47 +32,20 @@ final class HttpNotificationSender implements NotificationSender {
         };
     }
 
+    @Override
+    public Promise<Unit> close() {
+        return sender instanceof AsyncCloseable closeable
+               ? closeable.close()
+               : Promise.unitPromise();
+    }
+
     private Promise<NotificationResult> sendEmail(Notification.Email email) {
         var message = toEmailMessage(email);
 
-        return sendWithRetry(message,
-                             1,
-                             retryConfig.initialDelay().millis());
-    }
-
-    private Promise<NotificationResult> sendWithRetry(EmailMessage message, int attempt, long delayMs) {
-        return sender.send(message)
-                     .map(response -> notificationResult(response, "http"))
-                     .fold(result -> result.fold(cause -> {
-                                                     if (attempt >= retryConfig.maxAttempts()) {
-                                                     return new NotificationError.DeliveryFailed("HTTP delivery failed after " + attempt
-                                                                                                + " attempts: " + cause.message()).<NotificationResult> promise();
-                                                 }
-
-                                                     return delayThen(delayMs).flatMap(_ -> sendWithRetry(message,
-                                                                                                          attempt + 1,
-                                                                                                          nextDelay(delayMs)));
-                                                 },
-                                                 Promise::success));
-    }
-
-    private long nextDelay(long currentDelayMs) {
-        return Math.min((long)(currentDelayMs * retryConfig.backoffMultiplier()),
-                        retryConfig.maxDelay().millis());
-    }
-
-    private static Promise<Unit> delayThen(long delayMs) {
-        return Promise.promise(promise -> {
-            Thread.ofVirtual().start(() -> {
-                try {
-                    TimeUnit.MILLISECONDS.sleep(delayMs);
-                    promise.succeed(unit());
-                } catch (InterruptedException _) {
-                    Thread.currentThread().interrupt();
-                    promise.succeed(unit());
-                }
-            });
-        });
+        return retry.execute(() -> sender.send(message)
+                                         .map(response -> notificationResult(response, "http")))
+                    .mapError(cause -> new NotificationError.DeliveryFailed("HTTP delivery failed: " + cause.message(),
+                                                                            cause));
     }
 
     static EmailMessage toEmailMessage(Notification.Email email) {

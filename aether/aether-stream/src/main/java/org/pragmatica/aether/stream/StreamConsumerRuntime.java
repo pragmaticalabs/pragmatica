@@ -7,13 +7,16 @@ package org.pragmatica.aether.stream;
 import java.util.List;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -25,16 +28,30 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// call it from a plain statement. `void` is the JDK's contract here, not a choice, hence
     /// [`Contract`].
     ///
-    /// **This is NOT an infallible operation, and the narrowed signature hides that.** Closing flushes
-    /// every consumer cursor before removing push listeners, and that flush is
-    /// `ConsumerCursorStore.commit(...)` — a `Promise<Unit>` consensus write that can fail. The flush
-    /// site does not absorb the failure so much as never look at it: the returned `Promise` is
-    /// discarded unobserved, so a failed final commit is silent — no log, no retry, no signal here.
-    /// Effect: shutdown always completes, cursor durability is not guaranteed, and a consumer whose
-    /// final flush failed resumes from its last committed offset and redelivers the gap. Consumers
-    /// must therefore be idempotent [design intent — unverified]. Making that dropped failure
-    /// deliberate rather than incidental is worth its own ticket; this doc only stops the signature
-    /// from lying about it.
+    /// Closing flushes every consumer's cursor before removing push listeners; each flush first waits, up to
+    /// one second, for a delivery in flight to advance the cursor, so an event whose handler completed is not
+    /// redelivered (#1403). That flush is
+    /// `ConsumerCursorStore.commit(...)` — a `Promise<CommitOutcome>` consensus write that can fail, or simply
+    /// not settle before shutdown needs to proceed. #654: the batch of final commits is bound-await
+    /// for up to 5 seconds so a wedged or slow write cannot hold node stop; a commit that has not
+    /// settled within the bound counts as failed for THIS shutdown even if it later succeeds. Every
+    /// failure — settled or bound-expired — is counted in [#cursorCommitFailureCount] and, while the
+    /// consumer stays attached, visible on [SubscriptionSnapshot#lastCursorCommitFailure]. A store
+    /// composed of sub-stages (#654 round 2, e.g. the node's cluster-aware store chaining a consensus
+    /// checkpoint publish onto the local write) may recover an inner failure rather than fail
+    /// `commit(...)` itself, reporting it as that commit's `LocalOnly` outcome (#1239) — that case is
+    /// logged by the STORE at its own level, not here, but is
+    /// still folded into the same counter/detail, prefixed `checkpoint publish:` to distinguish it from
+    /// a `local commit:` failure, which this runtime logs at ERROR (consumer group, stream, partition,
+    /// cause) directly. **Redelivery contract**: a consumer whose final flush failed or did not settle
+    /// resumes, on its next attach, from its LAST COMMITTED offset [mechanism: `loadCursorAndStart`
+    /// unconditionally fetches and applies the last committed offset before starting delivery] and
+    /// redelivers every event since — consumers must be idempotent. On failover to another node it
+    /// resumes instead from the last CONSENSUS-PUBLISHED checkpoint, since the outgoing node's local
+    /// cursor is unreadable elsewhere — a lost publish means redelivery from that older point (#488,
+    /// #654 round 2). Operator recovery: none needed for one failure at one shutdown — that is ordinary
+    /// at-least-once behavior; a sustained rise in [#cursorCommitFailureCount] across restarts, rather
+    /// than an isolated one, is the signal worth investigating (consensus write path health).
     ///
     /// Ordering is load-bearing (#488): call this while the partition manager is still open and the
     /// cluster node still up, or the cursor write races shutdown and the listener removal — which
@@ -53,22 +70,69 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                            ConsumerCallback callback,
                            IdlePolicy idlePolicy);
 
+    /// #1271: a subscription admitted under a committed consumer assignment. Every cursor commit and
+    /// fetch carries [ConsumerFence#epoch], delivery pauses whenever [ConsumerFence#admitted] reads false,
+    /// and a cursor commit the store refuses as `Fenced` stops delivery for good. The default ignores the
+    /// fence — correct only for a runtime that delivers nothing (test doubles); the real runtime
+    /// overrides it.
+    default Result<Unit> subscribe(String streamName,
+                                   int partition,
+                                   ConsumerConfig config,
+                                   ConsumerCallback callback,
+                                   IdlePolicy idlePolicy,
+                                   ConsumerFence fence) {
+        return subscribe(streamName, partition, config, callback, idlePolicy);
+    }
+
     Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup);
+
+    /// #1271: detach WITHOUT the final cursor flush — for a node that has lost the consumer assignment,
+    /// whose flush the store would refuse anyway (and which, if it were admitted by a stale view, could
+    /// only move the cursor of a partition this node no longer owns). The default is the graceful
+    /// [#unsubscribe]; the real runtime overrides it.
+    default Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
+        return unsubscribe(streamName, partition, consumerGroup);
+    }
+
     Option<Long> cursorPosition(String streamName, int partition, String consumerGroup);
     Option<TransactionalCursorCommit> transactionalCursorCommit();
     DeadLetterHandler deadLetterHandler();
     /// Snapshot of everything currently subscribed. Pure read, assembled on request — the operator
     /// surface for "is this consumer actually attached, and where is it?" (#488).
     List<SubscriptionSnapshot> subscriptions();
+    /// #654: node-wide count of cursor commits — final flush at detach, or periodic checkpoint —
+    /// that failed or did not settle within their bound. Monotonic for the life of this runtime;
+    /// survives a consumer's removal from the live subscription set, unlike
+    /// [SubscriptionSnapshot#lastCursorCommitFailure], which goes with the removed entry.
+    long cursorCommitFailureCount();
 
     /// One live subscription. `cursor` is the next offset this consumer will read, i.e. one past the
-    /// last delivered offset.
+    /// last delivered offset. `lastCursorCommitFailure` (#654) is the detail of this consumer's most
+    /// recent cursor commit failure, cleared on its next successful commit; [Option#none] when its
+    /// last commit succeeded or none has been attempted yet. `deadLetterInFlight` / `retryInFlight`
+    /// (#1266) are the holds that stop the delivery loop while a failed head event is being resolved —
+    /// a dead-letter append outstanding, or a retry scheduled — so a HELD partition never reads as an
+    /// idle one (both are `false` with the cursor frozen when the partition is merely quiet).
+    /// `awaitingCursorFetch` (rev1272 F7 follow-up) is the third non-delivering state: this subscription
+    /// has not STARTED, because its cursor fetch keeps failing and is being retried. `rewindEpoch`
+    /// (#1333) is the epoch the consumer resumed under and stamps on every commit — `RewindEpoch.NONE`
+    /// for a group never rewound; the node compares it with the committed epoch to detect a rewind it
+    /// must restart the consumer for.
+    ///
+    /// `stalled` (#752) is a PROCESSING-FAILURE latch, not a liveness signal: it is set only when a handler failed
+    /// under the STALL error strategy. A consumer that receives nothing at all reports `stalled = false`
+    /// indefinitely, exactly like a healthy consumer on a quiet partition, so `false` never means "receiving".
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,
                                 long cursor,
                                 boolean stalled,
-                                IdlePolicy idlePolicy) {}
+                                IdlePolicy idlePolicy,
+                                Option<String> lastCursorCommitFailure,
+                                boolean deadLetterInFlight,
+                                boolean retryInFlight,
+                                boolean awaitingCursorFetch,
+                                RewindEpoch rewindEpoch) {}
 
     /// Whether the idle reaper may unsubscribe a consumer that has not polled recently.
     ///
@@ -82,6 +146,11 @@ public interface StreamConsumerRuntime extends AutoCloseable {
         /// for consumers declared by a deployment, whose lifetime is owned by the deployment.
         KEEP_UNTIL_UNSUBSCRIBED
     }
+
+    /// Late-bind where a consumer's re-seek after a replaced lineage is reported to the operator (#1873). The default ignores
+    /// it: a runtime without a node behind it only logs.
+    @Contract
+    default void operatorWarnings(OperatorWarningSink sink) {}
 
     @FunctionalInterface
     interface ConsumerCallback {
@@ -101,6 +170,51 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                                        int partition,
                                                        long fromOffset,
                                                        int maxEvents);
+
+        /// The consumer's read (#1730 phase 2 / #1873, KIP-320): the same read, carrying the owner epoch the consumer last
+        /// read under, answered with the events and the epoch they were served under, or with the typed
+        /// [StreamError.EpochDiverged] when the cursor belongs to a replaced lineage. The default is a plain read that
+        /// reports no epoch, which never diverges: a reader without an owner behind it has no lineage to be checked against.
+        default Promise<StreamPartitionManager.EpochRead> readFrom(String streamName,
+                                                                   int partition,
+                                                                   long fromOffset,
+                                                                   int maxEvents,
+                                                                   Epoch consumerEpoch) {
+            return read(streamName, partition, fromOffset, maxEvents).map(events -> new StreamPartitionManager.EpochRead(events,
+                                                                                                                         Epoch.ZERO));
+        }
+    }
+
+    /// A reader that validates against the owner's epoch (#1730 phase 2 / #1873): `plain` for the unvalidated read,
+    /// `validated` for the consumer's.
+    @FunctionalInterface
+    interface ValidatedRead {
+        Promise<StreamPartitionManager.EpochRead> read(String streamName,
+                                                       int partition,
+                                                       long fromOffset,
+                                                       int maxEvents,
+                                                       Epoch consumerEpoch);
+    }
+
+    static PartitionReader validatingReader(PartitionReader plain, ValidatedRead validated) {
+        return new PartitionReader() {
+            @Override
+            public Promise<List<OffHeapRingBuffer.RawEvent>> read(String streamName,
+                                                                  int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents) {
+                return plain.read(streamName, partition, fromOffset, maxEvents);
+            }
+
+            @Override
+            public Promise<StreamPartitionManager.EpochRead> readFrom(String streamName,
+                                                                      int partition,
+                                                                      long fromOffset,
+                                                                      int maxEvents,
+                                                                      Epoch consumerEpoch) {
+                return validated.read(streamName, partition, fromOffset, maxEvents, consumerEpoch);
+            }
+        };
     }
 
     /// The default reader: this node's own ring, and nothing else.

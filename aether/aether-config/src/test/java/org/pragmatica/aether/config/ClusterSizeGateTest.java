@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+
+package org.pragmatica.aether.config;
+
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+// #782 — boot-time gate on the CONFIGURED expected cluster size (Main#expectedClusterSize),
+// independent of ConfigValidator's declarative [cluster] nodes TOML check. See ClusterSizeGate#enforce.
+// Call-site arithmetic (static vs. discovery, configured vs. resolved) is pinned in
+// aether/node's MainClusterSizeTest, not here — this file only exercises the pure function.
+// #1019 — this floor stays STRUCTURAL at 3. enforce_succeeds_whenThree below is the pin: the owner
+// ruling of 2026-09-12 sets the supported minimum for NEW clusters at 5, enforced at authoring
+// (CoreWorkerSplit, via `cluster init`/`scaffold`), and raising THIS constant to 5 would stop
+// existing 3-node clusters from booting — reddening that test, which is the intended alarm.
+class ClusterSizeGateTest {
+
+    @Test
+    void enforce_fails_whenZero() {
+        ClusterSizeGate.enforce(0)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("a cluster is at least three nodes"));
+    }
+
+    @Test
+    void enforce_fails_whenOne() {
+        ClusterSizeGate.enforce(1)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("a cluster is at least three nodes"));
+    }
+
+    @Test
+    void enforce_fails_whenTwo() {
+        ClusterSizeGate.enforce(2)
+            .onSuccessRun(Assertions::fail)
+            .onFailure(cause -> assertThat(cause.message())
+                .contains("a cluster is at least three nodes"));
+    }
+
+    @Test
+    void enforce_succeeds_whenThree() {
+        ClusterSizeGate.enforce(3)
+            .onFailureRun(Assertions::fail);
+    }
+
+    @Test
+    void enforce_succeeds_whenFour() {
+        // Deliberately even and not in ConfigValidator.nodeCountErrors' {3,5,7} set — this gate
+        // only enforces the minimum-of-three floor, not the separate odd-count quorum preference.
+        ClusterSizeGate.enforce(4)
+            .onFailureRun(Assertions::fail);
+    }
+}

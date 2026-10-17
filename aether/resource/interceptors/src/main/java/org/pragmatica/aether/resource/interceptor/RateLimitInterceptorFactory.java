@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.RateLimiter;
 
 
@@ -22,16 +22,16 @@ public final class RateLimitInterceptorFactory implements ResourceFactory<RateLi
 
     @Override
     public Promise<RateLimitMethodInterceptor> provision(RateLimitConfig config) {
-        return Promise.success(interceptor(config));
+        return interceptor(config).async();
     }
 
-    private static RateLimitMethodInterceptor interceptor(RateLimitConfig config) {
-        var limiter = RateLimiter.builder()
-                                 .rate(config.maxRequests())
-                                 .period(config.window())
-                                 .burst(config.burst())
-                                 .withDefaultTimeSource();
-
-        return new RateLimitMethodInterceptor(limiter);
+    /// #1316: a configuration the limiter cannot represent fails provisioning with its typed cause.
+    private static Result<RateLimitMethodInterceptor> interceptor(RateLimitConfig config) {
+        return RateLimiter.builder()
+                          .rate(config.maxRequests())
+                          .period(config.window())
+                          .burst(config.burst())
+                          .withDefaultTimeSource()
+                          .map(RateLimitMethodInterceptor::new);
     }
 }

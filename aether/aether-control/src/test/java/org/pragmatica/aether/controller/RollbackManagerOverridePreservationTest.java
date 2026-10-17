@@ -24,6 +24,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
@@ -40,6 +42,7 @@ import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -65,6 +68,7 @@ class RollbackManagerOverridePreservationTest {
 
         seed(SliceTargetKey.sliceTargetKey(BASE), targetWithOverrides());
         seed(PreviousVersionKey.previousVersionKey(BASE), PreviousVersionValue.previousVersionValue(BASE, V1, V2));
+        seedCommittedLeader(kvStore, SELF);
 
         rollbackManager = RollbackManager.rollbackManager(SELF,
                                                           config,
@@ -107,15 +111,25 @@ class RollbackManagerOverridePreservationTest {
                                                                        List.of(NodeId.nodeId("node-2").unwrap()));
     }
 
+    /// #1573 N2: a rollback commits only while this node is the committed leader.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    static void seedCommittedLeader(KVStore<AetherKey, AetherValue> kvStore, NodeId leader) {
+        seedCommittedLeader(kvStore, leader, 1);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    static void seedCommittedLeader(KVStore<AetherKey, AetherValue> kvStore, NodeId leader, long viewSequence) {
+        kvStore.process(kvStore.createBatch((List) List.of(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(leader, viewSequence)))));
+    }
+
     private void seed(AetherKey key, AetherValue value) {
         kvStore.process(kvStore.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<AetherKey, AetherValue>(key,
                                                                                                                     value))));
     }
 
     private List<SliceTargetValue> capturedSliceTargets() {
-        return clusterNode.appliedCommands.stream()
-                                          .filter(KVCommand.Put.class::isInstance)
-                                          .map(command -> ((KVCommand.Put<?, ?>) command).value())
+        return clusterNode.writtenValues()
+                          .stream()
                                           .filter(SliceTargetValue.class::isInstance)
                                           .map(SliceTargetValue.class::cast)
                                           .toList();
@@ -137,12 +151,46 @@ class RollbackManagerOverridePreservationTest {
         };
     }
 
+    /// Records every applied command. Without a backing store it accepts every leader transaction; with one
+    /// (#1573 N2) it first runs `beforeApply` — a write that commits between a decision and its apply — and
+    /// then applies the commands to the store for real, so a fenced transaction is judged by the store.
     static final class CapturingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final NodeId self;
+        private final Option<KVStore<AetherKey, AetherValue>> store;
+        private final Runnable beforeApply;
         final List<KVCommand<AetherKey>> appliedCommands = new CopyOnWriteArrayList<>();
 
         CapturingClusterNode(NodeId self) {
+            this(self, Option.none(), () -> {});
+        }
+
+        CapturingClusterNode(NodeId self, KVStore<AetherKey, AetherValue> store, Runnable beforeApply) {
+            this(self, Option.some(store), beforeApply);
+        }
+
+        private CapturingClusterNode(NodeId self, Option<KVStore<AetherKey, AetherValue>> store, Runnable beforeApply) {
             this.self = self;
+            this.store = store;
+            this.beforeApply = beforeApply;
+        }
+
+        /// Every value written, in order: a Put's value, or each replacement of a leader transaction.
+        List<AetherValue> writtenValues() {
+            return appliedCommands.stream()
+                                  .flatMap(CapturingClusterNode::written)
+                                  .toList();
+        }
+
+        private static Stream<AetherValue> written(KVCommand<AetherKey> command) {
+            return switch (command) {
+                case KVCommand.Put<?, ?> put -> Stream.of((AetherValue) put.value());
+                case KVCommand.LeaderTransaction<?, ?> transaction -> transaction.mutations()
+                                                                                 .stream()
+                                                                                 .flatMap(mutation -> mutation.replacement()
+                                                                                                              .stream())
+                                                                                 .map(AetherValue.class::cast);
+                default -> Stream.empty();
+            };
         }
 
         @Override
@@ -169,8 +217,16 @@ class RollbackManagerOverridePreservationTest {
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             appliedCommands.addAll(commands);
+            beforeApply.run();
 
-            return Promise.success((List<R>) commands.stream().map(_ -> Unit.unit()).toList());
+            return Promise.success(store.map(kv -> kv.<R>process(kv.createBatch(commands)))
+                                        .or(() -> (List<R>) commands.stream().map(CapturingClusterNode::accepted).toList()));
+        }
+
+        private static Object accepted(KVCommand<AetherKey> command) {
+            return command instanceof KVCommand.LeaderTransaction<?, ?> transaction
+                   ? new KVCommand.TransactionResult(transaction.transactionId(), true)
+                   : Unit.unit();
         }
     }
 

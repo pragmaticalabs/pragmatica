@@ -67,6 +67,19 @@ class HttpForwarderDeadlineTest {
     }
 
     @Test
+    void workerDeparture_resolvesPendingForwardWithoutWaitingForHopTimeout() {
+        var network = new RecordingClusterNetwork(Set.of(A));
+        var forwarder = forwarder(network, timeSpan(20).seconds(), Set.of(A));
+        var context = HttpRequestContext.httpRequestContext(PATH, METHOD, Map.of(), Map.of(), "worker-departure");
+        var result = forwarder.forward(context, METHOD, PREFIX, "worker-departure");
+        network.firstSend.await(timeSpan(1).seconds()).unwrap();
+        forwarder.onNodeDeparture(A);
+        result.await(timeSpan(1).seconds());
+        assertThat(result.isResolved()).isTrue();
+        assertThat(result.await().isFailure()).isTrue();
+    }
+
+    @Test
     void forward_underExhaustedBudget_failsTyped_withoutAnySend() {
         var network = new RecordingClusterNetwork(Set.of(A, B));
         var forwarder = forwarder(network, timeSpan(50).millis(), Set.of(A, B));
@@ -140,6 +153,37 @@ class HttpForwarderDeadlineTest {
             .isLessThan(5_000);
     }
 
+    /// #1996: the frame must not outlive the hop wait that just started — after it the caller has moved on to another
+    /// owner, so a late delivery would run the request a second time. NO_BUDGET on the wire does not mean no wait: the
+    /// hop is always bounded by the configured timeout, so that is the lifetime handed to the transport.
+    @Test
+    void forward_withoutAmbientBudget_stillBoundsTheFrameLifetimeByTheHopTimeout() {
+        var network = new RecordingClusterNetwork(Set.of(A));
+        var forwarder = forwarder(network, timeSpan(50).millis(), Set.of(A));
+        var ctx = HttpRequestContext.httpRequestContext(PATH, METHOD, Map.of(), Map.of(), "req-ttl-nobudget");
+
+        forwarder.forward(ctx, METHOD, PREFIX, "req-ttl-nobudget").await();
+
+        assertThat(network.plainSends()).as("an HTTP forward is never sent without a frame lifetime").isZero();
+        assertThat(network.lifetimes()).isNotEmpty();
+        assertThat(network.lifetimes().getFirst().millis()).isPositive().isLessThanOrEqualTo(50L);
+    }
+
+    @Test
+    void forward_underBoundedBudget_frameLifetimeIsCappedByTheBudgetShare() {
+        var network = new RecordingClusterNetwork(Set.of(A));
+        var forwarder = forwarder(network, timeSpan(10).seconds(), Set.of(A));
+        var ctx = HttpRequestContext.httpRequestContext(PATH, METHOD, Map.of(), Map.of(), "req-ttl-budget");
+
+        Deadline.runWith(Deadline.fromWireMillis(300), () -> forwarder.forward(ctx, METHOD, PREFIX, "req-ttl-budget")).await();
+
+        assertThat(network.lifetimes()).isNotEmpty();
+        assertThat(network.lifetimes().getFirst().millis())
+            .as("the budget share (<= 300ms), not the configured 10s hop timeout")
+            .isPositive()
+            .isLessThanOrEqualTo(300L);
+    }
+
     private static HttpRouteRegistry fixedRouteRegistry(Set<NodeId> owners) {
         return new HttpRouteRegistry() {
             @Override public Option<RouteInfo> findRoute(String httpMethod, String path) {
@@ -156,12 +200,24 @@ class HttpForwarderDeadlineTest {
     private static final class RecordingClusterNetwork implements ClusterNetwork {
         private final Set<NodeId> connected;
         private final List<ProtocolMessage> sentMessages = new ArrayList<>();
+        private final Promise<Unit> firstSend = Promise.promise();
+        private final List<TimeSpan> lifetimes = new java.util.concurrent.CopyOnWriteArrayList<>();
+        private final java.util.concurrent.atomic.AtomicInteger plainSends = new java.util.concurrent.atomic.AtomicInteger();
 
         RecordingClusterNetwork(Set<NodeId> connected) {
             this.connected = new HashSet<>(connected);
         }
 
         synchronized List<ProtocolMessage> sentMessages() {return List.copyOf(sentMessages);}
+
+        List<TimeSpan> lifetimes() {return lifetimes;}
+
+        int plainSends() {return plainSends.get();}
+
+        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            lifetimes.add(offlineTtl);
+            return recordSend(message);
+        }
 
         @Override public <M extends ProtocolMessage> Unit broadcast(M message) {return unit();}
 
@@ -171,8 +227,14 @@ class HttpForwarderDeadlineTest {
         @Override public void handleSend(NetworkServiceMessage.Send send) {}
         @Override public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
-        @Override public synchronized <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+        @Override public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+            plainSends.incrementAndGet();
+            return recordSend(message);
+        }
+
+        private synchronized Unit recordSend(ProtocolMessage message) {
             sentMessages.add(message);
+            firstSend.succeed(Unit.unit());
             return unit();
         }
 

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.config;
 
@@ -16,7 +15,7 @@ class AetherConfigTest {
         var config = AetherConfig.aetherConfig(Environment.LOCAL);
 
         assertThat(config.environment()).isEqualTo(Environment.LOCAL);
-        assertThat(config.cluster().nodes()).isEqualTo(3);
+        assertThat(config.cluster().nodes()).isEqualTo(5);
         assertThat(config.node().heap()).isEqualTo("256m");
         assertThat(config.tlsEnabled()).isFalse();
         assertThat(config.docker().isEmpty()).isTrue();
@@ -28,7 +27,7 @@ class AetherConfigTest {
         var config = AetherConfig.aetherConfig(Environment.DOCKER);
 
         assertThat(config.environment()).isEqualTo(Environment.DOCKER);
-        assertThat(config.cluster().nodes()).isEqualTo(5);
+        assertThat(config.cluster().nodes()).isEqualTo(7);
         assertThat(config.node().heap()).isEqualTo("512m");
         assertThat(config.tlsEnabled()).isTrue();
         assertThat(config.tls().isPresent()).isTrue();
@@ -43,7 +42,7 @@ class AetherConfigTest {
         var config = AetherConfig.aetherConfig(Environment.KUBERNETES);
 
         assertThat(config.environment()).isEqualTo(Environment.KUBERNETES);
-        assertThat(config.cluster().nodes()).isEqualTo(5);
+        assertThat(config.cluster().nodes()).isEqualTo(7);
         assertThat(config.node().heap()).isEqualTo("1g");
         assertThat(config.tlsEnabled()).isTrue();
         assertThat(config.tls().isPresent()).isTrue();
@@ -81,7 +80,7 @@ class AetherConfigTest {
 
         assertThat(config.node().heap()).isEqualTo("2g");
         // Other defaults remain
-        assertThat(config.cluster().nodes()).isEqualTo(5);
+        assertThat(config.cluster().nodes()).isEqualTo(7);
     }
 
     @Test

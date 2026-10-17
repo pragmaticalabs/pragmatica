@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import java.nio.file.Path;
@@ -11,34 +10,112 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
 import static org.pragmatica.lang.io.FileOps.exists;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.lang.Result.success;
 
 
 public final class ConfigValidator {
-    private static final Set<Integer> VALID_NODE_COUNTS = Set.of(3, 5, 7);
+    /// STRUCTURAL floor — below three no majority quorum exists. Deliberately NOT the supported
+    /// minimum of 5 from the 2026-09-12 ruling. The policy minimum is enforced where configs are
+    /// CREATED — `CoreWorkerSplit`, reached from `aether cluster init` and `scaffold`.
+    ///
+    /// WHAT A FAILURE HERE ACTUALLY DOES (#1019 round-1 review S1, corrected by #2052): `ConfigLoader.load` calls [#validate] and `Main`
+    /// loads a GIVEN `--config=` file through it, so this runs on every such node boot, and a validation failure REFUSES the boot:
+    /// `Main#resolveConfig` fails and `Main#refuseConfig` exits 65 with a FATAL line on stderr naming the file and the cause. (Before
+    /// #2052 the failure was logged and discarded and the node booted on defaults without the file's TLS, port and secret settings.)
+    ///
+    /// That makes raising this floor as consequential as raising [ClusterSizeGate]'s: a 3-node cluster whose config stopped validating
+    /// could no longer restart. With NO config file given nothing here runs, and [ClusterSizeGate] is the only floor on that boot.
+    private static final int MINIMUM_CLUSTER_SIZE = 3;
+    private static final TimeSpan OFFLINE_BUFFER_CAP_FLOOR = timeSpan(5).seconds();
+    /// Upper bound on the CONSENSUS tier, not on the fleet. `[cluster] nodes` is the quorum basis
+    /// (`TopologyConfig#clusterSize`) and every consensus round is broadcast across it. Fleet size is
+    /// bounded separately by `ClusterConfig#maxNodes`, which #298 deliberately leaves UNBOUNDED, so
+    /// capacity beyond this limit is added as workers rather than refused. Raised 7 -> 9 by #1019.
+    ///
+    /// This replaces a `VALID_NODE_COUNTS = Set.of(3, 5, 7)` constant that was DEAD — it had exactly
+    /// one occurrence in the tree, its own declaration, while the live rule was the literal chain in
+    /// [#nodeCountErrors]. Updating it would have changed no behaviour AND left a plausible-looking
+    /// constant for the next reader to believe, which is worse than deleting it.
+    ///
+    /// The figure is [ConsensusTierBounds#MAXIMUM_CORE_NODES] rather than a local literal so that this
+    /// bound, `ClusterBootstrapConfigValidator`'s and `ClusterTopologyManager#setDesiredCount`'s cannot
+    /// drift apart — the exact failure the dead constant above demonstrates. Note this is a bound that
+    /// was already here and is RAISED (it refused above 7 before); the ruling adds no NEW boot-path
+    /// enforcement, and per the note on [#MINIMUM_CLUSTER_SIZE] a failure here does not refuse a boot.
+    private static final int MAXIMUM_CLUSTER_SIZE = ConsensusTierBounds.MAXIMUM_CORE_NODES;
     private static final Pattern HEAP_PATTERN = Pattern.compile("^\\d+[mMgG]$");
     private static final Set<String> VALID_GC = Set.of("zgc", "g1");
+    /// #250 review: floor below which a storage-maintenance pass (walks every lifecycle in every
+    /// local tier) is more likely to be re-scheduled on top of itself than to finish and idle. Chosen
+    /// two orders of magnitude below the 5-minute production default, not derived from a measured
+    /// worst-case pass duration.
+    private static final TimeSpan MIN_STORAGE_MAINTENANCE_INTERVAL = timeSpan(1).seconds();
 
     private ConfigValidator() {}
 
     public static Result<AetherConfig> validate(AetherConfig config) {
+        var security = securityMisconfiguration(config.appHttp());
+
+        if (security.isPresent()) {
+            return security.unwrap()
+                           .result();
+        }
+
         var errors = new ArrayList<String>();
 
         clusterErrors(config.cluster(), errors);
         nodeErrors(config.node(), errors);
         absenceWindowErrors(config.timeouts().cluster(),
                             errors);
+        offlineBufferCapErrors(config.timeouts().cluster(),
+                               errors);
+        storageMaintenanceErrors(config.timeouts().storageMaintenance(),
+                                 errors);
         streamingErrors(config.streaming(), errors);
+        promotionEscapeErrors(config.streaming(),
+                              config.timeouts().swim().suspectTimeout(),
+                              errors);
+        archiveRetentionErrors(config.slice(), errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, errors));
         }
 
         return toResult(config, errors);
     }
+
+    /// #909 — `security_mode = "jwt"` on a server that will serve, with nothing to verify a token against.
+    /// The factory and `ConfigLoader` accept it (`jwtConfig` exists only when `jwks_url` is present), and
+    /// the request-time deny floor from #888 only turns every non-public route into a `401`. A declared
+    /// contradiction is refused here, as a typed [ConfigError.SecurityMisconfigured] that names the missing
+    /// setting. A given `--config=` that fails validation refuses the boot (exit 65, #2052), so this is
+    /// what stops the node. A disabled server refuses nothing, so it is not refused.
+    private static Option<ConfigError> securityMisconfiguration(AppHttpConfig appHttp) {
+        if (!appHttp.enabled() || appHttp.securityMode() != SecurityMode.JWT) {
+            return Option.empty();
+        }
+
+        return appHttp.jwtConfig()
+                      .fold(() -> Option.some(ConfigError.securityMisconfigured(JWT_WITHOUT_JWKS_REASON)),
+                            jwt -> unusableJwksUrl(jwt.jwksUrl()));
+    }
+
+    private static Option<ConfigError> unusableJwksUrl(String jwksUrl) {
+        return JwksUrl.jwksUrl(jwksUrl).fold(cause -> Option.some(ConfigError.securityMisconfigured("[app-http] security_mode = \"jwt\" but " + cause.message()
+                                                                                                   + ". " + JWKS_URL_RULE)),
+                                             _ -> Option.empty());
+    }
+
+    static final String JWKS_URL_RULE = "jwks_url must be an absolute https URL (http only to a loopback host).";
+
+    static final String JWT_WITHOUT_JWKS_REASON = "[app-http] security_mode = \"jwt\" but [app-http] jwks_url is missing:"
+                                                + " there is nothing to verify tokens against. jwks_url is required"
+                                                + " (issuer/audience optional): set [app-http] jwks_url, or change security_mode.";
 
     /// #590 — the two absence windows are the two halves of one mechanism and their ORDER is a
     /// correctness property, not a preference. A community must stop serving before the core hands its
@@ -47,12 +124,56 @@ public final class ConfigValidator {
     /// Reported rather than clamped: substituting a working pair would hide that the operator asked
     /// for something whose failure mode is two live writers. Reported here rather than thrown from a
     /// factory so it joins every other config problem in one collected report.
+    /// #1996: the cap bounds how long ANY frame may wait in an offline buffer, including a request whose caller waits
+    /// longer. A cap below the shortest caller wait the cluster ships with (the 5s replication ack) silently shortens
+    /// that wait to the cap, and a zero or negative one expires every buffered frame. The 5s floor is a guess matching
+    /// that wait, not a measured value.
+    private static void offlineBufferCapErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
+        if (cluster.offlineBufferCap().nanos() < OFFLINE_BUFFER_CAP_FLOOR.nanos()) {
+            errors.add("timeouts.cluster.offline_buffer_cap (%s) must be at least %s: a smaller cap cuts the wait of every buffered request".formatted(cluster.offlineBufferCap(),
+                                                                                                                                                       OFFLINE_BUFFER_CAP_FLOOR));
+        }
+    }
+
     private static void absenceWindowErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
         if (!cluster.absenceWindowsOrdered()) {
             errors.add(("timeouts.cluster.core_absence (%s) must be strictly less than "
                        + "timeouts.cluster.community_absence (%s): a community has to stop serving before the core "
                        + "re-places its slices, or both run at once").formatted(cluster.coreAbsence(),
                                                                                 cluster.communityAbsence()));
+        }
+    }
+
+    /// #250 review: `StorageMaintenanceDriver` schedules `demote()`+`collectGarbage()` on this interval
+    /// unconditionally; a non-positive value would either fail scheduler wiring or spin the tick with
+    /// no pacing, so it is rejected here rather than discovered at startup, joining the collected report
+    /// with every other config problem.
+    ///
+    /// #250 review (round 2): positivity alone let 1ms through. A pass that iterates every lifecycle in
+    /// every local tier must not run back to back with itself, so a positive-but-below-floor interval is
+    /// reported as its own error rather than folded into the existing positivity message.
+    private static void storageMaintenanceErrors(TimeoutsConfig.StorageMaintenanceTimeouts storageMaintenance,
+                                                 List<String> errors) {
+        var interval = storageMaintenance.interval();
+
+        positiveTimeSpanError(interval, "Storage maintenance interval", errors);
+        if (interval.millis() > 0 && interval.millis() < MIN_STORAGE_MAINTENANCE_INTERVAL.millis()) {
+            errors.add("Storage maintenance interval must be at least " + MIN_STORAGE_MAINTENANCE_INTERVAL.millis()
+                      + "ms (a pass that iterates all lifecycles must not run back to back). Got: " + interval.millis()
+                      + "ms");
+        }
+    }
+
+    /// `[slice] artifact_archive_retention` is the minimum age before a version may be archived (#1778). Zero or
+    /// negative would let a version be archived the moment it is stored, and an unparseable value is carried here
+    /// as a negative sentinel, so both are reported rather than defaulted.
+    private static void archiveRetentionErrors(SliceConfig slice, List<String> errors) {
+        if (slice.artifactArchiveRetention().millis() <= 0) {
+            errors.add("slice.artifact_archive_retention must be a positive duration such as \"7d\" or \"36h\"");
+        }
+
+        if (slice.artifactMaxVersions() < 1) {
+            errors.add("slice.artifact_max_versions must be at least 1. Got: " + slice.artifactMaxVersions());
         }
     }
 
@@ -72,6 +193,27 @@ public final class ConfigValidator {
             errors.add("streaming.caught_up_max_lag_offsets must be >= 0 (a negative bound rejects every replica, "
                       + "stopping replica-served reads and blocking the ring-release catch-up gate). Got: " + streaming.caughtUpMaxLagOffsets());
         }
+        // #1604: 0 means "derive from the filesystem"; a negative cap has no meaning.
+        if (streaming.segmentDiskMaxBytes() < 0) {
+            errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
+        }
+    }
+
+    /// `promotion_escape_after` (#2080) may not be below the alarm bounds it follows: the owner gate's (two SWIM suspect windows) and the
+    /// replica contest's (`backfillSourceWaitBound`). An escape earlier than the alarm would go ahead before the operator was told anything
+    /// was wrong, and earlier than a slow boot completes.
+    private static void promotionEscapeErrors(StreamingConfig streaming, TimeSpan suspectTimeout, List<String> errors) {
+        var alarm = StreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);
+        var contest = streaming.backfillSourceWaitBound();
+        var floor = alarm.millis() >= contest.millis()
+                    ? alarm
+                    : contest;
+
+        if (streaming.promotionEscapeAfter().millis() < floor.millis()) {
+            errors.add("streaming.promotion_escape_after (%dms) must be at least %dms (the larger of two swim suspect_timeout windows and the replica contest's source-wait bound): an escape earlier than the alarm goes ahead before the operator is told".formatted(streaming.promotionEscapeAfter()
+                                                                                                                                                                                                                                                                                .millis(),
+                                                                                                                                                                                                                                                                       floor.millis()));
+        }
     }
 
     private static Result<AetherConfig> toResult(AetherConfig config, List<String> errors) {
@@ -88,13 +230,25 @@ public final class ConfigValidator {
     private static void nodeCountErrors(ClusterConfig cluster, List<String> errors) {
         int nodes = cluster.nodes();
 
-        if (nodes < 3) {
-            errors.add("Minimum 3 nodes required for fault tolerance. Got: " + nodes);
+        if (nodes < MINIMUM_CLUSTER_SIZE) {
+            errors.add("cluster.nodes is " + nodes
+                      + ", below the structural minimum of " + MINIMUM_CLUSTER_SIZE
+                      + ": fewer than three nodes have no majority quorum at all. Note the supported "
+                      + "minimum for NEW clusters is 5 — a 3-node cluster has no fault budget during "
+                      + "maintenance, since a rolling restart leaves 2 of 3 and any further fault "
+                      + "loses quorum.");
         } else if (nodes % 2 == 0) {
-            errors.add("Node count must be odd (3, 5, 7) for quorum. Got: " + nodes);
-        } else if (nodes > 7) {
-            errors.add("Maximum recommended node count is 7. Got: " + nodes
-                      + ". More nodes add overhead without proportional benefit.");
+            errors.add("cluster.nodes is " + nodes
+                      + ", which is even. Quorum needs an odd count so that no split is a tie. Use 5, "
+                      + "7 (recommended) or " + MAXIMUM_CLUSTER_SIZE
+                      + ".");
+        } else if (nodes > MAXIMUM_CLUSTER_SIZE) {
+            errors.add("cluster.nodes is " + nodes
+                      + ", above the maximum consensus tier of " + MAXIMUM_CLUSTER_SIZE
+                      + ". cluster.nodes sizes the CONSENSUS tier, which every consensus round is "
+                      + "broadcast across — it is not the fleet size, which cluster.max_nodes leaves "
+                      + "unbounded. Keep it at " + MAXIMUM_CLUSTER_SIZE
+                      + " or below and add further capacity as workers.");
         }
     }
 
@@ -217,6 +371,19 @@ public final class ConfigValidator {
             public String message() {
                 return "Configuration validation failed:\n- " + String.join("\n- ", errors);
             }
+        }
+
+        /// A security setting that contradicts itself (#909). Distinct from [ValidationFailed] so the refusal
+        /// names the contradiction rather than a list of generic validation errors.
+        record SecurityMisconfigured(String reason) implements ConfigError {
+            @Override
+            public String message() {
+                return "Security misconfiguration: " + reason;
+            }
+        }
+
+        static ConfigError securityMisconfigured(String reason) {
+            return new SecurityMisconfigured(reason);
         }
 
         static ConfigError validationFailed(List<String> errors) {

@@ -1,14 +1,12 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.storage;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.ContentStore;
 import org.pragmatica.storage.ContentStoreConfig;
@@ -39,9 +37,13 @@ public final class ContentStoreFactory implements ResourceFactory<ContentStore, 
                       .map(instance -> ContentStore.contentStore(instance, config))
                       .async();
     }
-
-    @Override
-    public Promise<Unit> close(ContentStore resource) {
-        return Promise.unitPromise();
-    }
+    // No close override, deliberately (#893). A content store owns nothing releasable: the
+    // StorageInstance it writes through is the NODE's (registered by
+    // AetherNode.registerRuntimeExtensions), never a slice's to close — closing it from one
+    // slice's unload would shut the node's content storage under every other slice. The node
+    // does not shut that instance down at stop either; that gap is #1078, not this factory's.
+    // The override that used to sit here returned unitPromise() — a no-op that reported success
+    // and was indistinguishable from a working close. Falling through to ResourceFactory's
+    // default dispatch names the outcome in code (noCloseConvention) and emits it to
+    // java.util.logging at FINE, which the node's log4j configuration does not receive (#1077).
 }

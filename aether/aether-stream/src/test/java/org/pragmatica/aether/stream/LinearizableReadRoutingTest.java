@@ -134,9 +134,9 @@ class LinearizableReadRoutingTest {
         void route_rejectsStaleEpochRead_whenCommittedEpochBelowHighWater() {
             publish("e0");
             markSelfCaughtUp(0L);
-            var highWater = highWaterAt(Epoch.epoch(5, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 5, 0));
 
-            var router = router(hrwOwner(SELF), committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater));
+            var router = router(hrwOwner(SELF), committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater));
 
             router.read(STREAM, PARTITION, 0, 10, ReadPreference.LINEARIZABLE)
                   .await()
@@ -150,9 +150,9 @@ class LinearizableReadRoutingTest {
         void route_serves_whenCommittedEpochEqualsHighWater() {
             publish("e0");
             markSelfCaughtUp(0L);
-            var highWater = highWaterAt(Epoch.epoch(3, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 3, 0));
 
-            var router = router(hrwOwner(SELF), committedOwner(SELF, Epoch.epoch(3, 0)), Option.some(highWater));
+            var router = router(hrwOwner(SELF), committedOwner(SELF, Epoch.epoch(0L, 3, 0)), Option.some(highWater));
 
             router.read(STREAM, PARTITION, 0, 10, ReadPreference.LINEARIZABLE)
                   .await()
@@ -223,11 +223,11 @@ class LinearizableReadRoutingTest {
         void route_rejectsStaleEpochRead_whenRoundObservesDeposalCommittedDuringRead() {
             publish("e0");
             markSelfCaughtUp(0L);
-            var highWater = highWaterAt(Epoch.epoch(3, 0));
-            var barrier = advancingBarrier(highWater, Epoch.epoch(9, 0));
+            var highWater = highWaterAt(Epoch.epoch(0L, 3, 0));
+            var barrier = advancingBarrier(highWater, Epoch.epoch(0L, 9, 0));
 
             var router = routerWithBarrier(hrwOwner(SELF),
-                                           committedOwner(SELF, Epoch.epoch(3, 0)),
+                                           committedOwner(SELF, Epoch.epoch(0L, 3, 0)),
                                            Option.some(highWater),
                                            Option.some(barrier));
 

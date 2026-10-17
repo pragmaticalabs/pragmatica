@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -62,7 +61,7 @@ class SpokesmanPingLoopLifecycleTest {
 
     @Test
     void assignedStatus_activatesAndWritesActive() {
-        var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.epoch(7L, 0L), HlcTimestamp.ZERO, 1L);
+        var value = SpokesmanValue.spokesmanValue(List.of("pool-a"), Epoch.epoch(0L, 7L, 0L), HlcTimestamp.ZERO, 1L);
 
         loop.onSpokesmanPut(new ValuePut<>(new KVCommand.Put<>(SpokesmanKey.spokesmanKey(SELF), value), Option.none()));
 

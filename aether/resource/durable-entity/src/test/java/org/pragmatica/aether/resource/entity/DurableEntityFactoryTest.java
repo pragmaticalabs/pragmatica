@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import io.netty.buffer.ByteBuf;
@@ -12,6 +11,9 @@ import org.pragmatica.aether.dht.CommittedPartitionOwnerSource.CommittedOwner;
 import org.pragmatica.aether.dht.PartitionOwnerEpochGate;
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -34,6 +36,9 @@ import org.pragmatica.serialization.Serializer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.ServiceLoader;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -170,6 +175,29 @@ class DurableEntityFactoryTest {
         }
     }
 
+    /// Make-before-break, as far as one node can make it. `retract` is what asks for the immediate
+    /// ownership reconcile (the node's `EntityOwnershipReconciler` runs a pass on it), so it has to be issued
+    /// BEFORE the forward target disappears: the other order removes the node's ability to answer first and
+    /// only then starts the clock on moving ownership away, widening the window in which a committed owner
+    /// has nothing to serve a forwarded request with.
+    @Nested
+    class UnloadSequencing {
+        @Test
+        void close_retractsTheKeyspace_beforeUnregisteringTheForwardTarget() {
+            unloadFixture().onFailure(DurableEntityFactoryTest::failCause)
+                           .onSuccess(fixture -> {
+                               var entity = provisioned(fixture);
+
+                               fixture.events().clear();
+                               closeOnce(entity);
+
+                               assertThat(fixture.events())
+                                   .as("the hosting declaration must be retracted first — that is what requests the reconcile")
+                                   .containsSubsequence("retract:" + KEYSPACE, "unregister:" + KEYSPACE);
+                           });
+        }
+    }
+
     // ---- unload helpers ------------------------------------------------------------------------
 
     private record UnloadFixture(DurableEntityConfig config,
@@ -177,13 +205,15 @@ class DurableEntityFactoryTest {
                                  RecordingRegistrar registrar,
                                  RecordingForwardRegistry registry,
                                  EntityCheckpointDriver driver,
-                                 EntityTimerDriver timerDriver) {}
+                                 EntityTimerDriver timerDriver,
+                                 List<String> events) {}
 
     /// A fully-wired provisioning context — the shape `AetherNode.registerEntityExtensionsOnSpi`
     /// produces — with the three unload collaborators reachable so the test can watch them.
     private static Result<UnloadFixture> unloadFixture() {
-        var registrar = new RecordingRegistrar();
-        var registry = new RecordingForwardRegistry();
+        var events = new ArrayList<String>();
+        var registrar = new RecordingRegistrar(events);
+        var registry = new RecordingForwardRegistry(events);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
         // Both entity drivers, because `registerEntityExtensionsOnSpi` registers both together and
         // unconditionally: a fixture carrying only one is not the shape a node produces, and the factory
@@ -198,7 +228,8 @@ class DurableEntityFactoryTest {
                                                         registrar,
                                                         registry,
                                                         driver,
-                                                        timerDriver));
+                                                        timerDriver,
+                                                        events));
     }
 
     private static void assertUnloadReleasesEverything(UnloadFixture fixture) {
@@ -237,6 +268,52 @@ class DurableEntityFactoryTest {
         assertThat(fixture.registry().unregistered).containsExactly(KEYSPACE);
     }
 
+    /// #1330 N6 — the factory must hand the checkpoint driver the ENTITY'S OWN owner gate, not a
+    /// permissive stand-in. The gate itself is pinned in `EntityCheckpointDriverLagTest`; this pins the
+    /// WIRING, which is the half that was missing: with `_ -> true` in its place every driver test stays
+    /// green and a replica reports a lag again — the exact B1 false CRITICAL.
+    ///
+    /// Both arms are asserted. "A non-owner reports nothing" alone would also pass if provisioning
+    /// registered nothing at all, so the owner arm is the control that the registration happened.
+    @Test
+    void provision_wiresTheEntitysOwnOwnerGate_soOnlyAnOwnerReportsLag() {
+        var ownerDriver = EntityCheckpointDriver.entityCheckpointDriver();
+        var replicaDriver = EntityCheckpointDriver.entityCheckpointDriver();
+
+        provisionWithCheckpointDriver(ownerDriver, selfOwnsEveryArc());
+        provisionWithCheckpointDriver(replicaDriver, otherNodeOwnsEveryArc());
+        ownerDriver.tick();
+        replicaDriver.tick();
+
+        assertThat(lagPartitions(ownerDriver)).describedAs("control: the owner's partitions are reported, so the"
+                                                           + " registration really happened")
+                                              .isNotEmpty();
+        assertThat(lagPartitions(replicaDriver)).describedAs("a node that owns none of the arcs must report no lag")
+                                                .isEmpty();
+    }
+
+    private static void provisionWithCheckpointDriver(EntityCheckpointDriver driver, CommittedPartitionOwnerSource owners) {
+        var context = fencedContext().withExtension(CommittedPartitionOwnerSource.class, owners)
+                                     .withExtension(EntityCheckpointDriver.class, driver)
+                                     .withExtension(EntityTimerDriver.class, EntityTimerDriver.entityTimerDriver());
+
+        config().map(entityConfig -> new DurableEntityFactory().provision(entityConfig, context))
+                .onFailure(cause -> fail(cause.message()))
+                .onSuccess(provisioning -> provisioning.await(AWAIT).onFailure(cause -> fail(cause.message())));
+    }
+
+    private static Set<Integer> lagPartitions(EntityCheckpointDriver driver) {
+        return driver.snapshot()
+                     .keyspaces()
+                     .stream()
+                     .flatMap(keyspace -> keyspace.checkpointLag().keySet().stream())
+                     .collect(Collectors.toSet());
+    }
+
+    private static CommittedPartitionOwnerSource otherNodeOwnsEveryArc() {
+        return (_, _) -> Option.some(new CommittedOwner(new NodeId("other-node"), Epoch.ZERO));
+    }
+
     private static List<String> driverKeyspaces(UnloadFixture fixture) {
         return fixture.driver()
                       .snapshot()
@@ -269,6 +346,111 @@ class DurableEntityFactoryTest {
                                                                .await(AWAIT)
                                                                .onSuccess(DurableEntityFactoryTest::failUnfenced)
                                                                .onFailure(DurableEntityFactoryTest::assertFenceUnavailable));
+    }
+
+    /// #1564: the entity's factors are resolved at provisioning against the node's [ReplicationContext] — the one path
+    /// from an entity declaration to its log's factors.
+    @Nested
+    class Replication {
+        @Test
+        void provision_nothingDeclared_materializesTheLogWithTheClusterDefault() {
+            var materializedWith = new AtomicReference<ReplicationFactors>();
+
+            provisioned(DurableEntityConfig.durableEntityConfig(KEYSPACE).unwrap(),
+                        ReplicationContext.replicationContext(new ReplicationFactors(5, 3), 0),
+                        materializedWith).onFailure(DurableEntityFactoryTest::failCause);
+
+            assertThat(materializedWith.get()).isEqualTo(new ReplicationFactors(5, 3));
+        }
+
+        /// #1564 acceptance: the cluster default is overridden by the per-resource value. Mutation "drop the
+        /// per-resource override" turns this red.
+        @Test
+        void provision_declaredFactors_overrideTheClusterDefault() {
+            var materializedWith = new AtomicReference<ReplicationFactors>();
+
+            provisioned(DurableEntityConfig.durableEntityConfig(KEYSPACE, 8, Option.some(3), Option.some(3)).unwrap(),
+                        ReplicationContext.replicationContext(new ReplicationFactors(5, 3), 0),
+                        materializedWith).onFailure(DurableEntityFactoryTest::failCause);
+
+            assertThat(materializedWith.get()).isEqualTo(new ReplicationFactors(3, 3));
+        }
+
+        /// #1564 R5 pin (entities): a factor below 3 from a DEFAULT is refused, and the log is never materialized.
+        /// Mutation "drop the explicitness check in ReplicationDeclaration#resolve" turns this red.
+        @Test
+        void provision_defaultedFactorBelowThree_isRefused() {
+            var materializedWith = new AtomicReference<ReplicationFactors>();
+            var outcome = provisioned(DurableEntityConfig.durableEntityConfig(KEYSPACE).unwrap(),
+                                      ReplicationContext.replicationContext(new ReplicationFactors(2, 1), 0),
+                                      materializedWith);
+
+            assertThat(outcome.<Object> fold(cause -> cause, _ -> "provisioned"))
+                .isEqualTo(new EntityProvisioningError.ReplicationRefused(new ReplicationFactorsError.ImplicitFactorBelowThree(2)));
+            assertThat(materializedWith.get()).isNull();
+        }
+
+        /// #1564 R7: a factor above the cluster's desired core count is refused before the log is materialized.
+        @Test
+        void provision_factorAboveDesiredCoreCount_isRefused() {
+            var materializedWith = new AtomicReference<ReplicationFactors>();
+            var outcome = provisioned(DurableEntityConfig.durableEntityConfig(KEYSPACE, 8, Option.some(5), Option.none()).unwrap(),
+                                      ReplicationContext.replicationContext(ReplicationFactors.BUILT_IN, 3),
+                                      materializedWith);
+
+            assertThat(outcome.<Object> fold(cause -> cause, _ -> "provisioned"))
+                .isEqualTo(new EntityProvisioningError.ReplicationRefused(new ReplicationFactorsError.ExceedsCoreCount(5, 3)));
+            assertThat(materializedWith.get()).isNull();
+        }
+
+        /// #1564 / #1617 (R10): the declaration's warnings are raised as `replication-policy-warning` operator warnings
+        /// through the sink the node supplies in the provisioning context.
+        @Test
+        void provision_declaredFactorOne_raisesReplicationPolicyOperatorWarnings() {
+            var events = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+            var context = fencedContext().withExtension(EntityLogSubstrate.class, inMemoryLog(new AtomicReference<>()))
+                                         .withExtension(ReplicationContext.Source.class,
+                                                        ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN))
+                                         .withExtension(org.pragmatica.utility.warning.OperatorWarningSink.class,
+                                                        org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+
+            new DurableEntityFactory().provision(DurableEntityConfig.durableEntityConfig(KEYSPACE, 8, Option.some(1), Option.none())
+                                                                    .unwrap(),
+                                                 context)
+                                      .await(AWAIT)
+                                      .onFailure(DurableEntityFactoryTest::failCause);
+            var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+            while (events.size() < 3 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+
+            assertThat(events).hasSize(3)
+                              .allSatisfy(event -> assertThat(event.subject()).isEqualTo("entity keyspace '" + KEYSPACE + "'"));
+            assertThat(events.stream().map(org.pragmatica.utility.warning.OperatorWarning::code))
+                .containsExactlyInAnyOrder(org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                           org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING);
+        }
+
+        @Test
+        void provision_withoutReplicationContext_isRefused() {
+            var context = fencedContext().withExtension(ReplicationContext.Source.class,
+                                                        () -> new EntityProvisioningError.ReplicationContextUnavailable(KEYSPACE).result());
+            var outcome = new DurableEntityFactory().provision(DurableEntityConfig.durableEntityConfig(KEYSPACE).unwrap(), context)
+                                                    .await(AWAIT);
+
+            assertThat(outcome.isFailure()).isTrue();
+        }
+
+        private static Result<DurableEntity> provisioned(DurableEntityConfig config,
+                                                         ReplicationContext replication,
+                                                         AtomicReference<ReplicationFactors> materializedWith) {
+            var context = fencedContext().withExtension(EntityLogSubstrate.class, inMemoryLog(materializedWith))
+                                         .withExtension(ReplicationContext.Source.class, ReplicationContext.Source.fixed(replication));
+
+            return new DurableEntityFactory().provision(config, context).await(AWAIT);
+        }
     }
 
     private static void assertProvisions(DurableEntityConfig config, ProvisioningContext context) {
@@ -307,6 +489,15 @@ class DurableEntityFactoryTest {
     private static final class RecordingRegistrar implements EntityKeyspaceRegistrar {
         private final List<String> declared = new ArrayList<>();
         private final List<String> retracted = new ArrayList<>();
+        private final List<String> events;
+
+        RecordingRegistrar() {
+            this(new ArrayList<>());
+        }
+
+        RecordingRegistrar(List<String> events) {
+            this.events = events;
+        }
 
         @Override
         public Unit declare(String keyspace, int partitionCount) {
@@ -318,6 +509,7 @@ class DurableEntityFactoryTest {
         @Override
         public Unit retract(String keyspace) {
             retracted.add(keyspace);
+            events.add("retract:" + keyspace);
 
             return Unit.unit();
         }
@@ -328,6 +520,15 @@ class DurableEntityFactoryTest {
     private static final class RecordingForwardRegistry implements EntityForwardRegistry {
         private final List<String> registered = new ArrayList<>();
         private final List<String> unregistered = new ArrayList<>();
+        private final List<String> events;
+
+        RecordingForwardRegistry() {
+            this(new ArrayList<>());
+        }
+
+        RecordingForwardRegistry(List<String> events) {
+            this.events = events;
+        }
 
         @Override
         @Contract
@@ -339,6 +540,7 @@ class DurableEntityFactoryTest {
         @Contract
         public void unregister(String keyspace) {
             unregistered.add(keyspace);
+            events.add("unregister:" + keyspace);
         }
     }
 
@@ -359,6 +561,7 @@ class DurableEntityFactoryTest {
 
         return ProvisioningContext.provisioningContext()
                                   .withExtension(EntityLogSubstrate.class, inMemoryLog())
+                                  .withExtension(ReplicationContext.Source.class, ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN))
                                   .withExtension(CommittedPartitionOwnerSource.class, selfOwnsEveryArc())
                                   .withExtension(OwnershipEpochHighWater.class, highWater)
                                   .withExtension(EntityKeyspaceRegistrar.class, registrar)
@@ -378,6 +581,7 @@ class DurableEntityFactoryTest {
         var context = ProvisioningContext.provisioningContext();
 
         context = addUnless(context, omitted, EntityLogSubstrate.class, inMemoryLog());
+        context = addUnless(context, omitted, ReplicationContext.Source.class, ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN));
         context = addUnless(context, omitted, CommittedPartitionOwnerSource.class, selfOwnsEveryArc());
         context = addUnless(context, omitted, OwnershipEpochHighWater.class, highWater);
         context = addUnless(context, omitted, EntityKeyspaceRegistrar.class, recordingRegistrar());
@@ -398,11 +602,18 @@ class DurableEntityFactoryTest {
     /// working entity with them; the fence itself is proven against a fence-enforcing substrate in
     /// PartitionFencedDurableEntityFenceTest, so this one only has to behave like a log.
     private static EntityLogSubstrate inMemoryLog() {
+        return inMemoryLog(new AtomicReference<>());
+    }
+
+    /// [#inMemoryLog] recording the factors `ensureLog` materializes the keyspace's log with (#1564).
+    private static EntityLogSubstrate inMemoryLog(AtomicReference<ReplicationFactors> materializedWith) {
         var records = new java.util.concurrent.ConcurrentHashMap<Integer, java.util.List<byte[]>>();
 
         return new EntityLogSubstrate() {
             @Override
-            public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
+            public Result<Unit> ensureLog(String keyspace, int partitionCount, ReplicationFactors replication) {
+                materializedWith.set(replication);
+
                 return Result.unitResult();
             }
 

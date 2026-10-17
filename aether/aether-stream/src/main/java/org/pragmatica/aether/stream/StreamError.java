@@ -4,18 +4,22 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.nio.file.Path;
+import java.util.regex.Pattern;
+
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 
 public sealed interface StreamError extends Cause {
-    /// `General` implements {@link ResourceCapacityExhausted} so the ONE capacity-class constant —
-    /// `STREAM_MEMORY_EXCEEDED` — is classified TRANSIENT by the slice-loading / resource-provisioning
-    /// path (retry, then `DeploymentFailed` after MAX_RETRIES; spec §6 / decision #7). Every other
-    /// constant overrides the marker predicate to false, so only off-heap budget exhaustion is
-    /// retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
+    /// `General` implements {@link ResourceCapacityExhausted} so the capacity-class constants —
+    /// `STREAM_MEMORY_EXCEEDED`, and `SEALING_BEHIND` since #1234 — are classified TRANSIENT by the
+    /// slice-loading / resource-provisioning path (retry, then `DeploymentFailed` after MAX_RETRIES; spec
+    /// §6 / decision #7). Every other constant overrides the marker predicate to false, so only capacity
+    /// shortages are retryable; genuine config errors (e.g. `AHSE_REQUIRED_FOR_STRONG`) stay fatal. Enum identity is
     /// preserved — `cause == STREAM_MEMORY_EXCEEDED` checks elsewhere are unaffected (spec §8).
     enum General implements StreamError, ResourceCapacityExhausted {
         BUFFER_CLOSED("Ring buffer is closed"),
@@ -28,10 +32,23 @@ public sealed interface StreamError extends Cause {
         CONSUMER_RUNTIME_CLOSED("Consumer runtime has been closed"),
         STREAM_MEMORY_EXCEEDED("Total off-heap memory limit exceeded"),
         CONSENSUS_PATH_UNAVAILABLE("Consensus publish path not configured for STRONG consistency stream"),
+        UNREADABLE_CONSISTENCY_MODE("Stream consistency mode was written by a node running a newer ConsistencyMode and cannot be"
+                                   + " read here (#964); nothing is published rather than defaulting to EVENTUAL or STRONG"),
         BUFFER_FULL("Ring buffer is full, STRONG consistency prevents eviction"),
+        EVENT_DROPPED("Event dropped: larger than the ring's allocation, and the ring cannot grow"),
         AHSE_REQUIRED_FOR_STRONG("STRONG consistency requires AHSE storage (EvictionListener must not be NOOP)"),
         STREAM_CONFIG_COMMIT_FAILED("Stream config consensus commit failed"),
-        PARTITION_NOT_LOCAL("Stream partition is not owned by this node");
+        PARTITION_NOT_LOCAL("Stream partition is not owned by this node"),
+        SEALING_BEHIND("Pending-seal cap reached on a partition with no WAL: storage has not accepted enough sealed segments for the ring to hand over more; append refused until sealing catches up"),
+        /// A batch run the ring cannot hold as one contiguous unit because one of its events is larger
+        /// than the frozen ring can ever allocate (#1287). Internal routing signal: the publish path then
+        /// publishes that run's events one by one, so each gets the single-publish outcome.
+        RUN_DOES_NOT_FIT("Batch run holds an event larger than the ring can allocate"),
+        /// #1604: this node's durable tier for sealed segments is at or above [SegmentTierPressure#REFUSE_AT].
+        /// Refused before the append takes an offset; clears as retention reclaims space. Recovery: raise
+        /// `[streaming] segment_disk_max_bytes` or add disk, or shorten retention.
+        SEGMENT_TIER_FULL("Durable segment tier nearly full on this node: new publishes are refused until retention "
+                         + "reclaims space, so the WAL disk cannot fill with records that cannot be sealed");
         private final String message;
         General(String message) {
             this.message = message;
@@ -40,11 +57,14 @@ public sealed interface StreamError extends Cause {
         public String message() {
             return message;
         }
-        /// Only `STREAM_MEMORY_EXCEEDED` is a transient capacity shortage (the pool may clear as other
-        /// streams are destroyed / right-sized); every other constant is a non-capacity error.
+        /// `STREAM_MEMORY_EXCEEDED` (the pool may clear as other streams are destroyed / right-sized) and
+        /// `SEALING_BEHIND` (a partition WITHOUT a WAL — the non-crash-durable mode, e.g. Ember or Forge with no
+        /// data dir — whose segment sealer's heap copies have reached their cap; it clears as pending seals land,
+        /// #1234) are transient capacity shortages; every other constant is a non-capacity error. With a WAL the
+        /// sealer spills to WAL-backed ranges instead and never raises it.
         @Override
         public boolean transientCapacity() {
-            return this == STREAM_MEMORY_EXCEEDED;
+            return this == STREAM_MEMORY_EXCEEDED || this == SEALING_BEHIND || this == SEGMENT_TIER_FULL;
         }
     }
 
@@ -55,10 +75,107 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// The consumer's cursor belongs to a lineage the partition no longer has (#1730 phase 2 / #1873, KIP-320): an owner
+    /// restart or failover began epoch `ownerEpoch` at `resumeAt` and assigned the offsets above it again. The consumer
+    /// re-reads from `resumeAt` and adopts `ownerEpoch`; reading on from its cursor would skip the new records.
+    ///
+    /// `provenLossFrom` is where the record PROVES a loss to begin, or [#NO_PROVEN_LOSS]: the first start exactly known to be of
+    /// an epoch after the consumer's, below its cursor. `resumeAt` is only a lower bound of every offset an epoch after the
+    /// consumer's may have re-assigned (the consumer re-reads from it: it may redeliver, it never skips), and may be below
+    /// `provenLossFrom` when the record folded the starts in between. Records in `[provenLossFrom, cursor)` are proven gone.
+    record EpochDiverged(Epoch ownerEpoch, long resumeAt, long provenLossFrom) implements StreamError {
+        /// No loss is proven: the record cannot tell a loss from a re-read.
+        public static final long NO_PROVEN_LOSS = -1L;
+
+        /// A divergence at an exact boundary: the loss is proven from `resumeAt`.
+        public EpochDiverged(Epoch ownerEpoch, long resumeAt) {
+            this(ownerEpoch, resumeAt, resumeAt);
+        }
+
+        public boolean lossProven() {
+            return provenLossFrom >= 0L;
+        }
+
+        @Override
+        public String message() {
+            return "Consumer cursor belongs to a replaced lineage: owner epoch %s began at offset %d, resume there".formatted(ownerEpoch,
+                                                                                                                              resumeAt);
+        }
+    }
+
     record CursorExpired(long requestedOffset, long tailOffset) implements StreamError {
         @Override
         public String message() {
             return "Cursor at offset %d has expired, oldest available is %d".formatted(requestedOffset, tailOffset);
+        }
+    }
+
+    /// A repair was refused because this copy's own history cannot vouch for its records (#1730 phase 2): it compares
+    /// unequal with the owner at `offset` only because it holds records and no owner-epoch history, which is no evidence of
+    /// a lineage split. Nothing was cut; the partition stays quarantined.
+    record DivergenceNotEstablished(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Divergence of %s[%d] at offset %d is not established: this copy's owner-epoch history cannot vouch for its records".formatted(streamName,
+                                                                                                                                                  partition,
+                                                                                                                                                  offset);
+        }
+    }
+
+    /// A repair was refused because the committed owner no longer authorises it: it is not the owner this copy backfills from,
+    /// it is this node, or its epoch is not later than the epoch of the records about to be cut (#1730 phase 2).
+    record RepairNotAuthorized(String streamName, int partition, long divergedAt) implements StreamError {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] at offset %d is not authorised by the committed owner".formatted(streamName,
+                                                                                                      partition,
+                                                                                                      divergedAt);
+        }
+    }
+
+    /// A repair was refused because the record of what its cut would discard could not be made durable first (#1730 phase 2): the
+    /// copy keeps its records and stays quarantined, and the repair is retried.
+    record RepairWitnessFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] refused: its truncation witness could not be written (%s)".formatted(streamName,
+                                                                                                          partition,
+                                                                                                          reason);
+        }
+    }
+
+    /// A repair was refused because the records its cut would remove could not be preserved in a recovery segment first (#2080): the
+    /// copy keeps its records and stays quarantined, and the repair is retried. Nothing is removed that was not first made durable.
+    record RepairPreserveFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] refused: the records its cut would remove could not be preserved in a recovery segment (%s)".formatted(streamName,
+                                                                                                                                            partition,
+                                                                                                                                            reason);
+        }
+    }
+
+    /// This node holds records at or above the start of the committed owner's current epoch that it has not compared with the
+    /// owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and acknowledges nothing,
+    /// until a backfill has verified it for the epoch (#1730 phase 2). Retriable: the backfill redrive verifies it.
+    record ReplicaNotVerified(String streamName, int partition, long startOffset) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica %s[%d] has not been verified against the owner's epoch starting at offset %d".formatted(streamName,
+                                                                                                                    partition,
+                                                                                                                    startOffset);
+        }
+    }
+
+    /// A suffix truncation asked to cut below the ring's retained range (#1730 phase 2): offsets between `keepThrough`
+    /// and `tailOffset` were evicted (and possibly sealed), so the ring cannot say they are gone. Nothing changed.
+    record TruncateBelowRetained(String streamName, int partition, long keepThrough, long tailOffset) implements StreamError {
+        @Override
+        public String message() {
+            return "Cannot truncate %s[%d] back to offset %d: the ring retains only offsets from %d".formatted(streamName,
+                                                                                                               partition,
+                                                                                                               keepThrough,
+                                                                                                               tailOffset);
         }
     }
 
@@ -71,6 +188,74 @@ public sealed interface StreamError extends Cause {
         @Override
         public String message() {
             return "Ring seed rejected (base=%d, head=%d): requires fresh ring, base>=0".formatted(base, currentHead);
+        }
+    }
+
+    /// WAL recovery refused (#1232): the recovered tail, placed by STORED offset, has a gap between
+    /// records (`foundOffset` above `expectedOffset`) or a duplicate (`foundOffset` below it). A gap
+    /// BEFORE the first record is not refused — it is reclaimed history (#1258 review B2). Recovery never
+    /// renumbers (that silently shifts every later record against replicas, segments and cursors), so the
+    /// STREAM stays unmaterialized on this node when it is being created (a lazy per-partition materialize
+    /// leaves only this partition unbuilt) until an operator acts; the message says how without advising
+    /// anything that could discard a correct tail. #1345 raises it BEFORE any record is appended, so a refused
+    /// recovery hands the sealer nothing. Node shape, traced to the producers: the node stays up; the ERROR
+    /// is logged per ATTEMPT, and attempts are boot hydration, once when this node newly becomes a replica
+    /// (`ReplicaSetController.reconcilePartition` → `onBecameReplica`, only on the registration edge), and
+    /// every publish (`ensureStreamMaterialized` / the owner-append safety valve) — reads never materialize
+    /// and nothing periodic re-attempts (`redriveIncompleteBackfills` backfills only). Each publish fails with
+    /// this cause.
+    record WalReplayMismatch(String streamName, int partition, Path walFile, long expectedOffset, long foundOffset) implements StreamError {
+        @Override
+        public String message() {
+            return ("WAL recovery refused for stream '%s' on this node: partition %d expected offset %d but %s holds %d (%s),"
+                   + " and records are never renumbered, so the stream is not materialized here. Keep the file — do not delete,"
+                   + " truncate or move it: records below offset %d are intact and may be the only copy. Operator action: archive"
+                   + " a copy for diagnosis; the other nodes keep serving the stream when replicas >= 2. Remove the file from"
+                   + " this node only after confirming another replica holds this partition beyond offset %d").formatted(streamName,
+                                                                                                                         partition,
+                                                                                                                         expectedOffset,
+                                                                                                                         walFile,
+                                                                                                                         foundOffset,
+                                                                                                                         foundOffset < expectedOffset
+                                                                                                                         ? "duplicate"
+                                                                                                                         : "gap",
+                                                                                                                         expectedOffset,
+                                                                                                                         foundOffset);
+        }
+    }
+
+    /// #1278: the partition WAL starts above the durable sealed watermark, which already counts every offset
+    /// retention reclaimed (the persisted reclaimed-through floor), so the offsets between were neither sealed
+    /// under a surviving segment ref nor reclaimed: they are lost, and the partition is not materialized here.
+    record WalHeadLost(String streamName, int partition, Path walFile, long sealedThrough, long firstOffset) implements StreamError {
+        @Override
+        public String message() {
+            return ("WAL recovery refused for stream '%s' on this node: partition %d is sealed or reclaimed through offset %d,"
+                   + " but %s starts at offset %d, so offsets [%d, %d] are LOST -- neither held by a sealed segment ref nor"
+                   + " recorded as reclaimed by retention. Records are never renumbered, so the stream is not materialized"
+                   + " here. Keep the file -- do not delete, truncate or move it: it holds offsets from %d on, and may be the"
+                   + " only copy. Operator action: check whether this node's streams metadata snapshot lost segment refs"
+                   + " (restore it if a newer copy exists) or whether another replica holds this partition from offset %d."
+                   + " Data written before #1278 has no reclaimed-through floor and refuses on every replica alike; it is"
+                   + " cleared only by wiping and recreating the partition").formatted(streamName,
+                                                                                       partition,
+                                                                                       sealedThrough,
+                                                                                       walFile,
+                                                                                       firstOffset,
+                                                                                       sealedThrough + 1,
+                                                                                       firstOffset - 1,
+                                                                                       firstOffset,
+                                                                                       sealedThrough + 1);
+        }
+    }
+
+    /// A write to a `system:` stream from a writer that does not hold [SystemWriteGrant] (#1338): system streams are
+    /// read-only to blueprints, slices and the Management API.
+    record SystemStreamWriteRefused(String streamName) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '" + streamName
+                 + "' is a system stream: it is read-only to slices, blueprints and the Management API";
         }
     }
 
@@ -90,10 +275,19 @@ public sealed interface StreamError extends Cause {
     /// is visible (via the owner's KV apply or this node's own lazy materialization from the committed
     /// `StreamConfigKey`). Not a capacity shortage, so it does NOT implement
     /// {@link org.pragmatica.aether.slice.ResourceCapacityExhausted}.
-    record StreamConfigNotYetVisible(String streamName) implements StreamError {
+    record StreamConfigNotYetVisible(String streamName) implements StreamError, Cause.Transient {
+        /// The text every message of this refusal carries. A forwarded refusal reaches the publisher as a string only
+        /// ([StreamForwardError.RemotePublishRetryable]), so [#describes] recognizes it by this marker, in this one place.
+        public static final String MESSAGE_MARKER = "Stream config not yet visible on this node";
+
         @Override
         public String message() {
-            return "Stream config not yet visible on this node: " + streamName;
+            return MESSAGE_MARKER + ": " + streamName;
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
         }
     }
 
@@ -135,7 +329,11 @@ public sealed interface StreamError extends Cause {
     /// materialized right now because this node already has `reshuffle_concurrency` (default 2) partitions
     /// concurrently in materialize+backfill state, so the materialization is QUEUED at the `buildAndInstall`
     /// pacing seam (system streams first, then FIFO) and re-driven once a slot frees (a completed backfill or
-    /// a release). DISTINCT from {@link General#PARTITION_NOT_LOCAL} (a genuine non-replica the caller
+    /// a release). The queue is a transient work list, so the re-drive is ALSO level-triggered: every reconcile
+    /// tick re-queues every partition this node holds that has no ring (#1805) — a lost queue entry, or a role
+    /// that flapped through NONE for any length of time, cannot strand it; a partition held but unmaterialized for
+    /// ~60s is WARNed. An owner-role queued partition needs no slot and drains regardless of free permits.
+    /// DISTINCT from {@link General#PARTITION_NOT_LOCAL} (a genuine non-replica the caller
     /// FORWARDS) and from {@link MaterializeBudgetExceeded} (an off-heap shortage): this node IS the holder
     /// and has budget — it is bounding concurrent reshuffle work — so the caller RETRIES (reconcile hook next
     /// tick / owner-append client retry), never a forward loop. Implements
@@ -148,6 +346,61 @@ public sealed interface StreamError extends Cause {
             return "Materialize of %s[%d] paced: node already has %d partitions in materialize+backfill (reshuffle_concurrency)".formatted(streamName,
                                                                                                                                            partition,
                                                                                                                                            inFlightLimit);
+        }
+    }
+
+    /// A replication-class read (catch-up or watermark probe) reached a partition this node HOLDS but has not
+    /// materialized — paced ([ReshufflePaced]) or budget-deferred ([MaterializeBudgetExceeded]) — so there is no
+    /// ring to read. The node is REACHABLE and knows what it durably holds: `watermark` is its durable local head
+    /// (WAL or sealed tier; `-1` when none). DISTINCT from {@link General#PARTITION_NOT_LOCAL}, a genuine
+    /// non-holder: a prober treats this as an answer, that as no information. A remote failure travels as its
+    /// message only until #1967 and now arrives typed, but the prober still reads `watermark` from the cause's text
+    /// ([#watermarkOf]), which the typed cause renders identically, the way a `CursorExpired` refusal names the oldest available
+    /// offset. Still a failure to a CATCH-UP pull, which has
+    /// nothing to pull from a partition with no ring and redrives.
+    record PartitionHeldNotMaterialized(String streamName, int partition, long watermark, boolean budgetExhausted) implements StreamError {
+        private static final String BUDGET_SUFFIX = " (off-heap budget exhausted)";
+
+        private static final Pattern DURABLE_WATERMARK = Pattern.compile("held but not materialized on this node, durable watermark (-?\\d+)");
+
+        /// A holder that is merely paced (`reshuffle_concurrency`).
+        public PartitionHeldNotMaterialized(String streamName, int partition, long watermark) {
+            this(streamName, partition, watermark, false);
+        }
+
+        @Override
+        public String message() {
+            return "Stream partition %s[%d] is held but not materialized on this node, durable watermark %d%s".formatted(streamName,
+                                                                                                                         partition,
+                                                                                                                         watermark,
+                                                                                                                         budgetExhausted
+                                                                                                                         ? BUDGET_SUFFIX
+                                                                                                                         : "");
+        }
+
+        /// Whether the peer said it is deferred because its off-heap budget is exhausted: no slot frees it, only budget does.
+        public static boolean isBudgetExhausted(Cause cause) {
+            return cause.message()
+                        .contains(BUDGET_SUFFIX);
+        }
+
+        /// The durable watermark a peer reported with this refusal, or none when `cause` is any other failure.
+        public static Option<Long> watermarkOf(Cause cause) {
+            var matcher = DURABLE_WATERMARK.matcher(cause.message());
+
+            return matcher.find()
+                   ? Option.some(Long.parseLong(matcher.group(1)))
+                   : Option.none();
+        }
+    }
+
+    /// A ring's index or offset arithmetic produced an out-of-bounds native access (#1247) — a defect in
+    /// the ring, never the closed-arena race. Distinct from {@link General#BUFFER_CLOSED} so a corrupted
+    /// ring is not reported as a benign release; `detail` carries the JDK's bounds message.
+    record RingIndexCorrupted(String streamName, int partition, String detail) implements StreamError {
+        @Override
+        public String message() {
+            return "Ring index corrupted at %s[%d]: %s".formatted(streamName, partition, detail);
         }
     }
 
@@ -172,6 +425,39 @@ public sealed interface StreamError extends Cause {
             return "Stream '%s' declares %d partitions, over the per-stream ceiling of %d".formatted(streamName,
                                                                                                      requestedPartitions,
                                                                                                      ceiling);
+        }
+    }
+
+    /// A retention count the ring cannot index (#1549): the ring's index is sized from `maxCount`, and a count
+    /// past [OffHeapRingBuffer#MAX_CAPACITY] overflows the allocation size. Rejected PRE-COMMIT on create
+    /// rather than built over a truncated index; a fatal config error, never retried.
+    record RetentionCountUnindexable(String streamName, long maxCount, long maxCapacity) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' retention max-count %d exceeds the indexable ring capacity %d".formatted(streamName,
+                                                                                                         maxCount,
+                                                                                                         maxCapacity);
+        }
+    }
+
+    /// A retention bound below 1 (#1549): a count of 0 divided by zero and a negative count requested a
+    /// negative allocation — both threw out of stream creation — and a byte or age bound of 0 creates a
+    /// stream that refuses or immediately evicts every event. Rejected PRE-COMMIT on create; a fatal config
+    /// error, never retried. `bound` is `max-count`, `max-bytes` or `max-age`.
+    record RetentionBoundInvalid(String streamName, String bound, long value) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '%s' retention %s = %d is invalid: it must be at least 1".formatted(streamName, bound, value);
+        }
+    }
+
+    /// A stream config whose replication factors the engine refuses (#1564): `1 <= CF <= RF` fails, or a declared
+    /// stream is redeclared with factors different from its committed ones. `cause` is the typed
+    /// [org.pragmatica.aether.slice.ReplicationFactorsError].
+    record ReplicationRefused(String streamName, Cause cause) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '" + streamName + "': " + cause.message();
         }
     }
 
@@ -206,6 +492,111 @@ public sealed interface StreamError extends Cause {
                                                                                                                                                  partition,
                                                                                                                                                  presented,
                                                                                                                                                  current);
+        }
+    }
+
+    /// Provenance refusal (#1596): the append carries owner epoch `presented`, but this partition's log already
+    /// records records of the strictly later epoch `recorded` -- the writer is deposed as far as this log is
+    /// concerned, whatever this node's fence high-water has observed yet. Nothing is appended.
+    record ProvenanceRegression(String streamName, int partition, Epoch presented, Epoch recorded) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream append refused for %s[%d]: owner epoch %s is older than epoch %s this partition's log already records".formatted(streamName,
+                                                                                                                                            partition,
+                                                                                                                                            presented,
+                                                                                                                                            recorded);
+        }
+    }
+
+    /// Catch-up provenance refusal (#1596, spec #1569 §7.5.1 N13): the source's owner-epoch history disagrees with
+    /// this replica's own at `offset`, the first offset whose provenance differs, so the two copies are different
+    /// histories. Nothing of the page is applied, and the partition is quarantined at `offset` (#1505 F2).
+    record ProvenanceMismatch(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Catch-up refused for %s[%d]: the source's owner-epoch history differs from this replica's at offset %d".formatted(streamName,
+                                                                                                                                      partition,
+                                                                                                                                      offset);
+        }
+    }
+
+    /// Offset-addressed replica append refusal (#1505): an event was offered at owner offset `offset`, but the
+    /// next offset this replica's ring can assign is `nextExpected` — the replica is missing
+    /// `[nextExpected, offset-1]`. Appending anyway would land the event one or more offsets too low, so
+    /// nothing is appended; the caller repairs by catch-up from its local head.
+    record ReplicaOffsetGap(String streamName, int partition, long offset, long nextExpected) implements StreamError {
+        @Override
+        public String message() {
+            return "Replica append refused for %s[%d]: event offered at offset %d but the next local offset is %d".formatted(streamName,
+                                                                                                                             partition,
+                                                                                                                             offset,
+                                                                                                                             nextExpected);
+        }
+    }
+
+    /// Offset-addressed replica append refusal (#1505): this replica already holds an event at `offset`, and it
+    /// is NOT the event offered for that offset (payload or timestamp differ). The replica's log has diverged
+    /// from its sender's at `offset`. Nothing is appended or overwritten, and the caller must not count the
+    /// replica as holding the offered event — the ring is append-only, so no catch-up can replace the entry.
+    record ReplicaEntryConflict(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Replica append refused for %s[%d]: offset %d already holds a DIFFERENT event than the one offered".formatted(streamName,
+                                                                                                                                 partition,
+                                                                                                                                 offset);
+        }
+    }
+
+    /// Quarantined replica partition (#1505 F2): this replica holds a DIVERGENT entry at `divergedAt`, so
+    /// nothing at or past that offset is appended or verified here. `offset` is the refused offer. The ring
+    /// has no overwrite and no truncation, so the quarantine is not cleared in this release; it lasts as long
+    /// as this node's partition manager does.
+    record ReplicaQuarantined(String streamName, int partition, long offset, long divergedAt) implements StreamError {
+        @Override
+        public String message() {
+            return "Replica append refused for %s[%d] at offset %d: the partition is quarantined here, offset %d holds a divergent event".formatted(streamName,
+                                                                                                                                                    partition,
+                                                                                                                                                    offset,
+                                                                                                                                                    divergedAt);
+        }
+    }
+
+    /// Owner-write admission refusal (#1230): an application append reached `publishLocal` on a node that is
+    /// not the COMMITTED owner of `(streamName, partition)` — the committed `StreamPartitionOwnershipValue`
+    /// names `committedOwner`. The epoch fence cannot catch this: a live non-owner stamps the same committed
+    /// epoch the owner does, so without this refusal a replica holding the partition ring became an
+    /// undeclared second writer assigning offsets the owner also assigns. Transient: during a reshuffle the
+    /// HRW-routed target refuses until the leader commits the ownership change, so the forwarder retries and
+    /// a local caller redirects to `committedOwner`.
+    record NotOwnerAppend(String streamName, int partition, NodeId committedOwner) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Stream append refused for %s[%d]: the committed owner is %s, not this node".formatted(streamName,
+                                                                                                          partition,
+                                                                                                          committedOwner);
+        }
+    }
+
+    /// Owner promotion gate refusal (#1555): this node is the owner of `(streamName, partition)` by placement or
+    /// by the committed record, but it has not yet completed promotion — a fresh committed view naming itself
+    /// and a catch-up to every live holder's watermark ([OwnerActivation]). Until then it neither appends nor
+    /// serves reads as owner. Transient: promotion runs on demand and completes within a probe/backfill round,
+    /// or stays blocked while a live holder is unreachable until that holder is declared dead.
+    record OwnerNotActivated(String streamName, int partition) implements StreamError, Cause.Transient {
+        /// The text every message of this refusal carries. A forwarded refusal reaches the publisher as a string only
+        /// ([StreamForwardError.RemotePublishRetryable]), so [#describes] recognizes it by this marker, in this one place.
+        public static final String MESSAGE_MARKER = "is not yet promoted on this node";
+
+        @Override
+        public String message() {
+            return "Stream partition %s[%d] %s (fresh ownership view and catch-up pending)".formatted(streamName,
+                                                                                                      partition,
+                                                                                                      MESSAGE_MARKER);
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
         }
     }
 
@@ -244,7 +635,7 @@ public sealed interface StreamError extends Cause {
     /// CAUGHT_UP signal lags the committed handover), so serving now could miss events the prior owner
     /// committed. The read is rejected (NOT blocked) so the client retries once the new owner has caught
     /// up — the new owner reuses the EXISTING failover-recovery catch-up machinery to close the gap.
-    record OwnerCatchupPending(String streamName, int partition) implements StreamError {
+    record OwnerCatchupPending(String streamName, int partition) implements StreamError, Cause.Transient {
         @Override
         public String message() {
             return "Linearizable read rejected for %s[%d]: the committed owner has not yet caught up to the handover offset".formatted(streamName,
@@ -258,7 +649,7 @@ public sealed interface StreamError extends Cause {
     /// unavailable, paused, or the owner is mid-churn. The read is rejected (NOT served from a
     /// pre-round view) so the client retries once the round can complete; serving without the round
     /// would forfeit linearizability.
-    record LinearizableRoundTimeout(String streamName, int partition) implements StreamError {
+    record LinearizableRoundTimeout(String streamName, int partition) implements StreamError, Cause.Transient {
         @Override
         public String message() {
             return "Linearizable read rejected for %s[%d]: the no-op consensus round did not apply within the read timeout budget".formatted(streamName,

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
 import java.util.List;
@@ -17,7 +16,9 @@ public record CommunityMetricsSnapshot(String communityId,
                                        NodeId governorId,
                                        int memberCount,
                                        List<PerSliceMetrics> sliceMetrics,
-                                       long timestampMs) implements Message.Wired {
+                                       long timestampMs,
+                                       long incarnation,
+                                       long sequence) implements Message.Wired {
     public CommunityMetricsSnapshot {
         sliceMetrics = sliceMetrics == null
                        ? List.of()
@@ -33,14 +34,15 @@ public record CommunityMetricsSnapshot(String communityId,
                                                                     NodeId governorId,
                                                                     int memberCount,
                                                                     List<PerSliceMetrics> sliceMetrics,
-                                                                    long timestampMs) {
-        return new CommunityMetricsSnapshot(communityId, governorId, memberCount, sliceMetrics, timestampMs);
-    }
-
-    public static CommunityMetricsSnapshot communityMetricsSnapshot(String communityId,
-                                                                    NodeId governorId,
-                                                                    int memberCount,
-                                                                    List<PerSliceMetrics> sliceMetrics) {
-        return communityMetricsSnapshot(communityId, governorId, memberCount, sliceMetrics, System.currentTimeMillis());
+                                                                    long timestampMs,
+                                                                    long incarnation,
+                                                                    long sequence) {
+        return new CommunityMetricsSnapshot(communityId,
+                                            governorId,
+                                            memberCount,
+                                            sliceMetrics,
+                                            timestampMs,
+                                            incarnation,
+                                            sequence);
     }
 }

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.slice.MethodInterceptor;
@@ -35,13 +34,23 @@ public record MetricsMethodInterceptor(MetricsConfig config, MeterRegistry regis
                      .onResult(result -> recordMetrics(sample, result));
     }
 
+    /// `record_timing` selects the timer and `record_counts` the counter; both flags were bound
+    /// from TOML and ignored — a timer always, a counter never (#280 R28). The counter is
+    /// `<name>.<outcome>.count`: Micrometer refuses two meter types under one id, so it cannot
+    /// share the timer's `<name>.<outcome>`.
     @Contract
     private <R> void recordMetrics(Timer.Sample sample, Result<R> result) {
-        var suffix = result.isSuccess()
-                     ? ".success"
-                     : ".failure";
+        var meterName = config.name() + (result.isSuccess()
+                                         ? ".success"
+                                         : ".failure");
 
-        sample.stop(registry.timer(config.name() + suffix, tags));
+        if (config.recordTiming()) {
+            sample.stop(registry.timer(meterName, tags));
+        }
+
+        if (config.recordCounts()) {
+            registry.counter(meterName + ".count", tags).increment();
+        }
     }
 
     // MetricsConfig#tags() is a flat List<String> of "key=value" tokens (the comma-joined-scalar

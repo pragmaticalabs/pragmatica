@@ -5,31 +5,49 @@
 package org.pragmatica.aether.stream;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.function.LongConsumer;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ConsumerConfig.ErrorStrategy;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.Cursor;
+import org.pragmatica.aether.stream.segment.ConsumerCursorStore.CommitOutcome;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 final class ConsumerRuntimeState implements StreamConsumerRuntime {
@@ -42,15 +60,123 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final long MAX_BACKOFF_MS = 10_000;
     private static final long CONSUMER_TIMEOUT_MS = 60_000L;
     private static final long IDLE_CHECK_INTERVAL_MS = 10_000L;
+    /// #654: bounds the final-commit batch in [#close] so a wedged or slow consensus write cannot
+    /// hold node shutdown. Well under [org.pragmatica.consensus.rabia.ProtocolConfig#DEFAULT_APPLY_TIMEOUT]
+    /// (30s) — a commit that would still succeed given the full apply timeout is treated as failed
+    /// for THIS shutdown and reported via [#cursorCommitFailureCount] / [ConsumerState#lastCursorCommitFailure]
+    /// rather than holding the node. [design intent — unverified: 5s is not derived from a measured
+    /// commit-latency distribution, it is a judgment call reviewed and accepted for this fix].
+    private static final TimeSpan CURSOR_COMMIT_SHUTDOWN_BOUND = timeSpan(5).seconds();
+    /// #1266: bound on one dead-letter append. The partition's loop is HELD while the append is
+    /// unresolved, so an append that never settles (a replication barrier that never answers) would hold
+    /// it forever; a timed-out append takes the same retry-with-backoff path as a failed one. A timed-out
+    /// append can still land later, and the retry then writes a SECOND entry for the same event: the DLQ
+    /// is at-least-once per event and duplicates are possible. Nothing deduplicates them today —
+    /// `DeadLetterEntry` carries no messageId; `DlqEnvelope.messageId` is only a candidate key, and only
+    /// for topic streams. 30s matches the declarative handler timeout and the consensus apply timeout.
+    /// [design intent — unverified: not derived from a measured DLQ-append latency.]
+    static final TimeSpan DEAD_LETTER_APPEND_TIMEOUT = timeSpan(30).seconds();
+    private static final Cause NULL_PROMISE = Causes.cause("Foreign call returned null instead of a promise");
+    /// #1934: the operator-facing lines of a consumer's escaped passes (the first escape of a run with its frames, the
+    /// warning and its end) go through slf4j, the logger [OperatorWarnings] writes to.
+    private static final Logger ESCAPE_LOG = LoggerFactory.getLogger(ConsumerRuntimeState.class);
+    /// #1934: the wait before the pass after the first escaped pass of a run: the old poll-backoff cap, so a single
+    /// throw is retried no later than before. Each further escape doubles it up to [#ESCAPE_BACKOFF_CAP_MS].
+    static final long ESCAPE_BACKOFF_FIRST_MS = 50L;
+    /// #1934: the longest wait between escaped passes. A pass that throws on every attempt then costs one attempt per
+    /// cap instead of about 17 a second. [design intent — unverified: 10 s is a guess, not derived from a measured
+    /// recovery time; it bounds how late a consumer resumes after a transient throw clears.]
+    static final long ESCAPE_BACKOFF_CAP_MS = 10_000L;
+    /// #1934: consecutive escaped passes after which `stream-consumer-drain-failing` is raised; about 1.5 s of
+    /// continuous throwing at the backoff above. [design intent — unverified: 5 is a guess; an escape is a defect,
+    /// not a routine condition, so a short run is already worth an operator's attention.]
+    static final int ESCAPES_BEFORE_WARNING = 5;
+    /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
+    /// commits apart, and a detach flush cancels the consumer before it is issued.
+    /// rev1272 F6: bound on one PERIODIC cursor commit. With one periodic commit in flight per consumer, a
+    /// commit that never settles would hold the slot forever and absorb every later checkpoint. Past the
+    /// bound the commit's own promise fails (`Promise.timeout` fails the original), so it is counted and
+    /// reported like any failed commit, and the retry commits the latest cursor. A timed-out commit can
+    /// still land late at the store; since every commit carries the monotonic cursor as it stood at
+    /// issue, a late one can step the stored cursor back by at most the progress made since — bounded
+    /// redelivery, never loss. Same 5s as [#CURSOR_COMMIT_SHUTDOWN_BOUND]. [design intent — unverified:
+    /// not derived from a measured commit-latency distribution.]
+    private static final TimeSpan PERIODIC_COMMIT_BOUND = timeSpan(5).seconds();
+    private static final Promise<CommitOutcome> NO_PREDECESSOR = Promise.success(CommitOutcome.persisted());
+    /// #1403: how long a graceful detach flush ([#flushCursorForKey]) waits for the consumer's in-flight advance — a
+    /// delivery whose handler is running or has returned, a retry, a dead-letter append — before it commits the cursor
+    /// as it stands. A handler that returned advances within microseconds; the bound exists for one that has not
+    /// returned. At the bound the flush commits the pre-delivery cursor (that event is redelivered on reattach,
+    /// at-least-once) and logs a WARNING naming the offset. Kept well under [#CURSOR_COMMIT_SHUTDOWN_BOUND] so a
+    /// [#close] flush still commits inside the shutdown bound. [design intent — unverified: 1s is a judgment call,
+    /// not derived from a measured handler-latency distribution.]
+    static final TimeSpan DETACH_ADVANCE_BOUND = timeSpan(1).seconds();
+
+    private static final Consumer<CheckpointIssuePoint> NO_CHECKPOINT_ISSUE_PROBE = _ -> {};
+
+    private static final Logger WARNINGS_LOG = LoggerFactory.getLogger(ConsumerRuntimeState.class);
 
     private final StreamPartitionManager partitionManager;
     private final DeadLetterHandler dlHandler;
     private final Option<ConsumerCursorStore> cursorStore;
     private final Option<TransactionalCursorCommit> transactionalCommit;
     private final PartitionReader reader;
+    private final TimeSpan deadLetterAppendTimeout;
+    /// #1873: where a consumer's re-seek after a replaced lineage, and #1934's run of escaped delivery passes and its
+    /// end, are reported to the operator, late-bound.
+    private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
+    /// #1934: the clock the escape backoff is measured on (milliseconds), and where the pass after the backoff is
+    /// scheduled. Seams so the backoff's growth is pinned without waiting for it.
+    private final LongSupplier clockMs;
+    private final DelayedTask escapeScheduler;
     private final ConcurrentHashMap<ConsumerKey, ConsumerState> consumers = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final ScheduledFuture<?> idleConsumerChecker;
+    /// #654: node-wide count of cursor commits (final flush or periodic checkpoint) that resolved
+    /// with a failure or never settled at all ([#reportIfUnsettled]). One counted incident per commit:
+    /// whichever of [#reportIfUnsettled], [#onCursorCommitFailure], or [#reportIfLocalOnly] first wins
+    /// that commit's own [TrackedCommit#reported] token increments this counter; every other one of
+    /// those three that later fires for the SAME commit does not (see [#reportCommitOutcome]).
+    /// Survives a consumer's removal from [#consumers] at detach, which a per-consumer-only field could
+    /// not. Exposed via [#cursorCommitFailureCount].
+    private final AtomicLong cursorCommitFailureCount = new AtomicLong(0);
+    /// #654 round 4: every [#observedCommit] invocation — final-detach commit or periodic checkpoint —
+    /// registers its [TrackedCommit] here for the life of that ONE commit and removes it on resolution,
+    /// so [#awaitFinalCursorCommits] can snapshot every commit in flight at close, not just the fresh
+    /// final commits it is about to issue. A periodic [#checkpointIfNeeded] commit still unresolved when
+    /// close starts is registered from an earlier call and would otherwise be invisible to the bound
+    /// entirely: `closed` only stops NEW poll cycles ([#pollCycle]), it never drains a commit already
+    /// issued.
+    private final Set<TrackedCommit> inFlightCommits = ConcurrentHashMap.newKeySet();
+
+    /// #1403 (v-str-1914 F1): the graceful detaches of one key whose flush is still pending — held behind the old
+    /// consumer's in-flight advance for up to [#DETACH_ADVANCE_BOUND] — per key. A re-subscription of the same key on
+    /// this node fetches its cursor only after the last of them settles ([#loadCursorAndStart]), so an old flush can
+    /// never land after the successor's own commits and move the group's cursor backwards.
+    private final ConcurrentHashMap<ConsumerKey, PendingDetaches> pendingDetachFlushes = new ConcurrentHashMap<>();
+
+    /// One promise and a counter per key, never a chain of promises: resolving a nested chain recurses once per link
+    /// (v-str-1914 N1: a StackOverflowError at ~20k links), this is O(1) however many detaches pile up. The counter is
+    /// touched only inside `compute`, which is atomic per key.
+    private static final class PendingDetaches {
+        final Promise<CommitOutcome> settled = Promise.promise();
+        private int pending = 1;
+
+        PendingDetaches added() {
+            pending++;
+
+            return this;
+        }
+
+        boolean released() {
+            return --pending == 0;
+        }
+    }
+
+    /// Test-only seam (#1355), run by [#issueCheckpoint] at each [CheckpointIssuePoint]. Volatile because the
+    /// issuing thread is a delivery continuation or the shared scheduler, which already exist when a test
+    /// installs it; one volatile read per checkpoint is nothing.
+    private volatile Consumer<CheckpointIssuePoint> checkpointIssueProbe = NO_CHECKPOINT_ISSUE_PROBE;
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager, DeadLetterHandler dlHandler) {
         this(partitionManager, dlHandler, none(), none());
@@ -70,7 +196,8 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
              dlHandler,
              cursorStore,
              transactionalCommit,
-             StreamConsumerRuntime.localPartitionReader(partitionManager));
+             StreamConsumerRuntime.localPartitionReader(partitionManager),
+             DEAD_LETTER_APPEND_TIMEOUT);
     }
 
     ConsumerRuntimeState(StreamPartitionManager partitionManager,
@@ -78,12 +205,44 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          Option<ConsumerCursorStore> cursorStore,
                          Option<TransactionalCursorCommit> transactionalCommit,
                          PartitionReader reader) {
+        this(partitionManager, dlHandler, cursorStore, transactionalCommit, reader, DEAD_LETTER_APPEND_TIMEOUT);
+    }
+
+    /// Package-private seam: the dead-letter append bound, shortened by [StreamConsumerRuntimeTest].
+    ConsumerRuntimeState(StreamPartitionManager partitionManager,
+                         DeadLetterHandler dlHandler,
+                         Option<ConsumerCursorStore> cursorStore,
+                         Option<TransactionalCursorCommit> transactionalCommit,
+                         PartitionReader reader,
+                         TimeSpan deadLetterAppendTimeout) {
+        this(partitionManager,
+             dlHandler,
+             cursorStore,
+             transactionalCommit,
+             reader,
+             deadLetterAppendTimeout,
+             System::currentTimeMillis,
+             SharedScheduler::schedule);
+    }
+
+    /// #1934: the clock and scheduler seams of the escape backoff.
+    ConsumerRuntimeState(StreamPartitionManager partitionManager,
+                         DeadLetterHandler dlHandler,
+                         Option<ConsumerCursorStore> cursorStore,
+                         Option<TransactionalCursorCommit> transactionalCommit,
+                         PartitionReader reader,
+                         TimeSpan deadLetterAppendTimeout,
+                         LongSupplier clockMs,
+                         DelayedTask escapeScheduler) {
         this.partitionManager = partitionManager;
         this.dlHandler = dlHandler;
         this.cursorStore = cursorStore;
         this.transactionalCommit = transactionalCommit;
         this.reader = reader;
-        this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::reapIdleConsumers,
+        this.deadLetterAppendTimeout = deadLetterAppendTimeout;
+        this.clockMs = clockMs;
+        this.escapeScheduler = escapeScheduler;
+        this.idleConsumerChecker = SharedScheduler.scheduleAtFixedRate(this::periodicConsumerCheck,
                                                                        TimeSpan.timeSpan(IDLE_CHECK_INTERVAL_MS).millis());
     }
 
@@ -92,25 +251,44 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         return subscribe(streamName, partition, config, callback, IdlePolicy.REAP_WHEN_IDLE);
     }
 
-    @SuppressWarnings("JBCT-NULL-01")
     @Override
     public Result<Unit> subscribe(String streamName,
                                   int partition,
                                   ConsumerConfig config,
                                   ConsumerCallback callback,
                                   IdlePolicy idlePolicy) {
+        return subscribeWith(streamName, partition, config, callback, idlePolicy, none());
+    }
+
+    @Override
+    public Result<Unit> subscribe(String streamName,
+                                  int partition,
+                                  ConsumerConfig config,
+                                  ConsumerCallback callback,
+                                  IdlePolicy idlePolicy,
+                                  ConsumerFence fence) {
+        return subscribeWith(streamName, partition, config, callback, idlePolicy, some(fence));
+    }
+
+    @SuppressWarnings("JBCT-NULL-01")
+    private Result<Unit> subscribeWith(String streamName,
+                                       int partition,
+                                       ConsumerConfig config,
+                                       ConsumerCallback callback,
+                                       IdlePolicy idlePolicy,
+                                       Option<ConsumerFence> fence) {
         if (closed.get()) {
             return StreamError.General.CONSUMER_RUNTIME_CLOSED.result();
         }
 
         var key = ConsumerKey.consumerKey(streamName, partition, config.groupId());
-        var state = ConsumerState.consumerState(config, callback, 0L, idlePolicy);
+        var state = ConsumerState.consumerState(config, callback, 0L, idlePolicy, fence);
 
         if (consumers.putIfAbsent(key, state) != null) {
             return StreamError.General.CONSUMER_ALREADY_SUBSCRIBED.result();
         }
 
-        loadCursorAndStart(key, state, config.groupId(), streamName, partition);
+        loadCursorAndStart(key, state);
 
         return success(unit());
     }
@@ -124,28 +302,89 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                         .toList();
     }
 
+    @Override
+    public long cursorCommitFailureCount() {
+        return cursorCommitFailureCount.get();
+    }
+
     private static SubscriptionSnapshot toSnapshot(ConsumerKey key, ConsumerState state) {
         return new SubscriptionSnapshot(key.streamName(),
                                         key.partition(),
                                         key.groupId(),
                                         state.cursor(),
                                         state.isStalled(),
-                                        state.idlePolicy());
+                                        state.idlePolicy(),
+                                        state.lastCursorCommitFailure(),
+                                        state.isDeadLetterInFlight(),
+                                        state.isRetryInFlight(),
+                                        state.isAwaitingCursorFetch(),
+                                        state.epoch());
     }
 
     @Override
     public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
         var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
+        var held = holdDetach(key);
 
         return option(consumers.remove(key)).toResult(StreamError.General.CONSUMER_NOT_FOUND)
-                     .onSuccess(state -> cleanupConsumer(key, state))
+                     .onSuccess(state -> cleanupConsumer(key, state, held))
+                     .onFailure(_ -> releaseDetach(key, held))
                      .mapToUnit();
     }
 
-    private void cleanupConsumer(ConsumerKey key, ConsumerState state) {
-        flushCursorForKey(key, state);
-        removePushListener(key, state);
+    /// #1271: removes the consumer WITHOUT a final flush — its assignment is gone, so the store would
+    /// refuse the flush, and nothing it could write belongs to this node any more.
+    @Override
+    public Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
+        var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
+
+        return option(consumers.remove(key)).toResult(StreamError.General.CONSUMER_NOT_FOUND)
+                     .onSuccess(state -> detachWithoutFlush(key, state))
+                     .mapToUnit();
+    }
+
+    /// Cancel FIRST (#1239): a cancelled consumer issues no further periodic commit, so the detach flush
+    /// — chained behind any periodic commit still in flight ([#flushCursorForKey]) — is the last commit
+    /// this consumer ever makes. A consumer whose commit was already refused as `Fenced` (#1271) skips
+    /// the flush: it is no longer the assignee, and the store would refuse it the same way.
+    private void cleanupConsumer(ConsumerKey key, ConsumerState state, PendingDetaches held) {
+        detachWithoutFlush(key, state);
+        if (state.isFenced()) {
+            releaseDetach(key, held);
+
+            return;
+        }
+
+        flushCursorForKey(key, state).withResult(_ -> releaseDetach(key, held));
+    }
+
+    /// #1403 (v-str-1914 F1, R2): counted BEFORE the consumer leaves [#consumers], so a same-key re-subscription that
+    /// sees the key free also sees the pending detach — the flush itself is only issued after the removal, and a store
+    /// that blocks its caller would otherwise leave a window with neither. Counted, never replaced: a later detach
+    /// whose flush is already settled must not release a successor while an earlier flush is still held.
+    private PendingDetaches holdDetach(ConsumerKey key) {
+        return pendingDetachFlushes.compute(key,
+                                            (_, current) -> current == null
+                                                            ? new PendingDetaches()
+                                                            : current.added());
+    }
+
+    /// The last release of a key removes its entry and settles the promise a waiting successor holds.
+    private void releaseDetach(ConsumerKey key, PendingDetaches held) {
+        var remaining = pendingDetachFlushes.compute(key,
+                                                     (_, current) -> current.released()
+                                                                     ? null
+                                                                     : current);
+
+        if (remaining == null) {
+            held.settled.succeed(CommitOutcome.persisted());
+        }
+    }
+
+    private void detachWithoutFlush(ConsumerKey key, ConsumerState state) {
         state.cancel();
+        endEscapeRunOnCancel(key, state);
+        removePushListener(key, state);
     }
 
     @Override
@@ -153,6 +392,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
 
         return option(consumers.get(key)).map(ConsumerState::cursor);
+    }
+
+    /// Test seam (#1388): how many cursor commits are registered in flight right now. A store stub reads it
+    /// from inside `commit()` to pin that a commit is registered BEFORE its own store call.
+    int inFlightCommitCount() {
+        return inFlightCommits.size();
+    }
+
+    /// Test seam (rev1285d F1): whether this consumer's retry hold is set. Package-private for
+    /// [StreamConsumerRuntimeTest], whose dead-letter sink reads it at append time — the only moment
+    /// at which the hold ordering in [#handleRetryFailureAgain] is observable.
+    boolean isRetryInFlight(String streamName, int partition, String consumerGroup) {
+        var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
+
+        return option(consumers.get(key)).map(ConsumerState::isRetryInFlight)
+                     .or(false);
     }
 
     @Override
@@ -170,15 +425,168 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     public void close() {
         if (closed.compareAndSet(false, true)) {
             idleConsumerChecker.cancel(false);
-            consumers.forEach(this::flushCursorForKey);
+            awaitFinalCursorCommits();
             consumers.forEach(this::removePushListener);
-            consumers.values().forEach(ConsumerState::cancel);
+            consumers.forEach((key, state) -> {
+                state.cancel();
+                endEscapeRunOnCancel(key, state);
+            });
             consumers.clear();
         }
     }
 
-    private void reapIdleConsumers() {
+    /// #654: batches every consumer's final cursor commit into one bounded wait so a slow or wedged
+    /// consensus write cannot hold node stop past [#CURSOR_COMMIT_SHUTDOWN_BOUND] — this runs inside
+    /// the #488 ordering window, while [#partitionManager] and the cursor store are still alive.
+    /// Each commit's [#observedCommit] handlers are attached BEFORE batching, so a commit that resolves
+    /// after the bound still reaches its own [#onCursorCommitFailure] / [#reportIfLocalOnly] path when
+    /// it settles — but that is not enough on its own: the documented contract ([#close]'s own javadoc,
+    /// `management-api.md`'s redelivery paragraph) says a commit that has not settled within the bound
+    /// counts as failed for THIS shutdown even if it later succeeds, and a plain success carries no
+    /// failure for those handlers to observe, so a merely SLOW commit would otherwise go uncounted
+    /// forever. [#reportIfUnsettled] closes that gap: right when the bound expires, every commit still
+    /// unresolved at that instant is marked directly, independent of how it eventually resolves.
+    ///
+    /// #654 round 4: the batch awaited here is a snapshot of [#inFlightCommits] taken AFTER issuing
+    /// every consumer's final commit — not the list of final commits alone. A periodic
+    /// [#checkpointIfNeeded] commit fired moments before close started, still unresolved, is registered
+    /// in that same set by [#observedCommit] and is bound-awaited (and, if still unsettled, reported)
+    /// exactly like a final commit: nothing about the bound cares which call site issued a commit, only
+    /// whether it is still open when the bound expires.
+    @TerminalOperation
+    private void awaitFinalCursorCommits() {
+        consumers.forEach(this::flushCursorForKey);
+        var snapshot = List.copyOf(inFlightCommits);
+
+        if (snapshot.isEmpty()) {
+            return;
+        }
+
+        Promise.allOf(snapshot.stream().map(TrackedCommit::commit).toList())
+               .await(CURSOR_COMMIT_SHUTDOWN_BOUND)
+               .onFailure(_ -> snapshot.forEach(this::reportIfUnsettled));
+    }
+
+    /// #654 round 4: a commit still unresolved the instant [#awaitFinalCursorCommits]'s bound expires is
+    /// reported through [#reportCommitOutcome] exactly as a genuine failure would be — "gave up waiting"
+    /// rather than an observed cause — racing on the SAME per-commit [TrackedCommit#reported] token that
+    /// [#onCursorCommitFailure] and [#reportIfLocalOnly] use for this same commit if it later settles.
+    /// Whichever of the three gets there first owns the one increment and the one ERROR line; the other
+    /// two, if they still fire afterward for this SAME commit, log WARNING instead.
+    ///
+    /// The COUNTER ([#cursorCommitFailureCount]) and the per-consumer DETAIL TEXT
+    /// ([ConsumerState#recordCursorCommitFailure]) carry different guarantees here. The counter cannot
+    /// be decremented by a later settle: once incremented for this commit it stays incremented, because
+    /// a commit that has not settled within the bound counts as failed for THIS shutdown even if it
+    /// later succeeds (see [#close]'s own javadoc, `management-api.md`'s redelivery paragraph). The
+    /// detail text has no such protection: [#onCursorCommitFailure] and [#reportIfLocalOnly] are the
+    /// SAME `observedCommit`-attached handlers already waiting on this promise, and when they eventually
+    /// fire they overwrite "unsettled at shutdown bound" with a more precise cause (`local commit: ...`
+    /// / `checkpoint publish: ...`) — the exact cause is new information even when the count is not.
+    /// That overwrite is NOT provably unobservable: [#subscriptions] can still read
+    /// [ConsumerState#lastCursorCommitFailure] for this commit's consumer right up until [#close]
+    /// finishes removing it from [#consumers] a few statements later — the window is real, just brief.
+    /// The detail text carries no rollback guarantee across that window; only the counter is protected.
+    private void reportIfUnsettled(TrackedCommit tracked) {
+        if (tracked.commit().isResolved()) {
+            return;
+        }
+
+        reportCommitOutcome(tracked,
+                            "unsettled at shutdown bound",
+                            "Cursor commit unsettled at the {0}ms shutdown bound for consumer group {1} on stream {2} partition {3}",
+                            CURSOR_COMMIT_SHUTDOWN_BOUND.millis(),
+                            tracked.key().groupId(),
+                            tracked.key().streamName(),
+                            tracked.key().partition());
+    }
+
+    /// #654 round 4: the single place all three paths that can observe a commit's outcome —
+    /// [#reportIfUnsettled] (bound expiry), [#onCursorCommitFailure] (a genuine local-commit failure),
+    /// and [#reportIfLocalOnly] (a recovered checkpoint-publish failure) — funnel through to record the
+    /// detail text, decide the increment, and log. The dedup token lives on the COMMIT
+    /// ([TrackedCommit#reported]), not the consumer, so two commits sharing one [ConsumerState] (a
+    /// periodic checkpoint still in flight when [#close] issues that same consumer's final commit) are
+    /// reported independently instead of racing over one shared per-consumer flag.
+    ///
+    /// Whichever caller wins [AtomicBoolean#compareAndSet] is the FIRST report for this commit: it
+    /// increments [#cursorCommitFailureCount] once and logs at ERROR. Every later call for the SAME
+    /// commit — a bound report arriving after the commit already resolved, or a resolution arriving
+    /// after the bound already reported it — loses the CAS, does not increment again, and logs at
+    /// WARNING instead, so the ERROR-line count and the counter never disagree: exactly one ERROR and
+    /// one increment per unsettled commit, ever. The detail text is recorded unconditionally either way.
+    private void reportCommitOutcome(TrackedCommit tracked, String detail, String errorTemplate, Object... errorArgs) {
+        tracked.state().recordCursorCommitFailure(detail);
+        if (tracked.reported().compareAndSet(false, true)) {
+            cursorCommitFailureCount.incrementAndGet();
+            LOG.log(System.Logger.Level.ERROR, errorTemplate, errorArgs);
+        } else {
+            LOG.log(System.Logger.Level.WARNING,
+                    "Late resolution of an already-reported cursor commit for consumer group {0} on stream {1} partition {2}: {3}",
+                    tracked.key().groupId(),
+                    tracked.key().streamName(),
+                    tracked.key().partition(),
+                    detail);
+        }
+    }
+
+    /// #654 round 4: pairs one commit's promise with the (key, state) [#reportCommitOutcome] logs and
+    /// records against, and [#reported] — the per-COMMIT dedup token that lets this commit's bound
+    /// report ([#reportIfUnsettled]) and its own eventual resolution ([#onCursorCommitFailure] /
+    /// [#reportIfLocalOnly]) race safely for ownership of the single increment. Round 3's token lived on
+    /// [ConsumerState] instead, shared by every commit that consumer ever issues; a periodic
+    /// [#checkpointIfNeeded] commit still in flight when [#close] issues that SAME consumer's final
+    /// commit shared that one flag, so a genuine failure on the periodic commit could be silently
+    /// uncounted (already "spent" by the final commit's bound report) or double-counted (a race between
+    /// the bound check and the commit's own resolution).
+    private record TrackedCommit(ConsumerKey key,
+                                 ConsumerState state,
+                                 Promise<CommitOutcome> commit,
+                                 AtomicBoolean reported) {}
+
+    @Contract
+    private void periodicConsumerCheck() {
         reapIdleConsumers(System.currentTimeMillis());
+        revalidatePushAttachments();
+    }
+
+    /// #1238: a push consumer is driven only by its ring's append listener, and releasing that ring on
+    /// role loss (`StreamPartitionManager.completeRelease` -> `OffHeapRingBuffer.close`, which clears
+    /// every listener) does not detach the consumer — the assignment can keep it here (the HRW pick over
+    /// slice-bearing nodes does not depend on this node's replica role). Left alone it has neither a
+    /// listener nor a poller and never delivers again. This check re-attaches any consumer whose ring is
+    /// no longer the partition's current one: to the new ring if it re-materialized, else to the poll
+    /// loop, whose reader forwards to the owner. Runs on the idle-check tick, so recovery is bounded by
+    /// [#IDLE_CHECK_INTERVAL_MS]. Package-private seam for [StreamConsumerRuntimeTest].
+    @Contract
+    void revalidatePushAttachments() {
+        if (closed.get()) {
+            return;
+        }
+
+        consumers.forEach(this::reattachIfRingReplaced);
+    }
+
+    private void reattachIfRingReplaced(ConsumerKey key, ConsumerState state) {
+        if (state.isCancelled() || state.pushBuffer().isEmpty() || attachedToCurrentRing(key, state)) {
+            return;
+        }
+
+        LOG.log(System.Logger.Level.INFO,
+                "Partition ring for {0}[{1}] was released under consumer group {2}; re-attaching",
+                key.streamName(),
+                key.partition(),
+                key.groupId());
+        removePushListener(key, state);
+        subscribePushOrPoll(key, state);
+    }
+
+    private boolean attachedToCurrentRing(ConsumerKey key, ConsumerState state) {
+        return partitionManager.partitionBuffer(key.streamName(),
+                                                key.partition())
+                               .flatMap(current -> state.pushBuffer()
+                                                        .filter(attached -> attached == current))
+                               .isPresent();
     }
 
     /// Time-injected seam: the reap threshold is 60s, so a test that waited for wall-clock would be
@@ -192,8 +600,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         consumers.forEach((key, state) -> reapIfIdleConsumer(key, state, now));
     }
 
+    /// rev1285d N1: a consumer still retrying its subscribe-time cursor fetch has not STARTED, so its
+    /// `lastPollTime` is the construction time — without the flag check it reads as idle after 60s and
+    /// is reaped, which also stops the fetch retry ([#retryCursorFetch] checks `isCancelled`).
     private void reapIfIdleConsumer(ConsumerKey key, ConsumerState state, long now) {
-        if (state.idlePolicy() == IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED) {
+        if (state.idlePolicy() == IdlePolicy.KEEP_UNTIL_UNSUBSCRIBED || state.isAwaitingCursorFetch()) {
             return;
         }
 
@@ -207,19 +618,97 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         unsubscribe(key.streamName(), key.partition(), key.groupId());
     }
 
-    private void loadCursorAndStart(ConsumerKey key,
-                                    ConsumerState state,
-                                    String groupId,
-                                    String streamName,
-                                    int partition) {
-        cursorStore.onPresent(store -> store.fetch(groupId, streamName, partition)
-                                            .onResult(result -> applyCursorAndStart(result, key, state)))
+    /// #1403 (v-str-1914 F1): the fetch waits for the detach flushes of the same key still pending on this node, so the
+    /// successor resumes from the old consumer's final cursor and no detach flush lands after it starts. Not covered: a
+    /// periodic commit that outlived its own `PERIODIC_COMMIT_BOUND` is abandoned by the flush's chain, and its store
+    /// write can still land late and move the cursor backwards (pre-existing, not introduced by this gate). Neither skipping that flush (it would drop the old handler's progress) nor a store-side max-fence (it would
+    /// refuse a legitimate operator rewind) is used.
+    private void loadCursorAndStart(ConsumerKey key, ConsumerState state) {
+        cursorStore.onPresent(store -> option(pendingDetachFlushes.get(key)).map(detaches -> detaches.settled)
+                                             .or(NO_PREDECESSOR)
+                                             .onResult(_ -> fetchCursorAndStart(store, key, state, 1)))
                    .onEmpty(() -> startConsumer(key, state));
     }
 
-    private void applyCursorAndStart(Result<Option<Long>> result, ConsumerKey key, ConsumerState state) {
-        result.onSuccess(opt -> opt.onPresent(state::advanceCursor));
+    /// rev1272 F7: the fetch is LIFTED. A store whose `fetch` threw used to escape out of `subscribe` with
+    /// the consumer already registered and never started, so every re-subscribe was refused as already
+    /// subscribed. A failed fetch — thrown or returned — is retried with backoff until the store answers
+    /// or the consumer goes away; the consumer then starts from the cursor the store holds. It no longer
+    /// starts from offset 0 on a failed fetch, which replayed the whole retained partition.
+    @Contract
+    private void fetchCursorAndStart(ConsumerCursorStore store, ConsumerKey key, ConsumerState state, int attempt) {
+        state.markAwaitingCursorFetch();
+        lifted(() -> fetchResumeCursor(store, state, key)).onResult(result -> applyCursorAndStart(result,
+                                                                                                  store,
+                                                                                                  key,
+                                                                                                  state,
+                                                                                                  attempt));
+    }
+
+    /// The stored cursor. It is NOT clamped to the partition's head: it carries the owner epoch it was read under, so the first
+    /// read of a resumed consumer is validated like any other (#1873, KIP-320). A cursor above the head of a replaced lineage is
+    /// answered with the typed [StreamError.EpochDiverged] and re-seeks, and a resume against an owner that is down or not yet
+    /// activated takes the ordinary poll-failure backoff; the only retry loop left here is the cursor store's own.
+    private Promise<Option<Cursor>> fetchResumeCursor(ConsumerCursorStore store, ConsumerState state, ConsumerKey key) {
+        return fetchCursor(store, state, key.groupId(), key.streamName(), key.partition());
+    }
+
+    /// #1271: a fenced consumer resumes only from a cursor written under ITS assignment epoch — and, #1333,
+    /// under the rewind epoch that cursor carries. An unfenced consumer has no assignment and cannot have
+    /// been rewound, so its cursor is [Cursor#unrewound].
+    private static Promise<Option<Cursor>> fetchCursor(ConsumerCursorStore store,
+                                                       ConsumerState state,
+                                                       String groupId,
+                                                       String streamName,
+                                                       int partition) {
+        return state.fence()
+                    .fold(() -> store.fetch(groupId, streamName, partition)
+                                     .map(offset -> offset.map(Cursor::unrewound)),
+                          fence -> store.fetchCursor(groupId,
+                                                     streamName,
+                                                     partition,
+                                                     fence.epoch()));
+    }
+
+    @Contract
+    private void applyCursorAndStart(Result<Option<Cursor>> result,
+                                     ConsumerCursorStore store,
+                                     ConsumerKey key,
+                                     ConsumerState state,
+                                     int attempt) {
+        result.onSuccess(cursor -> startFromCursor(key, state, cursor))
+              .onFailure(cause -> retryCursorFetch(store, key, state, attempt, cause));
+    }
+
+    /// #1333: the consumer runs — and commits — under the epoch its cursor was fetched with, so a report
+    /// derived from its commits is stamped with the rewind that positioned it, never with whatever epoch
+    /// is current when the commit happens to resolve.
+    @Contract
+    private void startFromCursor(ConsumerKey key, ConsumerState state, Option<Cursor> cursor) {
+        state.clearAwaitingCursorFetch();
+        cursor.onPresent(state::resumeAt);
         startConsumer(key, state);
+    }
+
+    @Contract
+    private void retryCursorFetch(ConsumerCursorStore store,
+                                  ConsumerKey key,
+                                  ConsumerState state,
+                                  int attempt,
+                                  Cause cause) {
+        if (closed.get() || state.isCancelled()) {
+            return;
+        }
+
+        LOG.log(System.Logger.Level.WARNING,
+                "Cursor fetch for consumer group {0} on {1}[{2}] failed (attempt {3}); retrying before start: {4}",
+                key.groupId(),
+                key.streamName(),
+                key.partition(),
+                attempt,
+                cause.message());
+        SharedScheduler.schedule(() -> fetchCursorAndStart(store, key, state, attempt + 1),
+                                 TimeSpan.timeSpan(computeBackoff(Math.min(attempt, 30))).millis());
     }
 
     private void startConsumer(ConsumerKey key, ConsumerState state) {
@@ -231,12 +720,72 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         subscribePushOrPoll(key, state);
     }
 
-    private void flushCursorForKey(ConsumerKey key, ConsumerState state) {
+    /// #654: the final commit for one consumer at detach (either interactive [#unsubscribe] or batch
+    /// [#close]). [#observedCommit] registers the commit into [#inFlightCommits] before returning it,
+    /// which is how [#awaitFinalCursorCommits] bound-awaits it — not this method's return value, which
+    /// [#cleanupConsumer]'s call discards on purpose: a single interactive detach does not gate node
+    /// shutdown, so nothing there needs to await it, and the failure is already logged/counted inside
+    /// [#observedCommit] regardless of who awaits.
+    ///
+    /// #1239: chained behind the consumer's periodic commit if one is still in flight, so the two never
+    /// overlap for one key — the final commit is issued only once the periodic one settles, and carries
+    /// the cursor as it stands then. It is registered in [#inFlightCommits] immediately, so a periodic
+    /// commit that never settles leaves BOTH counted as unsettled at the shutdown bound.
+    ///
+    /// #1403: and behind the consumer's in-flight advance ([#afterInFlightAdvance]), bounded by
+    /// [#DETACH_ADVANCE_BOUND], so an event whose handler completed before the detach is committed past rather than
+    /// redelivered on reattach. The flush is chained, never awaited here, so a handler that detaches its own consumer
+    /// cannot wait on itself.
+    private Promise<CommitOutcome> flushCursorForKey(ConsumerKey key, ConsumerState state) {
         if (!state.cursorInitialized()) {
-            return;
+            return Promise.success(CommitOutcome.persisted());
         }
 
-        cursorStore.onPresent(store -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor()));
+        return observedCommit(key,
+                              state,
+                              afterInFlightAdvance(key, state).fold(_ -> state.periodicCommit()));
+    }
+
+    /// #1403: settles once the consumer's in-flight advance has landed — at once when none is in flight, or when the
+    /// cursor is already past it — or when [#DETACH_ADVANCE_BOUND] expires, which is WARNed: the flush then commits the
+    /// cursor before that offset, and the event is redelivered on reattach. Waits on its own promise, never on the
+    /// slot's, because a timeout fails the promise it is attached to.
+    private Promise<Unit> afterInFlightAdvance(ConsumerKey key, ConsumerState state) {
+        var inFlight = state.inFlightAdvance();
+
+        if (state.cursor() > inFlight.offset()) {
+            return Promise.unitPromise();
+        }
+
+        var waiter = Promise.<Unit> promise();
+
+        inFlight.done().withResult(waiter::resolve);
+
+        return waiter.timeout(DETACH_ADVANCE_BOUND)
+                     .fold(result -> result.fold(_ -> advanceUnsettledAtDetach(key,
+                                                                               state,
+                                                                               inFlight.offset()),
+                                                 _ -> Promise.unitPromise()));
+    }
+
+    private static Promise<Unit> advanceUnsettledAtDetach(ConsumerKey key, ConsumerState state, long offset) {
+        LOG.log(System.Logger.Level.WARNING,
+                "Detach of consumer group {0} on {1}[{2}]: the delivery of offset {3} did not complete within {4}ms; committing cursor {5}, so offset {3} is redelivered on reattach",
+                key.groupId(),
+                key.streamName(),
+                key.partition(),
+                offset,
+                DETACH_ADVANCE_BOUND.millis(),
+                state.cursor());
+
+        return Promise.unitPromise();
+    }
+
+    /// #1403: the slot is settled by its own owner once the advance (or the failure handling that replaces it) has run.
+    @Contract
+    private static void settledAfter(ConsumerState.InFlightAdvance inFlight, Runnable work) {
+        work.run();
+        inFlight.settle();
     }
 
     private void subscribePushOrPoll(ConsumerKey key, ConsumerState state) {
@@ -246,25 +795,288 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                         .onEmpty(() -> scheduleNextPoll(key, state));
     }
 
+    /// #1238: the listener only reports FUTURE appends, so the loop is kicked once right after it is
+    /// installed — events already in the ring (a restart resuming behind the head, a warm-up event
+    /// published before attach) are delivered now instead of waiting for the next append.
     private void registerPushListener(OffHeapRingBuffer buffer, ConsumerKey key, ConsumerState state) {
         LongConsumer listener = _ -> onAppend(key, state);
 
-        state.pushListener(listener);
+        state.pushAttachment(buffer, listener);
         buffer.addAppendListener(listener);
+        detachIfCancelledMeanwhile(key, state);
+        requestDrain(key, state);
     }
 
+    /// Review rev1272 F3: a re-attach ([#reattachIfRingReplaced]) can race [#unsubscribe]. `cancel()` runs
+    /// BEFORE the unsubscribe's listener removal, so re-checking it AFTER installing closes the window:
+    /// either the unsubscribe's removal sees this attachment, or this check sees the cancellation and
+    /// removes it (removing twice is harmless).
+    private void detachIfCancelledMeanwhile(ConsumerKey key, ConsumerState state) {
+        if (state.isCancelled()) {
+            removePushListener(key, state);
+        }
+    }
+
+    /// Detaches from the ring the listener was REGISTERED on, not whatever ring the partition resolves
+    /// to now — after a release and re-materialization those differ (#1238).
     private void removePushListener(ConsumerKey key, ConsumerState state) {
-        state.pushListener()
-             .onPresent(listener -> partitionManager.partitionBuffer(key.streamName(),
-                                                                     key.partition())
-                                                    .onPresent(buffer -> buffer.removeAppendListener(listener)));
+        state.pushBuffer().onPresent(buffer -> state.pushListener()
+                                                    .onPresent(buffer::removeAppendListener));
+        state.clearPushAttachment();
     }
 
     private void checkpointIfNeeded(ConsumerKey key, ConsumerState state) {
         if (state.shouldCheckpoint()) {
-            cursorStore.onPresent(store -> store.commit(key.groupId(), key.streamName(), key.partition(), state.cursor()));
-            state.resetCheckpointCounters();
+            requestCheckpoint(key, state);
         }
+    }
+
+    /// #1239: the periodic checkpoint is a single-flight loop per consumer. A request made while a commit
+    /// is in flight (or waiting out a retry backoff) only marks one pending; whoever holds the slot then
+    /// commits the cursor as it stands AT ISSUE time, so requests coalesce to the latest cursor and two
+    /// periodic commits for one key can never land out of order. Delivery never waits on any of this —
+    /// the commit's outcome is observed on its own continuation (#654's non-gating property).
+    @Contract
+    private void requestCheckpoint(ConsumerKey key, ConsumerState state) {
+        state.markCheckpointPending();
+        if (state.tryStartCheckpoint()) {
+            issueCheckpoint(key, state);
+        }
+    }
+
+    /// #1355: the slot a detach flush chains behind ([#flushCursorForKey]) is handed a fresh promise FIRST —
+    /// before the cancellation check and before the store call — so a flush reading it at any point during
+    /// this issue finds the commit it must wait for. Assigning it after [#observedCommit] returned left the
+    /// previous, settled commit in the slot while the store call had already been made, the [TrackedCommit]
+    /// registered, three handlers attached and the timeout armed; a flush arriving in that window was issued
+    /// at once, beside this commit. Assigning before the check also closes the narrower interleaving
+    /// check(not cancelled) → `cancel()` → flush reads the settled slot → this commit is issued anyway.
+    /// On the bail path nothing is issued, so the slot is settled at once — only its SETTLEMENT is read
+    /// (`predecessor.fold(_ -> …)`), never its value. The slot resolves inline from the chain
+    /// (`withResult`), ahead of the asynchronous [#afterCheckpoint] event, so it never lags the commit.
+    @Contract
+    private void issueCheckpoint(ConsumerKey key, ConsumerState state) {
+        Promise<CommitOutcome> periodic = Promise.promise();
+
+        state.periodicCommit(periodic);
+        checkpointIssueProbe.accept(CheckpointIssuePoint.SLOT_ASSIGNED);
+        if (closed.get() || state.isCancelled() || state.isFenced()) {
+            periodic.succeed(CommitOutcome.persisted());
+            state.finishCheckpoint();
+
+            return;
+        }
+
+        state.clearCheckpointPending();
+        checkpointIssueProbe.accept(CheckpointIssuePoint.BEFORE_STORE_CALL);
+        observedCommit(key, state, NO_PREDECESSOR).timeout(PERIODIC_COMMIT_BOUND)
+                      .withResult(periodic::resolve)
+                      .onResult(result -> afterCheckpoint(key, state, result));
+    }
+
+    /// Test-only seam (#1355): install a probe that [#issueCheckpoint] runs at each [CheckpointIssuePoint] —
+    /// the points at which a detach flush must already find the slot holding this commit. A probe that parks
+    /// the issuing thread there while the test detaches the consumer makes the race deterministic instead
+    /// of scheduler-dependent. Production never touches it.
+    @Contract
+    void checkpointIssueProbe(Consumer<CheckpointIssuePoint> probe) {
+        checkpointIssueProbe = probe;
+    }
+
+    /// Where [#issueCheckpoint] runs the test-only [#checkpointIssueProbe] (#1355).
+    enum CheckpointIssuePoint {
+        /// After the slot holds this commit, before the cancellation check.
+        SLOT_ASSIGNED,
+        /// After the cancellation check, before the store call.
+        BEFORE_STORE_CALL
+    }
+
+    /// Retries on a failed commit AND on a [CommitOutcome.LocalOnly] one: a commit whose cluster
+    /// checkpoint did not land has not persisted the cursor where failover reads it (#1239).
+    @Contract
+    private void afterCheckpoint(ConsumerKey key, ConsumerState state, Result<CommitOutcome> result) {
+        result.onSuccess(outcome -> checkpointSettled(key, state, outcome)).onFailure(_ -> retryCheckpoint(key, state));
+    }
+
+    @Contract
+    private void checkpointSettled(ConsumerKey key, ConsumerState state, CommitOutcome outcome) {
+        switch (outcome) {
+            case CommitOutcome.Persisted _ -> checkpointPersisted(key, state);
+            case CommitOutcome.LocalOnly _ -> retryCheckpoint(key, state);
+            case CommitOutcome.Fenced _ -> state.finishCheckpoint();
+        }
+    }
+
+    /// The trigger counters reset only here, on a commit that SUCCEEDED. A request absorbed while that
+    /// commit was in flight is honoured one checkpoint interval later rather than immediately, which
+    /// keeps the commit rate at the configured cadence instead of one commit per commit latency — and
+    /// still lands the tail of a burst that ended while the commit was outstanding.
+    @Contract
+    private void checkpointPersisted(ConsumerKey key, ConsumerState state) {
+        state.resetCheckpointCounters();
+        state.resetCheckpointAttempts();
+        state.finishCheckpoint();
+        if (state.isCheckpointPending() && state.tryStartCheckpoint()) {
+            scheduleCheckpoint(key, state, state.checkpointInterval());
+        }
+    }
+
+    /// A failed periodic commit keeps the slot and retries with backoff until it persists or the
+    /// consumer goes away (FER: the failure is already counted and surfaced by [#observedCommit]; the
+    /// retry is what moves the persisted cursor forward on a partition that receives no further event).
+    /// Each retry re-reads the cursor, so it commits the newest value, never the one that failed.
+    @Contract
+    private void retryCheckpoint(ConsumerKey key, ConsumerState state) {
+        var attempt = Math.min(state.incrementCheckpointAttempts(), 30);
+
+        scheduleCheckpoint(key,
+                           state,
+                           TimeSpan.timeSpan(computeBackoff(attempt)).millis());
+    }
+
+    @Contract
+    private void scheduleCheckpoint(ConsumerKey key, ConsumerState state, TimeSpan delay) {
+        SharedScheduler.schedule(() -> issueCheckpoint(key, state), delay);
+    }
+
+    /// #654: the single place that performs a cursor commit and observes its outcome — shared by the
+    /// detach paths ([#flushCursorForKey]) and the periodic path ([#checkpointIfNeeded]), closing the
+    /// discard defect for both call sites at once. A missing [#cursorStore] (no persistence configured)
+    /// has nothing to commit and nothing to fail, so it resolves as persisted rather than going through
+    /// [#onCursorCommitFailure]. `predecessor` is the commit this one must not overlap (#1239).
+    private Promise<CommitOutcome> observedCommit(ConsumerKey key,
+                                                  ConsumerState state,
+                                                  Promise<CommitOutcome> predecessor) {
+        return cursorStore.map(store -> issueTrackedCommit(key, state, store, predecessor))
+                          .or(Promise.success(CommitOutcome.persisted()));
+    }
+
+    /// #654 round 2: clears the consumer's recorded failure OPTIMISTICALLY at the start of the attempt,
+    /// not on the outer promise's success — a store composed of sub-stages (e.g. the node's
+    /// cluster-aware store) can settle this promise successfully with a [CommitOutcome.LocalOnly]
+    /// outcome, and [#reportIfLocalOnly] runs from the same `.onSuccess` that would otherwise have
+    /// cleared it, so clearing there would erase what it just recorded.
+    ///
+    /// #654 round 4 (JBCT): extracted out of [#observedCommit]'s `cursorStore.map` lambda, which had
+    /// grown into a five-statement block. Mints THIS commit's [TrackedCommit] — and its own dedup token
+    /// — right here, the one entry point shared by both call sites via [#observedCommit], and registers
+    /// it into [#inFlightCommits] before the commit can possibly resolve, so a `store.commit(...)` that
+    /// resolves synchronously never leaves a stale entry behind (the registration happens before
+    /// `onResult` is even attached).
+    ///
+    /// #1239: the store call waits for `predecessor` to settle (either way) and reads the cursor THEN;
+    /// the tracked promise is the whole chain, so it is registered and bound-awaited from the moment it
+    /// is requested.
+    ///
+    /// #1388: registered BEFORE the store call, not after it. `store.commit(...)` runs inline on this thread
+    /// when `predecessor` is already settled (the periodic path), and a [#close] running concurrently takes
+    /// its [#awaitFinalCursorCommits] snapshot the moment the store answers — with the registration after
+    /// the call, a store that stalls (or a thread descheduled between the call and the `add`) left that
+    /// commit out of the snapshot, so it was neither bound-awaited nor counted for this shutdown. The
+    /// [TrackedCommit] therefore carries a handle minted before the chain exists, settled from the chain as
+    /// a regular completion (`withResult`, immediate on resolution).
+    ///
+    /// #1401: the outcome is counted with `with*()` too, attached BEFORE the handle's `withResult`.
+    /// Attachment order is execution order: `with*()` actions run inline in the resolver's frame, in the
+    /// order attached and before any dependent or join; `on*()` handlers are dispatched asynchronously.
+    /// With the count on an `onFailure`, a periodic commit whose own [#PERIODIC_COMMIT_BOUND] timeout
+    /// settled its handle just before [#close]'s bound was skipped there (correctly — settled) while its
+    /// increment landed after the caller had already read the count. Counted first, nothing that sees the
+    /// handle settled — the bound's `allOf` join above all — can see the count still short. A chain a
+    /// synchronously-failing store has already settled runs them inline at attachment, as before.
+    private Promise<CommitOutcome> issueTrackedCommit(ConsumerKey key,
+                                                      ConsumerState state,
+                                                      ConsumerCursorStore store,
+                                                      Promise<CommitOutcome> predecessor) {
+        state.clearCursorCommitFailure();
+        var tracked = new TrackedCommit(key, state, Promise.promise(), new AtomicBoolean(false));
+
+        inFlightCommits.add(tracked);
+        var commit = predecessor.fold(_ -> lifted(() -> commitCursor(store, key, state)));
+        // Attachment order is execution order (Promise.processActions): count, then unregister, then settle
+        // the handle — all inline in the frame that resolves `commit`, none on an async event.
+        commit.withSuccess(outcome -> reportIfLocalOnly(tracked, outcome));
+        commit.withFailure(cause -> onCursorCommitFailure(tracked, cause));
+        commit.withResult(_ -> inFlightCommits.remove(tracked));
+        commit.withResult(tracked.commit()::resolve);
+
+        return commit;
+    }
+
+    /// #1271: a fenced consumer commits under ITS assignment epoch, so the store can refuse it once the
+    /// assignment has moved — and, #1333, under the rewind epoch it resumed with, so a report derived from
+    /// the commit is stamped with the rewind that positioned it and the applier can refuse a zombie's
+    /// pre-rewind checkpoint. An unfenced consumer commits the plain offset.
+    private static Promise<CommitOutcome> commitCursor(ConsumerCursorStore store,
+                                                       ConsumerKey key,
+                                                       ConsumerState state) {
+        return state.fence()
+                    .fold(() -> store.commit(key.groupId(),
+                                             key.streamName(),
+                                             key.partition(),
+                                             state.cursor()),
+                          fence -> store.commit(key.groupId(),
+                                                key.streamName(),
+                                                key.partition(),
+                                                state.cursor(),
+                                                fence.epoch(),
+                                                state.epoch(),
+                                                state.ownerEpoch()));
+    }
+
+    /// #654 round 2 / #1239: `commit(...)` settled successfully but its cluster checkpoint did not land —
+    /// the cause arrives on THIS commit's outcome, so it can never be read against another commit — and
+    /// is folded into the same surface a local-commit failure uses. #654 round 4: routes through
+    /// [#reportCommitOutcome] on the SAME per-commit token [#reportIfUnsettled] and
+    /// [#onCursorCommitFailure] use for this commit, so a local-only outcome arriving after the bound
+    /// already reported this commit unsettled logs WARNING, not a second ERROR, and does not increment
+    /// [#cursorCommitFailureCount] again.
+    private void reportIfLocalOnly(TrackedCommit tracked, CommitOutcome outcome) {
+        switch (outcome) {
+            case CommitOutcome.LocalOnly(var cause) -> reportCheckpointRecovered(tracked, cause.message());
+            case CommitOutcome.Fenced(var detail) -> reportFenced(tracked, detail);
+            case CommitOutcome.Persisted _ -> {}
+        }
+    }
+
+    /// #1271: the store refused a commit because this node no longer holds the consumer assignment.
+    /// Not a failure to retry or count — a verdict: delivery stops at the next pass (the fence is
+    /// latched here, before any later pass can read it) and the node's reconcile detaches without a
+    /// final flush.
+    private void reportFenced(TrackedCommit tracked, String detail) {
+        tracked.state().markFenced();
+        tracked.state().recordCursorCommitFailure("fenced: " + detail);
+        LOG.log(System.Logger.Level.WARNING,
+                "Cursor commit refused — consumer assignment moved away from this node; delivery stopped for consumer group {0} on stream {1} partition {2}: {3}",
+                tracked.key().groupId(),
+                tracked.key().streamName(),
+                tracked.key().partition(),
+                detail);
+    }
+
+    private void reportCheckpointRecovered(TrackedCommit tracked, String detail) {
+        reportCommitOutcome(tracked,
+                            "checkpoint publish: " + detail,
+                            "Cursor commit checkpoint-publish recovered for consumer group {0} on stream {1} partition {2}: {3}",
+                            tracked.key().groupId(),
+                            tracked.key().streamName(),
+                            tracked.key().partition(),
+                            detail);
+    }
+
+    /// #654 round 4: routes through [#reportCommitOutcome] on the SAME per-commit token
+    /// [#reportIfUnsettled] and [#reportIfLocalOnly] use for this commit — a local-commit failure
+    /// arriving after the bound already reported this commit unsettled logs WARNING, not a second ERROR,
+    /// and does not increment [#cursorCommitFailureCount] again; the exact failure cause is still
+    /// recorded, since it is new information even when the count is not.
+    private void onCursorCommitFailure(TrackedCommit tracked, Cause cause) {
+        reportCommitOutcome(tracked,
+                            "local commit: " + cause.message(),
+                            "Cursor commit (local) failed for consumer group {0} on stream {1} partition {2}: {3}",
+                            tracked.key().groupId(),
+                            tracked.key().streamName(),
+                            tracked.key().partition(),
+                            cause.message());
     }
 
     private void scheduleNextPoll(ConsumerKey key, ConsumerState state) {
@@ -278,50 +1090,369 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.scheduledFuture(future);
     }
 
-    /// The scheduled poll loop is SERIAL: the next poll is scheduled only once the current cycle —
-    /// read AND delivery — has completed.
-    ///
-    /// The previous shape rescheduled eagerly, so a second poll could read from a cursor the first poll
-    /// had not yet advanced and re-deliver the same events. That was harmless while every read was a
-    /// synchronous local one, but it becomes a duplicate generator the moment a consumer assigned to a
-    /// non-owner node reads THROUGH the owner (#535): those reads take a network round trip, during
-    /// which the eager 1ms reschedule would stack further reads on the same offset.
+    /// Poll-mode tick: a TRIGGER for the consumer's one delivery loop ([#requestDrain]), then the next
+    /// tick. Reads cannot stack on one offset — the #535 hazard of a routed read's network round trip —
+    /// because a tick that lands while a pass is running only marks the loop dirty (#1238).
     @Contract
     private void pollAndReschedule(ConsumerKey key, ConsumerState state) {
-        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause)).onResult(_ -> scheduleNextPoll(key, state));
+        requestDrain(key, state);
+        scheduleNextPoll(key, state);
     }
 
-    /// Push-listener entry point. An append notification is fire-and-forget by construction — the ring
-    /// buffer hands out a `LongConsumer` — so the cycle's outcome has no caller to return to and is
-    /// logged instead. Only reachable when the ring IS local, where the read resolves without I/O.
+    /// Push-listener entry point, run synchronously on the NOTIFYING thread — the appender today, the
+    /// ring's per-partition notifier once #1258 lands. It only requests a drain, which never runs a handler
+    /// on this thread; a pass already running for this consumer picks the new event up instead of a
+    /// second cycle starting beside it (#1238).
     @Contract
     private void onAppend(ConsumerKey key, ConsumerState state) {
-        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause));
+        requestDrain(key, state);
+    }
+
+    /// #1238: the single entry to the consumer's delivery loop — push notifications, poll ticks, subscribe,
+    /// and the release of a retry or dead-letter hold all come through here. `dirty` records that there
+    /// may be something new to read; only the caller that flips `running` false->true starts a pass, so
+    /// at most one pass per (group, partition) runs at any instant and nothing ever delivers one offset
+    /// twice concurrently. The pass itself is DISPATCHED ([#continueDrain]), never run on the caller: the
+    /// caller may be the ring's notifying thread, where an inline handler can re-enter the publish path
+    /// (a handler that publishes to another partition — the #1258 deadlock) or stall every later
+    /// notification for the partition, or a subscriber, which must not run slice code synchronously.
+    ///
+    /// #1934: while a run of escaped passes is backing off, a trigger only marks the loop dirty; the pass after the
+    /// backoff is started by [#resumeAfterEscapeBackoff]. Without that, a push-mode consumer whose pass throws on every
+    /// attempt ran one pass per append.
+    @Contract
+    private void requestDrain(ConsumerKey key, ConsumerState state) {
+        state.markDirty();
+        if (state.inEscapeBackoff(clockMs.getAsLong())) {
+            return;
+        }
+
+        if (state.tryStartDrain()) {
+            continueDrain(key, state);
+        }
+    }
+
+    /// One pass of the loop. `dirty` is cleared BEFORE the read, so an append that lands after the read
+    /// re-arms it and [#afterDrainPass] runs another pass rather than stranding that event.
+    ///
+    /// Review rev1272 F1: the pass ALWAYS ends in [#afterDrainPass], which is what releases `running`.
+    /// The synchronous part of the cycle runs inside a lift ([#guardedCycle]) — the finally-equivalent for
+    /// this task body — and every foreign call reached asynchronously (handler, read continuation,
+    /// delivery outcome, cursor store) is lifted where it is made, because a throw inside a Promise
+    /// continuation escapes on the resolving thread and the pass would never settle. A literal `finally`
+    /// here would be wrong: the pass usually continues after this method returns, and releasing `running`
+    /// then would start a second pass beside it.
+    @Contract
+    private void drainPass(ConsumerKey key, ConsumerState state) {
+        state.clearDirty();
+        vmBoundedCycle(key, state).onResult(result -> afterDrainPass(key, state, result));
+    }
+
+    /// #1367: since #1311 `Result.lift` rethrows a [VirtualMachineError] instead of mapping it, so one thrown out of
+    /// [#pollCycle] escapes [#guardedCycle] before any pass promise exists, and `running` would stay set until restart
+    /// — every later trigger only marking the loop dirty. Same convention as `OffHeapRingBuffer.notifyGuarded`: a
+    /// [StackOverflowError] is the pass's own runaway recursion, recovered once the stack unwinds, so it is a failed
+    /// pass like any other throw ([PassEscape], then [#afterFailedPass]); every other `VirtualMachineError` means
+    /// the JVM itself is failing, so the loop is released the way a failed pass releases it and the error propagates.
+    /// The consumer is not stopped either way: its next trigger runs a pass. Only the SYNCHRONOUS escape is caught
+    /// here, never one from the pass's continuation, which may already have released or re-scheduled the loop.
+    @SuppressWarnings("JBCT-EX-01")
+    private Promise<Boolean> vmBoundedCycle(ConsumerKey key, ConsumerState state) {
+        try {
+            return guardedCycle(key, state);
+        } catch (StackOverflowError overflow) {
+            return PassEscape.passEscape(overflow).promise();
+        } catch (VirtualMachineError fatal) {
+            afterFailedPass(key, state, PassEscape.passEscape(fatal));
+
+            throw fatal;
+        }
+    }
+
+    /// The pass's escape boundary: anything thrown synchronously out of [#pollCycle] — a reader that
+    /// throws instead of returning a failed promise, say — becomes a failed pass instead of escaping the
+    /// scheduler task with `running` still set. #1934: the throw is kept with its frames ([PassEscape]) and reported by
+    /// [#afterEscapedPass].
+    private Promise<Boolean> guardedCycle(ConsumerKey key, ConsumerState state) {
+        return Result.lift(PassEscape::passEscape,
+                           () -> pollCycle(key, state))
+                     .async()
+                     .flatMap(cycle -> cycle);
+    }
+
+    @Contract
+    private void afterDrainPass(ConsumerKey key, ConsumerState state, Result<Boolean> pass) {
+        pass.onSuccess(batchFull -> afterCompletedPass(key, state, batchFull))
+            .onFailure(cause -> afterFailedPass(key, state, cause));
+    }
+
+    /// Repeat while the read came back full (more is waiting behind it — the ring notifies ONCE per
+    /// `appendBatch`) or while an append arrived during the pass; otherwise release the loop. The
+    /// re-check of `dirty` after releasing closes the window in which an append saw `running` still set
+    /// and left the work to this pass.
+    @Contract
+    private void afterCompletedPass(ConsumerKey key, ConsumerState state, boolean batchFull) {
+        if (batchFull) {
+            continueDrain(key, state);
+
+            return;
+        }
+
+        releaseDrain(key, state);
+    }
+
+    /// Review rev1272 F2: a push-mode consumer is re-driven only by appends, so a pass whose READ failed
+    /// — the subscribe kick's included — would strand everything already in the ring until the next
+    /// append. It is re-requested after the poll backoff instead; poll mode's own tick already does that.
+    @Contract
+    private void afterFailedPass(ConsumerKey key, ConsumerState state, Cause cause) {
+        if (cause instanceof PassEscape escape) {
+            afterEscapedPass(key, state, escape);
+
+            return;
+        }
+
+        logPollFailure(key, cause);
+        releaseDrain(key, state);
+        if (state.pushBuffer().isPresent() && !state.isCancelled() && !closed.get()) {
+            SharedScheduler.schedule(() -> requestDrain(key, state),
+                                     TimeSpan.timeSpan(state.currentPollMs.get()).millis());
+        }
+    }
+
+    /// #1934: a pass that THREW (a defect, unlike a failed read) backs off exponentially from [#ESCAPE_BACKOFF_FIRST_MS]
+    /// to [#ESCAPE_BACKOFF_CAP_MS], and the loop stays parked until the backoff ends, whatever triggers arrive. A run is
+    /// reported once on each transition: its first escape is WARNed with the thrown frames, the
+    /// [#ESCAPES_BEFORE_WARNING]th raises `stream-consumer-drain-failing`, and the escapes in between and after are
+    /// DEBUG. The run ends at the next successful read ([#endEscapeRun]).
+    @Contract
+    private void afterEscapedPass(ConsumerKey key, ConsumerState state, PassEscape escape) {
+        var escapes = state.recordEscape(clockMs.getAsLong());
+        var delayMs = escapeBackoffMs(escapes);
+
+        state.escapeBackoffUntil(clockMs.getAsLong() + delayMs);
+        state.adjustPollInterval(false);
+        reportEscape(key, state, escape, escapes, delayMs);
+        state.finishDrain();
+        if (!state.isCancelled() && !closed.get()) {
+            escapeScheduler.schedule(() -> resumeAfterEscapeBackoff(key, state),
+                                     TimeSpan.timeSpan(delayMs).millis());
+        }
+    }
+
+    /// The backoff after the `escapes`th consecutive escaped pass.
+    static long escapeBackoffMs(int escapes) {
+        return Math.min(ESCAPE_BACKOFF_FIRST_MS<< Math.min(escapes - 1, 20), ESCAPE_BACKOFF_CAP_MS);
+    }
+
+    /// Ends the backoff explicitly rather than by the clock, so a scheduler that wakes a millisecond early cannot leave
+    /// a push-mode consumer parked with no further trigger.
+    @Contract
+    private void resumeAfterEscapeBackoff(ConsumerKey key, ConsumerState state) {
+        state.escapeBackoffUntil(0L);
+        requestDrain(key, state);
+    }
+
+    @Contract
+    private void reportEscape(ConsumerKey key, ConsumerState state, PassEscape escape, int escapes, long delayMs) {
+        if (escapes == 1) {
+            ESCAPE_LOG.warn("Delivery pass for {}[{}] group {} threw {}; retrying with backoff from {} ms up to {} ms. Top frames: {}",
+                            key.streamName(),
+                            key.partition(),
+                            key.groupId(),
+                            escape.thrown(),
+                            delayMs,
+                            ESCAPE_BACKOFF_CAP_MS,
+                            escape.framesText());
+        } else if (escapes == ESCAPES_BEFORE_WARNING) {
+            OperatorWarnings.raise(ESCAPE_LOG,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                                   consumerSubject(key),
+                                   "Consumer group {} on {}[{}] delivers nothing: its last {} delivery passes threw {} over {} ms; it "
+                                  + "retries every {} ms at most. Top frames: {}",
+                                   key.groupId(),
+                                   key.streamName(),
+                                   key.partition(),
+                                   escapes,
+                                   escape.thrown(),
+                                   clockMs.getAsLong() - state.escapeRunStartMs(),
+                                   ESCAPE_BACKOFF_CAP_MS,
+                                   escape.framesText());
+            // Marked only AFTER the raise, so a cancel's own hook that runs before it finds the run unreported and raises no
+            // recovery ahead of the failure it would end. A cancel that landed meanwhile has nobody left to end the alert
+            // just raised, so it is ended here, exactly once: `endEscapeRun` reports the run as reported only to
+            // whichever of this recheck and the cancel's hook gets there first.
+            state.markEscapeRunReported();
+            if (state.isCancelled()) {
+                var lastedMs = clockMs.getAsLong() - state.escapeRunStartMs();
+
+                if (state.endEscapeRun()) {
+                    raiseCancelledRecovery(key, escapes, lastedMs);
+                }
+            }
+        } else {
+            ESCAPE_LOG.debug("Delivery pass for {}[{}] group {} threw again ({} in a row), next pass in {} ms: {}",
+                             key.streamName(),
+                             key.partition(),
+                             key.groupId(),
+                             escapes,
+                             delayMs,
+                             escape.thrown());
+        }
+    }
+
+    /// #1934: a successful read ends a run of escaped passes. The operator hears it is over only if they were told it
+    /// started.
+    @Contract
+    private void endEscapeRun(ConsumerKey key, ConsumerState state) {
+        endEscapeRun(key, state, false);
+    }
+
+    /// A consumer cancelled (detached, abandoned, idle-reaped, or the runtime closed) while its failing alert stands
+    /// would leave that alert open for good, so its end is reported too, with the reason (owner rule: every operator-facing
+    /// condition gets a recovery).
+    @Contract
+    private void endEscapeRunOnCancel(ConsumerKey key, ConsumerState state) {
+        endEscapeRun(key, state, true);
+    }
+
+    @Contract
+    private void endEscapeRun(ConsumerKey key, ConsumerState state, boolean cancelled) {
+        var escapes = state.escapeRunLength();
+
+        if (escapes == 0) {
+            return;
+        }
+
+        var lastedMs = clockMs.getAsLong() - state.escapeRunStartMs();
+        var reported = state.endEscapeRun();
+
+        if (reported && cancelled) {
+            raiseCancelledRecovery(key, escapes, lastedMs);
+        } else if (reported) {
+            OperatorWarnings.raise(ESCAPE_LOG,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                                   consumerSubject(key),
+                                   "Consumer group {} on {}[{}] delivers again: a pass read the partition after {} consecutive "
+                                  + "passes threw over {} ms.",
+                                   key.groupId(),
+                                   key.streamName(),
+                                   key.partition(),
+                                   escapes,
+                                   lastedMs);
+        } else if (cancelled) {
+            ESCAPE_LOG.info("Consumer group {} on {}[{}] was cancelled during a run of {} escaped passes that was never reported",
+                            key.groupId(),
+                            key.streamName(),
+                            key.partition(),
+                            escapes);
+        } else {
+            ESCAPE_LOG.info("Delivery pass for {}[{}] group {} succeeded after {} that threw",
+                            key.streamName(),
+                            key.partition(),
+                            key.groupId(),
+                            escapes);
+        }
+    }
+
+    private void raiseCancelledRecovery(ConsumerKey key, int escapes, long lastedMs) {
+        OperatorWarnings.raise(ESCAPE_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] was cancelled while its delivery passes were failing ({} consecutive "
+                              + "passes threw over {} ms): it no longer delivers or retries here; the failure alert is over.",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               escapes,
+                               lastedMs);
+    }
+
+    private static String consumerSubject(ConsumerKey key) {
+        return key.streamName() + "[" + key.partition() + "]/" + key.groupId();
+    }
+
+    @Contract
+    private void releaseDrain(ConsumerKey key, ConsumerState state) {
+        state.finishDrain();
+        if (state.isDirty() && state.tryStartDrain()) {
+            continueDrain(key, state);
+        }
+    }
+
+    /// Every pass runs on its own [SharedScheduler] task — a virtual thread per task body — never inline.
+    /// For the first pass that keeps handlers off the requester's thread (see [#requestDrain]); for every
+    /// further pass it also keeps the stack flat: `onResult` on an ALREADY-resolved promise (a local read
+    /// plus a handler that returns a completed promise) runs its action on the calling stack, so an
+    /// inline continuation would recurse once per batch and a deep backlog could overflow it.
+    @Contract
+    private void continueDrain(ConsumerKey key, ConsumerState state) {
+        SharedScheduler.schedule(() -> drainPass(key, state),
+                                 TimeSpan.timeSpan(0).millis());
     }
 
     /// One poll cycle: read the partition, then deliver what came back. The returned promise resolves
-    /// when the cycle is DONE. It fails only when the READ failed; a DELIVERY failure is handled by the
-    /// consumer's error strategy ([#handleDeliveryFailure]) and deliberately never surfaces here, so a
-    /// handler error cannot be mistaken for an unreachable partition.
-    private Promise<Unit> pollCycle(ConsumerKey key, ConsumerState state) {
-        if (closed.get() || state.isCancelled() || state.isStalled() || state.isDeadLetterInFlight()) {
-            return Promise.unitPromise();
+    /// when the cycle is DONE, with `true` when the read filled a whole batch and more may be waiting.
+    /// It fails only when the READ failed; a DELIVERY failure is handled by the consumer's error strategy
+    /// ([#handleDeliveryFailure]) and deliberately never surfaces here, so a handler error cannot be
+    /// mistaken for an unreachable partition. A held consumer (stalled, retry backoff, dead-letter append
+    /// in flight) reads nothing and reports `false`, so the loop idles until the hold's owner re-drives it.
+    ///
+    /// #1271: a fenced subscription also reads nothing while [ConsumerState#deliveryAdmitted] is false —
+    /// re-checked on EVERY pass, so the node stops delivering at its next pass once its committed-state
+    /// mirror shows the assignment has moved, not at the next reconcile tick.
+    private Promise<Boolean> pollCycle(ConsumerKey key, ConsumerState state) {
+        if (closed.get() || state.isCancelled() || state.isStalled() || state.isDeliveryHeld() || !state.deliveryAdmitted()) {
+            return Promise.success(false);
         }
 
         state.touchLastPollTime();
 
-        return reader.read(key.streamName(),
-                           key.partition(),
-                           state.cursor(),
-                           MAX_POLL_BATCH)
-                     .fold(result -> result.fold(cause -> pollFailed(state, cause),
-                                                 events -> pollSucceeded(key, state, events)));
+        return reader.readFrom(key.streamName(),
+                               key.partition(),
+                               state.cursor(),
+                               MAX_POLL_BATCH,
+                               state.ownerEpoch())
+                     .fold(result -> lifted(() -> result.fold(cause -> pollFailed(key, state, cause),
+                                                              read -> pollSucceeded(key, state, read))));
     }
 
-    private Promise<Unit> pollSucceeded(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
+    /// The events are served under the owner epoch `read.ownerEpoch()` (#1730 phase 2 / #1873): the consumer adopts it, so
+    /// its next read is checked against the lineage these offsets belong to. A reader that reports none (a local or
+    /// legacy reader) leaves the epoch as it was.
+    private Promise<Boolean> pollSucceeded(ConsumerKey key,
+                                           ConsumerState state,
+                                           StreamPartitionManager.EpochRead read) {
+        state.adoptOwnerEpoch(read.ownerEpoch());
+
+        return pollSucceeded(key, state, read.events());
+    }
+
+    private Promise<Boolean> pollSucceeded(ConsumerKey key,
+                                           ConsumerState state,
+                                           List<OffHeapRingBuffer.RawEvent> events) {
+        endEscapeRun(key, state);
         state.adjustPollInterval(!events.isEmpty());
 
-        return deliverEvents(key, state, events);
+        return deliverEvents(key, state, events).map(_ -> events.size() >= MAX_POLL_BATCH)
+                            .onSuccess(batchFull -> commitRewoundCatchUp(key, state, batchFull));
+    }
+
+    /// #1333 (review MEDIUM): a consumer resumed under a REWOUND epoch replays to the head, and a clean
+    /// replay lands entirely inside the checkpoint cadence — so the committed cursor would sit at the
+    /// rewind offset until the next event, and the groups route would show the rebuilt projection LIVE
+    /// against a cursor that never moved. The first pass that returns a NON-full batch is the catch-up
+    /// (push mode never issues an empty read after the backlog); one checkpoint is requested then, through
+    /// the same single-flight request a dead letter uses. Not while a hold is set: a batch cut short by a
+    /// failed delivery is not caught up, and the dead-letter path requests its own.
+    @Contract
+    private void commitRewoundCatchUp(ConsumerKey key, ConsumerState state, boolean batchFull) {
+        if (!batchFull && !state.isDeliveryHeld() && state.consumeRewoundCatchUp()) {
+            requestCheckpoint(key, state);
+        }
     }
 
     /// Back off on failure too, not just on an empty successful read.
@@ -332,10 +1463,85 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// each on its own virtual thread. The declarative path (#488) can enter that window legitimately:
     /// HRW can name this node OWNER of a partition whose ring is still materializing, so the poll path
     /// is reachable before the push listener exists.
-    private Promise<Unit> pollFailed(ConsumerState state, Cause cause) {
+    private Promise<Boolean> pollFailed(ConsumerKey key, ConsumerState state, Cause cause) {
+        if (cause instanceof StreamError.EpochDiverged diverged) {
+            return rewind(key, state, diverged);
+        }
+
         state.adjustPollInterval(false);
 
         return cause.promise();
+    }
+
+    /// #1873 (KIP-320): the owner replaced the lineage this consumer's cursor belongs to (a restart without a WAL, a
+    /// failover to a replica that held less): it began its epoch at `resumeAt` and assigned the offsets above it again. The
+    /// consumer re-reads from there under the new epoch, so the new records at those offsets are delivered instead of
+    /// skipped. Records this group processed in the replaced lineage are gone from the log, and the operator is told once
+    /// per lineage. The next pass runs at once: the cursor moved, so more may be waiting.
+    private Promise<Boolean> rewind(ConsumerKey key, ConsumerState state, StreamError.EpochDiverged diverged) {
+        var from = state.cursor();
+        var resume = Math.min(from, diverged.resumeAt());
+
+        state.rewindTo(resume, diverged.ownerEpoch());
+        if (resume < from) {
+            announceRewind(key, from, resume, diverged);
+        }
+
+        return Promise.success(true);
+    }
+
+    /// Only a re-seek that moves the cursor is announced, and only as a loss witness when the committed record PROVES a loss
+    /// (`provenLossFrom`: an exactly known start of a later epoch below the cursor). Otherwise the owner gave a bound at or below
+    /// every offset that may have been re-assigned (the record folded the starts that would decide it): the group may re-read
+    /// records that were never lost, so it is logged, not raised to the operator.
+    @Contract
+    private void announceRewind(ConsumerKey key, long from, long resume, StreamError.EpochDiverged diverged) {
+        if (diverged.lossProven()) {
+            warnRewound(key, from, diverged);
+
+            return;
+        }
+
+        LOG.log(System.Logger.Level.INFO,
+                "Consumer group {0} on {1}[{2}] was at offset {3}; the partition's recorded epoch history cannot place its epoch "
+               + "exactly; it re-reads from {4} under epoch {5} (records may be redelivered; no loss is proven)",
+                key.groupId(),
+                key.streamName(),
+                key.partition(),
+                from,
+                resume,
+                diverged.ownerEpoch());
+    }
+
+    @Contract
+    private void warnRewound(ConsumerKey key, long from, StreamError.EpochDiverged diverged) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_REWOUND,
+                               key.groupId()
+                              + ":" + key.streamName()
+                              + "[" + key.partition()
+                              + "]@" + diverged.ownerEpoch(),
+                               "Consumer group {} on {}[{}] was at offset {} when the partition's lineage was replaced: epoch {} began at offset {}; "
+                              + "it re-reads from {}. Records this group processed at offsets [{}, {}) belong to the replaced lineage "
+                              + "and are no longer in the log; the records now at those offsets are delivered",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               from,
+                               diverged.ownerEpoch(),
+                               diverged.provenLossFrom(),
+                               diverged.resumeAt(),
+                               diverged.provenLossFrom(),
+                               from);
+    }
+
+    /// Late-bind the operator-warning sink (#1873). `AetherNode` wires the cluster one; the default is log-only. Set once at
+    /// wiring.
+    @Contract
+    @Override
+    public void operatorWarnings(OperatorWarningSink sink) {
+        this.operatorWarnings = sink;
     }
 
     private Promise<Unit> deliverEvents(ConsumerKey key, ConsumerState state, List<OffHeapRingBuffer.RawEvent> events) {
@@ -346,7 +1552,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                            ConsumerState state,
                                            List<OffHeapRingBuffer.RawEvent> events,
                                            int index) {
-        if (index >= events.size() || state.isCancelled() || state.isStalled() || state.isDeadLetterInFlight()) {
+        if (index >= events.size() || state.isCancelled() || state.isStalled() || state.isDeliveryHeld()) {
             return Promise.unitPromise();
         }
 
@@ -356,18 +1562,82 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                                                                                index + 1));
     }
 
+    /// #1238: the outcome is folded INSIDE the chain. `onSuccess`/`onFailure` on a still-pending promise
+    /// are dispatched to another thread while `flatMap` dependents run inline, so the old side-effect
+    /// form let the next event's delivery start before this one's cursor advance — and let a failure's
+    /// hold ([#handleRetry], [#appendDeadLetterThenAdvance]) be set after the pass had already moved on.
+    ///
+    /// #1403: the delivery holds the consumer's in-flight-advance slot from the handler call until its outcome (the
+    /// cursor advance, or the error strategy) has run, so a detach flush issued in between commits after it.
     private Promise<Unit> deliverSingleEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
-        return state.callback()
-                    .onEvent(event.offset(),
-                             event.data(),
-                             event.timestamp())
-                    .onSuccess(_ -> advanceCursor(key,
-                                                  state,
-                                                  event.offset()))
-                    .onFailure(cause -> handleDeliveryFailure(key,
-                                                              state,
-                                                              event,
-                                                              cause.message()));
+        var inFlight = state.beginAdvance(event.offset());
+
+        return invokeHandler(state, event).fold(result -> lifted(() -> deliveryOutcome(key, state, event, result)))
+                            .withResult(_ -> inFlight.settle());
+    }
+
+    /// Review rev1272 F1: the handler is code this runtime does not own. A SYNCHRONOUS throw from it is a
+    /// failed delivery, handled by the error strategy (retry, then dead-letter) like any other — never an
+    /// exception escaping the pass.
+    private static Promise<Unit> invokeHandler(ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        return lifted(() -> state.callback()
+                                 .onEvent(event.offset(),
+                                          event.data(),
+                                          event.timestamp()));
+    }
+
+    /// Flattens a promise-returning call whose synchronous throw must surface as a failed promise — the
+    /// `Result.lift(...).async().flatMap(...)` idiom `StreamConsumerManager` uses for the topic-envelope
+    /// decode.
+    ///
+    /// #1266 review: a foreign call that returns `null` instead of a promise is a failure of that call
+    /// too — a handler returning `null` is a failed delivery (retry, then dead-letter), never a null that
+    /// blows up later inside the pass.
+    ///
+    /// #1367: a [StackOverflowError] thrown by the call is that call's own runaway recursion, recovered once its stack
+    /// unwinds (the `OffHeapRingBuffer.notifyGuarded` convention), so it is a failure of that call too. Since #1311
+    /// `Result.lift` rethrows it, and it escaped every holder of a flag set before the call: a retry left its retry
+    /// hold set and wedged the consumer, a dead-letter sink its dead-letter hold, and a handler on the delivery pass
+    /// bypassed the error strategy, so SKIP never dead-lettered the event. Every other `VirtualMachineError` (out of
+    /// memory, internal error) still propagates: the JVM itself is failing.
+    @SuppressWarnings("JBCT-EX-01")
+    private static <T> Promise<T> lifted(Functions.ThrowingFn0<Promise<T>> call) {
+        try {
+            return Result.lift(call)
+                         .flatMap(ConsumerRuntimeState::nonNullPromise)
+                         .async()
+                         .flatMap(promise -> promise);
+        } catch (StackOverflowError overflow) {
+            return PassEscape.overflowedCall(overflow).promise();
+        }
+    }
+
+    private static <T> Result<Promise<T>> nonNullPromise(Promise<T> promise) {
+        return option(promise).toResult(NULL_PROMISE);
+    }
+
+    private Promise<Unit> deliveryOutcome(ConsumerKey key,
+                                          ConsumerState state,
+                                          OffHeapRingBuffer.RawEvent event,
+                                          Result<Unit> result) {
+        return result.fold(cause -> deliveryFailed(key, state, event, cause), _ -> deliverySucceeded(key, state, event));
+    }
+
+    private Promise<Unit> deliverySucceeded(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        advanceCursor(key, state, event.offset());
+
+        return Promise.unitPromise();
+    }
+
+    /// Applies the error strategy (which sets any hold synchronously) and keeps the failure, so the rest
+    /// of this batch is not delivered past the failed event.
+    private Promise<Unit> deliveryFailed(ConsumerKey key,
+                                         ConsumerState state,
+                                         OffHeapRingBuffer.RawEvent event,
+                                         Cause cause) {
+        handleDeliveryFailure(key, state, event, cause.message());
+
+        return cause.promise();
     }
 
     private void advanceCursor(ConsumerKey key, ConsumerState state, long offset) {
@@ -403,25 +1673,34 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var backoffMs = computeBackoff(attempt);
         var delay = TimeSpan.timeSpan(backoffMs).millis();
 
+        state.markRetryInFlight();
         SharedScheduler.schedule(() -> retryDeliverEvent(key, state, event), delay);
     }
 
+    /// #1238: runs while [ConsumerState#isRetryInFlight] holds the loop — the same discipline
+    /// [#appendDeadLetterThenAdvance] applies — so an append arriving during the backoff cannot re-read
+    /// the un-advanced cursor and deliver this event in parallel with its own retry.
     private void retryDeliverEvent(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         if (state.isCancelled() || state.isStalled()) {
             return;
         }
 
-        state.callback()
-             .onEvent(event.offset(),
-                      event.data(),
-                      event.timestamp())
-             .onSuccess(_ -> advanceCursor(key,
-                                           state,
-                                           event.offset()))
-             .onFailure(cause -> handleRetryFailureAgain(key,
-                                                         state,
-                                                         event,
-                                                         cause.message()));
+        var inFlight = state.beginAdvance(event.offset());
+
+        invokeHandler(state, event).onSuccess(_ -> settledAfter(inFlight,
+                                                                () -> completeRetry(key, state, event)))
+                     .onFailure(cause -> settledAfter(inFlight,
+                                                      () -> handleRetryFailureAgain(key,
+                                                                                    state,
+                                                                                    event,
+                                                                                    cause.message())));
+    }
+
+    /// Released strictly AFTER the cursor advance, so the pass it re-drives reads past this event.
+    private void completeRetry(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
+        advanceCursor(key, state, event.offset());
+        state.clearRetryInFlight();
+        requestDrain(key, state);
     }
 
     private void handleRetryFailureAgain(ConsumerKey key,
@@ -431,6 +1710,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var attempt = state.incrementRetryCount();
 
         if (attempt >= state.maxRetries()) {
+            // rev1285d F1: the dead-letter hold is taken BEFORE the retry hold is released, so the loop
+            // is never unheld in between — and the retry hold is released BEFORE the append is issued,
+            // because a sink that resolves inline runs completeDeadLetter (and its requestDrain) inside
+            // that call. Released after it, the re-drive found the loop still held, read nothing, and
+            // the backlog already in the ring sat until the next append.
+            state.markDeadLetterInFlight();
+            state.clearRetryInFlight();
             appendDeadLetterThenAdvance(key, state, event, errorMessage, attempt, 1);
 
             return;
@@ -476,6 +1762,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// append retries with backoff indefinitely: capping and advancing anyway would BE the silent
     /// loss this contract exists to prevent; the stall is deliberate and operator-visible via the
     /// held cursor (the §9 `DLQ_STALL` alarm surface arrives with the D3 batch).
+    ///
+    /// A caller holding ANOTHER hold (the retry hold in [#handleRetryFailureAgain]) releases it before
+    /// this call, never after: the sink may resolve inline, and then [#completeDeadLetter]'s re-drive
+    /// runs inside this call and must find only the dead-letter hold, which it clears itself.
     private void appendDeadLetterThenAdvance(ConsumerKey key,
                                              ConsumerState state,
                                              OffHeapRingBuffer.RawEvent event,
@@ -483,25 +1773,53 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                              int attemptCount,
                                              int appendAttempt) {
         state.markDeadLetterInFlight();
-        dlHandler.append(key.streamName(),
-                         key.partition(),
-                         event.offset(),
-                         key.groupId(),
-                         event.data(),
-                         errorMessage,
-                         attemptCount)
-                 .onSuccess(_ -> completeDeadLetter(key, state, event))
-                 .onFailure(cause -> retryDeadLetterAppend(key,
-                                                           state,
-                                                           event,
-                                                           errorMessage,
-                                                           attemptCount,
-                                                           appendAttempt,
-                                                           cause));
+        var inFlight = state.beginAdvance(event.offset());
+
+        appendDeadLetter(key, event, errorMessage, attemptCount).onSuccess(_ -> settledAfter(inFlight,
+                                                                                             () -> completeDeadLetter(key,
+                                                                                                                      state,
+                                                                                                                      event)))
+                        .onFailure(cause -> settledAfter(inFlight,
+                                                         () -> retryDeadLetterAppend(key,
+                                                                                     state,
+                                                                                     event,
+                                                                                     errorMessage,
+                                                                                     attemptCount,
+                                                                                     appendAttempt,
+                                                                                     cause)));
     }
 
+    /// #1266: lifted and bounded. A sink that THROWS synchronously used to escape before the callbacks
+    /// above were attached, and one whose append never settles held the loop with no timeout — either way
+    /// the dead-letter hold was never released and the partition wedged silently and permanently. Both
+    /// now arrive as a failure on the returned promise and take [#retryDeadLetterAppend].
+    private Promise<Unit> appendDeadLetter(ConsumerKey key,
+                                           OffHeapRingBuffer.RawEvent event,
+                                           String errorMessage,
+                                           int attemptCount) {
+        return lifted(() -> dlHandler.append(key.streamName(),
+                                             key.partition(),
+                                             event.offset(),
+                                             key.groupId(),
+                                             event.data(),
+                                             errorMessage,
+                                             attemptCount)).timeout(deadLetterAppendTimeout);
+    }
+
+    /// #1333: the advance past a dead-lettered event REQUESTS a checkpoint at once, independent of the
+    /// 500ms/1000-event cadence. The committed cursor is the only signal that lets a rebuilding projection
+    /// skip a replay offset that never reached its fold. [#advanceCursor] already runs the cadence check,
+    /// and for a durable group the retry budget (≥1.5s over 5 attempts) always exceeds the interval, so
+    /// there the cadence commits the skip anyway (measured, `DurableProjectionRebuildTest`); a SKIP
+    /// strategy or a budget shorter than the interval would wait for the NEXT delivery's advance — whose
+    /// write the store refuses `Rebuilding` until then. The request also lands the acks that follow the
+    /// dead letter on a partition that then goes quiet: absorbed as PENDING into the in-flight commit, it
+    /// schedules the follow-up one interval later. One coalesced consensus round per dead letter, bounded
+    /// by the poison count (CTO ruling 3, 2026-09-20); [#requestCheckpoint] never overlaps a periodic
+    /// commit already in flight.
     private void completeDeadLetter(ConsumerKey key, ConsumerState state, OffHeapRingBuffer.RawEvent event) {
         advanceCursor(key, state, event.offset());
+        requestCheckpoint(key, state);
         state.clearDeadLetterInFlight();
         resumeAfterDeadLetter(key, state);
     }
@@ -510,10 +1828,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// that arrived while the dead-letter append was in flight was absorbed by the guard — so
     /// releasing the hold must also re-drive the loop, or events already in the ring sit
     /// undelivered until the NEXT append happens to arrive. Poll-mode consumers resume on their
-    /// own schedule and treat this as one extra cycle.
+    /// own schedule and treat this as one extra request on the same loop.
     @Contract
     private void resumeAfterDeadLetter(ConsumerKey key, ConsumerState state) {
-        pollCycle(key, state).onFailure(cause -> logPollFailure(key, cause));
+        requestDrain(key, state);
     }
 
     private void retryDeadLetterAppend(ConsumerKey key,
@@ -560,6 +1878,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                 cause.message());
     }
 
+    /// #1934: schedules the pass after an escape backoff; [SharedScheduler#schedule] in production.
+    @FunctionalInterface
+    interface DelayedTask {
+        @Contract
+        void schedule(Runnable task, TimeSpan delay);
+    }
+
     record ConsumerKey(String streamName, int partition, String groupId) {
         static ConsumerKey consumerKey(String streamName, int partition, String groupId) {
             return new ConsumerKey(streamName, partition, groupId);
@@ -579,27 +1904,102 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
         private final AtomicBoolean cursorInitialized = new AtomicBoolean(false);
         private final AtomicBoolean deadLetterInFlight = new AtomicBoolean(false);
+        /// #1238: a retry of the head event is scheduled — holds the loop like [#deadLetterInFlight].
+        private final AtomicBoolean retryInFlight = new AtomicBoolean(false);
+        /// rev1272 F7 follow-up: the subscribe-time cursor fetch has not succeeded yet.
+        private final AtomicBoolean awaitingCursorFetch = new AtomicBoolean(false);
+        /// #1238: a delivery pass is running; only the false->true flip starts one.
+        private final AtomicBoolean drainRunning = new AtomicBoolean(false);
+        /// #1238: something may have arrived since the running pass read.
+        private final AtomicBoolean drainDirty = new AtomicBoolean(false);
+        /// #1239: a periodic commit is in flight or waiting out its retry backoff.
+        private final AtomicBoolean checkpointInFlight = new AtomicBoolean(false);
+        /// #1239: a checkpoint was requested since the in-flight one was issued.
+        private final AtomicBoolean checkpointPending = new AtomicBoolean(false);
+        private final AtomicInteger checkpointAttempts = new AtomicInteger(0);
         private volatile ScheduledFuture<?> future;
         private volatile LongConsumer pushListenerRef;
+        private volatile OffHeapRingBuffer pushBufferRef;
+        /// #1239: the latest periodic commit, so a detach flush can chain behind it. #1355: assigned before
+        /// that commit's store call is made, and settled on every path that assigned it.
+        private volatile Promise<CommitOutcome> periodicCommitRef = NO_PREDECESSOR;
+        /// #1403: the latest work that will advance the cursor past `offset` — a delivery, a retry, a dead-letter
+        /// append — so a detach flush can chain behind it. Settled by its owner once that work's outcome has run.
+        private volatile InFlightAdvance inFlightAdvanceRef = InFlightAdvance.NONE;
+        /// #1333: the rewind epoch the cursor was fetched under; every commit of this consumer carries it.
+        private volatile RewindEpoch epoch = RewindEpoch.NONE;
+        /// #1873 (KIP-320): the OWNER epoch this consumer last read under. Zero before the first read; every read carries it
+        /// and the serving owner checks the cursor against it.
+        private volatile Epoch ownerEpoch = Epoch.ZERO;
+        /// #1333: resumed under a rewound epoch and not yet checkpointed at the head — armed by
+        /// [#resumeAt], consumed once by [ConsumerRuntimeState#commitRewoundCatchUp].
+        private final AtomicBoolean rewoundCatchUp = new AtomicBoolean(false);
         private final AtomicLong currentPollMs = new AtomicLong(MIN_POLL_MS);
+        /// #1934: the current run of escaped passes — its length, when it started, until when the loop is parked, and
+        /// whether `stream-consumer-drain-failing` was raised for it.
+        private final AtomicInteger escapeRun = new AtomicInteger(0);
+        private final AtomicLong escapeRunStartMs = new AtomicLong(0L);
+        private final AtomicLong escapeBackoffUntilMs = new AtomicLong(0L);
+        private final AtomicBoolean escapeRunReported = new AtomicBoolean(false);
         private final AtomicLong lastCheckpointTime = new AtomicLong(System.currentTimeMillis());
         private final AtomicLong lastPollTime = new AtomicLong(System.currentTimeMillis());
+        /// #654: detail of the most recent cursor commit failure for this consumer, cleared on the
+        /// next successful commit. Read by [ConsumerRuntimeState#toSnapshot] onto
+        /// [StreamConsumerRuntime.SubscriptionSnapshot] while this consumer is still attached — most
+        /// useful for a periodic [ConsumerRuntimeState#checkpointIfNeeded] failure, since detach
+        /// removes the entry from [ConsumerRuntimeState#consumers] and this per-consumer detail goes
+        /// with it. What survives detach is the node-wide [ConsumerRuntimeState#cursorCommitFailureCount].
+        private volatile String lastCursorCommitFailure;
+        /// #1271: the committed assignment this consumer was admitted under; none for an unfenced one.
+        private final Option<ConsumerFence> fence;
+        /// #1271: latched once the store refuses a commit as `Fenced` — delivery never resumes.
+        private final AtomicBoolean fenced = new AtomicBoolean(false);
 
         private ConsumerState(ConsumerConfig config,
                               ConsumerCallback callback,
                               long initialCursor,
-                              IdlePolicy idlePolicy) {
+                              IdlePolicy idlePolicy,
+                              Option<ConsumerFence> fence) {
             this.config = config;
             this.callback = callback;
             this.idlePolicy = idlePolicy;
             this.cursor = new AtomicLong(initialCursor);
+            this.fence = fence;
         }
 
         static ConsumerState consumerState(ConsumerConfig config,
                                            ConsumerCallback callback,
                                            long initialCursor,
                                            IdlePolicy idlePolicy) {
-            return new ConsumerState(config, callback, initialCursor, idlePolicy);
+            return consumerState(config, callback, initialCursor, idlePolicy, Option.none());
+        }
+
+        static ConsumerState consumerState(ConsumerConfig config,
+                                           ConsumerCallback callback,
+                                           long initialCursor,
+                                           IdlePolicy idlePolicy,
+                                           Option<ConsumerFence> fence) {
+            return new ConsumerState(config, callback, initialCursor, idlePolicy, fence);
+        }
+
+        Option<ConsumerFence> fence() {
+            return fence;
+        }
+
+        boolean isFenced() {
+            return fenced.get();
+        }
+
+        @Contract
+        void markFenced() {
+            fenced.set(true);
+        }
+
+        /// May this consumer deliver right now: not latched fenced, and — when fenced by an assignment —
+        /// still the committed assignee as this node's mirror shows it.
+        boolean deliveryAdmitted() {
+            return ! fenced.get() && fence.map(ConsumerFence::admitted)
+                                          .or(true);
         }
 
         IdlePolicy idlePolicy() {
@@ -624,9 +2024,50 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return cursor.get();
         }
 
+        Epoch ownerEpoch() {
+            return ownerEpoch;
+        }
+
+        /// A zero epoch is "the reader reported none" and changes nothing.
+        @Contract
+        void adoptOwnerEpoch(Epoch epoch) {
+            if (!epoch.equals(Epoch.ZERO)) {
+                ownerEpoch = epoch;
+            }
+        }
+
+        /// The one place the cursor moves BACKWARDS (#1873): to where the owner's new epoch began, under that epoch. Never
+        /// through [#advanceCursor], whose monotonicity is what keeps a late completion from rewinding a checkpoint.
+        @Contract
+        void rewindTo(long resumeAt, Epoch newEpoch) {
+            cursor.set(resumeAt);
+            ownerEpoch = newEpoch;
+        }
+
+        /// Monotonic (#1238): a late retry or dead-letter completion, or a stored cursor fetched after
+        /// delivery started, can never move the cursor — and so the checkpointed cursor — backwards.
         @Contract
         void advanceCursor(long offset) {
-            cursor.set(offset);
+            cursor.accumulateAndGet(offset, Math::max);
+        }
+
+        /// Position this consumer at a fetched cursor, epoch included. Runs once, before delivery
+        /// starts ([ConsumerRuntimeState#startFromCursor]), so the monotonic advance is not bypassed
+        /// by anything that could have moved the cursor first.
+        @Contract
+        void resumeAt(Cursor fetched) {
+            epoch = fetched.epoch();
+            ownerEpoch = fetched.ownerEpoch();
+            rewoundCatchUp.set(!fetched.epoch().isNone());
+            advanceCursor(fetched.offset());
+        }
+
+        RewindEpoch epoch() {
+            return epoch;
+        }
+
+        boolean consumeRewoundCatchUp() {
+            return rewoundCatchUp.getAndSet(false);
         }
 
         @Contract
@@ -654,6 +2095,46 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             return retryCount.incrementAndGet();
         }
 
+        int recordEscape(long nowMs) {
+            var escapes = escapeRun.incrementAndGet();
+
+            if (escapes == 1) {
+                escapeRunStartMs.set(nowMs);
+            }
+
+            return escapes;
+        }
+
+        int escapeRunLength() {
+            return escapeRun.get();
+        }
+
+        long escapeRunStartMs() {
+            return escapeRunStartMs.get();
+        }
+
+        @Contract
+        void escapeBackoffUntil(long untilMs) {
+            escapeBackoffUntilMs.set(untilMs);
+        }
+
+        boolean inEscapeBackoff(long nowMs) {
+            return nowMs < escapeBackoffUntilMs.get();
+        }
+
+        @Contract
+        void markEscapeRunReported() {
+            escapeRunReported.set(true);
+        }
+
+        /// Ends the run; whether `stream-consumer-drain-failing` had been raised for it.
+        boolean endEscapeRun() {
+            escapeRun.set(0);
+            escapeBackoffUntilMs.set(0L);
+
+            return escapeRunReported.getAndSet(false);
+        }
+
         @Contract
         void incrementEventsSinceCheckpoint() {
             eventsSinceCheckpoint.incrementAndGet();
@@ -663,10 +2144,84 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         /// safe to honor because #576's validator rejects non-default declarative values, so only
         /// the 1s factory default and explicit programmatic values exist). The event half stays at
         /// the class constant: a cadence-dominated bound, tightened per durable-pubsub-spec §7 for
-        /// durable-topic groups by their 500ms attach-time interval.
+        /// durable-topic groups by their 500ms attach-time interval. Evaluated only from
+        /// `ConsumerRuntimeState.advanceCursor`, so the bound holds while deliveries keep arriving; no timer starts a commit on
+        /// a quiet partition (#1385).
         boolean shouldCheckpoint() {
             return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= config.checkpointInterval()
                                                                                                                                                  .millis();
+        }
+
+        Promise<CommitOutcome> periodicCommit() {
+            return periodicCommitRef;
+        }
+
+        InFlightAdvance inFlightAdvance() {
+            return inFlightAdvanceRef;
+        }
+
+        InFlightAdvance beginAdvance(long offset) {
+            var inFlight = InFlightAdvance.inFlightAdvance(offset);
+
+            inFlightAdvanceRef = inFlight;
+
+            return inFlight;
+        }
+
+        /// #1403: one unit of work that advances the cursor past `offset` when it completes; `done` settles once its
+        /// outcome has run, whichever way it went.
+        record InFlightAdvance(long offset, Promise<Unit> done) {
+            static final InFlightAdvance NONE = new InFlightAdvance(-1L, Promise.unitPromise());
+
+            static InFlightAdvance inFlightAdvance(long offset) {
+                return new InFlightAdvance(offset, Promise.promise());
+            }
+
+            @Contract
+            void settle() {
+                done.succeed(unit());
+            }
+        }
+
+        @Contract
+        void periodicCommit(Promise<CommitOutcome> commit) {
+            this.periodicCommitRef = commit;
+        }
+
+        TimeSpan checkpointInterval() {
+            return config.checkpointInterval();
+        }
+
+        boolean tryStartCheckpoint() {
+            return checkpointInFlight.compareAndSet(false, true);
+        }
+
+        @Contract
+        void finishCheckpoint() {
+            checkpointInFlight.set(false);
+        }
+
+        @Contract
+        void markCheckpointPending() {
+            checkpointPending.set(true);
+        }
+
+        @Contract
+        void clearCheckpointPending() {
+            checkpointPending.set(false);
+        }
+
+        boolean isCheckpointPending() {
+            return checkpointPending.get();
+        }
+
+        int incrementCheckpointAttempts() {
+            return checkpointAttempts.incrementAndGet();
+        }
+
+        @Contract
+        void resetCheckpointAttempts() {
+            checkpointAttempts.set(0);
         }
 
         @Contract
@@ -697,6 +2252,66 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
             deadLetterInFlight.set(false);
         }
 
+        boolean isRetryInFlight() {
+            return retryInFlight.get();
+        }
+
+        /// rev1272 F7 follow-up: this consumer has not STARTED, because its cursor fetch has not succeeded
+        /// yet and is being retried. Without it a stuck consumer reads as an idle one — cursor 0, nothing
+        /// stalled, no holds — which is the confusion the delivery holds exist to remove.
+        boolean isAwaitingCursorFetch() {
+            return awaitingCursorFetch.get();
+        }
+
+        @Contract
+        void markAwaitingCursorFetch() {
+            awaitingCursorFetch.set(true);
+        }
+
+        @Contract
+        void clearAwaitingCursorFetch() {
+            awaitingCursorFetch.set(false);
+        }
+
+        @Contract
+        void markRetryInFlight() {
+            retryInFlight.set(true);
+        }
+
+        @Contract
+        void clearRetryInFlight() {
+            retryInFlight.set(false);
+        }
+
+        /// The loop reads and delivers nothing while an earlier failure of the head event is still
+        /// being resolved — by a scheduled retry or by a dead-letter append.
+        boolean isDeliveryHeld() {
+            return isDeadLetterInFlight() || isRetryInFlight();
+        }
+
+        boolean tryStartDrain() {
+            return drainRunning.compareAndSet(false, true);
+        }
+
+        @Contract
+        void finishDrain() {
+            drainRunning.set(false);
+        }
+
+        @Contract
+        void markDirty() {
+            drainDirty.set(true);
+        }
+
+        @Contract
+        void clearDirty() {
+            drainDirty.set(false);
+        }
+
+        boolean isDirty() {
+            return drainDirty.get();
+        }
+
         @Contract
         void stall() {
             stalled.set(true);
@@ -712,12 +2327,23 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         @Contract
-        void pushListener(LongConsumer listener) {
+        void pushAttachment(OffHeapRingBuffer buffer, LongConsumer listener) {
             this.pushListenerRef = listener;
+            this.pushBufferRef = buffer;
+        }
+
+        @Contract
+        void clearPushAttachment() {
+            this.pushBufferRef = null;
+            this.pushListenerRef = null;
         }
 
         Option<LongConsumer> pushListener() {
             return option(pushListenerRef);
+        }
+
+        Option<OffHeapRingBuffer> pushBuffer() {
+            return option(pushBufferRef);
         }
 
         @Contract
@@ -730,9 +2356,27 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         }
 
         @Contract
+        /// Also releases the delivery holds (#1266 review): a cancelled consumer delivers nothing, so the
+        /// holds would only mislead — every outcome, cancellation included, ends with both clear.
         void cancel() {
             cancelled.set(true);
+            retryInFlight.set(false);
+            deadLetterInFlight.set(false);
             option(future).onPresent(f -> f.cancel(false));
+        }
+
+        Option<String> lastCursorCommitFailure() {
+            return option(lastCursorCommitFailure);
+        }
+
+        @Contract
+        void recordCursorCommitFailure(String detail) {
+            lastCursorCommitFailure = detail;
+        }
+
+        @Contract
+        void clearCursorCommitFailure() {
+            lastCursorCommitFailure = null;
         }
     }
 }

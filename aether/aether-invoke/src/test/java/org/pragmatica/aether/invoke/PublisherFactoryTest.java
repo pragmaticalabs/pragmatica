@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.ArrayList;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -13,8 +14,10 @@ import org.pragmatica.aether.resource.SpiResourceProvider;
 import org.pragmatica.aether.resource.TopicConfig;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.ReplicationContext;
 import org.pragmatica.aether.slice.Publisher;
 import org.pragmatica.aether.slice.blueprint.BlueprintNamespace;
+import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.blueprint.TopicAddressResolver;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.TopicSubscriptionValue;
@@ -29,6 +32,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
+
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -121,7 +127,9 @@ class PublisherFactoryTest {
                                                  .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
                                                                 manager)
                                                  .withExtension(org.pragmatica.serialization.Serializer.class,
-                                                                NOOP_SERIALIZER);
+                                                                NOOP_SERIALIZER)
+                                                 .withExtension(ReplicationContext.Source.class,
+                                                                ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN));
                 var publisher = factory.provision(config, context)
                                        .await()
                                        .onFailure(cause -> fail(cause.message()))
@@ -141,13 +149,97 @@ class PublisherFactoryTest {
             var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager();
 
             try {
-                // Canonical-constructor bypass with replicas=1 — the §3-invalid shape the factory rejects.
+                // #1564: canonical-constructor bypass with confirmation_factor > replication_factor — the one
+                // shape the engine refuses (1 <= CF <= RF). The context carries a Source, so the refusal is the
+                // policy's own and not a missing extension.
                 var config = new TopicConfig("orders",
                                              org.pragmatica.aether.resource.TopicDurability.DURABLE,
                                              Option.none(),
-                                             Option.some(1),
-                                             Option.none(),
+                                             Option.some(2),
+                                             Option.some(3),
                                              Option.none());
+                var context = ProvisioningContext.provisioningContext()
+                                                 .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
+                                                                manager)
+                                                 .withExtension(org.pragmatica.serialization.Serializer.class,
+                                                                NOOP_SERIALIZER)
+                                                 .withExtension(ReplicationContext.Source.class,
+                                                                ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN));
+
+                factory.provision(config, context)
+                       .await()
+                       .onSuccess(_ -> fail("a durable declaration with CF > RF must not provision"))
+                       .onFailure(cause -> assertTrue(cause instanceof org.pragmatica.aether.resource.TopicConfigError.ReplicationRefused,
+                                                      cause.message()));
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// #1564 / #1617 (R10): a durable topic's replication warnings are raised as `replication-policy-warning`
+        /// operator warnings through the sink the node supplies in the provisioning context.
+        @Test
+        void provision_durableTopicDeclaringFactorOne_raisesReplicationPolicyOperatorWarnings() throws Exception {
+            var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager();
+            var events = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+
+            try {
+                var config = TopicConfig.topicConfig("orders",
+                                                     org.pragmatica.aether.resource.TopicDurability.DURABLE,
+                                                     Option.none(),
+                                                     Option.some(1),
+                                                     Option.none(),
+                                                     Option.none())
+                                        .unwrap();
+                var context = ProvisioningContext.provisioningContext()
+                                                 .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
+                                                                manager)
+                                                 .withExtension(org.pragmatica.serialization.Serializer.class,
+                                                                NOOP_SERIALIZER)
+                                                 .withExtension(ReplicationContext.Source.class,
+                                                                ReplicationContext.Source.fixed(ReplicationContext.BUILT_IN))
+                                                 .withExtension(org.pragmatica.utility.warning.OperatorWarningSink.class,
+                                                                org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+
+                factory.provision(config, context)
+                       .await()
+                       .onFailure(cause -> fail(cause.message()));
+                var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+                while (events.size() < 3 && System.nanoTime() < deadline) {
+                    Thread.onSpinWait();
+                }
+
+                assertEquals(3, events.size(), "RF 1 declared raises all three warnings");
+                events.forEach(event -> assertEquals("topic 'orders'", event.subject()));
+                assertEquals(1,
+                             events.stream()
+                                   .filter(event -> event.code() == org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE)
+                                   .count(),
+                             "the LOUD RF-below-3 warning has its own CRITICAL code");
+                assertEquals(2,
+                             events.stream()
+                                   .filter(event -> event.code() == org.pragmatica.utility.warning.OperatorWarningCode.REPLICATION_POLICY_WARNING)
+                                   .count());
+            } finally {
+                manager.close();
+            }
+        }
+
+        /// #1564: a durable topic resolves its policy against the cluster defaults, so a context without the
+        /// [ReplicationContext.Source] refuses provisioning instead of guessing the built-in defaults.
+        @Test
+        void provision_durableTopic_failsLoudly_whenReplicationSourceMissing() throws Exception {
+            var manager = org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager();
+
+            try {
+                var config = TopicConfig.topicConfig("orders",
+                                                     org.pragmatica.aether.resource.TopicDurability.DURABLE,
+                                                     Option.none(),
+                                                     Option.none(),
+                                                     Option.none(),
+                                                     Option.none())
+                                        .unwrap();
                 var context = ProvisioningContext.provisioningContext()
                                                  .withExtension(org.pragmatica.aether.stream.StreamPartitionManager.class,
                                                                 manager)
@@ -156,22 +248,40 @@ class PublisherFactoryTest {
 
                 factory.provision(config, context)
                        .await()
-                       .onSuccess(_ -> fail("a §3-invalid durable declaration must not provision"));
+                       .onSuccess(_ -> fail("a durable topic must not provision without the replication context"))
+                       .onFailure(cause -> assertTrue(cause instanceof org.pragmatica.aether.resource.TopicConfigError.ReplicationContextUnavailable,
+                                                      cause.message()));
+                assertTrue(manager.partitionBuffer("topic:default:orders:1.0.0", 0).isEmpty());
             } finally {
                 manager.close();
             }
         }
     }
 
-    /// RC2 #274 — the publisher (provisioned here from the slice-id) and the subscriber (registered
-    /// by the deployment FSM) MUST resolve the same bare topic name to the same blueprint-derived
-    /// namespace, or co-deployed pub/sub silently stops delivering. The publisher reads its owning
-    /// slice's [Artifact] from the provisioning context's slice-id extension and resolves via the
-    /// same [TopicAddressResolver] the subscriber uses.
+    /// RC2 #274 + #1216 — the publisher (provisioned here from the slice-id) and the subscriber
+    /// (registered by the deployment FSM) MUST resolve the same bare topic name to the same
+    /// BLUEPRINT-derived namespace, or co-deployed pub/sub silently stops delivering.
+    ///
+    /// #1216 REWROTE THIS FIXTURE BECAUSE IT SPECIFIED THE DEFECT RATHER THAN MISSING IT. Its
+    /// co-deployment test passed ONE artifact to both ends, which is not co-deployment at all, and
+    /// its sibling passed two distinct SLICES, asserted non-delivery, and commented that they lived
+    /// in different blueprints — while the namespace derivation never saw a blueprint. That second
+    /// test therefore asserted the production failure AS CORRECT BEHAVIOUR: any two co-deployed
+    /// distinct slices could never agree on an address, and `TopicPublisher` reported success having
+    /// delivered nothing.
+    ///
+    /// Both tests below now use the SAME two distinct slice artifacts, so slice-distinctness is held
+    /// constant and the OWNING BLUEPRINT is the only variable that differs between them. That pairing
+    /// is what makes them statements about blueprints; either one alone is satisfied by the defect.
     @Nested
     class NamespaceAlignment {
         private static final MethodName METHOD = MethodName.methodName("onMessage").unwrap();
         private static final NodeId NODE = new NodeId("node-a");
+
+        private static final Artifact BLUEPRINT = Artifact.artifact("org.example:orders-app:1.0.0").unwrap();
+        private static final Artifact OTHER_BLUEPRINT = Artifact.artifact("org.example:billing-app:1.0.0").unwrap();
+        private static final Artifact PUBLISHER_SLICE = Artifact.artifact("org.example:order-intake:1.0.0").unwrap();
+        private static final Artifact SUBSCRIBER_SLICE = Artifact.artifact("org.example:order-audit:1.0.0").unwrap();
 
         private TopicSubscriptionRegistry registry;
         private CopyOnWriteArrayList<Object> invocations;
@@ -182,21 +292,32 @@ class PublisherFactoryTest {
             invocations = new CopyOnWriteArrayList<>();
         }
 
-        private void registerBareSubscriptionFor(Artifact subscriberArtifact, String bareTopic) {
-            var address = TopicAddressResolver.resolve(subscriberArtifact, bareTopic).unwrap();
-            var key = TopicSubscriptionKey.topicSubscriptionKey(address, subscriberArtifact, METHOD);
+        /// What `NodeDeploymentState` writes: the address scoped to the blueprint OWNING the
+        /// subscribing slice, keyed by the subscribing slice's own artifact.
+        private void registerBareSubscriptionFor(Option<Artifact> owningBlueprint,
+                                                 Artifact subscriberArtifact,
+                                                 String bareTopic) {
+            var address = TopicAddressResolver.resolve(owningBlueprint, subscriberArtifact, bareTopic).unwrap();
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, subscriberArtifact, METHOD, NODE);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
             var put = new KVCommand.Put<>(key, value);
 
             registry.onSubscriptionPut(new ValuePut<>(put, Option.none()));
         }
 
-        private Publisher<Object> provisionPublisherFor(String sliceArtifact, String bareTopic) {
+        /// A publisher provisioned as a real node provisions one: the slice-id extension plus the
+        /// node-registered [OwningBlueprintResolver]. Passing [Option#none] models a runtime with no
+        /// resolver registered at all (see [#provision_noResolver_bothEndsFallBackToSliceCoordinates]).
+        private Publisher<Object> provisionPublisherFor(Option<Artifact> owningBlueprint,
+                                                        Artifact sliceArtifact,
+                                                        String bareTopic) {
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(TopicSubscriptionRegistry.class, registry)
                                              .withExtension(SliceInvoker.class,
                                                             new MinimalStubSliceInvoker(invocations))
-                                             .withExtension(String.class, sliceArtifact);
+                                             .withExtension(String.class, sliceArtifact.asString())
+                                             .withExtension(OwningBlueprintResolver.class,
+                                                            _ -> owningBlueprint);
             @SuppressWarnings("unchecked")
             var publisher = (Publisher<Object>) factory.provision(new TopicConfig(bareTopic),
                                                                   context)
@@ -209,45 +330,143 @@ class PublisherFactoryTest {
 
         @Test
         void provision_bareTopic_resolvesPublisherToBlueprintNamespace() {
-            var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
-            var expectedNamespace = BlueprintNamespace.deriveNamespace(artifact).unwrap();
-            var expectedAddress = ResourceAddress.resourceAddress(expectedNamespace,
+            var blueprintNamespace = BlueprintNamespace.deriveNamespace(BLUEPRINT).unwrap();
+            var sliceNamespace = BlueprintNamespace.deriveNamespace(PUBLISHER_SLICE).unwrap();
+            var expectedAddress = ResourceAddress.resourceAddress(blueprintNamespace,
                                                                   "orders",
                                                                   ResourceVersion.defaultVersion())
                                                  .unwrap();
 
-            registerBareSubscriptionFor(artifact, "orders");
-            var publisher = provisionPublisherFor(artifact.asString(), "orders");
-            // The subscriber is stored at the blueprint-derived address (not DEFAULT_NAMESPACE).
-            assertEquals(1,
-                         registry.findSubscribers(expectedAddress.asString()).size());
-            // A publish from the co-deployed publisher reaches it → both resolved the same address.
+            // The two namespaces must genuinely differ, or the assertions below pass for the wrong
+            // reason — this is the discriminator the pre-#1216 fixture lacked.
+            assertTrue(!blueprintNamespace.equals(sliceNamespace));
+
+            registerBareSubscriptionFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+
+            // The subscriber is stored at the BLUEPRINT-derived address, not the slice-derived one.
+            assertEquals(1, registry.findSubscribers(expectedAddress.asString()).size());
+            assertEquals(0,
+                         registry.findSubscribers(ResourceAddress.resourceAddress(sliceNamespace,
+                                                                                   "orders",
+                                                                                   ResourceVersion.defaultVersion())
+                                                                 .unwrap()
+                                                                 .asString())
+                                 .size());
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
             assertEquals(1, invocations.size());
         }
 
+        /// THE ACCEPTANCE TEST FOR #1216: two DISTINCT slice artifacts co-deployed in ONE blueprint.
+        /// The pre-#1216 version of this test passed one artifact to both ends and so never exercised
+        /// co-deployment; pointed at two artifacts it failed `expected: <1> but was: <0>` while the
+        /// publish itself still reported SUCCESS, which is the production symptom exactly.
         @Test
         void publish_coDeployedBareTopic_reachesSubscriber() {
-            var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
-
-            registerBareSubscriptionFor(artifact, "orders");
-            var publisher = provisionPublisherFor(artifact.asString(), "orders");
+            registerBareSubscriptionFor(Option.some(BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
 
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
             assertEquals(1, invocations.size());
-            assertEquals(artifact, invocations.getFirst());
+            assertEquals(SUBSCRIBER_SLICE, invocations.getFirst());
         }
 
+        /// The reverse direction: either co-deployed slice may be the publisher.
+        @Test
+        void publish_coDeployedBareTopic_reachesSubscriber_inTheReverseDirection() {
+            registerBareSubscriptionFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+
+            publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            assertEquals(1, invocations.size());
+            assertEquals(PUBLISHER_SLICE, invocations.getFirst());
+        }
+
+        /// Genuinely about two BLUEPRINTS: same two distinct slices as the co-deployment test above,
+        /// differing ONLY in their owner. Before #1216 this test used two slices in ONE (unnamed)
+        /// blueprint and passed because co-deployment was broken — it specified the defect.
         @Test
         void publish_subscriberInDifferentBlueprint_isNotReached() {
-            var publisherArtifact = Artifact.artifact("org.example:publisher-slice:1.0.0").unwrap();
-            var subscriberArtifact = Artifact.artifact("org.example:subscriber-slice:1.0.0").unwrap();
-            // Both declare the bare topic "orders" but live in different blueprints → different namespaces.
-            registerBareSubscriptionFor(subscriberArtifact, "orders");
-            var publisher = provisionPublisherFor(publisherArtifact.asString(), "orders");
+            registerBareSubscriptionFor(Option.some(OTHER_BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
 
             publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
             assertTrue(invocations.isEmpty());
+        }
+
+        /// #1216: the undelivered publish above is the ticket's exact shape, and it used to leave no
+        /// trace. Through the REAL factory, the WARN must carry what the factory alone knows — the
+        /// bare topic name from the config and the publishing slice from the provisioning context —
+        /// plus the address the factory resolved, so an operator can set it against `topic-sub/`.
+        @Test
+        void provision_undeliveredPublish_warnsNamingTopicResolvedAddressAndPublishingSlice() {
+            var expectedAddress = TopicAddressResolver.resolve(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders")
+                                                      .unwrap()
+                                                      .asString();
+            registerBareSubscriptionFor(Option.some(OTHER_BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders");
+            var warnings = new ArrayList<String>();
+            var detach = LogCapture.warningsOf(TopicPublisher.class, warnings);
+
+            try {
+                publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            } finally {
+                detach.run();
+            }
+
+            assertEquals(1, warnings.size(), "one WARN for the one undelivered publish: " + warnings);
+            var line = warnings.getFirst();
+            assertTrue(line.contains("'orders'"), "names the bare topic: " + line);
+            assertTrue(line.contains(expectedAddress), "names the resolved address: " + line);
+            assertTrue(line.contains(PUBLISHER_SLICE.asString()), "names the publishing slice: " + line);
+            assertTrue(!line.contains(PublisherFactory.UNSCOPED_PUBLISHER), "the slice id was in the context, so no placeholder: " + line);
+        }
+
+        /// rev1421 MEDIUM-2: the factory hands the node's `MeterRegistry` (a provisioning-context
+        /// extension, #278) to the publisher, so undelivered publishes are counted per topic,
+        /// address and publishing slice — the surface that survives a flood the WARN rate-limits.
+        @Test
+        void provision_undeliveredPublish_countsOnTheContextsMeterRegistry() {
+            var meters = new SimpleMeterRegistry();
+            var expectedAddress = TopicAddressResolver.resolve(Option.some(BLUEPRINT), PUBLISHER_SLICE, "orders")
+                                                      .unwrap()
+                                                      .asString();
+            registerBareSubscriptionFor(Option.some(OTHER_BLUEPRINT), SUBSCRIBER_SLICE, "orders");
+            var context = ProvisioningContext.provisioningContext()
+                                             .withExtension(TopicSubscriptionRegistry.class, registry)
+                                             .withExtension(SliceInvoker.class, new MinimalStubSliceInvoker(invocations))
+                                             .withExtension(String.class, PUBLISHER_SLICE.asString())
+                                             .withExtension(OwningBlueprintResolver.class, _ -> Option.some(BLUEPRINT))
+                                             .withExtension(MeterRegistry.class, meters);
+            @SuppressWarnings("unchecked")
+            var publisher = (Publisher<Object>) factory.provision(new TopicConfig("orders"), context)
+                                                       .await()
+                                                       .onFailure(_ -> fail("Provisioning should succeed"))
+                                                       .unwrap();
+
+            publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            publisher.publish("order-2").await().onFailure(_ -> fail("Publish should succeed"));
+
+            var counter = meters.find(TopicPublisher.UNDELIVERED_COUNTER)
+                                .tags("topic", "orders", "address", expectedAddress, "slice", PUBLISHER_SLICE.asString())
+                                .counter();
+            assertTrue(counter != null, "counter registered on the context's MeterRegistry with the factory's tags");
+            assertEquals(2.0, counter.count());
+            assertTrue(invocations.isEmpty());
+        }
+
+        /// A runtime with no resolver registered (unit test, minimal runtime): both ends scope to the
+        /// slice's own coordinates. A SINGLE slice therefore still reaches itself — the behaviour
+        /// that existed before #1216 and must not regress — while two distinct slices do not, because
+        /// with no deployment behind them there is no blueprint to share.
+        @Test
+        void provision_noResolver_bothEndsFallBackToSliceCoordinates() {
+            registerBareSubscriptionFor(Option.none(), PUBLISHER_SLICE, "orders");
+            var publisher = provisionPublisherFor(Option.none(), PUBLISHER_SLICE, "orders");
+
+            publisher.publish("order-1").await().onFailure(_ -> fail("Publish should succeed"));
+            assertEquals(1, invocations.size());
+            assertEquals(PUBLISHER_SLICE, invocations.getFirst());
         }
     }
 
@@ -321,7 +540,7 @@ class PublisherFactoryTest {
 
         private void registerSubscriber(TopicSubscriptionRegistry registry, Artifact artifact) {
             var address = TopicAddressResolver.resolve(artifact, CLICK_EVENTS).unwrap();
-            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, METHOD);
+            var key = TopicSubscriptionKey.topicSubscriptionKey(address, artifact, METHOD, NODE);
             var value = TopicSubscriptionValue.topicSubscriptionValue(NODE);
 
             registry.onSubscriptionPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
@@ -403,6 +622,9 @@ class PublisherFactoryTest {
         public void onInvokeResponse(InvocationMessage.InvokeResponse response) {}
 
         @Override
+        public org.pragmatica.lang.Unit onNodeDeparture(org.pragmatica.consensus.NodeId node) { return org.pragmatica.lang.Unit.unit(); }
+
+        @Override
         public void onNodeRemoved(org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved event) {}
 
         @Override
@@ -421,10 +643,6 @@ class PublisherFactoryTest {
             return 0;
         }
 
-        @Override
-        public Unit setFailureListener(SliceFailureListener listener) {
-            return Unit.unit();
-        }
 
         @Override
         public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {

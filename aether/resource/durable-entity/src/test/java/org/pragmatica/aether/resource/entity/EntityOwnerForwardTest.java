@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
@@ -350,6 +349,112 @@ class EntityOwnerForwardTest {
             .isInstanceOf(EntityError.EntityAlreadyExists.class));
     }
 
+    /// A transient owner-side refusal (the owner's substrate not ready after a failover) must stay
+    /// transient for the sender: flattened to the non-transient carrier it read as a permanent fault and
+    /// a boundary mapping `Cause.Transient` to "unavailable" answered 500 instead of 503. The failureType
+    /// is the owner-side class's simple name, so the real class name is used, not a literal.
+    @Test
+    void create_ownerRefusesAsStorageUnavailable_surfacesTheTransientTypedCause() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused(EntityError.StorageUnavailable.class.getSimpleName(),
+                                                                   "not yet promoted"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityError.StorageUnavailable.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("not yet promoted");
+        });
+    }
+
+    /// The rebalance-handoff refusal (run 8, 02w): the owner is mid-handoff and says so. It must stay
+    /// transient for the caller. The three names are the not-ready answers an owner can send — its own
+    /// handoff answer, an admission that has not yet seen the committed owner, and a fold still replaying.
+    /// Left as the terminal carrier, each read to the 02w harness (and to any client) as a permanent refusal.
+    @Test
+    void create_ownerIsMidHandoff_surfacesTheTransientCause_forEveryNotReadyName() {
+        for (var failureType : List.of(EntityError.OwnerTransitioning.class.getSimpleName(),
+                                       EntityError.OwnershipNotYetCommitted.class.getSimpleName(),
+                                       EntityLogError.FoldInProgress.class.getSimpleName(),
+                                       EntityLogError.NotYetCommitted.class.getSimpleName())) {
+            transport.refuseWith(new EntityOwnerForward.ForwardRefused(failureType, "owner not ready"));
+
+            var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+            assertThat(result.isFailure()).as(failureType).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).as(failureType).isInstanceOf(EntityError.OwnerTransitioning.class);
+                assertThat(cause.isTransient()).as(failureType).isTrue();
+                assertThat(cause.message()).contains("owner not ready");
+            });
+        }
+    }
+
+    /// #2087 (D11): the owner refuses a read of a key under an unacknowledged write with `NotYetCommitted`; it crosses the forward wire by
+    /// name and must reach the caller as the transient [EntityError.OwnerTransitioning], not as the terminal carrier.
+    @Test
+    void get_ownerRefusesAnUncommittedRead_surfacesTheTransientCause() {
+        substrate.holds = false;
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused(EntityLogError.NotYetCommitted.class.getSimpleName(), "key has an unacknowledged write"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).get("k1").await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityError.OwnerTransitioning.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("unacknowledged write");
+        });
+    }
+
+    /// #1973: a not-sent forward stays a transient, typed cause end to end through the entity: the read of a key whose
+    /// committed owner has just died surfaces `ForwardNotSent`, not an untyped failure a caller reads as final.
+    @Test
+    void get_forwardNeverSent_surfacesTheTypedTransientCause() {
+        substrate.holds = false;
+        transport.refuseWith(new EntityOwnerForward.ForwardNotSent("entity owner-forward to other-node refused at send (NoPeerState)"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).get("k1").await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
+            assertThat(cause.isTransient()).isTrue();
+        });
+    }
+
+    /// #1973: the owner refusing an arrived-expired command without touching the entity (`ForwardBudgetExhausted`) applied
+    /// nothing either, so it crosses the wire as the same typed transient, not as the terminal carrier.
+    @Test
+    void create_ownerRefusesBecauseTheBudgetIsSpent_surfacesTheTypedTransientCause() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("ForwardBudgetExhausted", "budget spent on arrival"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("budget spent on arrival");
+        });
+    }
+
+    /// The control for the row above: the terminal `UnknownKeyspace` (a keyspace nobody provisioned) must
+    /// keep the carrier, so retyping stays an allow-list and a genuinely unknown keyspace is never retried.
+    @Test
+    void create_ownerRefusesAsUnknownKeyspace_staysTerminal() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("UnknownKeyspace", "no entity registered for keyspace orders"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardRefused.class);
+            assertThat(cause.isTransient()).isFalse();
+        });
+    }
+
     /// An unknown failureType keeps the carrier — its message names the owner's reason verbatim,
     /// and minting a wrong typed cause would be worse than a generic one.
     @Test
@@ -549,6 +654,46 @@ class EntityOwnerForwardTest {
         assertThat(transport.calls).as("the receiving side must never re-enter the forwarding decision").isEmpty();
     }
 
+    /// #1805 shape: the COMMITTED owner does not hold the partition's ring yet (materialize pending or
+    /// refused), so what it says over the forward wire must be the transient not-ready, not the terminal
+    /// "not held" that a genuinely foreign node says. Paired with the test above, where the receiver is NOT
+    /// the committed owner and the answer stays `PartitionNotHeld` — the owner check is what separates them.
+    @Test
+    void forwardedOps_onTheCommittedOwnerThatDoesNotHoldThePartition_answerTheTransientCause() {
+        substrate.holds = false;
+
+        var owner = entityAs(SELF, SELF, Option.some(transport));
+        var target = (EntityForwardRegistry.ForwardTarget) owner;
+        var key = "k1".getBytes(StandardCharsets.UTF_8);
+
+        assertNotReadyTransient(target.getForwarded(key).await());
+        assertNotReadyTransient(target.applyForwarded(key, "Add:5".getBytes(StandardCharsets.UTF_8)).await());
+    }
+
+    private static <T> void assertNotReadyTransient(Result<T> result) {
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityError.OwnerTransitioning.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("committed owner");
+        });
+    }
+
+    /// The sender keeps a `PartitionNotHeld` that crossed the wire terminal: a node that said it from a
+    /// foreign position was not mid-handover, so only the owner-side decision above may make it transient.
+    @Test
+    void create_ownerRefusesAsPartitionNotHeld_staysTerminal() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("PartitionNotHeld", "partition 6 not held"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardRefused.class);
+            assertThat(cause.isTransient()).isFalse();
+        });
+    }
+
     /// The owner side of the hop: present state answers as bytes, a missing key as an explicit empty
     /// Option — decoded with the same serializer the entity commits with.
     @Test
@@ -659,7 +804,7 @@ class EntityOwnerForwardTest {
         private final Map<Integer, List<byte[]>> log = new ConcurrentHashMap<>();
 
         @Override
-        public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
+        public Result<Unit> ensureLog(String keyspace, int partitionCount, org.pragmatica.aether.slice.ReplicationFactors replication) {
             return Result.unitResult();
         }
 

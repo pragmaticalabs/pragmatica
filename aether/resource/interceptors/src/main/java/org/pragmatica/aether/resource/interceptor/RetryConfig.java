@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.lang.Result;
@@ -14,9 +13,10 @@ import static org.pragmatica.lang.Verify.ensure;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
+public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy, RetryOn retryOn) {
     // Pure tunable (no identity fields) - safe to expose for TOML-config binder defaulting (#278).
     // Reuses the same exponential shape already applied when a caller omits strategy details.
+    // `retryOn` defaults to TRANSIENT here, which is also what an omitted `retry_on` binds to.
     public static final RetryConfig DEFAULT = withExponentialBackoff(3);
 
     public static Result<RetryConfig> retryConfig(int maxAttempts) {
@@ -28,10 +28,21 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
     }
 
     public static Result<RetryConfig> retryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
+        return retryConfig(maxAttempts, backoffStrategy, RetryOn.TRANSIENT);
+    }
+
+    // Exact record-component-shaped factory: the reflective TOML binder invokes the factory whose
+    // parameter types match the record components verbatim.
+    public static Result<RetryConfig> retryConfig(int maxAttempts, BackoffStrategy backoffStrategy, RetryOn retryOn) {
         var validAttempts = ensure(maxAttempts, Verify.Is::positive);
         var validStrategy = ensure(backoffStrategy, Verify.Is::notNull);
+        var validPolicy = ensure(retryOn, Verify.Is::notNull);
 
-        return all(validAttempts, validStrategy).map(RetryConfig::new);
+        return all(validAttempts, validStrategy, validPolicy).map(RetryConfig::new);
+    }
+
+    public RetryConfig withRetryOn(RetryOn retryOn) {
+        return new RetryConfig(maxAttempts, backoffStrategy, retryOn);
     }
 
     @SuppressWarnings("JBCT-NAM-01")
@@ -42,12 +53,13 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
                                       .factor(2.0)
                                       .withoutJitter();
 
-        return new RetryConfig(attempts, strategy);
+        return new RetryConfig(attempts, strategy, RetryOn.TRANSIENT);
     }
 
     @SuppressWarnings("JBCT-NAM-01")
     private static RetryConfig withFixedBackoff(int attempts, TimeSpan interval) {
         return new RetryConfig(attempts,
-                               BackoffStrategy.fixed().interval(interval));
+                               BackoffStrategy.fixed().interval(interval),
+                               RetryOn.TRANSIENT);
     }
 }

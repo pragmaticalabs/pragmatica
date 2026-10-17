@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.config;
 
@@ -15,7 +14,8 @@ class EnvironmentTest {
     void local_hasCorrectDefaults() {
         var env = Environment.LOCAL;
 
-        assertThat(env.defaultNodes()).isEqualTo(3);
+        // 5, not 7: LOCAL is dev ergonomics and sits below the production default on purpose (#1019).
+        assertThat(env.defaultNodes()).isEqualTo(5);
         assertThat(env.defaultHeap()).isEqualTo("256m");
         assertThat(env.defaultTls()).isFalse();
     }
@@ -24,7 +24,7 @@ class EnvironmentTest {
     void docker_hasCorrectDefaults() {
         var env = Environment.DOCKER;
 
-        assertThat(env.defaultNodes()).isEqualTo(5);
+        assertThat(env.defaultNodes()).isEqualTo(7);
         assertThat(env.defaultHeap()).isEqualTo("512m");
         assertThat(env.defaultTls()).isTrue();
     }
@@ -33,7 +33,7 @@ class EnvironmentTest {
     void kubernetes_hasCorrectDefaults() {
         var env = Environment.KUBERNETES;
 
-        assertThat(env.defaultNodes()).isEqualTo(5);
+        assertThat(env.defaultNodes()).isEqualTo(7);
         assertThat(env.defaultHeap()).isEqualTo("1g");
         assertThat(env.defaultTls()).isTrue();
     }

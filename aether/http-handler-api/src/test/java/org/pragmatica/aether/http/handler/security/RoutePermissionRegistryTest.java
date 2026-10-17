@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.http.handler.security;
 
@@ -91,11 +90,6 @@ class RoutePermissionRegistryTest {
         }
 
         @Test
-        void resolve_adminOnly_forBackupRestore() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/backups/restore")).isEqualTo(ADMIN_ONLY);
-        }
-
-        @Test
         void resolve_adminOnly_forLogLevelSet() {
             assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/logging/levels")).isEqualTo(ADMIN_ONLY);
         }
@@ -179,11 +173,6 @@ class RoutePermissionRegistryTest {
         }
 
         @Test
-        void resolve_operatorAndAbove_forBackupCreate() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/backups")).isEqualTo(OPERATOR_AND_ABOVE);
-        }
-
-        @Test
         void resolve_operatorAndAbove_forScale() {
             assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/scale")).isEqualTo(OPERATOR_AND_ABOVE);
         }
@@ -211,11 +200,6 @@ class RoutePermissionRegistryTest {
         @Test
         void resolve_operatorAndAbove_forThresholdDelete() {
             assertThat(RoutePermissionRegistry.resolve("DELETE", "/api/v1/thresholds/cpu.usage")).isEqualTo(OPERATOR_AND_ABOVE);
-        }
-
-        @Test
-        void resolve_operatorAndAbove_forAlertsClear() {
-            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/alerts/clear")).isEqualTo(OPERATOR_AND_ABOVE);
         }
 
         @Test
@@ -262,6 +246,28 @@ class RoutePermissionRegistryTest {
         @Test
         void resolve_adminOnly_forUnknownPutPath() {
             assertThat(RoutePermissionRegistry.resolve("PUT", "/api/v1/some-resource/123")).isEqualTo(ADMIN_ONLY);
+        }
+    }
+
+    /// #1543 E2 (v-2042): the path-prefix table must agree with the per-route table. `/nodes/replace` is a prefix of both the
+    /// replace route and `/nodes/replacements/settle/...`; without the entry a mutation falls through to ADMIN_ONLY.
+    @Nested
+    class NodeReplacement {
+        @Test
+        void replaceAndSettle_areOperatorMutations() {
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/nodes/replace/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/nodes/replacements/settle/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
+        }
+
+        @Test
+        void listingReplacements_isARead() {
+            assertThat(RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/replacements")).isEqualTo(ALL_AUTHENTICATED);
+        }
+
+        /// #2062: without the prefix entry the operator clear would fall through to ADMIN_ONLY.
+        @Test
+        void clearUnconfirmed_isAnOperatorMutation() {
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/nodes/unconfirmed/clear/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
         }
     }
 }

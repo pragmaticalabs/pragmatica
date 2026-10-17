@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.Result;
@@ -12,12 +11,13 @@ import static org.pragmatica.lang.Result.success;
 public record DockerConfig(String network, String image) {
     public static final String DEFAULT_NETWORK = "aether-network";
     /// Default node image for management-generated Docker artifacts. Uses the published
-    /// `ghcr.io/pragmaticalabs` namespace (matching `DockerComposeGenerator` /
-    /// `ClusterConfigGenerator.IMAGE_PREFIX`) and pins the project version rather than a
-    /// floating `:latest`. The rest of the codebase versions images at runtime via
-    /// `config.cluster().version()`; this low-level module has no compile-time version source,
-    /// so the tag is pinned literally and must be bumped with the project version.
-    public static final String DEFAULT_IMAGE = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc3";
+    /// `ghcr.io/pragmaticalabs` namespace (matching `DockerComposeTemplate` /
+    /// `ClusterConfigGenerator.IMAGE_PREFIX`) and pins the running build's own version, read from
+    /// the jar manifest via [BuildInfo#version()], rather than a floating `:latest` or a literal
+    /// that goes stale every release. Outside a packaged jar (test classpath) the version is
+    /// `BuildInfo`'s `dev` sentinel, so the tag is visibly not a release instead of silently a
+    /// previous one.
+    public static final String DEFAULT_IMAGE = "ghcr.io/pragmaticalabs/aether-node:" + BuildInfo.version();
 
     public static Result<DockerConfig> dockerConfig(String network, String image) {
         return success(new DockerConfig(network, image));

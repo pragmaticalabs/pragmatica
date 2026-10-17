@@ -1,12 +1,14 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.worker.metrics;
 
 import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.function.LongSupplier;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.consensus.NodeId;
@@ -34,6 +36,9 @@ public interface WorkerMetricsAggregator {
     @Contract
     void stop();
 
+    @Contract
+    void setIncarnationSupplier(LongSupplier supplier);
+
     List<PerSliceMetrics> collectOwnMetrics();
     CommunityMetricsSnapshot buildSnapshot();
 
@@ -47,7 +52,15 @@ public interface WorkerMetricsAggregator {
                                        InvocationMetricsCollector invocationMetrics,
                                        Consumer<CommunityMetricsSnapshot> broadcaster,
                                        long aggregationIntervalMs,
-                                       CancellableTask task) implements WorkerMetricsAggregator {
+                                       CancellableTask task,
+                                       AtomicReference<LongSupplier> incarnationSupplier,
+                                       AtomicLong sequence) implements WorkerMetricsAggregator {
+            @Override
+            @Contract
+            public void setIncarnationSupplier(LongSupplier supplier) {
+                incarnationSupplier.set(supplier);
+            }
+
             @Override
             @Contract
             public void start() {
@@ -71,10 +84,13 @@ public interface WorkerMetricsAggregator {
 
             @Override
             public CommunityMetricsSnapshot buildSnapshot() {
-                return CommunityMetricsSnapshot.communityMetricsSnapshot(communityIdSupplier.get(),
-                                                                         self,
-                                                                         1,
-                                                                         collectOwnMetrics());
+                return new CommunityMetricsSnapshot(communityIdSupplier.get(),
+                                                    self,
+                                                    1,
+                                                    collectOwnMetrics(),
+                                                    System.currentTimeMillis(),
+                                                    incarnationSupplier.get().getAsLong(),
+                                                    sequence.incrementAndGet());
             }
 
             @Contract
@@ -88,6 +104,8 @@ public interface WorkerMetricsAggregator {
                                            invocationMetrics,
                                            broadcaster,
                                            aggregationIntervalMs,
-                                           CancellableTask.cancellableTask());
+                                           CancellableTask.cancellableTask(),
+                                           new AtomicReference<>(() -> 0L),
+                                           new AtomicLong());
     }
 }

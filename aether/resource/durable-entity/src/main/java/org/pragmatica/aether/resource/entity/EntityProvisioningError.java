@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.lang.Cause;
@@ -17,20 +16,23 @@ import org.pragmatica.lang.Cause;
 /// `DEPLOYMENT_FAILED` record, so a slice that cannot get the guarantees it declared fails to start
 /// instead of starting wrong.
 public sealed interface EntityProvisioningError extends Cause {
-    /// `replication_factor` must be at least one — it becomes the backing stream's `replicas`, the total
-    /// copies of each partition INCLUDING the owner, and a partition with no copies has no owner to write
-    /// to.
-    ///
-    /// **This replaced `ReplicationNotSupported` in #345 I3.** Until I3 the field was refused above `1`,
-    /// because the entity committed to a single process-local `StorageEngine` and could not replicate
-    /// anything; refusing was the honest reading at the time. I3 moved entity state onto a fenced,
-    /// fsync-durable, REPLICATED stream partition, so the field is now honoured — which is what closes
-    /// the gap the refusal was standing in for. See [DurableEntityConfig#minSyncReplicas()] for what each
-    /// value buys.
-    record InvalidReplicationFactor(int requested) implements EntityProvisioningError {
+    /// The entity's `replication_factor`/`confirmation_factor` refused (#1564); `cause` is the typed
+    /// [org.pragmatica.aether.slice.ReplicationFactorsError] — out of range, an RF below 3 taken from a default,
+    /// an RF above the desired core count, or a policy different from the keyspace's committed one.
+    record ReplicationRefused(Cause cause) implements EntityProvisioningError {
         @Override
         public String message() {
-            return "Durable entity replication_factor = " + requested + " is invalid: must be at least 1";
+            return "Durable entity replication refused: " + cause.message();
+        }
+    }
+
+    /// The node supplied no [org.pragmatica.aether.slice.ReplicationContext.Source], so the declared factors cannot be
+    /// resolved against the committed cluster defaults. Refused rather than resolved against a guess (#1564).
+    record ReplicationContextUnavailable(String keyspace) implements EntityProvisioningError {
+        @Override
+        public String message() {
+            return "Durable entity '" + keyspace
+                 + "' cannot resolve its replication factors: the node supplies no replication context";
         }
     }
 

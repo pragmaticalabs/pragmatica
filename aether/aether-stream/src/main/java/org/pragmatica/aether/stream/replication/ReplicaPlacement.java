@@ -71,6 +71,52 @@ public final class ReplicaPlacement {
         return Option.option(new Placement(ranked.getFirst(), replicas));
     }
 
+    /// #1555 sticky ownership: the placement of `(streamName, partition)` when its owner is already decided (the
+    /// committed ownership record). The owner leads the replica list whether or not it is in `members`; the other
+    /// `rf - 1` replicas are the HRW-top of the remaining members, so a higher-ranked node joining becomes a replica
+    /// and never displaces the owner.
+    public static Placement placeWithOwner(String streamName,
+                                           int partition,
+                                           NodeId owner,
+                                           Iterable<NodeId> members,
+                                           int requestedRf) {
+        var others = new ArrayList<NodeId>();
+
+        rank(streamName, partition, members).stream().filter(member -> !member.equals(owner)).forEach(others::add);
+        var rf = clamp(requestedRf, 1, others.size() + 1);
+        var replicas = new ArrayList<NodeId>();
+
+        replicas.add(owner);
+        replicas.addAll(others.subList(0, rf - 1));
+
+        return new Placement(owner, replicas);
+    }
+
+    /// #1730: [#placeWithOwner] keeping the committed in-sync replicas placed. The owner leads, then every ISR member
+    /// (in HRW order, whether or not it is a live member — an ISR member is dropped only by a committed ISR change),
+    /// then the HRW-top of the remaining members up to `rf`. An ISR member left unplaced would stop receiving the
+    /// partition, and every acknowledgement would wait for it until the ISR shrank.
+    public static Placement placeWithOwnerAndIsr(String streamName,
+                                                 int partition,
+                                                 NodeId owner,
+                                                 List<NodeId> isr,
+                                                 Iterable<NodeId> members,
+                                                 int requestedRf) {
+        var replicas = new ArrayList<NodeId>();
+
+        replicas.add(owner);
+        rank(streamName, partition, isr).stream().filter(member -> !replicas.contains(member)).forEach(replicas::add);
+        var others = rank(streamName, partition, members).stream()
+                         .filter(member -> !replicas.contains(member))
+                         .toList();
+        var room = Math.max(0, requestedRf - replicas.size());
+
+        replicas.addAll(others.subList(0,
+                                       Math.min(room, others.size())));
+
+        return new Placement(owner, List.copyOf(replicas));
+    }
+
     /// Rank all members by HRW score descending, tie-broken by node-id string ascending.
     /// Package-visible to allow direct churn/ordering assertions in tests.
     static List<NodeId> rank(String streamName, int partition, Iterable<NodeId> members) {
@@ -101,16 +147,15 @@ public final class ReplicaPlacement {
     }
 
     /// Effective replication factor for an APP stream: `clamp(requested, 1, clusterSize)`, where
-    /// `requested` is the stream's `replicas` knob (total copies INCLUDING the owner). Returns 0 only
+    /// `requested` is the stream's `replication_factor` (total copies INCLUDING the owner). Returns 0 only
     /// when the cluster is empty.
     ///
-    /// Under the two-knob model (#262) `replicas` ALONE determines placement — how many copies exist —
-    /// while the separate `min-sync-replicas` knob governs only the write-ack floor (a synchronous
-    /// publish awaits `min-sync-replicas − 1` DISTINCT NON-SELF acks) and never changes RF. The owner
-    /// is index 0 of the owner-first HRW set, so a `replicas`-sized set holds the owner PLUS
-    /// `replicas − 1` peers. When `min-sync-replicas` exceeds the peers a too-small cluster can
-    /// provision, the publish fails CLEARLY via [ReplicationManager#awaitReplication] with
-    /// `NOT_ENOUGH_REPLICAS` rather than silently under-provisioning.
+    /// Under the two-knob model (#262, #1564) `replication_factor` ALONE determines placement — how many copies
+    /// exist — while the separate `confirmation_factor` governs only the write-ack floor (a synchronous
+    /// publish awaits `confirmation_factor − 1` DISTINCT NON-SELF acks) and never changes RF. The owner
+    /// is index 0 of the owner-first HRW set, so an RF-sized set holds the owner PLUS RF − 1 peers. When `confirmation_factor` exceeds the peers a too-small cluster can
+    /// provision, the publish fails CLEARLY via [ReplicationManager#ensureReplicaFloor] with
+    /// `NOT_ENOUGH_REPLICAS`, before anything is appended, rather than silently under-provisioning (#1236).
     public static int replicationFactor(int requested, int clusterSize) {
         if (clusterSize <= 0) {
             return 0;

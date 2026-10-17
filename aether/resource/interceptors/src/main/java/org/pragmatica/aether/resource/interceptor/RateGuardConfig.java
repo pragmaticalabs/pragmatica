@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.lang.Result;
@@ -14,8 +13,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public record RateGuardConfig(int requestsPerSecond, int burst, String type) {
+    /// Per-field defaults, read by the config binder by name (`DEFAULT_<COMPONENT>`, #822) so a section may omit
+    /// them, as the resource reference promises. Not a whole-record `DEFAULT`: see
+    /// `InterceptorConfigDefaultAllowlistTest`.
+    public static final int DEFAULT_REQUESTS_PER_SECOND = 100;
+    public static final int DEFAULT_BURST = 20;
+    public static final String DEFAULT_TYPE = "local";
+
     public static Result<RateGuardConfig> rateGuardConfig(int requestsPerSecond, int burst) {
-        return rateGuardConfig(requestsPerSecond, burst, "local");
+        return rateGuardConfig(requestsPerSecond, burst, DEFAULT_TYPE);
     }
 
     public static Result<RateGuardConfig> rateGuardConfig(int requestsPerSecond, int burst, String type) {
@@ -27,7 +33,7 @@ public record RateGuardConfig(int requestsPerSecond, int burst, String type) {
     }
 
     public static Result<RateGuardConfig> rateGuardConfig() {
-        return rateGuardConfig(100, 20);
+        return rateGuardConfig(DEFAULT_REQUESTS_PER_SECOND, DEFAULT_BURST);
     }
 
     public TimeSpan window() {

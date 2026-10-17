@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
@@ -249,6 +248,42 @@ class PartitionFencedDurableEntityTimerTest {
             settle(entity, "k1");
 
             assertThat(read(entity, "k1")).isEqualTo(Option.some(42));
+            assertThat(substrate.opsOf(EntityLogRecord.Op.TIMER_FIRE)).isEqualTo(1);
+        }
+
+        /// #1269 — a stalled key must not accumulate one queued fire per due timer per TICK. The tick runs
+        /// every second, and before this each one queued a fresh fire behind the stall; `fireStillPending`
+        /// discarded the extras only once they finally ran, so a wedged key's queue grew without bound.
+        ///
+        /// The key's tail is held by an update parked in its append. Every task that runs a fire drives the
+        /// partition's readiness gate first, which asks the substrate `holdsPartition` exactly once. A read
+        /// asks twice — once to route, once at its own readiness gate — so after the ticks, the count up to
+        /// and including one settling read queued behind all of them on the same tail is the number of
+        /// queued fires plus two. Before the fix, five ticks gave 7 (five fires); now 3 (one).
+        @Test
+        void fireDueTimers_queuesOneFire_whileTheKeysTailIsStalled() {
+            var entity = seededEntity();
+            var ticks = 5;
+
+            schedule(entity, "k1", new IntOp.Add(41));
+            substrate.gateAppends();
+
+            var stalled = entity.update("k1", new IntOp.Add(100));
+
+            awaitCondition(() -> substrate.gatedCount() == 1, "the update must park in its append");
+
+            for (var tick = 0; tick < ticks; tick++) {
+                entity.fireDueTimers(farFuture());
+            }
+
+            var holdsBefore = substrate.holdsChecks();
+
+            substrate.releaseGate();
+            stalled.await().onFailure(PartitionFencedDurableEntityTimerTest::failCause);
+            settle(entity, "k1");
+
+            assertThat(substrate.holdsChecks() - holdsBefore).as("queued fires + the settling read's two checks")
+                                                             .isEqualTo(3);
             assertThat(substrate.opsOf(EntityLogRecord.Op.TIMER_FIRE)).isEqualTo(1);
         }
 
@@ -756,6 +791,7 @@ class PartitionFencedDurableEntityTimerTest {
         private final List<GatedAppend> gatedAppends = new CopyOnWriteArrayList<>();
         private final List<byte[]> attempts = new CopyOnWriteArrayList<>();
         private final AtomicInteger checkpointLoads = new AtomicInteger();
+        private final AtomicInteger holdsChecks = new AtomicInteger();
         private volatile boolean gated;
         private volatile Option<Cause> appendFailure = Option.none();
         private volatile boolean checkpointLoadFails;
@@ -770,11 +806,16 @@ class PartitionFencedDurableEntityTimerTest {
             appendFailure = Option.none();
         }
 
-        /// Make every rebuild fail at its checkpoint load — the cheapest way to produce a partition that is
-        /// held, owned, and permanently un-ready.
+        /// Make every rebuild fail: the checkpoint cannot be loaded AND the log below it has been reclaimed, so
+        /// the fold cannot fall back to replaying the log (#1533 — an unreadable checkpoint alone is skipped,
+        /// and the fold refuses only when the log cannot cover it). The cheapest way to produce a partition
+        /// that is held, owned, and permanently un-ready.
         void failCheckpointLoads() {
             checkpointLoadFails = true;
         }
+
+        /// While checkpoint loads fail, the log reads as reclaimed below this offset.
+        private static final long RECLAIMED_HEAD = 10L;
 
         void allowCheckpointLoads() {
             checkpointLoadFails = false;
@@ -845,7 +886,7 @@ class PartitionFencedDurableEntityTimerTest {
         }
 
         @Override
-        public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
+        public Result<Unit> ensureLog(String keyspace, int partitionCount, org.pragmatica.aether.slice.ReplicationFactors replication) {
             return Result.unitResult();
         }
 
@@ -887,11 +928,17 @@ class PartitionFencedDurableEntityTimerTest {
 
         @Override
         public long headOffset(String keyspace, int partition) {
-            return log.getOrDefault(partition, List.of()).size() - 1L;
+            return checkpointLoadFails
+                   ? RECLAIMED_HEAD
+                   : log.getOrDefault(partition, List.of()).size() - 1L;
         }
 
         @Override
         public long earliestRetainedOffset(String keyspace, int partition) {
+            if (checkpointLoadFails) {
+                return RECLAIMED_HEAD;
+            }
+
             return log.getOrDefault(partition, List.of()).isEmpty() ? -1L : 0L;
         }
 
@@ -900,8 +947,16 @@ class PartitionFencedDurableEntityTimerTest {
             return true;
         }
 
+        /// How many times anything asked whether this node holds a partition — see
+        /// [Firing#fireDueTimers_queuesOneFire_whileTheKeysTailIsStalled].
+        int holdsChecks() {
+            return holdsChecks.get();
+        }
+
         @Override
         public boolean holdsPartition(String keyspace, int partition) {
+            holdsChecks.incrementAndGet();
+
             return true;
         }
 

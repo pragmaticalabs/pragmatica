@@ -11,15 +11,24 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
+import org.pragmatica.aether.stream.OwnerPeerReads;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -36,14 +45,14 @@ class PartitionBackfillTest {
 
     private ReplicaRegistry registry;
     private StreamPartitionManager manager;
-    private StreamPartitionRecovery recovery;
+    private AlignedRecovery recovery;
 
     @BeforeEach
     void setUp() {
         registry = replicaRegistry();
         manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
         manager.createStream(StreamConfig.streamConfig("orders"));
-        recovery = manager::appendRecovered;
+        recovery = manager.alignedRecovery();
     }
 
     @Nested
@@ -105,6 +114,305 @@ class PartitionBackfillTest {
 
             assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
             assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+    }
+
+    /// #1638 F1: one backfill of a partition at a time. A call made while one is in flight joins it -- the same result,
+    /// no second pull -- and a call after it lands starts a fresh run. Red under "no single-flight" (the second call
+    /// pulls again).
+    @Nested
+    class SingleFlight {
+        @Test
+        void concurrentBackfills_ofOnePartition_shareOnePull() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            var pending = new AtomicReference<Promise<ReplicationMessage.CatchupResponse>>();
+            var served = fixedSource(eventsFrom(0, 5));
+            CatchupTransport gated = (target, request) -> {
+                pulls.incrementAndGet();
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.set(response);
+
+                return response.flatMap(_ -> served.requestCatchup(target, request));
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF);
+
+            var first = backfill.backfill(STREAM, PARTITION);
+            var second = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("the second call joined the first").isEqualTo(1);
+
+            pending.get().fail(ReplicationError.General.REPLICATION_TIMEOUT);
+
+            assertThat(first.await().isFailure()).isTrue();
+            assertThat(second.await().isFailure()).as("the joined call resolves with the same result").isTrue();
+
+            var retry = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("a call after the flight landed runs again").isEqualTo(2);
+
+            pending.get().succeed(catchupResponse(SOURCE, STREAM, PARTITION, 0, -1, List.of(), List.of()));
+
+            assertThat(await(retry)).isEqualTo(5L);
+        }
+
+        /// #1638 N1, B2 (ii): a backfill that makes no progress -- its pull never settles and reports no page -- holds
+        /// the slot only for the idle bound. The flight then FAILS (never a success) and a later call pulls again instead
+        /// of joining the stuck run forever. Red under "no bound" and under "the bound resolves as a success".
+        @Test
+        void stalledBackfill_releasesItsSlot_failed_afterTheIdleBound() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            CatchupTransport neverSettles = (_, _) -> {
+                pulls.incrementAndGet();
+
+                return Promise.promise();
+            };
+            var backfill = partitionBackfill(registry, recovery, neverSettles, SELF, TimeSpan.timeSpan(200).millis());
+
+            var stuck = backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+
+            assertThat(stuck.isFailure()).as("the bound fails the flight").isTrue();
+            stuck.onFailure(cause -> assertThat(cause).isEqualTo(BackfillError.General.FLIGHT_TIMED_OUT));
+            assertThat(descriptorFor(SELF).state()).as("never promoted").isEqualTo(ReplicationState.SYNCING);
+
+            backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pulls.get()).as("a call after the bound pulls again").isEqualTo(2);
+        }
+
+        /// #1638 B2 (i): a catch-up that takes several idle bounds in total but reports a page every 50 ms keeps its
+        /// slot: a call made past the bound joins it, no second pull starts, and it lands its records. Red under
+        /// "progress is not reported" and under "the bound caps the total duration".
+        @Test
+        void progressingBackfill_slowerThanTheBound_keepsItsSlot() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pulls = new AtomicInteger();
+            var served = fixedSource(eventsFrom(0, 5));
+            var pager = Executors.newSingleThreadScheduledExecutor();
+            var slowPager = new CatchupTransport() {
+                @Override
+                public Promise<ReplicationMessage.CatchupResponse> requestCatchup(NodeId target,
+                                                                                   ReplicationMessage.CatchupRequest request) {
+                    return requestCatchup(target, request, () -> {});
+                }
+
+                @Override
+                public Promise<ReplicationMessage.CatchupResponse> requestCatchup(NodeId target,
+                                                                                   ReplicationMessage.CatchupRequest request,
+                                                                                   Runnable onPage) {
+                    pulls.incrementAndGet();
+                    var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                    for (var page = 1; page <= 20; page++) {
+                        pager.schedule(onPage, page * 50L, TimeUnit.MILLISECONDS);
+                    }
+                    pager.schedule(() -> served.requestCatchup(target, request).onResult(response::resolve),
+                                   1_050L,
+                                   TimeUnit.MILLISECONDS);
+
+                    return response;
+                }
+            };
+            var backfill = partitionBackfill(registry, recovery, slowPager, SELF, TimeSpan.timeSpan(200).millis());
+
+            try {
+                var first = backfill.backfill(STREAM, PARTITION);
+
+                pager.schedule(() -> {}, 600L, TimeUnit.MILLISECONDS).get(5, TimeUnit.SECONDS);
+                var joined = backfill.backfill(STREAM, PARTITION);
+
+                assertThat(pulls.get()).as("past three idle bounds, the progressing flight still holds the slot").isEqualTo(1);
+                assertThat(first.await(TimeSpan.timeSpan(10).seconds()).or(-1L)).isEqualTo(5L);
+                assertThat(joined.await(TimeSpan.timeSpan(10).seconds()).or(-1L)).isEqualTo(5L);
+            } catch (Exception e) {
+                throw new AssertionError(e);
+            } finally {
+                pager.shutdownNow();
+            }
+        }
+
+        /// #1638 B2: an apply slower than the idle bound in total -- 10 records at 50 ms each against a 200 ms bound --
+        /// keeps its slot, because each applied record is progress. Red under "applied records are not reported".
+        @Test
+        void slowApply_keepsItsSlot_whileRecordsLand() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 9L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var slowAppends = AlignedRecovery.alignedRecovery((stream, partition, offset, payload, timestamp) -> {
+                                                                  LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+
+                                                                  return recovery.appendRecovered(stream,
+                                                                                                  partition,
+                                                                                                  offset,
+                                                                                                  payload,
+                                                                                                  timestamp);
+                                                              },
+                                                              recovery::applyAttributed,
+                                                              recovery::applyUnattributed);
+            var served = fixedSource(eventsFrom(0, 10));
+            // the response arrives on a timer thread, so the apply runs AFTER the flight's idle watch is armed
+            CatchupTransport later = (target, request) -> Promise.promise(TimeSpan.timeSpan(20).millis(),
+                                                                          () -> served.requestCatchup(target, request)
+                                                                                      .await());
+            var backfill = partitionBackfill(registry, slowAppends, later, SELF, TimeSpan.timeSpan(200).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).or(-1L))
+                    .as("the slow apply completed rather than timing out").isEqualTo(10L);
+        }
+
+        /// #1638 late side effects: a run that settles AFTER its flight timed out -- here while the NEXT flight holds
+        /// the slot -- changes no replica row: it does not promote self, whatever its stale response says. Then the next
+        /// flight's own settlement promotes. Red under "the run's side effects are not gated".
+        @Test
+        void lateSettlement_afterTheTimeout_leavesTheRegistryUnchanged() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            var served = fixedSource(eventsFrom(0, 5));
+            var requests = new CopyOnWriteArrayList<ReplicationMessage.CatchupRequest>();
+            CatchupTransport gated = (_, request) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+                requests.add(request);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF, TimeSpan.timeSpan(500).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+            var next = backfill.backfill(STREAM, PARTITION);
+            var before = descriptorFor(SELF);
+
+            served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(descriptorFor(SELF)).as("the late run changed no replica row").isEqualTo(before);
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.SYNCING);
+
+            served.requestCatchup(SOURCE, requests.get(1)).onResult(pending.get(1)::resolve);
+
+            assertThat(next.await(TimeSpan.timeSpan(10).seconds()).isSuccess()).as("the next flight settles").isTrue();
+            assertThat(descriptorFor(SELF).state()).as("the current flight promotes").isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// #1638 late side effects, the ack half: with the owner known (SOURCE), a completed backfill acks the owner.
+        /// A run that settles AFTER its flight timed out sends no ack, while the next flight's own settlement does. Red
+        /// under "the ack is not gated".
+        @Test
+        void lateSettlement_afterTheTimeout_sendsNoAckToTheOwner() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            var requests = new CopyOnWriteArrayList<ReplicationMessage.CatchupRequest>();
+            var served = fixedSource(eventsFrom(0, 5));
+            var acks = new CopyOnWriteArrayList<ReplicationMessage>();
+            CatchupTransport gated = (_, request) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+                requests.add(request);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             gated,
+                                             (_, message) -> acks.add(message),
+                                             SELF,
+                                             TimeSpan.timeSpan(500).millis());
+
+            backfill.ownerResolver((_, _) -> Option.some(SOURCE));
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+            var next = backfill.backfill(STREAM, PARTITION);
+
+            served.requestCatchup(SOURCE, requests.getFirst()).onResult(pending.getFirst()::resolve);
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(acks).as("the late run acked nothing").isEmpty();
+
+            served.requestCatchup(SOURCE, requests.get(1)).onResult(pending.get(1)::resolve);
+
+            assertThat(next.await(TimeSpan.timeSpan(10).seconds()).isSuccess()).isTrue();
+            assertThat(acks).as("the current flight acks the owner once").hasSize(1);
+        }
+
+        /// #1638 D1: a durability barrier slower than the idle bound -- 600 ms against 200 ms -- does not time the flight
+        /// out: a run that applied everything still promotes self CAUGHT_UP. Red under "no progress at the barrier".
+        @Test
+        void slowDurabilityBarrier_stillPromotes() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var served = fixedSource(eventsFrom(0, 5));
+            CatchupTransport later = (target, request) -> Promise.promise(TimeSpan.timeSpan(20).millis(),
+                                                                          () -> served.requestCatchup(target, request)
+                                                                                      .await());
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             later,
+                                             ReplicationTransport.NOOP,
+                                             (_, _, _) -> BackfillError.General.NO_SOURCE_REPLICA.promise(),
+                                             (_, _) -> - 1L,
+                                             SELF,
+                                             TimeSpan.timeSpan(Long.MAX_VALUE).nanos(),
+                                             List::of,
+                                             CommittedStreamOwnerSource.none(),
+                                             (_, _) -> Promise.promise(TimeSpan.timeSpan(600).millis(),
+                                                                       org.pragmatica.lang.Result::unitResult),
+                                             QuarantineView.NONE,
+                                             Option.some(TimeSpan.timeSpan(200).millis()));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).or(-1L))
+                    .as("the run that applied everything is not timed out in its barrier").isEqualTo(5L);
+            assertThat(descriptorFor(SELF).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// #1638 B1: a run that lands after its flight timed out must not evict the NEXT flight from the slot. The old
+        /// run stalls past the bound, a new flight starts, then the old run settles; a later call still joins the new
+        /// flight. Red under "unconditional remove".
+        @Test
+        void lateLandingOldRun_doesNotEvictTheNextFlight() {
+            registry.registerReplica(STREAM, PARTITION, SOURCE);
+            registry.updateWatermark(STREAM, PARTITION, SOURCE, 4L);
+            registry.registerReplica(STREAM, PARTITION, SELF);
+            var pending = new CopyOnWriteArrayList<Promise<ReplicationMessage.CatchupResponse>>();
+            CatchupTransport gated = (_, _) -> {
+                var response = Promise.<ReplicationMessage.CatchupResponse>promise();
+
+                pending.add(response);
+
+                return response;
+            };
+            var backfill = partitionBackfill(registry, recovery, gated, SELF, TimeSpan.timeSpan(500).millis());
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure())
+                    .as("the old flight timed out").isTrue();
+
+            var next = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pending).as("the next flight pulled").hasSize(2);
+
+            pending.getFirst().fail(ReplicationError.General.REPLICATION_TIMEOUT);
+            // let the old run's failure travel through its continuations to `land`
+            Promise.<Long>promise(TimeSpan.timeSpan(200).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            var joined = backfill.backfill(STREAM, PARTITION);
+
+            assertThat(pending).as("the late old run did not free the next flight's slot").hasSize(2);
+            assertThat(joined).isSameAs(next);
         }
     }
 
@@ -302,6 +610,182 @@ class PartitionBackfillTest {
             // Data safety: stays SYNCING despite locally-highest watermark, because a peer is unreachable.
             assertThat(descriptorFor(NODE_AA).state()).isEqualTo(ReplicationState.SYNCING);
             assertThat(descriptorFor(NODE_AA).confirmedOffset()).isEqualTo(-1L);
+        }
+
+        /// #2077: the contest waits on registry replicas, and the registry keeps a committed-ISR member until the leader
+        /// commits an ISR shrink. A co-replica the node's own membership view has dropped is not a peer that "might hold
+        /// newer state": the activation gate already stops waiting for it. Unreachable AND absent from the live members
+        /// promotes; unreachable and still live stays SYNCING. Self is the SECOND-ranked member, so the contest (not the
+        /// owner-immediate path) decides.
+        @Test
+        void backfill_unreachablePeerNotInLiveMembers_promotes_whileUnreachableLivePeerStillBlocks() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var owner = ranked.get(0);
+            var self = ranked.get(1);
+            var dead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, owner);
+            registry.registerReplica(STREAM, PARTITION, dead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) ->
+                    target.equals(owner)
+                    ? Promise.success(5L)
+                    : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var liveWithoutDead = List.of(owner, self);
+            var control = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> all).withCommittedIsr((_, _) -> List.of(owner, self));
+
+            control.backfill(STREAM, PARTITION).await();
+            clock.set(BOUND.millis() + 1);
+            assertThat(control.backfill(STREAM, PARTITION).await().isFailure()).as("control: the unreachable peer is a live member").isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
+
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> liveWithoutDead).withCommittedIsr((_, _) -> List.of(owner, self));
+
+            backfill.backfill(STREAM, PARTITION).await();   // arms this instance's bound at the current clock
+            clock.addAndGet(BOUND.millis() + 1);
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).as("the unreachable peer is not a live member").isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(self).confirmedOffset()).isEqualTo(8L);
+        }
+
+        /// #2077 (v-2079 BLOCK): local membership is not consensus. Committed ISR = {XX, YY}, both holding acked offset 8; self is a
+        /// registered NON-ISR replica lagging at 3. XX and YY are both dead in self's view: unreachable and dropped from its live
+        /// members. Self must stay SYNCING: promoting would serve offset 3 past records acked up to 8. A peer that is not live may
+        /// be ignored only when self, or a reachable probed peer, is named in the RAW committed ISR.
+        @Test
+        void backfill_nonIsrCandidate_bothIsrHoldersDroppedFromLocalView_staysSyncing() {
+            var xx = NodeId.nodeId("node-xx").unwrap();
+            var yy = NodeId.nodeId("node-yy").unwrap();
+            var live = ReplicaPlacement.rank(STREAM, PARTITION, List.of(NODE_AA, NODE_BB, NODE_CC));
+            var self = live.get(1);
+
+            registry.registerReplica(STREAM, PARTITION, xx);
+            registry.registerReplica(STREAM, PARTITION, yy);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(xx) || target.equals(yy)
+                                                            ? ReplicationError.General.REPLICATION_TIMEOUT.promise()
+                                                            : Promise.success(3L);
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(3L), self, BOUND, clock::get, () -> live)
+                    .withCommittedIsr((_, _) -> List.of(xx, yy));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(self).state()).as("self lacks acked offsets 4..8 held only by the dead ISR").isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// The control: a NON-ISR candidate that reaches an ISR peer is not blocked by a dead non-ISR replica. The reachable ISR
+        /// peer holds every acked record, so the contest runs on what is reachable (self is ahead of it here and promotes).
+        @Test
+        void backfill_nonIsrCandidate_reachableIsrPeer_deadNonIsrPeerIgnored() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var isrPeer = ranked.get(0);
+            var self = ranked.get(1);
+            var dead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, isrPeer);
+            registry.registerReplica(STREAM, PARTITION, dead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(isrPeer)
+                                                            ? Promise.success(5L)
+                                                            : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> List.of(isrPeer, self))
+                    .withCommittedIsr((_, _) -> List.of(isrPeer));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// An empty member view means "cannot judge liveness", never "nobody is alive": even with the ISR vouching for self, an
+        /// unreachable peer then blocks.
+        @Test
+        void backfill_emptyMemberView_isrNamesSelf_unreachablePeerStillBlocks() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var owner = ranked.get(0);
+            var self = ranked.get(1);
+            var dead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, owner);
+            registry.registerReplica(STREAM, PARTITION, dead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(owner)
+                                                            ? Promise.success(5L)
+                                                            : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, List::of)
+                    .withCommittedIsr((_, _) -> List.of(self));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// Only a peer that is BOTH unreachable and not live is ignored. A peer that is not live in this view but answers the probe
+        /// keeps its say: here it is ahead of self, so self does not promote.
+        @Test
+        void backfill_isrNamesSelf_nonLivePeerThatAnswersAndIsAhead_stillBlocksPromotion() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var owner = ranked.get(0);
+            var self = ranked.get(1);
+            var ahead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, owner);
+            registry.registerReplica(STREAM, PARTITION, ahead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> Promise.success(target.equals(ahead) ? 10L : 5L);
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> List.of(owner, self))
+                    .withCommittedIsr((_, _) -> List.of(self));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// No committed ISR (cold start, or no ISR source bound): no evidence, so a non-live unreachable peer blocks as before.
+        @Test
+        void backfill_noCommittedIsr_nonLiveUnreachablePeer_stillBlocks() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var owner = ranked.get(0);
+            var self = ranked.get(1);
+            var dead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, owner);
+            registry.registerReplica(STREAM, PARTITION, dead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(owner)
+                                                            ? Promise.success(5L)
+                                                            : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> List.of(owner, self));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
         }
 
         @Test
@@ -630,6 +1114,10 @@ class PartitionBackfillTest {
         /// response, so the response cannot tell them apart and both used to route into the cold-start
         /// contest. A caught-up replica then lost the lowest-NodeId tie-break to the owner and returned
         /// to SYNCING every redrive interval — observed as 336 declines over 28 minutes.
+        ///
+        /// #1730 phase 2 changed what proves "at the owner's tail": the empty response is only the cue. The replica then
+        /// fetches the owner's last records and compares them with its own before it is CAUGHT_UP, and is promoted at
+        /// the OWNER's head. The fixture's owner therefore serves its tail window; the contest is still never entered.
         @Test
         void backfill_selfAtOwnerTail_emptyResponse_reachesCaughtUp_withoutPromotionContest() {
             registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
@@ -637,7 +1125,7 @@ class PartitionBackfillTest {
             var clock = new AtomicLong(BOUND.millis() + 1L); // bound elapsed — contest would be reachable
             var backfill = partitionBackfill(registry,
                                              recovery,
-                                             fixedSource(List.of()), // nothing at or beyond self's tail
+                                             ownerServing(eventsFrom(0, 2)), // the owner serves its tail window when asked (#1730 phase 2)
                                              ownerProbedAt(1L),      // owner's true tail is 1 — self matches
                                              selfWatermarkOf(1L),
                                              NON_OWNER,
@@ -698,7 +1186,7 @@ class PartitionBackfillTest {
             for (var replica : List.of(secondReplica, thirdReplica)) {
                 var backfill = partitionBackfill(registry,
                                                  recovery,
-                                                 fixedSource(List.of()), // nothing at or beyond this replica's tail
+                                                 ownerServing(eventsFrom(0, 2)), // the owner serves its tail window when asked (#1730 phase 2)
                                                  ownerProbedAt(1L),      // owner's true tail
                                                  selfWatermarkOf(1L),    // this replica already holds it
                                                  replica,
@@ -1002,7 +1490,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1026,8 +1514,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -1038,7 +1528,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -1293,7 +1783,7 @@ class PartitionBackfillTest {
             // the production receive handler does WITHOUT updating self's own registry descriptor. Self's
             // registry confirmedOffset therefore stays 15 — the quiesce invariant — across every tick.
             for (var tick = 0; tick < 10; tick++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("live-" + tick).getBytes(), 2000L + tick).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("live-" + tick).getBytes(), 2000L + tick).unwrap();
                 assertThat(backfill.redriveCandidates())
                         .as("live-replicating non-owner must stay quiesced on tick %d (no per-tick owner probe)", tick)
                         .isEmpty();
@@ -1302,7 +1792,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1346,8 +1836,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -1358,7 +1850,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -1539,7 +2031,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1678,6 +2170,448 @@ class PartitionBackfillTest {
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
         }
 
+        /// #2077: the owner path's twin. The blind survivor is unreachable and absent from the live members, so there is
+        /// no possibly-ahead peer to wait for: the owner promotes at once, not after `sourceWaitBound`. The live-member
+        /// arm is the arm above.
+        @Test
+        void backfill_freshOwnerEmptyRing_blindSurvivorUnreachableAndNotLive_promotesWithoutWaitingForTheBound() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            ReplicaWatermarkProbe unreachable = (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var live = MEMBERS.stream().filter(member -> !member.equals(SURVIVOR)).toList();
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             unreachable,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> live).withCommittedIsr((_, _) -> List.of(OWNER));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// The owner path's twin of the tail-loss guard: the blind survivor is dead in the live view and unreachable, and the owner
+        /// is NOT in the committed ISR, so it waits for the bound as before instead of promoting at once.
+        @Test
+        void backfill_freshOwnerNotInCommittedIsr_blindSurvivorUnreachableAndNotLive_stillWaitsForTheBound() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            ReplicaWatermarkProbe unreachable = (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var live = MEMBERS.stream().filter(member -> !member.equals(SURVIVOR)).toList();
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             unreachable,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> live).withCommittedIsr((_, _) -> List.of(SURVIVOR));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// #1431: a blind survivor that ANSWERS with a page cut before its first event (the backstop cause) is not an
+        /// unreachable one: the bounded escape, which promotes at the LOCAL watermark below it, must never fire. Red
+        /// under "any probe failure is unreachable": past the bound the owner self-promotes CAUGHT_UP@-1.
+        @Test
+        void backfill_freshOwner_blindSurvivorEventExceedsReadCap_neverEscapesAtTheLocalWatermark() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            ReplicaWatermarkProbe oversized = (_, _, _) -> new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(0L).promise();
+            var clock = new AtomicLong(BOUND.millis() + 1);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             oversized,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).as("first attempt").isTrue();
+            clock.set(3 * BOUND.millis());
+            var outcome = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(outcome.isFailure()).as("past the bound, still refused: %s", outcome).isTrue();
+            outcome.onFailure(cause -> assertThat(cause).isInstanceOf(org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap.class));
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// #1937 item 2: the backfill path's refusal for a peer's oversized event is reported like the activation gate's — a
+        /// STREAM_EVENT_EXCEEDS_READ_CAP block raised once per transition, not a WARN on every redrive. Red when the refusal only
+        /// logs: no block reaches the alarm.
+        @Test
+        void backfill_freshOwner_blindSurvivorEventExceedsReadCap_raisesTheBlockOncePerTransition() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var oversizedNow = new java.util.concurrent.atomic.AtomicBoolean(true);
+            ReplicaWatermarkProbe probe = (_, _, _) -> oversizedNow.get()
+                                                       ? new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L).promise()
+                                                       : Promise.success(-1L);
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var clock = new AtomicLong(0);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             probe,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            backfill.blockAlarm(block -> {
+                raised.add(block);
+                return org.pragmatica.lang.Unit.unit();
+            });
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("three redrives of one condition raise one block").singleElement()
+                              .isInstanceOfSatisfying(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock.PeerEventExceedsReadCap.class,
+                                                      block -> {
+                                                          assertThat(block.peer()).isEqualTo(SURVIVOR);
+                                                          assertThat(block.offset()).isEqualTo(7L);
+                                                      });
+
+            oversizedNow.set(false);
+            backfill.backfill(STREAM, PARTITION).await();
+            oversizedNow.set(true);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("the condition ended and came back: a second transition, a second block").hasSize(2);
+        }
+
+        /// #1937 F4: the oversized condition can end by a CATCH-UP (the operator raised the cap, so the peer now answers with a
+        /// tail ahead of self), not only by an all-clear. The report must be forgotten on that path too, or the same peer and offset
+        /// recurring later is silent. Red when the entry is cleared only on the all-clear path: one raise where two are expected.
+        /// Each end also tells the alarm, so the operator sees the recovery.
+        @Test
+        void backfill_freshOwner_oversizedEndedByACatchup_raisesAgainWhenItRecurs_andReportsEachEnd() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L).promise());
+            ReplicaWatermarkProbe probe = (_, _, _) -> peerAnswer.get();
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             (_, _) -> org.pragmatica.lang.utils.Causes.cause("catch-up refused").promise(),
+                                             probe,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0)::get,
+                                             () -> MEMBERS);
+
+            backfill.blockAlarm(new org.pragmatica.aether.stream.OwnerActivation.BlockAlarm() {
+                @Override
+                public org.pragmatica.lang.Unit raise(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock block) {
+                    raised.add(block);
+                    return org.pragmatica.lang.Unit.unit();
+                }
+
+                @Override
+                public org.pragmatica.lang.Unit resolved(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock block) {
+                    resolved.add(block);
+                    return org.pragmatica.lang.Unit.unit();
+                }
+            });
+            backfill.backfill(STREAM, PARTITION).await();
+            peerAnswer.set(Promise.success(50L));
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("ending by a catch-up reports the end").hasSize(1);
+
+            peerAnswer.set(new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L).promise());
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("the same peer and offset recurring after a catch-up is a new transition").hasSize(2);
+        }
+
+        private static final org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap OVERSIZED_AT_7 = new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L);
+
+        private org.pragmatica.aether.stream.OwnerActivation.BlockAlarm recordingAlarm(java.util.List<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock> raised,
+                                                                                        java.util.List<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock> resolved) {
+            return new org.pragmatica.aether.stream.OwnerActivation.BlockAlarm() {
+                @Override
+                public org.pragmatica.lang.Unit raise(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock block) {
+                    raised.add(block);
+                    return org.pragmatica.lang.Unit.unit();
+                }
+
+                @Override
+                public org.pragmatica.lang.Unit resolved(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock block) {
+                    resolved.add(block);
+                    return org.pragmatica.lang.Unit.unit();
+                }
+            };
+        }
+
+        /// The common arrangement of the end-path pins below: self owns a partition with one blind survivor that answers the probe
+        /// as `peerAnswer` says; the catch-up transport refuses, so only the decision under test matters.
+        private PartitionBackfill oversizedFixture(java.util.concurrent.atomic.AtomicReference<Promise<Long>> peerAnswer,
+                                                   java.util.function.Supplier<List<NodeId>> members,
+                                                   java.util.List<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock> raised,
+                                                   java.util.List<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock> resolved) {
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             (_, _) -> org.pragmatica.lang.utils.Causes.cause("catch-up refused").promise(),
+                                             (_, _, _) -> peerAnswer.get(),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0)::get,
+                                             members);
+
+            backfill.blockAlarm(recordingAlarm(raised, resolved));
+
+            return backfill;
+        }
+
+        /// #1937 F4 end path: self stops being the partition's owner (the member view moved). The report ends, the alarm is told, and the
+        /// same peer and offset after self is the owner again raises anew. Red when the not-owner branch of `runBackfill` does not clear.
+        @Test
+        void backfill_freshOwner_oversizedEndedBySelfNoLongerOwner_reportsTheEnd_andRaisesAgainOnRecurrence() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(OVERSIZED_AT_7.promise());
+            var members = new java.util.concurrent.atomic.AtomicReference<List<NodeId>>(MEMBERS);
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = oversizedFixture(peerAnswer, members::get, raised, resolved);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            assertThat(raised).hasSize(1);
+            members.set(List.of(SURVIVOR));
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("no longer the owner ends the report").hasSize(1);
+
+            members.set(MEMBERS);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("owner again, oversized again: a new transition").hasSize(2);
+        }
+
+        /// #1937 F4 end path: a survivor now known to be AHEAD (the promoted owner catches up from it through `aheadSurvivor`, not the
+        /// probe). Red when the survivor branch of `promoteOwner` does not clear.
+        @Test
+        void backfill_freshOwner_oversizedEndedByAKnownAheadSurvivor_reportsTheEnd_andRaisesAgainOnRecurrence() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(OVERSIZED_AT_7.promise());
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = oversizedFixture(peerAnswer, () -> MEMBERS, raised, resolved);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            assertThat(raised).hasSize(1);
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, 10L);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("a known ahead survivor ends the report").hasSize(1);
+
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, -1L);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("blind and oversized again: a new transition").hasSize(2);
+        }
+
+        /// #1937 F4 end path: the survivor's offset is now KNOWN and not ahead, so no blind peer is left to probe and the owner
+        /// self-promotes. Red when the blind-empty branch of `probeThenPromoteOwner` does not clear.
+        @Test
+        void backfill_freshOwner_oversizedEndedByNoBlindPeerLeft_reportsTheEnd_andRaisesAgainOnRecurrence() {
+            seedLocal(6);
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(OVERSIZED_AT_7.promise());
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = oversizedFixture(peerAnswer, () -> MEMBERS, raised, resolved);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            assertThat(raised).hasSize(1);
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, 3L);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("no blind peer left ends the report").hasSize(1);
+
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, -1L);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("blind and oversized again: a new transition").hasSize(2);
+        }
+
+        /// #1937 F4 end path: the partition is quarantined (the verifier's probeQ1). Red when the quarantine branch of `runBackfill`
+        /// does not clear.
+        @Test
+        void backfill_freshOwner_oversizedThenQuarantined_resolvesOnce_andARecurrenceAfterReleaseRaisesAgain() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var quarantined = new java.util.concurrent.atomic.AtomicBoolean(false);
+            QuarantineView view = new QuarantineView() {
+                @Override
+                public org.pragmatica.lang.Option<Long> quarantinedAt(String stream, int partition) {
+                    return quarantined.get()
+                           ? org.pragmatica.lang.Option.some(5L)
+                           : org.pragmatica.lang.Option.none();
+                }
+
+                @Override
+                public <T> org.pragmatica.lang.Option<T> unlessQuarantined(String stream, int partition, java.util.function.Supplier<T> promotion) {
+                    return quarantined.get()
+                           ? org.pragmatica.lang.Option.none()
+                           : org.pragmatica.lang.Option.some(promotion.get());
+                }
+            };
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                               recovery,
+                                                               failIfCatchup(),
+                                                               ReplicationTransport.NOOP,
+                                                               (_, _, _) -> OVERSIZED_AT_7.promise(),
+                                                               localHeadWatermark(),
+                                                               OWNER,
+                                                               BOUND,
+                                                               () -> MEMBERS,
+                                                               CommittedStreamOwnerSource.none(),
+                                                               ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                                               view,
+                                                               org.pragmatica.lang.Option.none());
+
+            backfill.blockAlarm(recordingAlarm(raised, resolved));
+            backfill.backfill(STREAM, PARTITION).await();
+            assertThat(raised).hasSize(1);
+            quarantined.set(true);
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("entering quarantine ends the oversized report once").hasSize(1);
+
+            quarantined.set(false);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("oversized again after the quarantine lifts: a new transition").hasSize(2);
+        }
+
+        /// A backfill that never reported an oversized peer tells the alarm nothing when it settles: a resolved with no prior raise
+        /// would publish a recovery for a condition nobody saw. Red when `clearOversized` resolves unconditionally.
+        @Test
+        void backfill_freshOwner_noOversizedEverReported_resolvesNothing() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(Promise.success(-1L));
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = oversizedFixture(peerAnswer, () -> MEMBERS, raised, resolved);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).isEmpty();
+            assertThat(resolved).isEmpty();
+        }
+
+        /// #1937 F6 / #1638: flight 1 times out with its probe pending; flight 2 finds no oversized peer and settles the partition; flight
+        /// 1's probe then answers oversized. A run whose flight is no longer current raises nothing (the verifier's probeS1). Red when
+        /// `oversizedPeer` ignores `current`.
+        @Test
+        void backfill_staleFlightLateOversizedAnswer_raisesNothingAfterTheCurrentFlightFoundNone() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+            var first = Promise.<Long>promise();
+            ReplicaWatermarkProbe probe = (_, _, _) -> calls.getAndIncrement() == 0
+                                                       ? first
+                                                       : Promise.success(-1L);
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                               recovery,
+                                                               failIfCatchup(),
+                                                               ReplicationTransport.NOOP,
+                                                               probe,
+                                                               localHeadWatermark(),
+                                                               OWNER,
+                                                               BOUND,
+                                                               () -> MEMBERS,
+                                                               CommittedStreamOwnerSource.none(),
+                                                               ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                                               QuarantineView.NONE,
+                                                               org.pragmatica.lang.Option.some(TimeSpan.timeSpan(300).millis()));
+
+            backfill.blockAlarm(recordingAlarm(raised, resolved));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure()).as("flight 1 timed out").isTrue();
+            backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+            first.resolve(OVERSIZED_AT_7.result());
+            Promise.<Long>promise(TimeSpan.timeSpan(300).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(raised).as("a superseded run must not raise").isEmpty();
+            assertThat(resolved).isEmpty();
+        }
+
+        /// The same rule on the clearing side: the current flight reported an oversized peer; a timed-out flight's late NON-oversized
+        /// answer must not forget that report or tell the alarm it ended. Red when `clearOversized` ignores `current`.
+        @Test
+        void backfill_staleFlightLateCleanAnswer_doesNotEndTheCurrentFlightsReport() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+            var first = Promise.<Long>promise();
+            ReplicaWatermarkProbe probe = (_, _, _) -> calls.getAndIncrement() == 0
+                                                       ? first
+                                                       : OVERSIZED_AT_7.promise();
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                               recovery,
+                                                               (_, _) -> org.pragmatica.lang.utils.Causes.cause("catch-up refused").promise(),
+                                                               ReplicationTransport.NOOP,
+                                                               probe,
+                                                               localHeadWatermark(),
+                                                               OWNER,
+                                                               BOUND,
+                                                               () -> MEMBERS,
+                                                               CommittedStreamOwnerSource.none(),
+                                                               ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                                               QuarantineView.NONE,
+                                                               org.pragmatica.lang.Option.some(TimeSpan.timeSpan(300).millis()));
+
+            backfill.blockAlarm(recordingAlarm(raised, resolved));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure()).as("flight 1 timed out").isTrue();
+            backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+            assertThat(raised).as("control: the current flight reported the peer").hasSize(1);
+            first.resolve(org.pragmatica.lang.Result.success(-1L));
+            Promise.<Long>promise(TimeSpan.timeSpan(300).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(resolved).as("a superseded run must not end the current flight's report").isEmpty();
+            backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+            assertThat(raised).as("the report stood, so the redrive stays silent").hasSize(1);
+        }
+
         @Test
         void backfill_ownerWithKnownSurvivorOffset_noProbe_localRegistryHitPathUntouched() {
             // NEGATIVE: when the local registry DOES carry the survivor's offset (not blind), aheadSurvivor is
@@ -1705,9 +2639,124 @@ class PartitionBackfillTest {
             assertThat(self.confirmedOffset()).isEqualTo(5L); // self-promoted at its own tail
         }
 
+        /// F1a (cloud run 1 `Concurrent_deploy`): both co-replicas HOLD the brand-new partition but are paced by
+        /// `reshuffle_concurrency`, so they answer the owner's probe with the typed "held, not materialized,
+        /// durable watermark -1" reply. That is a REACHABLE answer, so the owner promotes on the FIRST attempt:
+        /// with the clock at 0, inside the source wait, an "unreachable" reading fails the backfill and holds the
+        /// promotion for the full bound.
+        @Test
+        void backfill_freshOwner_bothPeersHeldNotMaterialized_selfPromotesOnTheFirstAttempt() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            otherMembers().forEach(peer -> registry.registerReplica(STREAM, PARTITION, peer));
+
+            var probed = new AtomicInteger();
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             probeThrough(pacedHolder(-1L), probed),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(probed.get()).as("both blind peers probed").isEqualTo(2);
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(OWNER).confirmedOffset()).isEqualTo(-1L);
+        }
+
+        /// The other side of the same line: a peer that answers `PARTITION_NOT_LOCAL` is a genuine non-holder,
+        /// no information, and keeps blocking the owner's promotion inside the wait exactly as before.
+        @Test
+        void backfill_freshOwner_peerNotLocal_staysBlockedWithinTheWait() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            otherMembers().forEach(peer -> registry.registerReplica(STREAM, PARTITION, peer));
+
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             probeThrough(nonHolder(), new AtomicInteger()),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// SAFETY: a paced co-replica reports a durable watermark AHEAD of the fresh owner. The owner
+        /// must try to catch up from it and, while that peer cannot serve (still paced), stay SYNCING -- inside the
+        /// source wait AND long after it. Promoting at its local -1 would drop offsets 0..5 the peer durably holds.
+        @Test
+        void freshOwner_pacedPeerAhead_neverPromotesPastItsDurableWatermark() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            otherMembers().forEach(peer -> registry.registerReplica(STREAM, PARTITION, peer));
+
+            var clock = new AtomicLong(0L);
+            var catchups = new AtomicInteger();
+            CatchupTransport pacedCatchup = (_, _) -> {
+                catchups.incrementAndGet();
+                return new StreamForwardError.ReadForwardFailed(new StreamError.PartitionHeldNotMaterialized(STREAM,
+                                                                                                             PARTITION,
+                                                                                                             5L).message()).promise();
+            };
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             pacedCatchup,
+                                             probeThrough(pacedHolder(5L), new AtomicInteger()),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+            clock.set(10 * BOUND.millis());
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+            assertThat(catchups.get()).as("the owner tried to catch up from the paced peer each time").isEqualTo(2);
+        }
+
+        private static List<NodeId> otherMembers() {
+            return MEMBERS.stream().filter(member -> !member.equals(OWNER)).toList();
+        }
+
+        private static ReplicaWatermarkProbe probeThrough(OwnerPeerReads.PageRead read, AtomicInteger probed) {
+            return (target, stream, partition) -> countedProbe(read, probed, target, stream, partition);
+        }
+
+        private static Promise<Long> countedProbe(OwnerPeerReads.PageRead read,
+                                                  AtomicInteger probed,
+                                                  NodeId target,
+                                                  String stream,
+                                                  int partition) {
+            probed.incrementAndGet();
+
+            return OwnerPeerReads.replicaWatermark(read, target, stream, partition, 16);
+        }
+
+        private static OwnerPeerReads.PageRead pacedHolder(long watermark) {
+            return (_, stream, partition, _, _) -> refusal(new StreamError.PartitionHeldNotMaterialized(stream,
+                                                                                                        partition,
+                                                                                                        watermark));
+        }
+
+        private static OwnerPeerReads.PageRead nonHolder() {
+            return (_, _, _, _, _) -> refusal(StreamError.General.PARTITION_NOT_LOCAL);
+        }
+
+        /// A remote refusal travels as its message only.
+        private static Promise<StreamForwardClient.ReadForwardResult> refusal(Cause cause) {
+            return new StreamForwardError.ReadForwardFailed(cause.message()).promise();
+        }
+
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1867,7 +2916,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -1896,8 +2945,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -1908,7 +2959,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -2008,8 +3059,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the reconciled HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -2020,7 +3073,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -2177,8 +3230,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -2189,7 +3244,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -2333,7 +3388,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -2375,9 +3430,9 @@ class PartitionBackfillTest {
 
     /// #567 — the append floor for a PEER-source catch-up pull.
     ///
-    /// [StreamPartitionRecovery#appendRecoveredEvent] assigns SEQUENTIAL offsets at the ring tail, so a
-    /// `fromOffset` below the local head does not overwrite — it re-appends the overlap as brand-new
-    /// offsets, duplicating history. The only authority on "what have I already landed" is the local ring,
+    /// Before #1505 the apply assigned SEQUENTIAL offsets at the ring tail, so a `fromOffset` below the
+    /// local head did not overwrite — it re-appended the overlap as brand-new offsets, duplicating history.
+    /// (The apply now verifies an overlap at its own offsets; the floor still keeps the pull from re-reading it.) The only authority on "what have I already landed" is the local ring,
     /// which is precisely what [SelfWatermark] exists to report and what its own contract warns about:
     /// the registry self-descriptor `confirmedOffset` is NOT a substitute, because after a failover /
     /// restart it reads `-1` while the ring holds real recovered events.
@@ -2483,7 +3538,7 @@ class PartitionBackfillTest {
 
         private void seedLocal(int count) {
             for (var i = 0; i < count; i++) {
-                recovery.appendRecoveredEvent(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
+                manager.appendRecovered(STREAM, PARTITION, ("event-" + i).getBytes(), 1000L + i).unwrap();
             }
         }
 
@@ -2517,6 +3572,14 @@ class PartitionBackfillTest {
                        .filter(d -> d.nodeId().equals(nodeId))
                        .findFirst()
                        .orElseThrow();
+    }
+
+    /// An owner that answers each request with the events it holds from the requested offset up, so the empty answer
+    /// to a request past its head and the answer to a request for its tail window are both honest.
+    private CatchupTransport ownerServing(List<EventData> held) {
+        return (target, request) -> fixedSource(held.stream()
+                                                    .filter(event -> event.offset() >= request.fromOffset())
+                                                    .toList()).requestCatchup(target, request);
     }
 
     private CatchupTransport fixedSource(List<EventData> events) {

@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource.CommittedOwner;
 import org.pragmatica.aether.dht.EntityPartitionArc;
@@ -21,6 +23,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationDeclaration;
+import org.pragmatica.aether.slice.ReplicationFactors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,10 +42,10 @@ import static org.pragmatica.lang.Result.all;
 ///
 /// ## What it builds, and why the context is mandatory (#345 I1)
 /// Until I1 this factory ignored its config and unconditionally returned the NO-ARG
-/// [InMemoryDurableEntity] — a bare map with no fence and no owner routing — so a five-node cluster gave
-/// every node its own private copy of every key. It now builds the fenced
-/// [PartitionFencedDurableEntity] from node-wide SPI extensions registered by
-/// `AetherNode.registerEntityExtensionsOnSpi`, following the `StreamAccessFactory` template.
+/// `InMemoryDurableEntity` — a bare map with no fence and no owner routing, now a test-only fixture in
+/// this module's test sources (#1270) — so a five-node cluster gave every node its own private copy of
+/// every key. It now builds the fenced [PartitionFencedDurableEntity] from node-wide SPI extensions
+/// registered by `AetherNode.registerEntityExtensionsOnSpi`, following the `StreamAccessFactory` template.
 ///
 /// The context-free [#provision(DurableEntityConfig)] overload cannot reach those extensions, so it
 /// REFUSES rather than silently rebuilding the unfenced entity — the #345 I1 owner ruling on an absent
@@ -137,6 +142,51 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
     private static Result<DurableEntity> fencedEntity(DurableEntityConfig config,
                                                       ProvisioningContext context,
                                                       FenceCollaborators fence) {
+        return resolveReplication(config, context).flatMap(factors -> materializedEntity(config, context, fence, factors));
+    }
+
+    /// #1564: the keyspace's declared factors resolved against the committed cluster defaults and desired core
+    /// count ([ReplicationContext]), the single path from an entity declaration to its log's factors. The
+    /// declaration's warnings are logged here, at activation; the deploy path reports them to the operator.
+    private static Result<ReplicationFactors> resolveReplication(DurableEntityConfig config,
+                                                                 ProvisioningContext context) {
+        return context.extension(ReplicationContext.Source.class)
+                      .mapError(_ -> new EntityProvisioningError.ReplicationContextUnavailable(config.keyspace()))
+                      .flatMap(ReplicationContext.Source::current)
+                      .flatMap(replication -> replication.resolve(config.replication()))
+                      .mapError(EntityProvisioningError.ReplicationRefused::new)
+                      .onSuccess(resolved -> raiseWarnings(config, resolved, context))
+                      .map(ReplicationDeclaration.Resolved::factors);
+    }
+
+    /// #1564 / #1617: raised as `replication-policy-warning` operator warnings through the node's sink, when the
+    /// node supplies one; the WARN log is written either way.
+    private static void raiseWarnings(DurableEntityConfig config,
+                                      ReplicationDeclaration.Resolved resolved,
+                                      ProvisioningContext context) {
+        var resource = "entity keyspace '" + config.keyspace() + "'";
+        var sink = context.extension(OperatorWarningSink.class).or(OperatorWarningSink.logOnly());
+
+        resolved.warnings()
+                .forEach(warning -> OperatorWarnings.raise(LOG,
+                                                           sink,
+                                                           warning.loud()
+                                                           ? OperatorWarningCode.REPLICATION_FACTOR_BELOW_THREE
+                                                           : OperatorWarningCode.REPLICATION_POLICY_WARNING,
+                                                           resource,
+                                                           "{}durable entity replication warning [{}]: {}",
+                                                           warning.loud()
+                                                           ? "LOUD: "
+                                                           : "",
+                                                           warning.code(),
+                                                           warning.message(resource,
+                                                                           resolved.factors())));
+    }
+
+    private static Result<DurableEntity> materializedEntity(DurableEntityConfig config,
+                                                            ProvisioningContext context,
+                                                            FenceCollaborators fence,
+                                                            ReplicationFactors factors) {
         // Declare the keyspace BEFORE handing back the entity. Synchronous and IO-free (see
         // EntityKeyspaceRegistrar): it records intent, and the node's level-triggered driver commits and
         // re-asserts it. Until the leader mints ownership records from it, every write on this entity
@@ -146,8 +196,7 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
         return fence.substrate()
                     .ensureLog(config.keyspace(),
                                config.partitionCount(),
-                               config.replicationFactor(),
-                               config.minSyncReplicas())
+                               factors)
                     .mapError(cause -> new EntityProvisioningError.LogUnavailable(config.keyspace(),
                                                                                   cause))
                     .map(_ -> buildEntity(config, context, fence));
@@ -195,7 +244,8 @@ public final class DurableEntityFactory implements ResourceFactory<DurableEntity
                                       .onSuccess(driver -> driver.register(config.keyspace(),
                                                                            config.partitionCount(),
                                                                            fenced.fold(),
-                                                                           fence.substrate()));
+                                                                           fence.substrate(),
+                                                                           fenced::isPartitionOwned));
         // Timers (#345 I4) are OPTIONAL on the same terms as checkpointing, and for the same reason the
         // shape of a refusal has to match the size of the loss: an absent driver costs TIMELINESS, not
         // safety. Every scheduled timer is still durable, fenced and replicated — it is in the log — so a

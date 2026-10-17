@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
@@ -18,6 +17,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -76,7 +76,7 @@ class EntityFoldTest {
                        new EntityLogRecord(EntityLogRecord.Op.TIMER_SCHEDULE, "poison", MALFORMED_TIMER_PAYLOAD));
             fold.apply(PARTITION, 2, EntityLogRecord.upsert("b", bytes("2")));
 
-            fold.checkpointCandidate(PARTITION)
+            fold.checkpointCandidate(PARTITION, -1L)
                 .onPresent(candidate -> assertThat(candidate.throughOffset())
                         .as("the claim must stop BELOW the unapplied record — a checkpoint past it would let"
                             + " retention reclaim the only replayable copy")
@@ -104,6 +104,33 @@ class EntityFoldTest {
                       .await()
                       .onSuccess(_ -> fail("a fold that cannot apply a committed record must refuse,"
                                            + " not serve state missing it"));
+        }
+
+        /// #701 under #1241's per-key guard: an append-path success for the SAME key after an unapplicable
+        /// record must not let catch-up treat the unapplied record as superseded. The per-key guard's premise
+        /// — a key holding a newer offset got it after the older one was applied — is false exactly when
+        /// the older apply FAILED, so catch-up must replay the record and refuse, and the watermark must hold
+        /// below it. Found by the adversarial review of PR #1272, where catch-up went through the guard.
+        @Test
+        void caughtUp_refusesLoudly_whenASameKeySuccessorFollowsAnUnapplicableRecord() {
+            var substrate = new FakeSubstrate();
+            var fold = readyFold(substrate);
+            var poison = new EntityLogRecord(EntityLogRecord.Op.TIMER_SCHEDULE, "k", MALFORMED_TIMER_PAYLOAD);
+            var successor = EntityLogRecord.upsert("k", bytes("2"));
+
+            substrate.append(poison);
+            fold.apply(PARTITION, 0, poison);
+            substrate.append(successor);
+            fold.apply(PARTITION, 1, successor);
+
+            fold.caughtUp(PARTITION)
+                .await()
+                .onSuccess(_ -> fail("catch-up must replay the unapplied record and refuse (#701),"
+                                     + " not account it as superseded"));
+
+            assertThat(fold.checkpointableThrough(PARTITION))
+                    .as("the watermark must hold below the unapplied record")
+                    .isEqualTo(-1L);
         }
 
         /// #701 item 2's liveness sibling, and the half of it a test can pin deterministically. A
@@ -221,6 +248,80 @@ class EntityFoldTest {
 
             assertThat(text(fold, "seeded")).isEqualTo("fromCheckpoint");
             assertThat(text(fold, "tail")).isEqualTo("fromLog");
+        }
+    }
+
+    /// #1533 — a checkpoint POINTER is cluster state and comes back with a KV backup restore; the log it
+    /// points into is this node's and may not have survived the cold restart. The pointer is validated where
+    /// it is used.
+    @Nested
+    class RestoredCheckpointPointer {
+        /// The log survived: the pointer is inside it, so it is used — no skip, no refusal.
+        @Test
+        void ready_usesTheCheckpoint_whenTheLogSurvivedTheRestart() {
+            var substrate = new FakeSubstrate();
+
+            for (int i = 0; i < 10; i++) {
+                substrate.append(EntityLogRecord.upsert("log-" + i, bytes("v" + i)));
+            }
+            substrate.checkpoint(4, EntityFoldSnapshot.encode(Map.of("only-in-checkpoint", bytes("seeded")), Map.of()));
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            assertThat(text(fold, "only-in-checkpoint")).as("seeded from the checkpoint, not skipped")
+                                                        .isEqualTo("seeded");
+            assertThat(text(fold, "log-9")).isEqualTo("v9");
+        }
+
+        /// The log restarted at 0 while the restored pointer claims 500: the pointer is ignored and the
+        /// partition folds from its log — neither refusing nor seeding state the log never held.
+        @Test
+        void ready_ignoresACheckpointBeyondTheLogHead_whenTheLogRestartedAtZero() {
+            var substrate = new FakeSubstrate();
+
+            substrate.append(EntityLogRecord.upsert("fresh-0", bytes("a")));
+            substrate.append(EntityLogRecord.upsert("fresh-1", bytes("b")));
+            substrate.checkpoint(500, EntityFoldSnapshot.encode(Map.of("stale", bytes("old")), Map.of()));
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            assertThat(text(fold, "fresh-1")).isEqualTo("b");
+            assertThat(fold.get(PARTITION, "stale")
+                           .isEmpty()).as("nothing seeded from a pointer past the log")
+                                      .isTrue();
+        }
+
+        @Test
+        void ready_ignoresAnUndecodableCheckpoint_andFoldsFromTheLog() {
+            var substrate = new FakeSubstrate();
+
+            substrate.append(EntityLogRecord.upsert("k", bytes("v")));
+            substrate.checkpoint(0, bytes("not a snapshot"));
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            assertThat(text(fold, "k")).isEqualTo("v");
+        }
+
+        @Test
+        void ready_ignoresAnUnreadableCheckpoint_andFoldsFromTheLog() {
+            var substrate = new FakeSubstrate();
+
+            substrate.append(EntityLogRecord.upsert("k", bytes("from-log")));
+            substrate.checkpoint(0, EntityFoldSnapshot.encode(Map.of("k", bytes("from-checkpoint")), Map.of()));
+            substrate.failCheckpointLoads();
+
+            var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+            awaitReady(fold);
+
+            assertThat(text(fold, "k")).isEqualTo("from-log");
         }
     }
 
@@ -425,6 +526,127 @@ class EntityFoldTest {
         }
     }
 
+    /// #1241 — a delayed apply of an OLDER record must not overwrite a key a newer record has already
+    /// written. Before the fix the append path applied from an asynchronous `onSuccess`, so an
+    /// `apply(N)` could pass its watermark check, stall, and land after `N+1` had been applied for the
+    /// same key; the watermark does not move for it, so nothing ever re-applies `N+1`, and the next
+    /// checkpoint persists the regressed state. The late arrival is driven here by call order: offset 1
+    /// lands first and PARKS (0 is still outstanding), so the stale offset 0 still passes the watermark
+    /// check — exactly the state the stalled apply was in.
+    @Nested
+    class StaleApply {
+        @Test
+        void apply_keepsNewerState_whenAnOlderOffsetForTheSameKeyLandsLate() {
+            var fold = readyFold(new FakeSubstrate());
+
+            fold.apply(PARTITION, 1, EntityLogRecord.upsert("k", bytes("new")));
+            fold.apply(PARTITION, 0, EntityLogRecord.upsert("k", bytes("old")));
+
+            assertThat(text(fold, "k")).as("the older record must not win over the newer one for the same key")
+                                       .isEqualTo("new");
+            assertThat(fold.checkpointableThrough(PARTITION)).as("the superseded offset is still ACCOUNTED, or"
+                                                                 + " the watermark would hold below it forever")
+                                                              .isEqualTo(1);
+        }
+
+        @Test
+        void apply_keepsKeyDeleted_whenAnOlderUpsertLandsAfterTheTombstone() {
+            var fold = readyFold(new FakeSubstrate());
+
+            fold.apply(PARTITION, 1, EntityLogRecord.delete("k"));
+            fold.apply(PARTITION, 0, EntityLogRecord.upsert("k", bytes("resurrected")));
+
+            assertThat(fold.get(PARTITION, "k")).as("a late upsert must not resurrect a deleted key")
+                                                .isEqualTo(Option.none());
+        }
+
+        /// Records of DIFFERENT keys arriving out of order are not stale relative to each other — each
+        /// still applies. Pins that the guard is per key, not a partition-wide maximum.
+        @Test
+        void apply_appliesOlderOffset_whenTheNewerOneBelongsToADifferentKey() {
+            var fold = readyFold(new FakeSubstrate());
+
+            fold.apply(PARTITION, 1, EntityLogRecord.upsert("b", bytes("2")));
+            fold.apply(PARTITION, 0, EntityLogRecord.upsert("a", bytes("1")));
+
+            assertThat(text(fold, "a")).isEqualTo("1");
+            assertThat(text(fold, "b")).isEqualTo("2");
+        }
+
+        /// Catch-up writes no per-key offset, so once it has applied a newer record for the key, a late
+        /// append-path apply of an older, covered offset is refused by the WATERMARK half of the guard
+        /// alone. Pins that re-check: `apply` has no separate watermark fast path in front of it.
+        @Test
+        void apply_refusesACoveredOffset_whenCatchUpAppliedANewerRecordForTheKey() {
+            var substrate = new FakeSubstrate();
+            var fold = readyFold(substrate);
+            var older = EntityLogRecord.upsert("k", bytes("old"));
+
+            substrate.append(older);
+            substrate.append(EntityLogRecord.upsert("k", bytes("new")));
+
+            fold.caughtUp(PARTITION)
+                .await()
+                .onFailure(cause -> fail("catch-up must apply both records: " + cause.message()));
+
+            fold.apply(PARTITION, 0, older);
+
+            assertThat(text(fold, "k")).as("a covered offset must not overwrite the state catch-up advanced")
+                                       .isEqualTo("new");
+            assertThat(fold.checkpointableThrough(PARTITION)).isEqualTo(1);
+        }
+
+        /// Catch-up's apply-or-account skip: an offset the append path already applied and PARKED is
+        /// accounted, not re-applied. Here the append path applied a schedule (offset 1) and its cancel
+        /// (offset 2) while offset 0 was still outstanding, so both parked; the cancel landed after the
+        /// catch-up read's head, so catch-up replays only 0 and 1. Re-applying the schedule at 1 would
+        /// resurrect the timer the cancel already consumed, with nothing later in the replay to cancel it.
+        @Test
+        void caughtUp_doesNotReapplyAParkedSchedule_whoseCancelLandedPastTheReplayHead() {
+            var substrate = new FakeSubstrate();
+            var fold = readyFold(substrate);
+            var schedule = EntityLogRecord.timerSchedule("k", "tok", 1_000L, bytes("cmd"));
+
+            substrate.append(EntityLogRecord.upsert("gap", bytes("v")));
+            substrate.append(schedule);
+            fold.apply(PARTITION, 1, schedule);
+            fold.apply(PARTITION, 2, EntityLogRecord.timerCancel("k", "tok"));
+
+            fold.caughtUp(PARTITION)
+                .await()
+                .onFailure(cause -> fail("catch-up must drain offsets 0 and 1: " + cause.message()));
+
+            assertThat(fold.dueTimers(PARTITION, Long.MAX_VALUE)).as("a parked schedule re-applied by catch-up"
+                                                                    + " resurrects the cancelled timer")
+                                                                 .isEmpty();
+            assertThat(text(fold, "gap")).isEqualTo("v");
+        }
+
+        /// The guard's per-key offsets must not become a per-key leak: an entry is dropped as soon as the
+        /// watermark covers it, and an entry whose offset PARKED is swept by the next checkpoint.
+        @Test
+        void apply_retainsNoPerKeyOffset_onceTheWatermarkCoversIt() {
+            var fold = readyFold(new FakeSubstrate());
+            var keys = 1000;
+
+            for (var i = 0; i < keys; i++) {
+                fold.apply(PARTITION, i, EntityLogRecord.upsert("k" + i, bytes("v")));
+            }
+
+            assertThat(fold.trackedKeyOffsets(PARTITION)).as("in-order applies are covered at once").isZero();
+
+            fold.apply(PARTITION, keys + 1, EntityLogRecord.upsert("parked", bytes("v")));
+            fold.apply(PARTITION, keys, EntityLogRecord.upsert("gap", bytes("v")));
+
+            assertThat(fold.trackedKeyOffsets(PARTITION)).as("the parked offset was not covered when applied")
+                                                         .isEqualTo(1);
+
+            fold.checkpointCandidate(PARTITION, -1L);
+
+            assertThat(fold.trackedKeyOffsets(PARTITION)).as("the checkpoint sweeps it once covered").isZero();
+        }
+    }
+
     private static EntityFold readyFold(FakeSubstrate substrate) {
         var fold = EntityFold.entityFold(KEYSPACE, substrate);
 
@@ -469,6 +691,7 @@ class EntityFoldTest {
         private byte[] checkpointSnapshot;
         private boolean localLogComplete = true;
         private boolean holdsPartition = true;
+        private boolean checkpointLoadFails;
         // Inert by default, so every other test in this file sees the substrate unchanged. Models a
         // substrate that fails SYNCHRONOUSLY rather than returning a failed promise — the window
         // Result.lift closes in caughtUp.
@@ -488,7 +711,12 @@ class EntityFoldTest {
             records.add(record.encode());
         }
 
+        /// A checkpoint over an EMPTY log models a log reclaimed through the checkpoint: its numbering
+        /// continues after it. (A log that restarted below the checkpoint is built by appending first.)
         void checkpoint(long throughOffset, byte[] snapshot) {
+            if (records.isEmpty() && baseOffset <= throughOffset) {
+                baseOffset = throughOffset + 1;
+            }
             checkpointThrough = throughOffset;
             checkpointSnapshot = snapshot;
         }
@@ -497,8 +725,12 @@ class EntityFoldTest {
             baseOffset = offset;
         }
 
+        void failCheckpointLoads() {
+            checkpointLoadFails = true;
+        }
+
         @Override
-        public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
+        public Result<Unit> ensureLog(String keyspace, int partitionCount, org.pragmatica.aether.slice.ReplicationFactors replication) {
             return Result.unitResult();
         }
 
@@ -528,9 +760,11 @@ class EntityFoldTest {
             return Promise.success(snapshot.subList(start, Math.min(snapshot.size(), start + maxRecords)));
         }
 
+        /// Numbering-based, as production's `nextExpectedOffset - 1` is: an empty log whose records were all
+        /// reclaimed still reports the offset it reached, not `-1`.
         @Override
         public long headOffset(String keyspace, int partition) {
-            return records.isEmpty() ? -1L : baseOffset + records.size() - 1;
+            return baseOffset + records.size() - 1;
         }
 
         @Override
@@ -558,6 +792,9 @@ class EntityFoldTest {
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
             checkpointLoads.incrementAndGet();
+            if (checkpointLoadFails) {
+                return Causes.cause("checkpoint block unreadable").promise();
+            }
 
             return Promise.success(checkpointSnapshot == null
                                    ? Option.none()

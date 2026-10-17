@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.config.cluster;
 
@@ -32,6 +31,7 @@ import static org.pragmatica.aether.config.cluster.SourceProfile.sourceProfile;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 class ClusterBootstrapConfigValidatorTest {
@@ -44,7 +44,7 @@ class ClusterBootstrapConfigValidatorTest {
 
         return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("local", source), Map.of(),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig validCloudConfig() {
@@ -59,7 +59,15 @@ class ClusterBootstrapConfigValidatorTest {
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("hetzner-eu", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+    }
+
+    /// #2059: an aws source carries its credential keys under `node_config.cloud.credentials` — the scalar
+    /// `credentials` cannot be several keys. Other providers in these fixtures are expected to fail on other rules.
+    private static Option<TomlDocument> awsCredentials(CloudProviderName provider) {
+        return provider == CloudProviderName.AWS
+               ? some(new TomlDocument(Map.of("cloud.credentials", Map.of("access_key_id", "a", "secret_access_key", "s")), Map.of()))
+               : none();
     }
 
     private static ClusterBootstrapConfig cloudConfigWithFirewall(CloudProviderName provider) {
@@ -69,12 +77,12 @@ class ClusterBootstrapConfigValidatorTest {
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
-                                   Map.of(NodeRole.CORE, coreRole), rules);
+                                   Map.of(NodeRole.CORE, coreRole), rules, awsCredentials(provider));
 
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig cloudConfigWithManagement(String securityMode, String cidr) {
@@ -91,7 +99,22 @@ class ClusterBootstrapConfigValidatorTest {
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+    }
+
+    private static ClusterBootstrapConfig cloudConfigWithOverlay(Map<String, Object> appHttp) {
+        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var overlay = new TomlDocument(Map.of("app-http", appHttp));
+        var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                   some("key"), some("eu-central"), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, coreRole), List.of(), some(overlay));
+
+        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("cloud-src", source),
+                                      Map.of("prod", runtime),
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     private static ClusterBootstrapConfig cloudConfigWithPublicManagement(String securityMode) {
@@ -109,12 +132,12 @@ class ClusterBootstrapConfigValidatorTest {
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
-                                   Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of());
+                                   Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of(), awsCredentials(provider));
 
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
                                       Map.of("prod", runtime),
-                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
     @Nested
@@ -149,13 +172,60 @@ class ClusterBootstrapConfigValidatorTest {
 
         @Test
         void validate_invalidVersion_returnsError() {
-            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "not-semver").unwrap(),
-                                                defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
-            validate(config)
+            validate(configWithVersion("not-semver"))
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-02"));
+        }
+
+        // #585: CL-02 rejected valid semver pre-release/build-metadata versions, including the
+        // project's own "1.0.0-rc3"/"1.0.0-rc4" strings — an operator pasting the real Aether
+        // version into `[cluster] version` got refused at bootstrap VALIDATE.
+        @Test
+        void validate_semverPreReleaseVersion_succeeds() {
+            validate(configWithVersion("1.0.0-rc3"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+            validate(configWithVersion("1.0.0-rc4"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_semverPreReleaseWithBuildMetadata_succeeds() {
+            validate(configWithVersion("1.0.0-rc4+meta"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_semverDottedPreReleaseIdentifiers_succeeds() {
+            validate(configWithVersion("1.0.0-alpha.1"))
+                .onFailure(cause -> Assertions.fail(cause.message()));
+        }
+
+        @Test
+        void validate_semverTrailingDashNoIdentifier_returnsError() {
+            validate(configWithVersion("1.0.0-"))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-02"));
+        }
+
+        @Test
+        void validate_semverLeadingZeroInPreReleaseNumericIdentifier_returnsError() {
+            validate(configWithVersion("1.0.0-01"))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-02"));
+        }
+
+        @Test
+        void validate_semverInvalidCharacterInPreRelease_returnsError() {
+            validate(configWithVersion("1.0.0-rc_4"))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-02"));
+        }
+
+        private static ClusterBootstrapConfig configWithVersion(String version) {
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", version).unwrap(),
+                                          defaultCoreTopology(), validForgeConfig().sources(),
+                                          Map.of(), infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig(), java.util.Map.of());
         }
 
         @Test
@@ -167,7 +237,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-04").contains("odd"));
@@ -182,7 +252,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-04").contains(">= 3"));
@@ -197,10 +267,47 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-07"));
+        }
+
+        /// CL-08 second half (#296 review SF-1): node ids are `<source>-<role>-<index>`, so a source
+        /// name that dash-prefixes another would let two sources claim one node. Refused at load.
+        @Test
+        void validate_sourceNameIsDashPrefixOfAnother_returnsCl08NamingBoth() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var eu1 = sourceProfile(sourceNameOrDefault("eu-1"), SourceType.FORGE, none(), none(), none(), none(),
+                                    none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                    none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("eu", eu, "eu-1", eu1), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig(), java.util.Map.of());
+            validate(config)
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("CL-08")
+                                                              .contains("'eu' is a prefix of source 'eu-1'"));
+        }
+
+        @Test
+        void validate_distinctNonPrefixSourceNames_pass() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var eu = sourceProfile(sourceNameOrDefault("eu"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var us = sourceProfile(sourceNameOrDefault("us"), SourceType.FORGE, none(), none(), none(), none(),
+                                   none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                   none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("eu", eu, "us", us), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig(), java.util.Map.of());
+            validate(config).onFailure(cause -> assertThat(cause.message()).doesNotContain("CL-08"));
         }
 
         @Test
@@ -210,7 +317,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        defaultOperationsConfig().timeouts(), ports);
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops);
+                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-11").contains("conflicts"));
@@ -223,7 +330,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        defaultOperationsConfig().timeouts(), ports);
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops);
+                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("CL-11").contains("out of range"));
@@ -233,12 +340,12 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_autoHealDisabled_returnsPf25() {
             // Positive control for enabled=true already exists: HappyPath.validate_validForgeConfig_succeeds
             // uses defaultOperationsConfig(), which defaults autoHeal to enabled=true and must not trip PF-25.
-            var autoHeal = AutoHealSpec.autoHealSpec(false, "60s", "15s");
+            var autoHeal = AutoHealSpec.autoHealSpec(false);
             var ops = operationsConfig(autoHeal, defaultOperationsConfig().tls(),
                                        defaultOperationsConfig().timeouts(), defaultOperationsConfig().ports());
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), validForgeConfig().sources(),
-                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops);
+                                                Map.of(), infrastructureConfig(NetworkingType.MANUAL), ops, java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-25").contains("auto-heal disable"));
@@ -254,7 +361,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 topology, validForgeConfig().sources(), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("REQ-3.3.7"));
@@ -275,7 +382,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-15"));
@@ -292,7 +399,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-15"));
@@ -376,7 +483,7 @@ class ClusterBootstrapConfigValidatorTest {
                                        Map.of(NodeRole.CORE, coreRole), rules);
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
-                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
 
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
@@ -417,7 +524,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("cloud-src", source),
                                                 Map.of("prod", runtime),
-                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig());
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
 
             assertThat(warnings(config)).noneSatisfy(warning -> assertThat(warning).contains("port 22"))
                                         .noneSatisfy(warning -> assertThat(warning).contains("port 8080"));
@@ -432,6 +539,117 @@ class ClusterBootstrapConfigValidatorTest {
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-24")
                                                               .contains("unauthenticated management API"));
+        }
+
+        /// PF-34 (#909): a jwt source with no jwks_url would provision nodes that all refuse to boot.
+        @Test
+        void validate_jwtWithoutJwks_returnsPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true")))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34").contains("jwks_url"));
+        }
+
+        @Test
+        void validate_jwtWithJwks_succeeds() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true",
+                                                   "jwks_url", "https://auth.example.com/jwks.json")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// Only the jwt mode needs a jwks_url: an enabled app-http under another mode without one is not PF-34.
+        @Test
+        void validate_nonJwtModeWithoutJwks_isNotPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "api_key", "enabled", "true")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// A blank jwks_url verifies nothing either.
+        @Test
+        void validate_jwtWithBlankJwks_returnsPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true", "jwks_url", "   ")))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34"));
+        }
+
+        /// F1: the global default sets `[app-http] enabled = true`, so an overlay that only says `security_mode = "jwt"` IS an enabled server. Judged
+        /// on the raw overlay it slipped through.
+        @Test
+        void validate_jwtWithoutJwksOnTheDefaultEnabledShape_isRefused() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34").contains("jwks_url"));
+        }
+
+        @Test
+        void validate_jwtWithoutJwksOnExplicitlyDisabledAppHttp_isNotRefused() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "false")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// F3 (P3): an overlay that sets no security_mode is not a jwt server, whatever else it says.
+        @Test
+        void validate_overlayWithoutSecurityMode_isNotPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("enabled", "true")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// F2: PF-34 applies the same URL predicate config load does.
+        @Test
+        void validate_jwtWithAnUnusableJwksUrl_returnsPf34() {
+            for (var bad : List.of("   ", "/relative/jwks.json", "http://auth.example.com/jwks.json", "ftp://auth.example.com/jwks.json", "https://", "ht tp://x")) {
+                validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", bad)))
+                    .onSuccess(v -> Assertions.fail("Expected failure for '" + bad + "'"))
+                    .onFailure(cause -> assertThat(cause.message()).as(bad).contains("PF-34").contains("jwks_url"));
+            }
+        }
+
+        /// C5b: the node does not trim `enabled`, so `" true "` is a DISABLED server there; PF-34 must agree (it used to trim and refuse). The same
+        /// file loaded by the node is accepted, which is the property: bootstrap and node give the same verdict.
+        @Test
+        void validate_paddedEnabled_agreesWithTheNode() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", " true ")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+            assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \" true \"\nsecurity_mode = \"jwt\"\n").isSuccess())
+                .as("the node loads the padded-enabled file as a disabled server").isTrue();
+        }
+
+        /// C5: a padded or odd-cased security_mode is the SAME mode at PF-34 and at the node: both refuse a jwt server with no jwks_url.
+        @Test
+        void validate_paddedAndUpperCasedJwtMode_isRefusedLikeTheNode() {
+            for (var mode : List.of("  jwt ", "JWT")) {
+                validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", mode, "enabled", "true")))
+                    .onSuccess(v -> Assertions.fail("Expected failure for '" + mode + "'"))
+                    .onFailure(cause -> assertThat(cause.message()).as(mode).contains("PF-34"));
+                assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \"true\"\nsecurity_mode = \"" + mode + "\"\n").isFailure())
+                    .as("the node refuses '" + mode + "' too").isTrue();
+            }
+        }
+
+        /// N1 in PF-34: a padded URL is accepted (the node loads it trimmed).
+        @Test
+        void validate_jwtWithAPaddedJwksUrl_isNotPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", "  https://auth.example.com/jwks.json ")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// C10/A6: the exact operator-facing wording and the URL cause text.
+        @Test
+        void validate_pf34Messages_arePinned() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url is missing. Every node would refuse to start")
+                    .contains("jwks_url is required (issuer/audience optional)"));
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", "http://auth.example.com/jwks.json")))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url 'http://auth.example.com/jwks.json' must use https"));
+        }
+
+        @Test
+        void validate_jwtWithHttpsOrLoopbackHttpJwks_isNotPf34() {
+            for (var good : List.of("https://auth.example.com/jwks.json", "http://localhost:8080/jwks.json", "http://127.0.0.1/jwks.json", "http://[::1]:9000/jwks.json")) {
+                validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", good)))
+                    .onFailure(cause -> assertThat(cause.message()).as(good).doesNotContain("PF-34"));
+            }
         }
 
         @Test
@@ -453,6 +671,45 @@ class ClusterBootstrapConfigValidatorTest {
                 .onSuccess(config -> assertThat(config.cluster().name().value()).isEqualTo("production"));
         }
 
+        /// #1049 — the runtime reads `replacement_ceiling` only from a cloud source; on any other
+        /// source type the value would parse and never be read, so it is refused (PF-26).
+        @Test
+        void validate_replacementCeilingOnForgeSource_returnsPf26() {
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       List.of(), none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of(), none(),
+                                       some(timeSpan(5).minutes()));
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("local", source), Map.of(),
+                                                infrastructureConfig(NetworkingType.MANUAL),
+                                                defaultOperationsConfig(), java.util.Map.of());
+
+            validate(config)
+                .onSuccess(v -> Assertions.fail("Expected PF-26 for a ceiling no runtime path reads"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-26")
+                                                              .contains("replacement_ceiling"));
+        }
+
+        /// Control for the PF-26 case above: the same key on a cloud source is read, so it is accepted.
+        @Test
+        void validate_replacementCeilingOnCloudSource_accepted() {
+            var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+            var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+            var source = sourceProfile(sourceNameOrDefault("hetzner-eu"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                       some("key"), some("eu-central"), none(), List.of(), none(), none(), none(),
+                                       LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                       Map.of(NodeRole.CORE, coreRole), List.of(), none(),
+                                       some(timeSpan(5).minutes()));
+            var config = clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                                defaultCoreTopology(), Map.of("hetzner-eu", source),
+                                                Map.of("prod", runtime),
+                                                infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+
+            validate(config)
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-26"));
+        }
+
         @Test
         void validate_electedLbOnSsh_returnsError() {            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), "ember");
             var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
@@ -462,7 +719,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-17"));
@@ -478,7 +735,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("ssh-src", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-10"));
@@ -497,7 +754,7 @@ class ClusterBootstrapConfigValidatorTest {
                                                 defaultCoreTopology(), Map.of("cloud-src", source),
                                                 Map.of("prod", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-11"));
@@ -513,7 +770,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-18").contains("invalid port"));
@@ -529,7 +786,7 @@ class ClusterBootstrapConfigValidatorTest {
             var config = clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
                                                 defaultCoreTopology(), Map.of("local", source), Map.of(),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-18").contains("invalid protocol"));
@@ -546,10 +803,87 @@ class ClusterBootstrapConfigValidatorTest {
                                                 defaultCoreTopology(), Map.of("local", source),
                                                 Map.of("jvm-rt", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-19"));
+        }
+
+        /// #1090 review SF-2: a JVM/EMBER runtime on an SSH source used to pass validation and be
+        /// refused only at DEPLOY_RUNTIME — after every other source had already provisioned. The
+        /// deploy phase can launch only a container over SSH, so PF-22 says so at config load.
+        @Test
+        void validate_sshWithJvmRuntime_returnsError() {
+            validate(sshConfigWithRuntime(runtimeProfile("jvm-rt", RuntimeType.JVM, none(), none())))
+                .onSuccess(v -> Assertions.fail("Expected PF-22: a JVM runtime cannot be launched over SSH"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-22").contains("jvm-rt"));
+        }
+
+        @Test
+        void validate_sshWithEmberRuntime_returnsError() {
+            validate(sshConfigWithRuntime(runtimeProfile("ember-rt", RuntimeType.EMBER, none(), none())))
+                .onSuccess(v -> Assertions.fail("Expected PF-22: an EMBER runtime cannot be launched over SSH"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-22").contains("ember-rt"));
+        }
+
+        /// Control for the two above: the container runtime is what the SSH path launches.
+        @Test
+        void validate_sshWithContainerRuntime_isAccepted() {
+            var runtime = runtimeProfile("ctr", RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
+                                         none());
+            validate(sshConfigWithRuntime(runtime))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-22"));
+        }
+
+        private static ClusterBootstrapConfig sshConfigWithRuntime(RuntimeProfile runtime) {
+            var coreRole = roleSubTable(NodeRole.CORE, none(), some(List.of("h1", "h2", "h3")), none(), runtime.name());
+            var source = sourceProfile(sourceNameOrDefault("ssh-src"), SourceType.SSH, none(), none(), none(), none(),
+                                       some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
+                                       List.of(), none(), Map.of(),
+                                       Map.of(NodeRole.CORE, coreRole), List.of());
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                          defaultCoreTopology(), Map.of("ssh-src", source),
+                                          Map.of(runtime.name(), runtime),
+                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig(), java.util.Map.of());
+        }
+
+        /// #1090 review SF-3: PF-09 catches a host listed twice INSIDE one SSH source; a host listed
+        /// by two SSH sources was deployed twice, the second `docker run` replacing the first. One
+        /// host runs one node — refuse it at config load, naming both sources.
+        @Test
+        void validate_sameHostInTwoSshSources_returnsError() {
+            validate(twoSshSources(List.of("10.0.0.1", "10.0.0.2", "10.0.0.3"), List.of("10.0.0.1")))
+                .onSuccess(v -> Assertions.fail("Expected PF-27: host 10.0.0.1 is declared by both SSH sources"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-27")
+                                                               .contains("10.0.0.1")
+                                                               .contains("'dc'")
+                                                               .contains("'lab'"));
+        }
+
+        @Test
+        void validate_distinctHostsAcrossSshSources_isAccepted() {
+            validate(twoSshSources(List.of("10.0.0.1", "10.0.0.2", "10.0.0.3"), List.of("10.0.1.1")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-27"));
+        }
+
+        private static ClusterBootstrapConfig twoSshSources(List<String> dcHosts, List<String> labHosts) {
+            var runtime = runtimeProfile("ctr", RuntimeType.CONTAINER, some("ghcr.io/pragmaticalabs/aether-node:1.0.0"),
+                                         none());
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("test", "1.0.0").unwrap(),
+                                          defaultCoreTopology(),
+                                          Map.of("dc", sshSource("dc", NodeRole.CORE, dcHosts),
+                                                 "lab", sshSource("lab", NodeRole.WORKER, labHosts)),
+                                          Map.of("ctr", runtime),
+                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          defaultOperationsConfig(), java.util.Map.of());
+        }
+
+        private static SourceProfile sshSource(String name, NodeRole role, List<String> hosts) {
+            return sourceProfile(sourceNameOrDefault(name), SourceType.SSH, none(), none(), none(), none(),
+                                 some("root"), some("/key"), some(22), LoadBalancerMode.NONE,
+                                 List.of(), none(), Map.of(),
+                                 Map.of(role, roleSubTable(role, none(), some(hosts), none(), "ctr")), List.of());
         }
 
         @Test
@@ -563,7 +897,7 @@ class ClusterBootstrapConfigValidatorTest {
                                                 defaultCoreTopology(), Map.of("local", source),
                                                 Map.of("jvm-rt", runtime),
                                                 infrastructureConfig(NetworkingType.MANUAL),
-                                                defaultOperationsConfig());
+                                                defaultOperationsConfig(), java.util.Map.of());
             validate(config)
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-20"));
@@ -578,6 +912,82 @@ class ClusterBootstrapConfigValidatorTest {
             var result = warnings(validForgeConfig());
 
             assertThat(result).anyMatch(w -> w.contains("CL-13"));
+        }
+    }
+
+    /// #1019 — the consensus maximum at the BOOTSTRAP validator.
+    ///
+    /// Round 1 bounded the consensus tier at `aether cluster init` alone. The round-1 review (S2)
+    /// showed what that left: this validator ACCEPTED a hand-written config with a derived core count
+    /// of 11, and `[cluster.core] max = 15` besides — so the operator route the ticket itself calls a
+    /// working alternative ("writing the config directly … DOES provision five core nodes") had no
+    /// ceiling at all. The cap is now a property of the config, not of one command that writes configs.
+    ///
+    /// Both ends are asserted per rule rather than by "validate fails": `validateDerivedCoreCount` and
+    /// `validateCoreMax` are separate checks that this class would otherwise conflate, and a config
+    /// with an over-cap derived count also trips REQ-3.3.3 if `max` is left at the default.
+    @Nested
+    class ConsensusTierMaximum {
+
+        private static ClusterBootstrapConfig configWithCoreCount(int count) {
+            var coreRole = roleSubTable(NodeRole.CORE, some(count), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                          defaultCoreTopology(), Map.of("local", source), Map.of(),
+                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+        }
+
+        private static ClusterBootstrapConfig configWithCoreMax(int max) {
+            var coreRole = roleSubTable(NodeRole.CORE, some(5), none(), none(), "ember");
+            var source = sourceProfile(sourceNameOrDefault("local"), SourceType.FORGE, none(), none(), none(), none(),
+                                       none(), none(), none(), LoadBalancerMode.ELECTED, List.of(),
+                                       none(), Map.of(), Map.of(NodeRole.CORE, coreRole), List.of());
+
+            return clusterBootstrapConfig("1.0.0", clusterIdentity("dev-local", "1.0.0").unwrap(),
+                                          coreTopology(some(5), some(max), 1), Map.of("local", source), Map.of(),
+                                          infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+        }
+
+        private static String messageOf(ClusterBootstrapConfig config) {
+            return validate(config).fold(cause -> cause.message(), _ -> "");
+        }
+
+        @Test
+        void validate_fails_whenDerivedCoreCountExceedsTheMaximum() {
+            assertThat(validate(configWithCoreCount(11)).isFailure()).isTrue();
+            assertThat(messageOf(configWithCoreCount(11))).contains("CL-04")
+                                                          .contains("must be <= 9");
+        }
+
+        /// The boundary, both sides. Without this, a cap set one too low or one too high still passes
+        /// the test above.
+        @Test
+        void validate_succeeds_atTheMaximumAndFailsJustAbove() {
+            assertThat(validate(configWithCoreCount(9)).isSuccess()).isTrue();
+            assertThat(validate(configWithCoreCount(11)).isFailure()).isTrue();
+        }
+
+        /// The STRUCTURAL floor stays at 3 here — an existing 3-node cluster must still re-bootstrap.
+        /// This is deliberately NOT `CoreWorkerSplit`'s supported minimum of 5, and pinning it stops a
+        /// later reader "harmonising" the two.
+        @Test
+        void validate_succeeds_atTheStructuralFloorOfThree() {
+            assertThat(validate(configWithCoreCount(3)).isSuccess()).isTrue();
+        }
+
+        @Test
+        void validate_fails_whenCoreMaxExceedsTheMaximum() {
+            assertThat(validate(configWithCoreMax(15)).isFailure()).isTrue();
+            assertThat(messageOf(configWithCoreMax(15))).contains("REQ-3.3.3")
+                                                        .contains("must be <= 9");
+        }
+
+        @Test
+        void validate_succeeds_whenCoreMaxIsAtTheMaximum() {
+            assertThat(validate(configWithCoreMax(9)).isSuccess()).isTrue();
         }
     }
 }

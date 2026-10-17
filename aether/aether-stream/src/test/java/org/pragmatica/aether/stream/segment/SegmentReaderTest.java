@@ -9,14 +9,33 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
+import com.sun.management.ThreadMXBean;
+
+import java.lang.management.ManagementFactory;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
+import java.util.stream.LongStream;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.aether.stream.segment.SegmentReader.segmentReader;
 import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
@@ -24,6 +43,7 @@ import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSeg
 class SegmentReaderTest {
 
     private static final String STREAM = "test-stream";
+    private static final String SEGMENT = "streams/test-stream/0/0-1";
     private static final int PARTITION = 0;
     private static final long ONE_GB = 1024 * 1024 * 1024L;
 
@@ -175,7 +195,7 @@ class SegmentReaderTest {
                 RawEvent.rawEvent(1L, "y".getBytes(), 20L)
             ));
 
-            var result = SegmentReader.deserializeAndFilter(serialized, 0, 100);
+            var result = decoded(serialized, 0, 100);
 
             assertThat(result).hasSize(2);
         }
@@ -187,7 +207,7 @@ class SegmentReaderTest {
                 RawEvent.rawEvent(6L, "keep".getBytes(), 20L)
             ));
 
-            var result = SegmentReader.deserializeAndFilter(serialized, 6, 100);
+            var result = decoded(serialized, 6, 100);
 
             assertThat(result).hasSize(1);
             assertThat(result.getFirst().offset()).isEqualTo(6L);
@@ -201,10 +221,514 @@ class SegmentReaderTest {
                 RawEvent.rawEvent(2L, "c".getBytes(), 30L)
             ));
 
-            var result = SegmentReader.deserializeAndFilter(serialized, 0, 2);
+            var result = decoded(serialized, 0, 2);
 
             assertThat(result).hasSize(2);
         }
+    }
+
+    /// #1265: a cold read skips records below `fromOffset` by header alone — no payload allocation, no
+    /// copy — and accumulates across segments into one list. Allocation is measured, not time: the
+    /// per-thread allocated-bytes counter brackets exactly one decode.
+    @Nested
+    class AllocationAndAccumulation {
+        private static final int EVENT_COUNT = 1_000;
+        private static final int PAYLOAD_BYTES = 1_024;
+        private static final long ALLOCATION_BUDGET_BYTES = 16 * 1_024;
+        private static final int SEGMENT_COUNT = 50;
+
+        @Test
+        void deserializeAndFilter_allocatesUnderBudget_whenSkippingRecordsBelowFromOffset() {
+            var serialized = serializeEvents(oneKibEvents());
+            var lastOffset = EVENT_COUNT - 1;
+
+            // Warm-up: class loading and first-call allocations belong to no decode.
+            decoded(serialized, lastOffset, 1);
+
+            var before = allocatedBytes();
+            var result = decoded(serialized, lastOffset, 1);
+            var allocated = allocatedBytes() - before;
+
+            assertThat(result).hasSize(1);
+            assertThat(result.getFirst().offset()).isEqualTo(lastOffset);
+            assertThat(allocated).as("bytes allocated decoding one event past %d skipped records", lastOffset)
+                                 .isLessThan(ALLOCATION_BUDGET_BYTES);
+        }
+
+        @Test
+        void deserializeAndFilter_failsWithoutAllocating_whenLengthExceedsRemainingBytes() {
+            var serialized = serializeEvents(List.of(RawEvent.rawEvent(0L, "ok".getBytes(), 10L),
+                                                     RawEvent.rawEvent(1L, "cut".getBytes(), 20L)));
+            var truncated = Arrays.copyOf(serialized, serialized.length - 1);
+            var secondRecordAt = Long.BYTES + Long.BYTES + Integer.BYTES + "ok".length();
+
+            assertCorruptRecord(SegmentReader.deserializeAndFilter(SEGMENT, truncated, 0, 100),
+                                secondRecordAt,
+                                "cut".length());
+        }
+
+        @Test
+        void deserializeAndFilter_failsWithoutAllocating_whenLengthIsNegative() {
+            var serialized = serializeEvents(List.of(RawEvent.rawEvent(0L, "ok".getBytes(), 10L),
+                                                     RawEvent.rawEvent(1L, "bad".getBytes(), 20L)));
+            var secondRecordAt = Long.BYTES + Long.BYTES + Integer.BYTES + "ok".length();
+            var secondLengthAt = secondRecordAt + Long.BYTES + Long.BYTES;
+
+            ByteBuffer.wrap(serialized).order(ByteOrder.BIG_ENDIAN).putInt(secondLengthAt, -1);
+
+            assertCorruptRecord(SegmentReader.deserializeAndFilter(SEGMENT, serialized, 0, 100), secondRecordAt, -1);
+        }
+
+        @Test
+        void readEvents_returnsAllEventsInOrder_acrossFiftyOneEventSegments() {
+            for (long offset = 0; offset < SEGMENT_COUNT; offset++) {
+                var serialized = serializeEvents(List.of(RawEvent.rawEvent(offset, ("e" + offset).getBytes(), offset)));
+
+                sink.seal(sealedSegment(STREAM, PARTITION, offset, offset, 1, offset, offset, serialized)).await();
+            }
+
+            var events = reader.readEvents(STREAM, PARTITION, 0, SEGMENT_COUNT).await();
+
+            assertThat(events.isSuccess()).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(LongStream.range(0, SEGMENT_COUNT)
+                                                                                          .boxed()
+                                                                                          .toList()));
+        }
+
+        private static List<RawEvent> oneKibEvents() {
+            return LongStream.range(0, EVENT_COUNT)
+                             .mapToObj(offset -> RawEvent.rawEvent(offset, new byte[PAYLOAD_BYTES], offset))
+                             .toList();
+        }
+
+        private static long allocatedBytes() {
+            var threads = (ThreadMXBean) ManagementFactory.getThreadMXBean();
+
+            return threads.getThreadAllocatedBytes(Thread.currentThread().threadId());
+        }
+    }
+
+    /// #1392: a read across k segments must not nest a frame group per segment. With a memory tier every
+    /// `storage.get` settles synchronously, and the `flatMap`-per-segment chain then ran each continuation
+    /// inline: 7 frames per segment, ~3,600 for a 512-segment replay batch — and the sealer seals one evicted
+    /// record per segment, so that is the production shape. On CI's 1 MB x64 thread stack the entity replay
+    /// overflowed at about 480 segments. Depth is measured with `StackWalker`, which `MaxJavaStackTraceDepth`
+    /// does not cap.
+    @Nested
+    class StackDepthAcrossSegments {
+        private static final int MANY_SEGMENTS = 2_000;
+        private static final int SOME_SEGMENTS = 200;
+        private static final int FAILING_SEGMENT = 5;
+        /// Well under one segment's worth of nesting (7 frames) times any small constant, and four orders of
+        /// magnitude under the 13,993 frames the recursion grew by before the fix.
+        private static final long MAX_DEPTH_GROWTH = 50;
+        /// Every off-thread read awaits with a budget: a read that never settles must FAIL, not park the suite
+        /// (rev1394 measured 9+ minutes parked under an ignored-failure mutation with an unbounded await).
+        private static final TimeSpan READ_BUDGET = TimeSpan.timeSpan(10).seconds();
+        private static final int RECORDS_PER_SEGMENT = 3;
+        private static final int BOUNDARY_SEGMENTS = 5;
+        private static final long CROSSING_FROM = 4;
+        /// `from + max - 1` must land INSIDE a segment, not on its end: the ref range is already bounded by that
+        /// offset, so a limit on a segment end is met by the ref list alone and an un-decremented `remaining` on the
+        /// resume path reads the same records (a first draft used max 5 over 3-record segments and pinned nothing).
+        private static final int CROSSING_MAX = 4;
+        private static final int THROWING_SEGMENT = 3;
+        private static final String THROWN_MESSAGE = "metadata store exploded synchronously";
+
+        /// RED before the fix: the last segment's `get` ran 7 × 1,999 frames deeper than the first's.
+        @Test
+        void readEvents_keepsStackDepthFlat_acrossTwoThousandSynchronouslySettlingSegments() {
+            var depths = new ArrayList<Long>();
+            var probedReader = segmentReader(recordingDepthOnGet(storage, depths), index);
+
+            sealOneEventSegments(MANY_SEGMENTS);
+            var events = probedReader.readEvents(STREAM, PARTITION, 0, MANY_SEGMENTS).await();
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(offsets(MANY_SEGMENTS)));
+            assertThat(depths).as("control: every segment was fetched through the probe").hasSize(MANY_SEGMENTS);
+            assertThat(depths.getLast() - depths.getFirst()).as("stack depth at the last segment's get relative to the first's")
+                                                              .isLessThan(MAX_DEPTH_GROWTH);
+        }
+
+        /// The suspended branch: a `get` that settles on another thread parks the loop, which resumes there.
+        @Test
+        void readEvents_readsEverySegmentInOrder_whenEachGetSettlesOffThread() {
+            var offThreadReader = segmentReader(settlingOffThread(storage), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = offThreadReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(offsets(SOME_SEGMENTS)));
+        }
+
+        /// The resume path's failure branch, DETERMINISTICALLY: the held step's promise is handed to the test, which
+        /// fails it only after `readEvents` has returned — so the loop has already found it pending and suspended
+        /// on it, and the inline branch cannot have taken it. A step failed on a racing thread instead lands in
+        /// whichever branch scheduling picks: under a mutation that ignores a failed resumed step the racing shape
+        /// passed 31/31 on one run and reddened on the next (rev1394 N5, shape adopted from
+        /// `oss/internal/probes/s25-rev1394/Rev1394ProbeTest.failedStepSettledAfterTheLoopSuspended_failsTheReadOnce`).
+        @Test
+        void readEvents_failsTheReadOnce_whenAHeldStepFailsAfterTheLoopSuspendedOnIt() {
+            var failure = SegmentError.General.SEGMENT_DATA_NOT_FOUND;
+            var held = new AtomicReference<Promise<Option<byte[]>>>();
+            var settled = new AtomicInteger();
+            var heldReader = segmentReader(holdingGetAt(storage, FAILING_SEGMENT, held), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            // `withResult`, not `onResult`: an `onResult` action runs on the async executor after `await()` is already
+            // released, so the count could still read 0 (seen in CI). `withResult`'s promise resolves only after it runs.
+            var read = heldReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).withResult(_ -> settled.incrementAndGet());
+
+            assertThat(held.get()).as("control: the loop reached the held step").isNotNull();
+            assertThat(read.isResolved()).as("control: the read is suspended on the held step").isFalse();
+            held.get().fail(failure);
+            var events = read.await(READ_BUDGET);
+
+            events.onSuccess(list -> fail("a failed segment read must fail the whole read, not return " + list.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(failure));
+            assertThat(settled.get()).as("the read settles exactly once").isEqualTo(1);
+        }
+
+        /// `maxEvents` crossing a segment boundary after a resume, ending mid-segment. The suspended path carries
+        /// `remaining` forward itself; passing it unchanged over-reads the rest of the next segment, which no
+        /// `maxEvents == segments` read sees.
+        @Test
+        void readEvents_stopsAtMaxEvents_whenTheLimitFallsMidSegmentAfterAnOffThreadResume() {
+            var offThreadReader = segmentReader(settlingOffThread(storage), index);
+
+            sealSegmentsOf(RECORDS_PER_SEGMENT, BOUNDARY_SEGMENTS);
+            var events = offThreadReader.readEvents(STREAM, PARTITION, CROSSING_FROM, CROSSING_MAX).await(READ_BUDGET);
+
+            assertThat(events.isSuccess()).as(() -> "read failed: " + events).isTrue();
+            events.onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .containsExactlyElementsOf(LongStream.range(CROSSING_FROM, CROSSING_FROM + CROSSING_MAX)
+                                                                                          .boxed()
+                                                                                          .toList()));
+        }
+
+        /// M1: a step that THROWS (a ref lookup that explodes) on the inline path fails the read — it neither escapes
+        /// `readEvents` as an exception nor leaves the read unsettled.
+        @Test
+        void readEvents_failsTheRead_whenARefLookupThrowsOnTheInlinePath() {
+            var throwingReader = segmentReader(throwingRefAt(storage, THROWING_SEGMENT), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = throwingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
+
+            assertThrownRefFailed(events);
+        }
+
+        /// M1, resume path: the throw lands inside the resumed loop, whose enclosing `onResult` would otherwise swallow it.
+        @Test
+        void readEvents_failsTheRead_whenARefLookupThrowsAfterAnOffThreadResume() {
+            var throwingReader = segmentReader(throwingRefAt(settlingOffThread(storage), THROWING_SEGMENT), index);
+
+            sealOneEventSegments(SOME_SEGMENTS);
+            var events = throwingReader.readEvents(STREAM, PARTITION, 0, SOME_SEGMENTS).await(READ_BUDGET);
+
+            assertThrownRefFailed(events);
+        }
+
+        private static void assertThrownRefFailed(Result<List<RawEvent>> events) {
+            events.onSuccess(list -> fail("a throwing ref lookup must fail the read, not return " + list.size() + " events"))
+                  .onFailure(cause -> assertThat(cause.message()).as("the read's failure is the throw itself, not a timeout of a read that never settled")
+                                                                .contains(THROWN_MESSAGE));
+        }
+
+        private void sealSegmentsOf(int recordsPerSegment, int segments) {
+            for (var segment = 0; segment < segments; segment++) {
+                var start = (long) segment * recordsPerSegment;
+                var end = start + recordsPerSegment - 1;
+                var records = LongStream.rangeClosed(start, end)
+                                        .mapToObj(offset -> RawEvent.rawEvent(offset, ("e" + offset).getBytes(), offset))
+                                        .toList();
+
+                sink.seal(sealedSegment(STREAM, PARTITION, start, end, recordsPerSegment, start, end, serializeEvents(records))).await();
+            }
+        }
+
+        /// The real storage, whose `resolveRef` THROWS on its `nth` call (1-based).
+        private static StorageInstance throwingRefAt(StorageInstance delegate, int nth) {
+            var calls = new AtomicInteger();
+
+            return proxy(delegate, (method, args) -> {
+                if (method.getName().equals("resolveRef") && calls.incrementAndGet() == nth) {
+                    throw new IllegalStateException(THROWN_MESSAGE);
+                }
+
+                return Option.none();
+            });
+        }
+
+        private void sealOneEventSegments(int count) {
+            for (long offset = 0; offset < count; offset++) {
+                var serialized = serializeEvents(List.of(RawEvent.rawEvent(offset, ("e" + offset).getBytes(), offset)));
+
+                sink.seal(sealedSegment(STREAM, PARTITION, offset, offset, 1, offset, offset, serialized)).await();
+            }
+        }
+
+        private static List<Long> offsets(int count) {
+            return LongStream.range(0, count).boxed().toList();
+        }
+
+        /// The real storage, with the calling thread's stack depth recorded at every `get`.
+        private static StorageInstance recordingDepthOnGet(StorageInstance delegate, List<Long> depths) {
+            return proxy(delegate, (method, args) -> {
+                if (method.getName().equals("get")) {
+                    depths.add(StackWalker.getInstance().walk(Stream::count));
+                }
+
+                return Option.none();
+            });
+        }
+
+        /// The real storage, except that the `nth` `get` (1-based) returns a promise the TEST holds in `held`.
+        private static StorageInstance holdingGetAt(StorageInstance delegate, int nth, AtomicReference<Promise<Option<byte[]>>> held) {
+            var gets = new AtomicInteger();
+
+            return proxy(delegate, (method, args) -> {
+                if (!method.getName().equals("get") || gets.incrementAndGet() != nth) {
+                    return Option.none();
+                }
+
+                var step = Promise.<Option<byte[]>> promise();
+
+                held.set(step);
+
+                return Option.some(step);
+            });
+        }
+
+        /// The real storage, every `get` settling on a fresh virtual thread.
+        private static StorageInstance settlingOffThread(StorageInstance delegate) {
+            return proxy(delegate, (method, args) -> {
+                if (!method.getName().equals("get")) {
+                    return Option.none();
+                }
+
+                var id = (BlockId) args[0];
+
+                return Option.some(Promise.<Option<byte[]>> promise()
+                                          .async(promise -> delegate.get(id).onResult(promise::resolve)));
+            });
+        }
+
+        /// `intercept` answers a call itself or returns none to pass it to `delegate`.
+        private static StorageInstance proxy(StorageInstance delegate, BiFunction<Method, Object[], Option<Object>> intercept) {
+            return (StorageInstance) Proxy.newProxyInstance(StorageInstance.class.getClassLoader(),
+                                                            new Class<?>[]{StorageInstance.class},
+                                                            (_, method, args) -> intercept.apply(method, args)
+                                                                                          .or(() -> invoke(delegate, method, args)));
+        }
+
+        private static Object invoke(StorageInstance delegate, Method method, Object[] args) {
+            try {
+                return method.invoke(delegate, args);
+            } catch (InvocationTargetException e) {
+                throw new IllegalStateException(e.getCause());
+            } catch (IllegalAccessException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    /// A corrupt record length is a typed failure of the read — never a truncated success. Found by the
+    /// adversarial review of PR #1291: stopping the decode at the corrupt record let the read continue into
+    /// the next segment and return `[0, 3, 4]`, so offsets 1 and 2 vanished with nothing failing.
+    @Nested
+    class CorruptRecordLength {
+        @Test
+        void readEvents_failsWithCorruptRecord_whenALengthMidSegmentIsCorruptAndAHealthySegmentFollows() {
+            var first = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L),
+                                                RawEvent.rawEvent(2L, "c".getBytes(), 30L)));
+            var secondLengthAt = (Long.BYTES + Long.BYTES + Integer.BYTES + "a".length()) + Long.BYTES + Long.BYTES;
+
+            ByteBuffer.wrap(first).order(ByteOrder.BIG_ENDIAN).putInt(secondLengthAt, -1);
+
+            var second = serializeEvents(List.of(RawEvent.rawEvent(3L, "d".getBytes(), 40L),
+                                                 RawEvent.rawEvent(4L, "e".getBytes(), 50L)));
+
+            sink.seal(sealedSegment(STREAM, PARTITION, 0, 2, 3, 10L, 30L, first)).await();
+            sink.seal(sealedSegment(STREAM, PARTITION, 3, 4, 2, 40L, 50L, second)).await();
+
+            var events = reader.readEvents(STREAM, PARTITION, 0, 100).await();
+
+            events.onSuccess(list -> fail("a corrupt record length must fail the read, not return "
+                                          + list.stream().map(RawEvent::offset).toList()))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(SegmentError.CorruptRecord.FACTORY.apply("streams/test-stream/0/0-2",
+                                                                                                           secondLengthAt
+                                                                                                           - Long.BYTES
+                                                                                                           - Long.BYTES,
+                                                                                                           -1)));
+        }
+    }
+
+    /// A segment whose last record header is cut short is corrupt too — the same loss mode as a corrupt
+    /// length. Found by the round-2 review of PR #1291: the decode loop ended quietly on fewer than a
+    /// header's worth of bytes, the read continued into the next segment, and returned `[0, 1, 3, 4]`.
+    @Nested
+    class TruncatedTailHeader {
+        private static final int RECORD_BYTES = Long.BYTES + Long.BYTES + Integer.BYTES + 1;
+        private static final int KEPT_OF_LAST_RECORD = 10;
+
+        @Test
+        void readEvents_failsWithCorruptRecord_whenASegmentEndsInATruncatedHeaderAndAHealthySegmentFollows() {
+            var whole = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L),
+                                                RawEvent.rawEvent(2L, "c".getBytes(), 30L)));
+            var first = Arrays.copyOf(whole, 2 * RECORD_BYTES + KEPT_OF_LAST_RECORD);
+            var second = serializeEvents(List.of(RawEvent.rawEvent(3L, "d".getBytes(), 40L),
+                                                 RawEvent.rawEvent(4L, "e".getBytes(), 50L)));
+
+            sink.seal(sealedSegment(STREAM, PARTITION, 0, 2, 3, 10L, 30L, first)).await();
+            sink.seal(sealedSegment(STREAM, PARTITION, 3, 4, 2, 40L, 50L, second)).await();
+
+            var events = reader.readEvents(STREAM, PARTITION, 0, 100).await();
+
+            events.onSuccess(list -> fail("a truncated tail header must fail the read, not return "
+                                          + list.stream().map(RawEvent::offset).toList()))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(SegmentError.CorruptRecord.TRUNCATED_HEADER.apply("streams/test-stream/0/0-2",
+                                                                                                                    2 * RECORD_BYTES,
+                                                                                                                    KEPT_OF_LAST_RECORD)));
+        }
+
+        @Test
+        void deserializeAndFilter_failsWithCorruptRecord_whenTheSegmentEndsInsideARecordHeader() {
+            var whole = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L)));
+            var truncated = Arrays.copyOf(whole, RECORD_BYTES + KEPT_OF_LAST_RECORD);
+
+            SegmentReader.deserializeAndFilter(SEGMENT, truncated, 0, 100)
+                         .onSuccess(list -> fail("a truncated tail header must fail the decode, not return " + list))
+                         .onFailure(cause -> assertThat(cause).isEqualTo(SegmentError.CorruptRecord.TRUNCATED_HEADER.apply(SEGMENT,
+                                                                                                                           RECORD_BYTES,
+                                                                                                                           KEPT_OF_LAST_RECORD)));
+        }
+
+        /// Bytes left over because `maxEvents` was reached are the rest of a well-formed segment, not a
+        /// truncation — the decode must still succeed.
+        @Test
+        void deserializeAndFilter_succeeds_whenMaxEventsIsReachedWithWholeRecordsLeftOver() {
+            var serialized = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                     RawEvent.rawEvent(1L, "b".getBytes(), 20L)));
+
+            assertThat(decoded(serialized, 0, 1)).extracting(RawEvent::offset).containsExactly(0L);
+        }
+    }
+
+    /// Boundary sweeps over `(fromOffset, maxEvents)`, adopted from the round-3 review of PR #1291. The
+    /// `maxEvents` guard on the truncated-tail check must neither mis-report a VALID segment nor let a read
+    /// that stops on a full batch SKIP a truncated record and serve the next segment's offsets instead.
+    @Nested
+    class MaxEventsBoundary {
+        private static final int JUNK_TAIL_BYTES = 11;
+
+        /// No `(from, max)` over valid segments may report truncation: a well-formed segment ends exactly
+        /// on a record boundary, so nothing is left over once the loop has consumed it. Zero-length
+        /// payloads are included, since they are the shortest record a boundary can land on.
+        @Test
+        void readEvents_neverReportsTruncation_forAnyFromAndMaxOverValidSegments() {
+            sealValidSegments();
+
+            for (var from = 0L; from <= 4L; from++) {
+                for (var max = 1; max <= 7; max++) {
+                    assertSlice(from, max);
+                }
+            }
+        }
+
+        /// No `(from, max)` may read PAST a truncated tail into the next segment. Each read either fails
+        /// with [SegmentError.CorruptRecord] or returns a contiguous prefix that stops at the tail.
+        @Test
+        void readEvents_neverSkipsIntoTheNextSegment_forAnyFromAndMaxOverATruncatedTail() {
+            sealTruncatedTailThenHealthySegment();
+            var refusals = new AtomicInteger();
+
+            for (var from = 0L; from <= 3L; from++) {
+                for (var max = 1; max <= 7; max++) {
+                    assertStopsAtTheTail(from, max, refusals);
+                }
+            }
+
+            assertThat(refusals.get()).describedAs("non-vacuity: reads that reach the tail without filling"
+                                                   + " their batch must refuse, or this sweep asserts nothing")
+                                      .isPositive();
+        }
+
+        private void assertSlice(long from, int max) {
+            var expected = LongStream.rangeClosed(from, Math.min(4L, from + max - 1))
+                                     .boxed()
+                                     .toList();
+
+            reader.readEvents(STREAM, PARTITION, from, max)
+                  .await()
+                  .onFailure(cause -> fail("a valid segment must never report truncation — from=" + from
+                                           + " max=" + max + ": " + cause.message()))
+                  .onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .describedAs("from=%d max=%d", from, max)
+                                                     .containsExactlyElementsOf(expected));
+        }
+
+        private void assertStopsAtTheTail(long from, int max, AtomicInteger refusals) {
+            reader.readEvents(STREAM, PARTITION, from, max)
+                  .await()
+                  .onFailure(cause -> refusals.incrementAndGet())
+                  .onFailure(cause -> assertThat(cause).describedAs("from=%d max=%d", from, max)
+                                                       .isInstanceOf(SegmentError.CorruptRecord.class))
+                  .onSuccess(list -> assertThat(list).extracting(RawEvent::offset)
+                                                     .describedAs("from=%d max=%d must stop at the truncated"
+                                                                  + " tail, not serve the next segment", from, max)
+                                                     .containsExactlyElementsOf(LongStream.rangeClosed(from,
+                                                                                                       Math.min(2L, from + max - 1))
+                                                                                          .boxed()
+                                                                                          .toList()));
+        }
+
+        /// Offsets 0-2 and 3-4, each segment ending in a zero-length payload.
+        private void sealValidSegments() {
+            var first = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L),
+                                                RawEvent.rawEvent(2L, new byte[0], 30L)));
+            var second = serializeEvents(List.of(RawEvent.rawEvent(3L, "d".getBytes(), 40L),
+                                                 RawEvent.rawEvent(4L, new byte[0], 50L)));
+
+            sink.seal(sealedSegment(STREAM, PARTITION, 0, 2, 3, 10L, 30L, first)).await();
+            sink.seal(sealedSegment(STREAM, PARTITION, 3, 4, 2, 40L, 50L, second)).await();
+        }
+
+        /// Offsets 0-2 followed by junk too short to be a header, under metadata claiming through offset 3
+        /// — a segment whose last record was cut — and then a healthy segment holding 4-5.
+        private void sealTruncatedTailThenHealthySegment() {
+            var whole = serializeEvents(List.of(RawEvent.rawEvent(0L, "a".getBytes(), 10L),
+                                                RawEvent.rawEvent(1L, "b".getBytes(), 20L),
+                                                RawEvent.rawEvent(2L, "c".getBytes(), 30L)));
+            var truncated = Arrays.copyOf(whole, whole.length + JUNK_TAIL_BYTES);
+            var healthy = serializeEvents(List.of(RawEvent.rawEvent(4L, "e".getBytes(), 50L),
+                                                  RawEvent.rawEvent(5L, "f".getBytes(), 60L)));
+
+            sink.seal(sealedSegment(STREAM, PARTITION, 0, 3, 4, 10L, 40L, truncated)).await();
+            sink.seal(sealedSegment(STREAM, PARTITION, 4, 5, 2, 50L, 60L, healthy)).await();
+        }
+    }
+
+    private static List<RawEvent> decoded(byte[] serialized, long fromOffset, int maxEvents) {
+        return SegmentReader.deserializeAndFilter(SEGMENT, serialized, fromOffset, maxEvents)
+                            .onFailure(cause -> fail(cause.message()))
+                            .unwrap();
+    }
+
+    private static void assertCorruptRecord(Result<List<RawEvent>> result, int position, int length) {
+        result.onSuccess(list -> fail("a corrupt record length must fail the decode, not return " + list))
+              .onFailure(cause -> assertThat(cause).isEqualTo(SegmentError.CorruptRecord.FACTORY.apply(SEGMENT,
+                                                                                                        position,
+                                                                                                        length)));
     }
 
     /// Serialize events using the same format as SegmentSealer: [offset:8][timestamp:8][len:4][data:len]

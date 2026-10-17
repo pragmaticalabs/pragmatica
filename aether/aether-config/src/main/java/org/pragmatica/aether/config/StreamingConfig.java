@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.pragmatica.lang.io.TimeSpan;
@@ -14,7 +13,10 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                               long maxReadResponseBytes,
                               ReadLinearizationMode readLinearization,
                               int reshuffleConcurrency,
-                              long caughtUpMaxLagOffsets) {
+                              long caughtUpMaxLagOffsets,
+                              long segmentDiskMaxBytes,
+                              TimeSpan isrLagMax,
+                              TimeSpan promotionEscapeAfter) {
     public static final long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
     /// How many partitions one node may hold in materialize+backfill at once (`reshuffle_concurrency`).
     /// One-at-a-time starves a large reshuffle; unbounded floods backfill. Was a hard-coded constant with
@@ -50,6 +52,23 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// production wiring passes a finite bound, and the no-argument factories default to
     /// [#DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS] so an unwired path is GUARDED rather than silently inert.
     public static final long CAUGHT_UP_LAG_UNBOUNDED = Long.MAX_VALUE;
+    /// `segment_disk_max_bytes` unset (#1604): the node derives the streams disk-tier cap from the filesystem
+    /// holding its stream segments at boot. Disk size is a fact about the node, not cluster policy -- the
+    /// previous hard-coded 4 GiB wedged long-lived nodes whatever their real disk.
+    public static final long DERIVE_SEGMENT_DISK_MAX_BYTES = 0L;
+    /// #1730 `isr_lag_max`: how long an in-sync replica may stay behind the owner's head before the owner asks for it
+    /// to leave the partition's ISR (Kafka's `replica.lag.time.max.ms`). A LIVENESS knob only: the ISR changes only
+    /// by a committed write, and a confirmation waits for every committed ISR member, so no value of it can make an
+    /// acknowledgement unsafe. Smaller drops a slow replica sooner (shorter ack stalls, fewer copies); larger keeps
+    /// it longer (an ack waits up to this long for a lagging member).
+    public static final TimeSpan DEFAULT_ISR_LAG_MAX = timeSpan(30).seconds();
+    /// #2080 `promotion_escape_after`: how long a stream partition's promotion (the owner activation gate, the replica promotion
+    /// contest) waits for members that do not answer before a candidate named in the partition's COMMITTED in-sync set goes ahead
+    /// without them. Distinct from, and at least, the alarm bound (two SWIM suspect windows, 20 s at the default): after a full-cluster
+    /// cold restart the in-sync set is minted from placement, so a node whose disk is ahead and which merely boots slowly (JVM start
+    /// plus WAL replay) must not be escaped past, or divergence becomes routine on staggered restarts. THE DEFAULT IS A GUESS (the
+    /// owner's, 2026-10-09); what would settle it is the measured boot spread of a cold restart.
+    public static final TimeSpan DEFAULT_PROMOTION_ESCAPE_AFTER = timeSpan(120).seconds();
 
     /// The default `LINEARIZABLE`-read mechanism (spec §8.1): the no-op consensus round (#345 item
     /// 1e-a). The alternative `lease` mechanism is rejected at config parse until validated.
@@ -63,13 +82,24 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// staggered survivor several probe cycles to converge before symmetry is broken.
     public static final int BACKFILL_SOURCE_WAIT_PROBE_CYCLES = 10;
 
+    /// Multiplier applied to {@link #readForwardTimeout()} to derive how long one partition backfill may go WITHOUT
+    /// PROGRESS and keep its single-flight slot (#1638 N1, B2). Progress is a catch-up page received or a record
+    /// applied. Between two progress points a live backfill performs at most one watermark-probe round (parallel, each
+    /// probe bounded by {@link #readForwardTimeout()}) and one catch-up page read (bounded by it too), plus local work
+    /// (apply, durability sync); 3 covers those two network legs with one leg of slack for the local work. A judgement
+    /// from the leg structure, not a measurement.
+    public static final int BACKFILL_FLIGHT_IDLE_READ_TIMEOUTS = 3;
+
     public static StreamingConfig streamingConfig() {
         return new StreamingConfig(timeSpan(5).seconds(),
                                    timeSpan(2).seconds(),
                                    DEFAULT_MAX_READ_RESPONSE_BYTES,
                                    DEFAULT_READ_LINEARIZATION,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
-                                   DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS);
+                                   DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -80,7 +110,10 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    maxReadResponseBytes,
                                    DEFAULT_READ_LINEARIZATION,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
-                                   DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS);
+                                   DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -92,7 +125,10 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    maxReadResponseBytes,
                                    readLinearization,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
-                                   DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS);
+                                   DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -105,7 +141,10 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    maxReadResponseBytes,
                                    readLinearization,
                                    reshuffleConcurrency,
-                                   DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS);
+                                   DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -119,7 +158,55 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    maxReadResponseBytes,
                                    readLinearization,
                                    reshuffleConcurrency,
-                                   caughtUpMaxLagOffsets);
+                                   caughtUpMaxLagOffsets,
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
+    }
+
+    /// The same streaming config with the streams disk-tier cap set (`segment_disk_max_bytes`, #1604);
+    /// [#DERIVE_SEGMENT_DISK_MAX_BYTES] derives it from the filesystem.
+    public StreamingConfig withSegmentDiskMaxBytes(long segmentDiskMaxBytes) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter);
+    }
+
+    /// The same streaming config with the ISR lag bound set (`isr_lag_max`, #1730).
+    public StreamingConfig withIsrLagMax(TimeSpan isrLagMax) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter);
+    }
+
+    /// The same streaming config with the promotion escape bound set (`promotion_escape_after`, #2080).
+    public StreamingConfig withPromotionEscapeAfter(TimeSpan promotionEscapeAfter) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter);
+    }
+
+    /// The owner activation gate's alarm bound (#1555 item 8): two SWIM suspect windows. The promotion escape bound may not be below it.
+    public static TimeSpan ownerPromotionAlarmWindow(TimeSpan suspectTimeout) {
+        return suspectTimeout.plus(suspectTimeout);
     }
 
     /// The same streaming config with the `LINEARIZABLE`-read mechanism replaced — used by the config
@@ -130,12 +217,21 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    maxReadResponseBytes,
                                    readLinearization,
                                    reshuffleConcurrency,
-                                   caughtUpMaxLagOffsets);
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter);
     }
 
     /// Bounded wait for a caught-up source to appear before a cold-start replica self-promotes. Derived
     /// from {@link #readForwardTimeout()} so it scales with the configured transport latency budget.
     public TimeSpan backfillSourceWaitBound() {
         return readForwardTimeout.plus(readForwardTimeout.nanos() * (BACKFILL_SOURCE_WAIT_PROBE_CYCLES - 1L));
+    }
+
+    /// How long one partition backfill may go without progress and keep its single-flight slot (#1638 N1, B2):
+    /// {@link #readForwardTimeout()} times {@link #BACKFILL_FLIGHT_IDLE_READ_TIMEOUTS}.
+    public TimeSpan backfillFlightIdleBound() {
+        return readForwardTimeout.plus(readForwardTimeout.nanos() * (BACKFILL_FLIGHT_IDLE_READ_TIMEOUTS - 1L));
     }
 }

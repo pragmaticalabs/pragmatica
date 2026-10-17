@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import java.util.List;
@@ -14,13 +13,50 @@ import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
-public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig events) {
+public record AlertConfig(boolean enabled,
+                          WebhookConfig webhook,
+                          EventConfig events,
+                          double hysteresisMargin,
+                          EntityCheckpointLag entityCheckpointLag) {
+    /// Default hysteresis margin (#969, #957): a breached threshold clears only once the metric falls
+    /// below its clear point, and **the clear point differs by severity** —
+    /// `max(critical * (1 - margin), warning)` for a CRITICAL alert, and plain `warning * (1 - margin)`
+    /// for a WARNING one. The clamp applies to CRITICAL ONLY, because WARNING has no lower rung to
+    /// invert into. At the shipped `cpu.usage` 0.7/0.9 and a 5% margin that is 0.855 and **0.665**
+    /// respectively — a WARNING alert does NOT clear at 0.7.
+    ///
+    /// **RELATIVE, not absolute, and that is forced by the API rather than chosen.** `POST
+    /// /api/v1/thresholds` accepts an arbitrary metric name and a bare `double`, so a threshold may be
+    /// a 0..1 ratio, a latency in millis, or a size in bytes. An absolute margin is meaningful for the
+    /// first and absurd for the others; only a relative one is unit-agnostic.
+    ///
+    /// **The CLAMP, not this number, is what prevents a ladder inversion.** Without
+    /// `max(..., warningThreshold)` a CRITICAL alert could clear beneath its own WARNING threshold and
+    /// immediately re-raise as WARNING — manufacturing the flapping the margin exists to damp. With the
+    /// clamp that is impossible for any operator configuration, which is what makes 5% a safe DEFAULT
+    /// rather than a load-bearing constant: it is a conventional damping value, not a derived one
+    /// (#969 was filed precisely because no derivation exists), and it is operator-overridable.
+    public static final double DEFAULT_HYSTERESIS_MARGIN = 0.05;
+
     private static final AlertConfig DEFAULT = alertConfig(true,
                                                            WebhookConfig.webhookConfig(),
-                                                           EventConfig.eventConfig()).unwrap();
+                                                           EventConfig.eventConfig(),
+                                                           DEFAULT_HYSTERESIS_MARGIN).unwrap();
 
-    public static Result<AlertConfig> alertConfig(boolean enabled, WebhookConfig webhook, EventConfig events) {
-        return success(new AlertConfig(enabled, webhook, events));
+    /// The default entity checkpoint-lag thresholds ([EntityCheckpointLag#entityCheckpointLag()]).
+    public static Result<AlertConfig> alertConfig(boolean enabled,
+                                                  WebhookConfig webhook,
+                                                  EventConfig events,
+                                                  double hysteresisMargin) {
+        return alertConfig(enabled, webhook, events, hysteresisMargin, EntityCheckpointLag.entityCheckpointLag());
+    }
+
+    public static Result<AlertConfig> alertConfig(boolean enabled,
+                                                  WebhookConfig webhook,
+                                                  EventConfig events,
+                                                  double hysteresisMargin,
+                                                  EntityCheckpointLag entityCheckpointLag) {
+        return success(new AlertConfig(enabled, webhook, events, hysteresisMargin, entityCheckpointLag));
     }
 
     public static AlertConfig alertConfig() {
@@ -30,7 +66,31 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
     public static AlertConfig alertConfig(List<String> urls) {
         return alertConfig(true,
                            WebhookConfig.webhookConfig(true, urls, 3, timeSpan(5).seconds()).unwrap(),
-                           EventConfig.eventConfig(true).unwrap()).unwrap();
+                           EventConfig.eventConfig(true).unwrap(),
+                           DEFAULT_HYSTERESIS_MARGIN).unwrap();
+    }
+
+    /// Whole-config validation, called at node boot by `AetherNode`.
+    ///
+    /// **This composes [WebhookConfig#check], which before #957 was fully written and invoked by
+    /// nothing** — a fifth dead surface in this subsystem, alongside the four the #957 investigation
+    /// found. It is what delivers that ticket's fail-closed clause: a configured webhook that cannot
+    /// fire refuses at boot rather than accepting and dropping.
+    public Result<AlertConfig> check() {
+        return webhook.check()
+                      .flatMap(_ -> checkHysteresisMargin())
+                      .flatMap(_ -> entityCheckpointLag.check())
+                      .map(_ -> this);
+    }
+
+    /// A margin of 0 disables damping (clear point == breach point, the pre-#969 behaviour) and is
+    /// legal. 1 or above would drive the clear point to zero or negative, so a breach could never
+    /// clear on its own — refused rather than clamped, because silently correcting an operator's
+    /// number would hide a configuration mistake behind working-looking behaviour.
+    private Result<AlertConfig> checkHysteresisMargin() {
+        return hysteresisMargin >= 0.0 && hysteresisMargin < 1.0
+               ? success(this)
+               : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("alerts.hysteresis_margin must be in [0.0, 1.0), got " + hysteresisMargin).result();
     }
 
     @SuppressWarnings("JBCT-ZONE-02")
@@ -73,6 +133,46 @@ public record AlertConfig(boolean enabled, WebhookConfig webhook, EventConfig ev
             return ! enabled || timeout.millis() >= 100
                    ? success(this)
                    : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("webhook.timeout must be >= 100ms").result();
+        }
+    }
+
+    /// Durable-entity checkpoint lag alert thresholds (#1302), in log RECORDS: the metric
+    /// `entity.checkpoint.lag.max` is a node's largest per-(keyspace, partition) distance between the
+    /// log head and the last committed checkpoint. Config keys `alerts.entity_checkpoint_lag_warning`
+    /// and `alerts.entity_checkpoint_lag_critical`; seeded as the metric's threshold only when the
+    /// cluster holds none, so an operator's `/api/v1/thresholds` value always wins.
+    ///
+    /// **Why 5,000 / 10,000.** An entity partition's ring holds 10,000 records
+    /// (`StreamEntityLogSubstrate.ENTITY_RING_CAPACITY`). A recovery whose checkpoint lags the head by
+    /// less than that replays from the ring; past it, the replay must read sealed storage (#1240) and
+    /// recovery slows. CRITICAL therefore sits AT the ring capacity — recovery has left the ring — and
+    /// WARNING at half of it, the headroom to act before it does. At the 30s checkpoint interval a
+    /// healthy partition sustaining more than ~166 writes/s also reaches WARNING between ticks; that is
+    /// the same recovery-cost signal, not a false alarm, and the keys exist for workloads where it is
+    /// expected.
+    public record EntityCheckpointLag(double warning, double critical) {
+        public static final double DEFAULT_WARNING = 5_000;
+        public static final double DEFAULT_CRITICAL = 10_000;
+        private static final EntityCheckpointLag DEFAULT = new EntityCheckpointLag(DEFAULT_WARNING, DEFAULT_CRITICAL);
+
+        public static EntityCheckpointLag entityCheckpointLag() {
+            return DEFAULT;
+        }
+
+        /// Total, like [AlertConfig#alertConfig]: validation runs at node boot through [AlertConfig#check],
+        /// so a loader building this stays total and a bad value refuses at boot instead of here.
+        public static EntityCheckpointLag entityCheckpointLag(double warning, double critical) {
+            return new EntityCheckpointLag(warning, critical);
+        }
+
+        /// Both positive, and CRITICAL not below WARNING — an inverted ladder would raise CRITICAL
+        /// for a lag that never reached WARNING. Refused rather than corrected, like the margin.
+        public Result<EntityCheckpointLag> check() {
+            return warning > 0 && critical >= warning
+                   ? success(this)
+                   : AlertConfigError.InvalidAlertConfig.invalidAlertConfig("alerts.entity_checkpoint_lag_warning must be > 0 and"
+                                                                           + " alerts.entity_checkpoint_lag_critical >= it, got " + warning
+                                                                           + " / " + critical).result();
         }
     }
 

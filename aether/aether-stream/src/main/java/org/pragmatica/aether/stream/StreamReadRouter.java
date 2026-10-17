@@ -5,8 +5,11 @@
 package org.pragmatica.aether.stream;
 
 import java.util.Comparator;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
@@ -17,6 +20,7 @@ import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationState;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -37,6 +41,7 @@ public final class StreamReadRouter {
     private final Option<CommittedStreamOwnerSource> committedOwnerSource;
     private final Option<OwnershipEpochHighWater> epochHighWater;
     private final Option<LinearizableBarrier> barrier;
+    private final Map<ReadPreference, ForwardingReadRouter<OffHeapRingBuffer.RawEvent>> readRouters;
 
     private StreamReadRouter(StreamPartitionManager partitionManager,
                              Option<ReplicaRegistry> replicaRegistry,
@@ -56,6 +61,7 @@ public final class StreamReadRouter {
         this.committedOwnerSource = committedOwnerSource;
         this.epochHighWater = epochHighWater;
         this.barrier = barrier;
+        this.readRouters = buildReadRouters();
     }
 
     public static StreamReadRouter streamReadRouter(StreamPartitionManager partitionManager,
@@ -116,6 +122,112 @@ public final class StreamReadRouter {
                                                           long fromOffset,
                                                           int maxEvents,
                                                           ReadPreference preference) {
+        return readRouter(preference).route(streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// A GOVERNOR consumer read that carries the owner epoch the consumer last read under (#1730 phase 2 / #1873, KIP-320):
+    /// served from this node's ring when it is materialised here, forwarded to the resolved owner when it is not, and in
+    /// either case checked against the committed epoch starts by the node that serves it. The answer is the events and the
+    /// epoch they were served under, or the typed [StreamError.EpochDiverged].
+    ///
+    /// Unlike the plain GOVERNOR read, a failed forward is NOT softened to a local read: a refusal that tells the consumer its
+    /// lineage was replaced must reach it, and a local read of a ring this node does not hold could only fail again.
+    public Promise<StreamPartitionManager.EpochRead> readValidated(String streamName,
+                                                                   int partition,
+                                                                   long fromOffset,
+                                                                   int maxEvents,
+                                                                   Epoch consumerEpoch) {
+        return partitionManager.readServing(streamName, partition, fromOffset, maxEvents, consumerEpoch)
+                               .async()
+                               .fold(result -> result.fold(cause -> cause == StreamError.General.PARTITION_NOT_LOCAL
+                                                                    ? forwardValidated(streamName,
+                                                                                       partition,
+                                                                                       fromOffset,
+                                                                                       maxEvents,
+                                                                                       consumerEpoch)
+                                                                    : cause.<StreamPartitionManager.EpochRead> promise(),
+                                                           Promise::success));
+    }
+
+    private Promise<StreamPartitionManager.EpochRead> forwardValidated(String streamName,
+                                                                       int partition,
+                                                                       long fromOffset,
+                                                                       int maxEvents,
+                                                                       Epoch consumerEpoch) {
+        return ownerResolver.resolve(streamName, partition)
+                            .filter(owner -> !owner.equals(selfNodeId))
+                            .flatMap(owner -> forwardClient.map(client -> client.readRemoteValidated(owner,
+                                                                                                     streamName,
+                                                                                                     partition,
+                                                                                                     fromOffset,
+                                                                                                     maxEvents,
+                                                                                                     consumerEpoch)))
+                            .map(read -> read.map(result -> new StreamPartitionManager.EpochRead(toRawEvents(result.events(),
+                                                                                                             partition),
+                                                                                                 result.ownerEpoch())))
+                            .or(() -> StreamError.General.PARTITION_NOT_LOCAL.<StreamPartitionManager.EpochRead> promise());
+    }
+
+    ForwardingReadRouter<OffHeapRingBuffer.RawEvent> readRouter(ReadPreference preference) {
+        return readRouters.get(preference);
+    }
+
+    /// #1333: the consumer-visible bounds of a partition, answered the way a GOVERNOR read is served —
+    /// from this node's ring when it is materialised here (owner or replica), else forwarded to the
+    /// resolved HRW owner, whose `ReadForwardResponse` carries them. Fails when there is no ring here, no
+    /// owner is resolvable, or no forward client is wired — a rebuild must refuse rather than guess.
+    public Promise<VisibleBounds> bounds(String streamName, int partition) {
+        return partitionManager.visibleBounds(streamName, partition)
+                               .map(Promise::success)
+                               .or(() -> forwardBounds(streamName, partition));
+    }
+
+    /// #1478: the bounds of a partition as its OWNER reports them. [#bounds] prefers any local ring, which
+    /// is right for a read but wrong for a total: a replica ring that has not backfilled yet reports an
+    /// empty span while the owner holds every event. Here the local ring answers only when this node IS the
+    /// owner (or no owner is resolvable, so the local ring is the only source there is); otherwise the
+    /// question goes to the owner, and fails when it cannot be asked — never answered from a replica.
+    public Promise<VisibleBounds> ownerBounds(String streamName, int partition) {
+        return ownerResolver.resolve(streamName, partition)
+                            .filter(owner -> !selfNodeId.equals(owner))
+                            .map(owner -> remoteOwnerBounds(owner, streamName, partition))
+                            .or(() -> localBounds(streamName, partition));
+    }
+
+    private Promise<VisibleBounds> remoteOwnerBounds(NodeId owner, String streamName, int partition) {
+        return forwardClient.map(client -> client.boundsRemote(owner, streamName, partition))
+                            .or(StreamError.General.PARTITION_NOT_LOCAL::promise);
+    }
+
+    private Promise<VisibleBounds> localBounds(String streamName, int partition) {
+        return partitionManager.visibleBounds(streamName, partition)
+                               .map(Promise::success)
+                               .or(StreamError.General.PARTITION_NOT_LOCAL::promise);
+    }
+
+    private Promise<VisibleBounds> forwardBounds(String streamName, int partition) {
+        return Option.all(forwardClient,
+                          ownerResolver.resolve(streamName, partition))
+                     .map((client, owner) -> client.boundsRemote(owner, streamName, partition))
+                     .or(StreamError.General.PARTITION_NOT_LOCAL::promise);
+    }
+
+    /// #1264: one router per {@link ReadPreference}, built ONCE as the constructor's last step from
+    /// `final` fields only — `read` varies the preference per call, so the routers are keyed by it
+    /// rather than rebuilt per read. What is cached is the mechanism, never the answer: the owner
+    /// resolver runs inside the router at route time, so an ownership change between two reads reaches
+    /// the new owner.
+    private Map<ReadPreference, ForwardingReadRouter<OffHeapRingBuffer.RawEvent>> buildReadRouters() {
+        var routers = new EnumMap<ReadPreference, ForwardingReadRouter<OffHeapRingBuffer.RawEvent>>(ReadPreference.class);
+
+        for (var preference : ReadPreference.values()) {
+            routers.put(preference, buildReadRouter(preference));
+        }
+
+        return routers;
+    }
+
+    private ForwardingReadRouter<OffHeapRingBuffer.RawEvent> buildReadRouter(ReadPreference preference) {
         return ForwardingReadRouter.<OffHeapRingBuffer.RawEvent> forwardingReadRouter(replicaRegistry,
                                                                                       selfNodeId,
                                                                                       forwardClient,
@@ -126,17 +238,14 @@ public final class StreamReadRouter {
                                                                                       metrics,
                                                                                       committedOwnerSource,
                                                                                       epochHighWater,
-                                                                                      barrier).route(streamName,
-                                                                                                     partition,
-                                                                                                     fromOffset,
-                                                                                                     maxEvents);
+                                                                                      barrier);
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> readLocal(String streamName,
                                                                 int partition,
                                                                 long fromOffset,
                                                                 int maxEvents) {
-        return partitionManager.readLocal(streamName, partition, fromOffset, maxEvents)
+        return partitionManager.readServing(streamName, partition, fromOffset, maxEvents)
                                .async();
     }
 
@@ -157,8 +266,21 @@ public final class StreamReadRouter {
     /// [#selfRowOverride]. The registry can never advance a node's own entry (acks come from peers,
     /// and a node does not ack to itself), so without the substitution an owner reports itself
     /// permanently `SYNCING` at `-1` while serving a complete partition.
+    /// The deterministic HRW owner of `(streamName, partition)` under this node's membership view —
+    /// the SAME `ownerResolver` call [#replicaSnapshot] makes to compute `hrwOwner`/`servedByOwner`.
+    ///
+    /// Exposed for #1039: the management dispatch path must forward `STREAM_REPLICAS` to the owner,
+    /// and it has to reach the owner the ANSWERING code will agree with. Reading the field the
+    /// snapshot reads makes that agreement structural — a separately-wired resolver could send the
+    /// request to a node that then reports `servedByOwner=false`, which is the defect again, one hop
+    /// further away. Empty for the same reason the snapshot reports no owner: no placement is
+    /// computable (empty member view / pre-reconcile bootstrap window).
+    public Option<NodeId> resolveOwner(String streamName, int partition) {
+        return ownerResolver.resolve(streamName, partition);
+    }
+
     public ReplicaSetView replicaSnapshot(String streamName, int partition) {
-        var owner = ownerResolver.resolve(streamName, partition);
+        var owner = resolveOwner(streamName, partition);
         var descriptors = replicaRegistry.map(registry -> registry.replicasFor(streamName, partition)).or(List.of());
         var replicas = descriptors.stream()
                                   .map(descriptor -> toReplicaView(descriptor,
@@ -170,10 +292,12 @@ public final class StreamReadRouter {
         return new ReplicaSetView(streamName,
                                   partition,
                                   owner.map(NodeId::id),
-                                  owner.map(selfNodeId::equals).or(false),
+                                  owner.map(selfNodeId::equals)
+                                       .or(false) && partitionManager.mayServeAsOwner(streamName, partition),
                                   partitionManager.nextExpectedOffset(streamName, partition),
                                   partitionManager.earliestRetainedOffset(streamName, partition),
-                                  replicas);
+                                  replicas,
+                                  partitionManager.ownerActivationBlock(streamName, partition).map(Cause::message));
     }
 
     private static ReplicaView toReplicaView(ReplicaDescriptor descriptor,
@@ -221,13 +345,15 @@ public final class StreamReadRouter {
     /// is itself the resolved HRW owner, in which case `replicas` is the authoritative full set.
     /// `ownerHeadOffset` is the local partition next-expected offset (head + 1) — on the owner this is
     /// the true tail used to spot a CAUGHT_UP replica whose `confirmedOffset` lags it (#333).
+    /// `ownerActivationBlock` is why this node's owner promotion waits for an operator (#1555), if it does.
     public record ReplicaSetView(String streamName,
                                  int partition,
                                  Option<String> ownerNodeId,
                                  boolean servedByOwner,
                                  long ownerHeadOffset,
                                  long earliestRetainedOffset,
-                                 List<ReplicaView> replicas) {}
+                                 List<ReplicaView> replicas,
+                                 Option<String> ownerActivationBlock) {}
 
     /// Per-replica state row: `state` is the `ReplicationState` name (SYNCING / CAUGHT_UP / LAGGING),
     /// `confirmedOffset` the replica's acked watermark, `hrwOwner` whether this replica is the resolved

@@ -2,19 +2,18 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.ttm.model;
 
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class FeatureIndexTest {
 
+class FeatureIndexTest {
     @Test
     void featureCount_matchesNumberOfFeatures() {
         // All features: CPU_USAGE, HEAP_USAGE, EVENT_LOOP_LAG_MS, LATENCY_MS, INVOCATIONS,
-        // GC_PAUSE_MS, LATENCY_P50, LATENCY_P95, LATENCY_P99, ERROR_RATE, EVENT_COUNT
+        // GC_PAUSE_MS, INTERVAL_MEAN_LATENCY_P50, INTERVAL_MEAN_LATENCY_P95, INTERVAL_MEAN_LATENCY_P99, ERROR_RATE, EVENT_COUNT
         assertThat(FeatureIndex.FEATURE_COUNT).isEqualTo(11);
     }
 
@@ -49,18 +48,18 @@ class FeatureIndexTest {
     }
 
     @Test
-    void latencyP50_hasCorrectIndex() {
-        assertThat(FeatureIndex.LATENCY_P50).isEqualTo(6);
+    void intervalMeanLatencyP50_hasCorrectIndex() {
+        assertThat(FeatureIndex.INTERVAL_MEAN_LATENCY_P50).isEqualTo(6);
     }
 
     @Test
-    void latencyP95_hasCorrectIndex() {
-        assertThat(FeatureIndex.LATENCY_P95).isEqualTo(7);
+    void intervalMeanLatencyP95_hasCorrectIndex() {
+        assertThat(FeatureIndex.INTERVAL_MEAN_LATENCY_P95).isEqualTo(7);
     }
 
     @Test
-    void latencyP99_hasCorrectIndex() {
-        assertThat(FeatureIndex.LATENCY_P99).isEqualTo(8);
+    void intervalMeanLatencyP99_hasCorrectIndex() {
+        assertThat(FeatureIndex.INTERVAL_MEAN_LATENCY_P99).isEqualTo(8);
     }
 
     @Test
@@ -81,6 +80,7 @@ class FeatureIndexTest {
     @Test
     void featureNames_haveCorrectOrder() {
         var names = FeatureIndex.featureNames();
+
         assertThat(names[FeatureIndex.CPU_USAGE]).isEqualTo("cpu_usage");
         assertThat(names[FeatureIndex.HEAP_USAGE]).isEqualTo("heap_usage");
         assertThat(names[FeatureIndex.LATENCY_MS]).isEqualTo("latency_ms");

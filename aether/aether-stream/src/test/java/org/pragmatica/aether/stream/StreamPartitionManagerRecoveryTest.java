@@ -7,19 +7,30 @@ package org.pragmatica.aether.stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.segment.SealedSegment;
+import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
+import java.util.zip.CRC32;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
+import static org.pragmatica.aether.stream.segment.SegmentSealer.segmentSealer;
 
 /// Proves streaming-persistence W4 (replay-on-recovery): when a partition ring is rebuilt and a WAL
 /// exists, the un-sealed tail is recovered into the fresh ring at its ORIGINAL offsets — bounded by the
@@ -30,6 +41,10 @@ class StreamPartitionManagerRecoveryTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final int EVENTS = 6;
+    private static final int SMALL_RING_EVENTS = 4;
+    private static final int RECOVERY_EVENTS = 30;
+    /// Two pending one-event segments of an `evt-N` payload (20-byte header + up to 6 bytes each).
+    private static final long TWO_SEGMENTS_BYTES = 2 * (20 + 6);
 
     @TempDir
     Path walDir;
@@ -86,7 +101,224 @@ class StreamPartitionManagerRecoveryTest {
         rebuilt.close();
     }
 
+    /// #1234: segment 1 ([0-1]) failed to seal while a later segment ([2-3]) is sealed, then the node
+    /// restarts. Recovery seeds the ring at the sealed watermark and replays only the WAL above it, so the
+    /// watermark must stop below the failed segment: the failed range comes back from the WAL. Before the fix
+    /// recovery seeded above the later segment and the failed range was in neither the ring, the segments nor
+    /// the replay. The index is written directly — an index rebuilt from refs written before the fix.
+    @Test
+    void rebuild_replaysFailedSegmentRangeFromWal_whenLaterSegmentSealed() {
+        var index = new SegmentIndex();
+
+        publishAll(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)));
+        index.addSegment(STREAM, PARTITION, 2, 3);
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
+        createStream(recovered);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(events).hasSize(EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> assertEvent(events.get(i), i));
+
+        recovered.close();
+    }
+
+    /// #1234, ruling B: the node restarts while sealing is still failing. The ring had already reclaimed the
+    /// evicted events and the sealer's retained copies die with the process, so the WAL — never truncated past
+    /// the contiguous sealed watermark — is the copy that survives: recovery replays the whole range.
+    @Test
+    void rebuild_replaysEvictedRangeFromWal_whenRestartedWhileSealingFails() {
+        var index = new SegmentIndex();
+        var storageDown = new AtomicBoolean(true);
+        var failing = streamPartitionManager(Long.MAX_VALUE,
+                                             segmentSealer((segment, _) -> sealUnlessDown(storageDown, index, segment)),
+                                             Option.some(walDir),
+                                             index::lastSealedOffset);
+
+        createStream(failing, SMALL_RING_EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> publishOne(failing, i));
+
+        assertCursorExpired(failing, 0);
+        failing.truncateWalsToSealed();
+        failing.close();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), index::lastSealedOffset);
+        createStream(recovered, EVENTS * 10);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(-1L);
+        assertThat(events).hasSize(EVENTS);
+        IntStream.range(0, EVENTS).forEach(i -> assertEvent(events.get(i), i));
+
+        recovered.close();
+        // Let the orphaned sealer's next retry succeed, so it stops retrying for the rest of the test JVM.
+        storageDown.set(false);
+    }
+
+    /// #1234 (review of 510829642, the recovery path): a restart replays the WAL into the ring BEFORE the
+    /// stream is registered with the manager. With storage down and the replay evicting past the pending-seal
+    /// cap, every recovery-time hand-over must already see the partition as WAL-backed — spill, never refuse.
+    /// Keyed on manager registration instead, recovery refused each hand-over as "no WAL" and createStream
+    /// failed.
+    @Test
+    void rebuild_replayPastPendingCapWhileStorageDown_neverRefused_spillsToWal() {
+        var index = new SegmentIndex();
+        var writer = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+        createStream(writer, RECOVERY_EVENTS * 2);
+        IntStream.range(0, RECOVERY_EVENTS).forEach(i -> publishOne(writer, i));
+        writer.close();
+
+        var storageDown = new AtomicBoolean(true);
+        var sealer = segmentSealer((segment, _) -> sealUnlessDown(storageDown, index, segment), TWO_SEGMENTS_BYTES);
+        var recovered = streamPartitionManager(Long.MAX_VALUE, sealer, Option.some(walDir), index::lastSealedOffset);
+
+        createStream(recovered, SMALL_RING_EVENTS);
+
+        assertThat(sealer.refusalCount()).isZero();
+        assertThat(sealer.spillCount()).isPositive();
+        assertThat(sealer.pendingBytes()).isLessThanOrEqualTo(TWO_SEGMENTS_BYTES);
+
+        var tail = readFrom(recovered, RECOVERY_EVENTS - SMALL_RING_EVENTS);
+
+        assertThat(tail).hasSize(SMALL_RING_EVENTS);
+        IntStream.range(0, tail.size()).forEach(i -> assertEvent(tail.get(i), RECOVERY_EVENTS - SMALL_RING_EVENTS + i));
+
+        recovered.close();
+        storageDown.set(false);
+    }
+
+    /// #1232 acceptance 1: a WAL holding offset 1 ("v1") BEFORE offset 0 ("v0") — the file order the
+    /// pre-fix owner path could produce. Each record lands at its STORED offset; before the fix recovery
+    /// numbered them in scan order and `readLocal(0)` returned "v1".
+    @Test
+    void rebuild_placesEachRecordAtItsStoredOffset_whenWalFramesAreOutOfOrder() throws IOException {
+        writeRawWal(frame(1, "v1"), frame(0, "v0"));
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        createStream(recovered);
+
+        var events = readFrom(recovered, 0);
+
+        assertThat(events).extracting(RawEvent::offset).containsExactly(0L, 1L);
+        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v0");
+        assertThat(new String(events.get(1).data(), UTF_8)).isEqualTo("v1");
+
+        recovered.close();
+    }
+
+    /// #1232 acceptance 2: two frames for one offset. Recovery refuses with the distinct
+    /// [StreamError.WalReplayMismatch] instead of shifting every later record by one.
+    @Test
+    void rebuild_failsLoudly_whenWalHoldsDuplicateOffset() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(1, "v1-again"), frame(2, "v2"));
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)), 2L, 1L);
+    }
+
+    /// A missing frame above the sealed bound: recovery refuses instead of numbering offset 5's record as 4.
+    @Test
+    void rebuild_failsLoudly_whenWalTailHasGapAboveSealedBound() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(3, "v3"), frame(5, "v5"));
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 4L, 5L);
+    }
+
+    /// #1278 (owner ruling 2026-10-03, superseding #1258's accept-with-WARN): a WAL whose first record sits above
+    /// `sealed + 1` lost its head. The sealed watermark already counts every offset retention reclaimed (the persisted
+    /// floor), so nothing licenses the gap. Recovery refuses with the typed [StreamError.WalHeadLost], names the
+    /// lost range, counts it, and materializes nothing.
+    @Test
+    void rebuild_refusesLostHead_whenWalStartsAboveTheSealedWatermark() throws IOException {
+        writeRawWal(frame(5, "v5"), frame(6, "v6"), frame(7, "v7"));
+
+        assertHeadLost(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir)), -1L, 5L);
+    }
+
+    /// #1278 review: a refused partition is re-attempted on every publish and placement edge; each attempt is the
+    /// SAME loss, so the operator counter counts it once.
+    @Test
+    void rebuild_lostHead_reattemptedRecovery_isCountedOnce() throws IOException {
+        writeRawWal(frame(5, "v5"), frame(6, "v6"));
+        var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+            var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+
+            assertThat(manager.createStream(StreamConfig.streamConfig(STREAM)).isFailure()).as("attempt %d refused", attempt)
+                                                                                     .isTrue();
+            manager.close();
+        }
+
+        assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).as("three attempts, one loss").isEqualTo(1);
+    }
+
+    /// The same shape above a non-negative watermark: offset 3 is neither sealed nor in the file.
+    @Test
+    void rebuild_refusesLostHead_aboveSealedBound() throws IOException {
+        writeRawWal(frame(4, "v4"), frame(5, "v5"));
+
+        assertHeadLost(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 2L, 4L);
+    }
+
+    /// Control for the two above: the watermark covers the reclaimed prefix (what a persisted floor of 4 rebuilds
+    /// to), so the same file is reclaimed history -- accepted at its stored offsets, offsets below read as expired,
+    /// and nothing counted as lost.
+    @Test
+    void rebuild_acceptsWal_startingDirectlyAboveTheReclaimedWatermark() throws IOException {
+        writeRawWal(frame(5, "v5"), frame(6, "v6"), frame(7, "v7"));
+        var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
+
+        var recovered = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(4L));
+        createStream(recovered);
+
+        var events = readFrom(recovered, 5);
+
+        assertThat(events).extracting(RawEvent::offset).containsExactly(5L, 6L, 7L);
+        assertThat(new String(events.get(0).data(), UTF_8)).isEqualTo("v5");
+        assertCursorExpired(recovered, 0);
+        assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).isZero();
+
+        recovered.close();
+    }
+
+    /// #1258 review round 2 (R2-3, reviewer probe D): the file still physically holds records at and below
+    /// the floor (lazy truncation), so a missing offset right above the floor is a HOLE, refused as
+    /// [StreamError.WalReplayMismatch], never as a lost head.
+    @Test
+    void rebuild_failsLoudly_whenHoleSitsDirectlyAboveTheFloor_andEarlierRecordsExist() throws IOException {
+        writeRawWal(frame(0, "v0"), frame(1, "v1"), frame(2, "v2"), frame(4, "v4"), frame(5, "v5"));
+        var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
+
+        assertRecoveryRefused(streamPartitionManager(Long.MAX_VALUE, Option.some(walDir), sealedUpTo(2L)), 3L, 4L);
+        assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).as("a hole, not a lost head")
+                                                                                   .isZero();
+    }
+
     // === helpers ===
+
+    /// Storage refuses every seal while it is down; once up, it records the segment in the index as
+    /// `StorageSegmentSink` does.
+    private static Promise<Unit> sealUnlessDown(AtomicBoolean storageDown, SegmentIndex index, SealedSegment segment) {
+        return storageDown.get()
+               ? Causes.cause("disk full").promise()
+               : indexed(index, segment);
+    }
+
+    private static Promise<Unit> indexed(SegmentIndex index, SealedSegment segment) {
+        index.addSegment(segment.streamName(), segment.partition(), segment.startOffset(), segment.endOffset());
+
+        return Promise.unitPromise();
+    }
+
+    private static void createStream(StreamPartitionManager manager, int ringEvents) {
+        var retention = RetentionPolicy.retentionPolicy(ringEvents, 64 * 1024, 600_000);
+
+        manager.createStream(StreamConfig.streamConfig(STREAM, 1, retention, "earliest"))
+               .onFailure(cause -> fail(cause.message()));
+    }
 
     private static void publishAll(StreamPartitionManager manager) {
         createStream(manager);
@@ -122,6 +354,87 @@ class StreamPartitionManagerRecoveryTest {
         assertThat(event.offset()).isEqualTo((long) i);
         assertThat(event.timestamp()).isEqualTo(1000L + i);
         assertThat(new String(event.data(), UTF_8)).isEqualTo("evt-" + i);
+    }
+
+    private void assertRecoveryRefused(StreamPartitionManager manager, long expectedOffset, long foundOffset) {
+        manager.createStream(StreamConfig.streamConfig(STREAM))
+               .onSuccess(_ -> fail("recovery must refuse a WAL whose tail does not continue the ring"))
+               .onFailure(cause -> assertThat(cause.stream().toList()).as("the per-partition refusal, aggregated across partitions")
+                                                                      .singleElement()
+                                                                      .isInstanceOfSatisfying(StreamError.WalReplayMismatch.class,
+                                                                                              mismatch -> assertMismatch(mismatch,
+                                                                                                                         expectedOffset,
+                                                                                                                         foundOffset)));
+        manager.close();
+    }
+
+    private void assertHeadLost(StreamPartitionManager manager, long sealedThrough, long firstOffset) {
+        var headsLostBefore = StreamPartitionManager.walRecoveryHeadsLost();
+
+        manager.createStream(StreamConfig.streamConfig(STREAM))
+               .onSuccess(_ -> fail("recovery must refuse a WAL whose head is neither sealed nor reclaimed"))
+               .onFailure(cause -> assertThat(cause.stream().toList()).singleElement()
+                                                                      .isInstanceOfSatisfying(StreamError.WalHeadLost.class,
+                                                                                              lost -> assertLost(lost,
+                                                                                                                 sealedThrough,
+                                                                                                                 firstOffset)));
+        assertThat(manager.partitionBuffer(STREAM, PARTITION).isPresent()).as("nothing materialized").isFalse();
+        assertThat(StreamPartitionManager.walRecoveryHeadsLost() - headsLostBefore).as("counted for the operator")
+                                                                                   .isEqualTo(1);
+        manager.close();
+    }
+
+    private void assertLost(StreamError.WalHeadLost lost, long sealedThrough, long firstOffset) {
+        assertThat(lost.partition()).isEqualTo(PARTITION);
+        assertThat(lost.sealedThrough()).isEqualTo(sealedThrough);
+        assertThat(lost.firstOffset()).isEqualTo(firstOffset);
+        assertThat(lost.walFile()).isEqualTo(walFile());
+        assertThat(lost.message()).as("names the lost range")
+                                  .contains("offsets [" + (sealedThrough + 1) + ", " + (firstOffset - 1) + "] are LOST");
+        assertThat(lost.message()).as("advice that cannot discard the surviving tail").contains("do not delete");
+    }
+
+    private void assertMismatch(StreamError.WalReplayMismatch mismatch, long expectedOffset, long foundOffset) {
+        assertThat(mismatch.partition()).isEqualTo(PARTITION);
+        assertThat(mismatch.expectedOffset()).isEqualTo(expectedOffset);
+        assertThat(mismatch.foundOffset()).isEqualTo(foundOffset);
+        assertThat(mismatch.walFile()).isEqualTo(walFile());
+        assertThat(mismatch.message()).as("names the STREAM, since the whole stream stays unmaterialized")
+                                      .contains("stream 'orders'");
+        assertThat(mismatch.message()).as("advice that cannot discard a correct tail").contains("do not delete");
+    }
+
+    private Path walFile() {
+        return walDir.resolve(STREAM).resolve(PARTITION + ".wal");
+    }
+
+    /// Writes frames byte-for-byte in the documented `AppendLog` format, in the order given — the
+    /// fixed WAL refuses to WRITE an out-of-order or duplicate offset, so a file holding one (left by
+    /// pre-fix code) can only be produced directly.
+    private void writeRawWal(byte[]... frames) throws IOException {
+        Files.createDirectories(walFile().getParent());
+        try (var out = Files.newOutputStream(walFile())) {
+            for (var frame : frames) {
+                out.write(frame);
+            }
+        }
+    }
+
+    /// `[u32 payloadLen][u64 offset][u64 timestampMillis][u32 crc32(offset||timestamp||payload)][payload]`.
+    private static byte[] frame(long offset, String text) {
+        var payload = text.getBytes(UTF_8);
+        var timestamp = 1000L + offset;
+        var crcInput = ByteBuffer.allocate(16 + payload.length).putLong(offset).putLong(timestamp).put(payload);
+        var crc = new CRC32();
+
+        crc.update(crcInput.array());
+        return ByteBuffer.allocate(24 + payload.length)
+                         .putInt(payload.length)
+                         .putLong(offset)
+                         .putLong(timestamp)
+                         .putInt((int) crc.getValue())
+                         .put(payload)
+                         .array();
     }
 
     private static byte[] payload(int i) {

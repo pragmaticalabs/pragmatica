@@ -2,24 +2,38 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.invoke;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Consumer;
+
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.invoke.ScheduledTaskManager.ScheduledTaskManagerAdapter;
 import org.pragmatica.aether.slice.ExecutionMode;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskPauseKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskPauseValue;
+import org.pragmatica.aether.slice.kvstore.BackupEntryCodec;
+import org.pragmatica.aether.slice.kvstore.KvstoreCodecsSlice;
+import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskStateValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ScheduledTaskValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -28,19 +42,28 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.serialization.SliceCodec;
 
-import java.util.concurrent.CopyOnWriteArrayList;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+
 
 class ScheduledTaskManagerTest {
     private ScheduledTaskRegistry registry;
     private StubSliceInvoker stubInvoker;
+    private CopyOnWriteArrayList<InvocationRecord> invocations;
     private ScheduledTaskManager manager;
     private NodeId self;
     private Artifact artifact;
     private MethodName method;
     private CopyOnWriteArrayList<KVCommand<AetherKey>> stateWrites;
+    private ConcurrentHashMap<ScheduledTaskStateKey, ScheduledTaskStateValue> stateMap;
     private TestLeaderManager leaderManager;
 
     record InvocationRecord(Artifact artifact, MethodName method, Object message) {}
@@ -48,13 +71,29 @@ class ScheduledTaskManagerTest {
     @BeforeEach
     void setUp() {
         registry = ScheduledTaskRegistry.scheduledTaskRegistry();
-        stubInvoker = new StubSliceInvoker(new CopyOnWriteArrayList<>(), Option.none());
+        invocations = new CopyOnWriteArrayList<>();
+        stubInvoker = new StubSliceInvoker(invocations, Option.none());
         self = new NodeId("node-self");
         artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
         method = MethodName.methodName("cleanup").unwrap();
         stateWrites = new CopyOnWriteArrayList<>();
+        stateMap = new ConcurrentHashMap<>();
         leaderManager = new TestLeaderManager(self);
-        manager = ScheduledTaskManager.scheduledTaskManager(registry, stubInvoker, self, stateWrites::add, leaderManager);
+        Consumer<KVCommand<AetherKey>> stateWriter = command -> {
+            stateWrites.add(command);
+            if (command instanceof KVCommand.Put<AetherKey, ?> put
+                && put.key() instanceof ScheduledTaskStateKey stateKey
+                && put.value() instanceof ScheduledTaskStateValue stateValue) {
+                stateMap.put(stateKey, stateValue);
+            }
+        };
+
+        manager = ScheduledTaskManager.scheduledTaskManager(registry,
+                                                            stubInvoker,
+                                                            self,
+                                                            stateWriter,
+                                                            key -> Option.option(stateMap.get(key)),
+                                                            leaderManager);
     }
 
     @AfterEach
@@ -62,11 +101,16 @@ class ScheduledTaskManagerTest {
         manager.stop();
     }
 
-    private void putTask(String configSection, Artifact artifact, MethodName method,
-                         NodeId node, String interval, ExecutionMode executionMode) {
+    private void putTask(String configSection,
+                         Artifact artifact,
+                         MethodName method,
+                         NodeId node,
+                         String interval,
+                         ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
         var value = ScheduledTaskValue.intervalTask(node, interval, executionMode);
         var put = new KVCommand.Put<>(key, value);
+
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }
 
@@ -94,21 +138,127 @@ class ScheduledTaskManagerTest {
         void allMode_startsOnNonLeaderNode() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
-
-            // Not a leader, but ALL mode should start
+            // Not a leader, but a HOSTING node — ALL mode should start (#273: hosting ∧ ¬draining)
             assertThat(manager.activeTimerCount()).isEqualTo(1);
+        }
+
+        /// #272 R12 / #273 item 1: ALL-mode means every HOSTING node. A node that does not host the
+        /// slice has no bridge to fire through and used to write a failure state every interval.
+        @Test
+        void allMode_nonHostingNode_registersNoTimerAndWritesNoState() {
+            stubInvoker.setHosted(artifact, false);
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).as("#273: a non-hosting node registers no ALL-mode timer").isZero();
+            settle(2_500);
+            assertThat(invocations).as("no fire from a non-hosting node over ≥2 intervals").isEmpty();
+            assertThat(stateWrites).as("no state write from a non-hosting node over ≥2 intervals").isEmpty();
+        }
+
+        /// #272 R12 (a): SINGLE-mode stays leader-owned and is NOT gated on hosting — the leader fires
+        /// it as a `Unit` fire-and-forget the invoker can encode without a local bridge.
+        @Test
+        void singleMode_leaderNotHosting_stillStartsAndFires() {
+            stubInvoker.setHosted(artifact, false);
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.SINGLE);
+            becomeLeader();
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+            awaitTrue(() -> invocations.size() >= 2, 4_000);
+            assertThat(invocations).allMatch(record -> record.message() instanceof Unit);
+        }
+
+        /// #273 item 1: this node's own drain cancels its ALL-mode timers and no fire or state write
+        /// happens over >=2 intervals. Driven through [ScheduledTaskManager#onDrainInitiated] — the
+        /// method `DrainProcedure.initiate` invokes via `AetherNode`'s `drainInitiatedEmitter`. That the
+        /// real drain reaches this method is pinned separately, in `aether/node`, by
+        /// `ScheduledTaskDrainWiringBootTest`; this test owns only the manager's behaviour once it does.
+        @Test
+        void allMode_drainingSelf_stopsFiring() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+            manager.onDrainInitiated();
+            assertThat(manager.activeTimerCount()).as("#273: the drain cancels this node's ALL-mode timer").isZero();
+            var firesBefore = invocations.size();
+            var writesBefore = stateWrites.size();
+
+            settle(2_500);
+            assertThat(invocations).as("no fire while draining over >=2 intervals").hasSize(firesBefore);
+            assertThat(stateWrites).as("no state write while draining over >=2 intervals").hasSize(writesBefore);
+        }
+
+        /// #273 item 1, the `!draining` term of `hostingAndNotDraining` rather than the cancel: a drained
+        /// node must not RE-register an ALL-mode timer. `startEligibleTasks` runs again on every
+        /// Following/Leading re-entry and on any registry change, both of which outlive the drain's start
+        /// (the grace window is 30s by default). Round 1 left this unpinned — dropping the `!draining`
+        /// term reddened nothing, because the only drain test asserted the cancel, which
+        /// `cancelAllModeTimers` performs on its own.
+        @Test
+        void allMode_drainingSelf_doesNotReRegisterOnQuorumReEntryOrRegistryChange() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).isEqualTo(1);
+            manager.onDrainInitiated();
+            assertThat(manager.activeTimerCount()).isZero();
+
+            loseQuorum();
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).as("a Following re-entry must not re-register while draining")
+                      .isZero();
+
+            putTask("cache", artifact, MethodName.methodName("refresh").unwrap(), self, "1s", ExecutionMode.ALL);
+            assertThat(manager.activeTimerCount()).as("a registry change must not register a new timer while draining")
+                      .isZero();
+
+            var firesBefore = invocations.size();
+
+            settle(2_500);
+            assertThat(invocations).as("no fire after re-entry while draining over >=2 intervals").hasSize(firesBefore);
+        }
+
+        /// The opposite direction of the same gate, and the reason it is not simply "exclude everyone":
+        /// a hosting node that is NOT draining keeps firing after the very same re-entry the test above
+        /// drives. Without this control, a predicate that returned `false` unconditionally would satisfy
+        /// every drain assertion above while silently stopping the feature on every node.
+        @Test
+        void allMode_notDraining_stillFiresAfterQuorumReEntry() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            loseQuorum();
+            establishQuorum();
+            assertThat(manager.activeTimerCount()).as("a hosting, non-draining node re-registers on re-entry")
+                      .isEqualTo(1);
+
+            var firesBefore = invocations.size();
+
+            awaitTrue(() -> invocations.size() >= firesBefore + 2, 6_000);
+            assertThat(invocations.size()).as("and keeps firing").isGreaterThan(firesBefore);
+        }
+
+        /// Fire-time guard: hosting can end without a registry change (the slice unloaded here while
+        /// another replica keeps the cluster-scoped key). A tick on a no-longer-hosting node is skipped
+        /// without a state write.
+        @Test
+        void allMode_hostingLostAfterTimerStart_ticksAreSkippedSilently() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            stubInvoker.setHosted(artifact, false);
+            var firesBefore = invocations.size();
+            var writesBefore = stateWrites.size();
+
+            settle(2_500);
+            assertThat(invocations).hasSize(firesBefore);
+            assertThat(stateWrites).hasSize(writesBefore);
         }
 
         @Test
         void singleMode_onlyStartsOnLeader() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.SINGLE);
             establishQuorum();
-
             // Not a leader — SINGLE mode should NOT start
             assertThat(manager.activeTimerCount()).isEqualTo(0);
-
             becomeLeader();
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
     }
@@ -119,9 +269,7 @@ class ScheduledTaskManagerTest {
         void onLeaderChange_becomesLeader_startsSingleModeTasks() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.SINGLE);
             establishQuorum();
-
             becomeLeader();
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
@@ -131,9 +279,7 @@ class ScheduledTaskManagerTest {
             establishQuorum();
             becomeLeader();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             loseLeadership();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -143,9 +289,7 @@ class ScheduledTaskManagerTest {
         @Test
         void onQuorumStateChange_established_enablesExecution() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
-
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
@@ -154,9 +298,7 @@ class ScheduledTaskManagerTest {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             loseQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -166,10 +308,10 @@ class ScheduledTaskManagerTest {
         @Test
         void activeTimerCount_reflectsRunningTimers() {
             var method2 = MethodName.methodName("refresh").unwrap();
+
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             putTask("metrics", artifact, method2, self, "1m", ExecutionMode.ALL);
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(2);
         }
 
@@ -178,9 +320,7 @@ class ScheduledTaskManagerTest {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             manager.stop();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -190,10 +330,77 @@ class ScheduledTaskManagerTest {
         @Test
         void registryChange_taskAdded_startsTimer() {
             establishQuorum();
-
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
+        }
+
+        /// #1723: the task is removed while its newest fire is unknown: the open outcome is cleared with it (the committed
+        /// change tells the operator `task-removed`), the counters and the sequence stay, and a task registered again
+        /// starts with a fresh condition instead of inheriting the UNKNOWN.
+        @Test
+        void registryChange_taskRemoved_withOpenUnknown_clearsTheOutcome_keepingTheCounters() {
+            var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+            var unknownRow = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0, 1_000L);
+
+            stateMap.put(stateKey, unknownRow);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            var remove = new KVCommand.Remove<ScheduledTaskKey>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method));
+
+            registry.onScheduledTaskRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(remove,
+                                                                                                                      Option.none()));
+            var cleared = stateMap.get(stateKey);
+
+            assertThat(cleared.outcomeUnknown()).as("the open UNKNOWN ends with the task").isFalse();
+            assertThat(cleared.lastOutcome()).isEmpty();
+            assertThat(cleared.completionTimeouts()).as("the history stays").isEqualTo(unknownRow.completionTimeouts());
+            assertThat(cleared.fireSeq()).as("the sequence continues").isEqualTo(unknownRow.fireSeq());
+            assertThat(((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).submittedRowCount()).as("nothing in flight is kept for a removed task").isZero();
+        }
+
+        /// A removal with nothing unknown writes nothing.
+        /// #1723: a per-node (ALL-mode) row whose node left the cluster for good while its newest fire was unknown will never
+        /// be written again: the LEADER closes it on the committed removal (the announcer turns that into RESTORED
+        /// `node-departed`). A follower writes nothing; a node with no open UNKNOWN is left alone.
+        @Test
+        void nodeRemoved_leaderClosesTheDepartedNodesOpenUnknown_followerDoesNot() {
+            var gone = new NodeId("node-gone");
+            var goneKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, gone);
+            var otherKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, new NodeId("node-other"));
+            var unknownRow = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0, 1_000L);
+
+            stateMap.put(goneKey, unknownRow);
+            stateMap.put(otherKey, unknownRow);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            var departed = new MembershipDecision.NodeRemoved(gone, java.util.List.of(), 1L, org.pragmatica.hlc.HlcTimestamp.ZERO);
+
+            manager.onNodeRemoved(departed);
+            assertThat(stateMap.get(goneKey).outcomeUnknown()).as("a follower writes nothing").isTrue();
+
+            becomeLeader();
+            manager.onNodeRemoved(departed);
+
+            assertThat(stateMap.get(goneKey).lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_NODE_DEPARTED);
+            assertThat(stateMap.get(goneKey).completionTimeouts()).as("history stays").isEqualTo(unknownRow.completionTimeouts());
+            assertThat(stateMap.get(otherKey).outcomeUnknown()).as("another node's row is untouched").isTrue();
+            assertThat(((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).submittedRowCount()).as("nothing in flight is kept for a departed node's row").isZero();
+        }
+
+        @Test
+        void registryChange_taskRemoved_withoutOpenUnknown_writesNothing() {
+            var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            stateMap.put(stateKey, ScheduledTaskStateValue.successState(Option.none(), 0, 1_000L));
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            var writesBefore = stateWrites.size();
+            var remove = new KVCommand.Remove<ScheduledTaskKey>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method));
+
+            registry.onScheduledTaskRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(remove,
+                                                                                                                      Option.none()));
+
+            assertThat(stateWrites).hasSize(writesBefore);
         }
 
         @Test
@@ -201,11 +408,11 @@ class ScheduledTaskManagerTest {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             var key = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
             var remove = new KVCommand.Remove<ScheduledTaskKey>(key);
-            registry.onScheduledTaskRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(remove, Option.none()));
 
+            registry.onScheduledTaskRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(remove,
+                                                                                                                      Option.none()));
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -214,16 +421,22 @@ class ScheduledTaskManagerTest {
     class IntervalParserTests {
         @Test
         void parse_validFormats_parsed() {
-            assertParsedInterval("30s", TimeSpan.timeSpan(30).seconds());
-            assertParsedInterval("5m", TimeSpan.timeSpan(5).minutes());
-            assertParsedInterval("1h", TimeSpan.timeSpan(1).hours());
-            assertParsedInterval("2d", TimeSpan.timeSpan(2).days());
+            assertParsedInterval("30s",
+                                 TimeSpan.timeSpan(30).seconds());
+            assertParsedInterval("5m",
+                                 TimeSpan.timeSpan(5).minutes());
+            assertParsedInterval("1h",
+                                 TimeSpan.timeSpan(1).hours());
+            assertParsedInterval("2d",
+                                 TimeSpan.timeSpan(2).days());
         }
 
         @Test
         void parse_weeks_parsed() {
-            assertParsedInterval("1w", TimeSpan.timeSpan(7).days());
-            assertParsedInterval("2w", TimeSpan.timeSpan(14).days());
+            assertParsedInterval("1w",
+                                 TimeSpan.timeSpan(7).days());
+            assertParsedInterval("2w",
+                                 TimeSpan.timeSpan(14).days());
         }
 
         @Test
@@ -237,12 +450,15 @@ class ScheduledTaskManagerTest {
 
         private void assertParsedInterval(String input, TimeSpan expected) {
             var result = ScheduledTaskManager.IntervalParser.parse(input);
-            result.onFailure(cause -> org.junit.jupiter.api.Assertions.fail("Expected success for '" + input + "': " + cause.message()))
+
+            result.onFailure(cause -> org.junit.jupiter.api.Assertions.fail("Expected success for '" + input
+                                                                           + "': " + cause.message()))
                   .onSuccess(ts -> assertThat(ts.nanos()).isEqualTo(expected.nanos()));
         }
 
         private void assertParseFailure(String input) {
             var result = ScheduledTaskManager.IntervalParser.parse(input);
+
             result.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("Expected failure for '" + input + "'"));
         }
     }
@@ -253,7 +469,6 @@ class ScheduledTaskManagerTest {
         void pausedTask_preventsTimerCreation() {
             putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
 
@@ -262,11 +477,59 @@ class ScheduledTaskManagerTest {
             putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(0);
-
-            // Resume by putting non-paused task
-            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
-
+            // Resume = the operator's pause key is removed
+            removePause("cache", artifact, method);
             assertThat(manager.activeTimerCount()).isEqualTo(1);
+        }
+
+        /// After a restore the pause key is back BEFORE slice activation republishes the task. The
+        /// registry must remember it and apply it when the task registers.
+        @Test
+        void pauseArrivingBeforeItsTask_isAppliedWhenTheTaskRegisters() {
+            putPause("cache", artifact, method);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).isEqualTo(0);
+            assertThat(registry.allTasks()).singleElement()
+                                           .matches(ScheduledTask::paused);
+        }
+
+        /// Republishing the task (slice reactivation) writes only `ScheduledTaskKey`; the pause stays.
+        @Test
+        void republishOfAPausedTask_keepsItPaused() {
+            putPausedTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).isEqualTo(0);
+        }
+
+        /// Simulated cold restart: the paused task's KV state is backed up, decoded, and applied to a fresh
+        /// registry; the runtime `ScheduledTaskKey` is excluded from the backup and republished by activation.
+        @Test
+        void pause_survivesABackupRestore() {
+            var taskKey = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
+            var pauseKey = ScheduledTaskPauseKey.scheduledTaskPauseKey(taskKey);
+            var codec = BackupEntryCodec.backupEntryCodec(SliceCodec.sliceCodec(FrameworkCodecs.frameworkCodecs(),
+                                                                                KvstoreCodecsSlice.CODECS));
+            var live = Map.<AetherKey, AetherValue> of(taskKey,
+                                                       ScheduledTaskValue.intervalTask(self, "30s", ExecutionMode.ALL),
+                                                       pauseKey,
+                                                       ScheduledTaskPauseValue.scheduledTaskPauseValue(1L));
+            var restored = codec.encode(1L, live)
+                                .flatMap(codec::decode)
+                                .unwrap()
+                                .entries();
+
+            assertThat(restored).containsOnlyKeys(pauseKey);
+            restored.forEach(ScheduledTaskManagerTest.this::applyRestored);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+
+            assertThat(manager.activeTimerCount()).as("the restored pause holds the republished task").isEqualTo(0);
+            removePause("cache", artifact, method);
+            assertThat(manager.activeTimerCount()).as("resume after restore clears it").isEqualTo(1);
         }
     }
 
@@ -276,7 +539,6 @@ class ScheduledTaskManagerTest {
         void cronTask_registersActiveTimer() {
             putCronTask("cleanup", artifact, method, self, "0 * * * *", ExecutionMode.ALL);
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
@@ -284,7 +546,6 @@ class ScheduledTaskManagerTest {
         void cronTask_invalidCron_skipsTimer() {
             putCronTask("cleanup", artifact, method, self, "invalid cron", ExecutionMode.ALL);
             establishQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
 
@@ -293,9 +554,7 @@ class ScheduledTaskManagerTest {
             putCronTask("cleanup", artifact, method, self, "0 * * * *", ExecutionMode.ALL);
             establishQuorum();
             assertThat(manager.activeTimerCount()).isEqualTo(1);
-
             loseQuorum();
-
             assertThat(manager.activeTimerCount()).isEqualTo(0);
         }
     }
@@ -309,66 +568,620 @@ class ScheduledTaskManagerTest {
         }
     }
 
-    private void putPausedTask(String configSection, Artifact artifact, MethodName method,
-                               NodeId node, String interval, ExecutionMode executionMode) {
+    /// Exercises the REAL fixed-rate timer through [SharedScheduler] end to end — no
+    /// internal `TaskOps` hook is used. `"1s"` is [IntervalParser]'s minimum granularity, so
+    /// these tests run on real wall-clock ticks; [#awaitTrue] polls the SAME `stateMap` that
+    /// production code writes to, giving a genuine happens-before edge (`ConcurrentHashMap`'s
+    /// documented put-then-get guarantee) instead of racing on an unrelated field.
+    @Nested
+    class FireBehavior {
+        @Test
+        void fixedRate_twoFires_accumulatesTotalExecutions() {
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 2)
+                                    .or(false),
+                      4000);
+            manager.stop();  // freeze — no further tick can land between detection and assertion
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.totalExecutions()).isEqualTo(2);
+            assertThat(state.consecutiveFailures()).isZero();
+            assertThat(state.nextFireAt()).isGreaterThan(0L);
+        }
+
+        @Test
+        void fixedRate_failThenSucceed_consecutiveFailuresTracksThenResets() {
+            Cause boom = () -> "boom";
+
+            stubInvoker.setFailureCause(Option.some(boom));
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1)
+                                    .or(false),
+                      4000);
+            var afterFailure = stateFor(key).unwrap();
+
+            assertThat(afterFailure.consecutiveFailures()).isEqualTo(1);
+            assertThat(afterFailure.totalExecutions()).isZero();
+            assertThat(afterFailure.lastFailureMessage()).isEqualTo("boom");
+            stubInvoker.setFailureCause(Option.none());
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() == 0)
+                                    .or(false),
+                      4000);
+            manager.stop();
+            var afterSuccess = stateFor(key).unwrap();
+
+            assertThat(afterSuccess.consecutiveFailures()).isZero();
+            assertThat(afterSuccess.totalExecutions()).isEqualTo(1);
+        }
+
+        /// #1723: the fire is judged by the callee's COMPLETION, not by the request being handed to the transport. Here
+        /// `invoke` (fire-and-forget) would resolve at once, but the callee fails: the task must record a failure and
+        /// must not count an execution. Reverted to `invoke`, the fire reads as a success and this goes red.
+        @Test
+        void fixedRate_calleeThatFailsAfterTheRequestWasAccepted_isAFailureNotAnExecution() {
+            Cause calleeFailed = () -> "callee failed after the request was accepted";
+
+            stubInvoker.setCompletionFailure(Option.some(calleeFailed));
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1)
+                                    .or(false),
+                      4000);
+            manager.stop();
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.totalExecutions()).as("a fire the callee did not complete is not an execution").isZero();
+            assertThat(state.lastFailureMessage()).isEqualTo("callee failed after the request was accepted");
+        }
+
+        /// #1723 (CTO ruling): a remote fire that times out has an UNKNOWN outcome, recorded as such: not an execution,
+        /// not a failure (the failure streak is neither extended nor reset), counted in `completionTimeouts`, and logged once
+        /// per transition into the state, not per fire. A later completed fire leaves the state and is logged once.
+        @Test
+        void fixedRate_remoteFireWithNoResponse_recordsUnknown_notAFailureNotAnExecution_andLogsOnce() throws Exception {
+            var warnings = new java.util.concurrent.CopyOnWriteArrayList<String>();
+            var detach = LogCapture.warningsOf(Class.forName("org.pragmatica.aether.invoke.ScheduledTaskManager$TaskOps"), warnings);
+
+            try {
+                Cause unknown = SliceInvokerError.CompletionUnknown.completionUnknown(artifact, method, () -> "no response in 20000ms");
+
+                stubInvoker.setCompletionFailure(Option.some(unknown));
+                putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+                establishQuorum();
+                var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+                awaitTrue(() -> stateFor(key).map(v -> v.completionTimeouts() >= 3)
+                                        .or(false),
+                          15000);
+                manager.stop();
+                var state = stateFor(key).unwrap();
+
+                assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_UNKNOWN);
+                assertThat(state.totalExecutions()).as("unknown is not an execution").isZero();
+                assertThat(state.consecutiveFailures()).as("unknown is not a failure").isZero();
+                assertThat(state.lastFailureMessage()).as("no failure was recorded").isEmpty();
+                assertThat(warnings.stream().filter(message -> message.contains("outcome UNKNOWN")))
+                    .as("logged once per transition into UNKNOWN, not per fire (%d fires)", state.completionTimeouts())
+                    .hasSize(1);
+            } finally {
+                detach.run();
+            }
+        }
+
+        /// #1723 (owner ruling N1): the callee's response arrives after the fire was recorded UNKNOWN. It is that fire's
+        /// real outcome: the fire becomes an execution, is counted in `lateResolutions`, and the task leaves UNKNOWN.
+        @Test
+        void fixedRate_lateSuccessResponse_resolvesTheUnknownFire_intoAnExecution() {
+            var key = unknownTaskState(1);
+            var before = stateFor(key).unwrap();
+
+            stubInvoker.lateOutcomes.getLast().succeed(Unit.unit());
+            awaitLate(key, v -> ScheduledTaskStateValue.OUTCOME_SUCCESS.equals(v.lastOutcome()));
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_SUCCESS);
+            assertThat(state.totalExecutions()).as("the late answer makes the fire an execution").isEqualTo(1);
+            assertThat(state.lateResolutions()).as("a late answer is counted").isEqualTo(before.lateResolutions() + 1);
+            assertThat(state.completionTimeouts()).as("the timeout total is monotonic").isEqualTo(before.completionTimeouts());
+            assertThat(state.consecutiveFailures()).isZero();
+            assertThat(state.nextFireAt()).as("the schedule is untouched").isEqualTo(before.nextFireAt());
+        }
+
+        @Test
+        void fixedRate_lateFailureResponse_resolvesTheUnknownFire_intoAFailure() {
+            var key = unknownTaskState(1);
+            var before = stateFor(key).unwrap();
+
+            stubInvoker.lateOutcomes.getLast().fail(() -> "callee failed late");
+            awaitLate(key, v -> ScheduledTaskStateValue.OUTCOME_FAILURE.equals(v.lastOutcome()));
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_FAILURE);
+            assertThat(state.consecutiveFailures()).as("the late answer makes the fire a failure").isEqualTo(1);
+            assertThat(state.lastFailureMessage()).isEqualTo("callee failed late");
+            assertThat(state.totalExecutions()).as("a failure is not an execution").isZero();
+            assertThat(state.lateResolutions()).isEqualTo(before.lateResolutions() + 1);
+        }
+
+        /// Only the answered fire is resolved: the others stay counted as unknown.
+        @Test
+        void fixedRate_lateResponse_resolvesOnlyItsOwnFire() {
+            var key = unknownTaskState(2);
+            var before = stateFor(key).unwrap();
+
+            stubInvoker.lateOutcomes.getFirst().succeed(Unit.unit());
+            awaitLate(key, v -> v.totalExecutions() == 1);
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.totalExecutions()).isEqualTo(1);
+            assertThat(state.lateResolutions()).as("only the answered fire is resolved").isEqualTo(1);
+            assertThat(state.completionTimeouts()).as("the unanswered fires stay counted as timeouts").isGreaterThanOrEqualTo(2);
+        }
+
+        /// #1723 ordering by FIRE: an older fire's late answer resolves ITS fire (the gauge falls) but never overwrites
+        /// the outcome a NEWER fire recorded. The newer fire is the row as written by a fire that succeeded after the
+        /// older one timed out.
+        @Test
+        void fixedRate_olderFireLateFailure_afterNewerFireSucceeded_keepsTheNewerSuccess() {
+            var key = unknownTaskState(1);
+            var unknown = stateFor(key).unwrap();
+            var newer = ScheduledTaskStateValue.successState(Option.some(unknown), unknown.nextFireAt(), unknown.newestFireAt() + 1);
+
+            stateMap.put(key, newer);
+            stubInvoker.lateOutcomes.getFirst().fail(() -> "old fire failed late");
+            awaitLate(key, v -> v.lateResolutions() > newer.lateResolutions());
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lateResolutions()).as("the old fire is resolved: counted").isEqualTo(newer.lateResolutions() + 1);
+            assertThat(state.lastOutcome()).as("the newer fire's definite outcome stands").isEqualTo(ScheduledTaskStateValue.OUTCOME_SUCCESS);
+            assertThat(state.consecutiveFailures()).as("an older failure does not extend the newer streak").isZero();
+            assertThat(state.totalExecutions()).isEqualTo(newer.totalExecutions());
+        }
+
+        /// The mirror: an older fire's late SUCCESS does not overwrite a newer fire's definite failure, but it still
+        /// counts as an execution.
+        @Test
+        void fixedRate_olderFireLateSuccess_afterNewerFireFailed_keepsTheNewerFailure() {
+            var key = unknownTaskState(1);
+            var unknown = stateFor(key).unwrap();
+            var newer = ScheduledTaskStateValue.failureState(Option.some(unknown), unknown.nextFireAt(), unknown.newestFireAt() + 1, "newer failed");
+
+            stateMap.put(key, newer);
+            stubInvoker.lateOutcomes.getFirst().succeed(Unit.unit());
+            awaitLate(key, v -> v.lateResolutions() > newer.lateResolutions());
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_FAILURE);
+            assertThat(state.consecutiveFailures()).as("an older success does not reset the newer streak").isEqualTo(newer.consecutiveFailures());
+            assertThat(state.lastFailureMessage()).isEqualTo("newer failed");
+            assertThat(state.totalExecutions()).as("it still executed").isEqualTo(newer.totalExecutions() + 1);
+        }
+
+        /// The late outcome is applied on the promise's own thread: wait for the write, bounded. A resolution that never
+        /// comes leaves the state as it was, and the assertions that follow report it.
+        private void awaitLate(ScheduledTaskStateKey key, java.util.function.Predicate<ScheduledTaskStateValue> resolved) {
+            var deadline = System.currentTimeMillis() + 3_000L;
+
+            while (!stateFor(key).map(resolved::test).or(false) && System.currentTimeMillis() < deadline) {
+                settle(20);
+            }
+        }
+
+        /// Fires an ALL-mode task whose every fire times out until at least `fires` are recorded, then stops the timers.
+        /// Each fire's late outcome is in `stubInvoker.lateOutcomes`, in fire order.
+        private ScheduledTaskStateKey unknownTaskState(int fires) {
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            stubInvoker.unknownWithLateOutcome.set(true);
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            awaitTrue(() -> stateFor(key).map(v -> v.completionTimeouts() >= fires)
+                                    .or(false),
+                      15000);
+            manager.stop();
+            assertThat(stateFor(key).unwrap().lastOutcome()).as("premise").isEqualTo(ScheduledTaskStateValue.OUTCOME_UNKNOWN);
+
+            return key;
+        }
+
+        @Test
+        void fixedRate_unknownOutcome_leavesTheFailureStreakAlone() {
+            Cause boom = () -> "boom";
+
+            stubInvoker.setCompletionFailure(Option.some(boom));
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1)
+                                    .or(false),
+                      4000);
+            stubInvoker.setCompletionFailure(Option.some(SliceInvokerError.CompletionUnknown.completionUnknown(artifact, method, () -> "no response")));
+            awaitTrue(() -> stateFor(key).map(v -> v.completionTimeouts() >= 1)
+                                    .or(false),
+                      4000);
+            manager.stop();
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_UNKNOWN);
+            assertThat(state.consecutiveFailures()).as("an unknown outcome neither extends nor resets the streak").isGreaterThanOrEqualTo(1);
+            assertThat(state.lastFailureMessage()).as("it still describes the last real failure").isEqualTo("boom");
+        }
+
+        @Test
+        void fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution() {
+            var gate = Promise.<Unit> promise();
+
+            stubInvoker.holdNextInvocation(gate);
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            // First tick (~1s) blocks on `gate`: invoked, but never settles until released —
+            // this keeps ctx.inFlight claimed for the key past the second tick.
+            awaitTrue(() -> invocations.size() >= 1, 3000);
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+            // Second tick (~2s) must find the key still in-flight: recorded as a skip, no
+            // second invoke.
+            awaitTrue(() -> stateFor(key).map(v -> v.skippedOverlaps() >= 1)
+                                    .or(false),
+                      3000);
+            assertThat(invocations).as("overlap must be skipped, not executed").hasSize(1);
+            assertThat(stateFor(key).unwrap().skippedOverlaps()).isEqualTo(1);
+            assertThat(stateFor(key).unwrap().totalExecutions()).as("the blocked invocation has not settled yet")
+                      .isZero();
+            gate.succeed(Unit.unit());
+            awaitTrue(() -> stateFor(key).map(v -> v.totalExecutions() >= 1)
+                                    .or(false),
+                      3000);
+            manager.stop();
+            var finalState = stateFor(key).unwrap();
+
+            assertThat(finalState.totalExecutions()).isEqualTo(1);
+            assertThat(finalState.skippedOverlaps()).isEqualTo(1);
+            assertThat(invocations).hasSize(1);
+        }
+
+        private Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key) {
+            return Option.option(stateMap.get(key));
+        }
+    }
+
+    /// #841: ALL-mode runs independently on every node once quorum is established (no leader
+    /// election needed), so two nodes firing the SAME task identity concurrently must never
+    /// share one counter row — each writes under its own `ctx.self()`-scoped
+    /// `ScheduledTaskStateKey` into the (here, shared) backing map. Two separate
+    /// [ScheduledTaskManager] instances — one per node identity — are driven against their own
+    /// registries but the SAME `stateMap`, mirroring the shared cluster-wide KVStore a real
+    /// deployment would replicate to both nodes; a lost update would show up as one node's row
+    /// missing or its count stuck below the fire count actually observed.
+    @Nested
+    class MultiNodeStateIsolation {
+        @Test
+        void allModeTask_twoNodesFiringConcurrently_eachNodeOwnsDistinctCounterRow() {
+            var nodeB = new NodeId("node-other");
+            var registryB = ScheduledTaskRegistry.scheduledTaskRegistry();
+            var invocationsB = new CopyOnWriteArrayList<InvocationRecord>();
+            var stubInvokerB = new StubSliceInvoker(invocationsB, Option.none());
+            var leaderManagerB = new TestLeaderManager(nodeB);
+            Consumer<KVCommand<AetherKey>> stateWriterB = command -> {
+                if (command instanceof KVCommand.Put<AetherKey, ?> put
+                    && put.key() instanceof ScheduledTaskStateKey stateKey
+                    && put.value() instanceof ScheduledTaskStateValue stateValue) {
+                    stateMap.put(stateKey, stateValue);
+                }
+            };
+            var managerB = ScheduledTaskManager.scheduledTaskManager(registryB,
+                                                                     stubInvokerB,
+                                                                     nodeB,
+                                                                     stateWriterB,
+                                                                     key -> Option.option(stateMap.get(key)),
+                                                                     leaderManagerB);
+
+            try {
+                putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+                establishQuorum();
+                var putB = new KVCommand.Put<>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method),
+                                               ScheduledTaskValue.intervalTask(nodeB, "1s", ExecutionMode.ALL));
+
+                registryB.onScheduledTaskPut(new ValuePut<>(putB, Option.none()));
+                managerB.onQuorumStateChange(ClusterStateNotification.active());
+                var keyA = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+                var keyB = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, nodeB);
+
+                awaitTrue(() -> stateFor(keyA).map(v -> v.totalExecutions() >= 2)
+                                        .or(false),
+                          4000);
+                awaitTrue(() -> stateFor(keyB).map(v -> v.totalExecutions() >= 2)
+                                        .or(false),
+                          4000);
+                manager.stop();
+                managerB.stop();
+                assertThat(stateFor(keyA).unwrap().totalExecutions()).isEqualTo(2);
+                assertThat(stateFor(keyB).unwrap().totalExecutions()).isEqualTo(2);
+                assertThat(stateMap).as("both nodes' rows must survive side by side").containsKeys(keyA, keyB);
+            } finally {
+                managerB.stop();
+            }
+        }
+
+        private Option<ScheduledTaskStateValue> stateFor(ScheduledTaskStateKey key) {
+            return Option.option(stateMap.get(key));
+        }
+    }
+
+    /// Pins #273 review item 1: `ScheduledTaskManager.tryClaim`/`release` is the SAME
+    /// `ctx.inFlight` guard `TaskOps` uses for automatic fires, so a manual trigger
+    /// (`ScheduledTaskRoutes#invokeAndBuildResult`) can never run concurrently with one.
+    @Nested
+    class TriggerGuard {
+        @Test
+        void tryClaim_fixedRateInFlight_refusesClaimUntilReleased() {
+            var gate = Promise.<Unit> promise();
+
+            stubInvoker.holdNextInvocation(gate);
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            var key = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
+            var ctx = ((ScheduledTaskManagerAdapter) manager).ctx();
+            // First tick (~1s) blocks on `gate`: ctx.inFlight is claimed for the key and stays
+            // claimed until the gate is released.
+            awaitTrue(() -> invocations.size() >= 1, 3000);
+            assertThat(manager.tryClaim(key)).as("an automatic fire is in flight — a manual trigger must be refused")
+                      .isFalse();
+            gate.succeed(Unit.unit());
+            awaitTrue(() -> !ctx.inFlight.contains(key), 3000);
+            manager.stop();  // freeze — no further tick can land between release and the assertion below
+            assertThat(manager.tryClaim(key)).as("the automatic fire settled and released its claim").isTrue();
+            manager.release(key);
+        }
+
+        @Test
+        void tryClaim_cronInFlight_refusesClaimUntilReleased() {
+            var adapter = (ScheduledTaskManagerAdapter) manager;
+            var ctx = adapter.ctx();
+            var key = ScheduledTaskKey.scheduledTaskKey("cache", artifact, method);
+            var task = new ScheduledTaskRegistry.ScheduledTask("cache",
+                                                               artifact,
+                                                               method,
+                                                               self,
+                                                               "",
+                                                               "0 * * * *",
+                                                               ExecutionMode.ALL,
+                                                               false);
+            var cron = CronExpression.parse(task.cron()).unwrap();
+            var gate = Promise.<Unit> promise();
+
+            stubInvoker.holdNextInvocation(gate);
+            // Drives the widened TaskOps.executeCronTask directly — cron's minute-granularity
+            // delayUntilNext makes waiting on a real timer tick impractically slow for a unit
+            // test. The task/timer is never registered, so releasing the gate below settles the
+            // invocation without arming a real next-fire timer.
+            ScheduledTaskManager.TaskOps.executeCronTask(ctx, key, task, cron);
+            assertThat(manager.tryClaim(key)).as("a cron fire is in flight — a manual trigger must be refused")
+                      .isFalse();
+            gate.succeed(Unit.unit());
+            awaitTrue(() -> !ctx.inFlight.contains(key), 3000);
+            assertThat(manager.tryClaim(key)).as("the cron fire settled and released its claim").isTrue();
+            manager.release(key);
+        }
+    }
+
+    private void putPausedTask(String configSection,
+                               Artifact artifact,
+                               MethodName method,
+                               NodeId node,
+                               String interval,
+                               ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
-        var value = ScheduledTaskValue.intervalTask(node, interval, executionMode).withPaused(true);
+        var value = ScheduledTaskValue.intervalTask(node, interval, executionMode);
         var put = new KVCommand.Put<>(key, value);
+
+        putPause(configSection, artifact, method);
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }
 
-    private void putCronTask(String configSection, Artifact artifact, MethodName method,
-                             NodeId node, String cron, ExecutionMode executionMode) {
+    private void putPause(String configSection, Artifact artifact, MethodName method) {
+        var put = new KVCommand.Put<>(ScheduledTaskPauseKey.scheduledTaskPauseKey(configSection, artifact, method),
+                                      ScheduledTaskPauseValue.scheduledTaskPauseValue(1L));
+
+        registry.onScheduledTaskPausePut(new ValuePut<>(put, Option.none()));
+    }
+
+    private void removePause(String configSection, Artifact artifact, MethodName method) {
+        var remove = new KVCommand.Remove<ScheduledTaskPauseKey>(ScheduledTaskPauseKey.scheduledTaskPauseKey(configSection,
+                                                                                                             artifact,
+                                                                                                             method));
+
+        registry.onScheduledTaskPauseRemove(new ValueRemove<>(remove, Option.none()));
+    }
+
+    private void applyRestored(AetherKey key, AetherValue value) {
+        if (key instanceof ScheduledTaskPauseKey pauseKey && value instanceof ScheduledTaskPauseValue pause) {
+            registry.onScheduledTaskPausePut(new ValuePut<>(new KVCommand.Put<>(pauseKey, pause), Option.none()));
+        }
+    }
+
+    private void putCronTask(String configSection,
+                             Artifact artifact,
+                             MethodName method,
+                             NodeId node,
+                             String cron,
+                             ExecutionMode executionMode) {
         var key = ScheduledTaskKey.scheduledTaskKey(configSection, artifact, method);
         var value = ScheduledTaskValue.cronTask(node, cron, executionMode);
         var put = new KVCommand.Put<>(key, value);
+
         registry.onScheduledTaskPut(new ValuePut<>(put, Option.none()));
     }
 
+    /// Lets `millis` of wall time pass so a negative ("nothing fired") covers ≥2 one-second intervals.
+    private static void settle(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void awaitTrue(BooleanSupplier condition, long timeoutMs) {
+        var deadline = System.currentTimeMillis() + timeoutMs;
+
+        while (!condition.getAsBoolean()) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new AssertionError("Condition not satisfied within " + timeoutMs + "ms");
+            }
+
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
     /// Minimal stub implementing only the invoke methods used by ScheduledTaskManager.
+    /// `failureCause` is mutable (fail-then-succeed sequencing) and `pendingGate` is a
+    /// one-shot hook: when set, the NEXT `invoke()` call returns that exact (unresolved)
+    /// `Promise` instead of an already-resolved one, letting a test hold an invocation
+    /// "in flight" across a subsequent timer tick to exercise overlap detection.
     static final class StubSliceInvoker implements SliceInvoker {
         private final CopyOnWriteArrayList<InvocationRecord> invocations;
-        private final Option<Cause> failureCause;
+        private final AtomicReference<Option<Cause>> failureCause;
+        private final AtomicReference<Promise<Unit>> pendingGate = new AtomicReference<>();
+        /// #272/#273: the stub models a node that HOSTS every slice unless told otherwise, so the
+        /// pre-existing ALL-mode tests keep their meaning (every node = every hosting node).
+        private final Set<Artifact> notHosted = ConcurrentHashMap.newKeySet();
 
         public StubSliceInvoker(CopyOnWriteArrayList<InvocationRecord> invocations, Option<Cause> failureCause) {
             this.invocations = invocations;
-            this.failureCause = failureCause;
+            this.failureCause = new AtomicReference<>(failureCause);
+        }
+
+        void setFailureCause(Option<Cause> cause) {
+            failureCause.set(cause);
+        }
+
+        void holdNextInvocation(Promise<Unit> gate) {
+            pendingGate.set(gate);
+        }
+
+        void setHosted(Artifact slice, boolean hosted) {
+            if (hosted) {
+                notHosted.remove(slice);
+            } else {
+                notHosted.add(slice);
+            }
+        }
+
+        @Override
+        public boolean hasLocalSlice(Artifact slice) {
+            return ! notHosted.contains(slice);
         }
 
         @Override
         public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
             invocations.add(new InvocationRecord(slice, method, request));
-            return failureCause.fold(Promise::unitPromise, Cause::promise);
+            var gate = pendingGate.getAndSet(null);
+
+            if (gate != null) {
+                return gate;
+            }
+
+            return failureCause.get()
+                               .fold(Promise::unitPromise, Cause::promise);
+        }
+
+        /// #1723: a REMOTE callee that is handed the request (so `invoke` resolves, as fire-and-forget does on enqueue) but
+        /// then fails or never answers: only the completion-aware call sees that. Unset, it behaves as `invoke`.
+        private final AtomicReference<Option<Cause>> completionFailure = new AtomicReference<>(Option.none());
+
+        void setCompletionFailure(Option<Cause> cause) {
+            completionFailure.set(cause);
+        }
+
+        /// #1723 N1: when set, every completion-awaited fire times out (UNKNOWN) and its late outcome is kept here, in
+        /// fire order, for the test to settle as the callee's late response would.
+        final java.util.concurrent.atomic.AtomicBoolean unknownWithLateOutcome = new java.util.concurrent.atomic.AtomicBoolean();
+        final CopyOnWriteArrayList<Promise<Unit>> lateOutcomes = new CopyOnWriteArrayList<>();
+
+        /// #1930: when set, every completion-awaited fire returns THIS promise (a fire that is still running), until it is cleared.
+        final java.util.concurrent.atomic.AtomicReference<Promise<Unit>> heldCompletion = new java.util.concurrent.atomic.AtomicReference<>();
+
+        @Override
+        public Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
+            var held = heldCompletion.get();
+
+            if (held != null) {
+                invocations.add(new InvocationRecord(slice, method, request));
+
+                return held;
+            }
+
+            if (unknownWithLateOutcome.get()) {
+                var lateOutcome = Promise.<Unit> promise();
+
+                invocations.add(new InvocationRecord(slice, method, request));
+                lateOutcomes.add(lateOutcome);
+
+                return SliceInvokerError.CompletionUnknown.completionUnknown(slice, method, () -> "no response", lateOutcome).promise();
+            }
+
+            return completionFailure.get()
+                                    .fold(() -> invoke(slice, method, request),
+                                          cause -> {
+                                              invocations.add(new InvocationRecord(slice, method, request));
+
+                                              return cause.promise();
+                                          });
         }
 
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
             invocations.add(new InvocationRecord(slice, method, request));
-            return failureCause.fold(() -> (Promise<R>) Promise.unitPromise(), Cause::promise);
+
+            return failureCause.get()
+                               .fold(() -> (Promise<R>) Promise.unitPromise(),
+                                     Cause::promise);
         }
 
         // --- Unused methods — minimal stubs for compilation ---
-
         @Override
         public Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method) {
             return Result.unitResult();
         }
 
         @Override
-        public <R> Promise<R> invokeWithRetry(Artifact slice, MethodName method, Object request,
-                                               TypeToken<R> responseType, int maxRetries) {
+        public <R> Promise<R> invokeWithRetry(Artifact slice,
+                                              MethodName method,
+                                              Object request,
+                                              TypeToken<R> responseType,
+                                              int maxRetries) {
             return invoke(slice, method, request, responseType);
         }
 
         @Override
-        public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request,
-                                           TypeToken<R> responseType) {
+        public <R> Promise<R> invokeLocal(Artifact slice,
+                                          MethodName method,
+                                          Object request,
+                                          TypeToken<R> responseType) {
             return invoke(slice, method, request, responseType);
         }
 
         @Override
         public void onInvokeResponse(org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse response) {}
+
+        @Override
+        public org.pragmatica.lang.Unit onNodeDeparture(org.pragmatica.consensus.NodeId node) { return org.pragmatica.lang.Unit.unit(); }
 
         @Override
         public void onNodeRemoved(org.pragmatica.consensus.topology.MembershipDecision.NodeRemoved event) {}
@@ -389,14 +1202,9 @@ class ScheduledTaskManagerTest {
             return 0;
         }
 
-        @Override
-        public Unit setFailureListener(SliceFailureListener listener) {
-            return Unit.unit();
-        }
 
         @Override
-        public Unit registerAffinityResolver(Artifact artifact, MethodName method,
-                                              CacheAffinityResolver resolver) {
+        public Unit registerAffinityResolver(Artifact artifact, MethodName method, CacheAffinityResolver resolver) {
             return Unit.unit();
         }
 
@@ -419,26 +1227,48 @@ class ScheduledTaskManagerTest {
             this.leader = value;
         }
 
-        @Override public Option<NodeId> leader() {
-            return leader ? Option.some(self) : Option.none();
+        @Override
+        public Option<NodeId> leader() {
+            return leader
+                   ? Option.some(self)
+                   : Option.none();
         }
 
-        @Override public boolean isLeader() {
+        @Override
+        public boolean isLeader() {
             return leader;
         }
 
-        @Override public Option<Long> currentLeaderEpoch() {
+        @Override
+        public Option<Long> currentLeaderEpoch() {
             return Option.none();
         }
 
-        @Override public void onLeaderCommitted(NodeId leader) {}
-        @Override public void triggerElection() {}
-        @Override public void stop() {}
-        @Override public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
-        @Override public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
-        @Override public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
-        @Override public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
-        @Override public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
-        @Override public void watchClusterState(ClusterStateNotification q) {}
+        @Override
+        public void onLeaderCommitted(NodeId leader) {}
+
+        @Override
+        public void triggerElection() {}
+
+        @Override
+        public void stop() {}
+
+        @Override
+        public void peerJoined(org.pragmatica.consensus.topology.TransportObservation.PeerJoined p) {}
+
+        @Override
+        public void peerDisconnected(org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected p) {}
+
+        @Override
+        public void peerObservedFaulty(org.pragmatica.consensus.topology.TransportObservation.PeerObservedFaulty p) {}
+
+        @Override
+        public void peerReconnected(org.pragmatica.consensus.topology.TransportObservation.PeerReconnected p) {}
+
+        @Override
+        public void selfShutdown(org.pragmatica.consensus.topology.TransportObservation.SelfShutdown s) {}
+
+        @Override
+        public void watchClusterState(ClusterStateNotification q) {}
     }
 }

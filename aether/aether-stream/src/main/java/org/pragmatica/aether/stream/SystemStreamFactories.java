@@ -4,6 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.function.Function;
+
+import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -55,7 +58,7 @@ public final class SystemStreamFactories {
 
     /// Construct a {@link FrameworkStreamPublisher} for a system address backed by a local
     /// partition materialized from `config`. Use this overload when the stream needs the full set of
-    /// production knobs — `maxEventSizeBytes`, `consistencyMode`, `minSyncReplicas` — carried on the
+    /// production knobs — `maxEventSizeBytes`, `consistencyMode`, `confirmationFactor` — carried on the
     /// {@link StreamConfig} (e.g. `system:cluster-events`, B5b). The config's `name` must equal
     /// `address.asString()`.
     public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address,
@@ -63,11 +66,40 @@ public final class SystemStreamFactories {
                                                                                 Serializer serializer,
                                                                                 StreamConfig config) {
         ensureLocalPartition(partitionManager, config);
-        var transport = DefaultStreamPublisher.<T> streamPublisher(partitionManager,
-                                                                   serializer,
-                                                                   config.name(),
-                                                                   config.partitions(),
-                                                                   Option.none());
+        var transport = DefaultStreamPublisher.<T> systemStreamPublisher(partitionManager,
+                                                                         serializer,
+                                                                         config.name(),
+                                                                         config.partitions(),
+                                                                         Option.none());
+
+        return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
+    }
+
+    /// #1230: construct a forward-capable {@link FrameworkStreamPublisher} for a REPLICATED system address —
+    /// the write-side counterpart of the forward-capable consumer below. `system:cluster-events` has
+    /// whole-cluster RF, so EVERY node holds a replica ring; the local-only overloads above wire no forward
+    /// client, so every non-owner emit (`ClusterEventAggregator.emitAsLeader` / `emitLocal`) appended to its
+    /// replica ring as an undeclared second writer. This one threads the `forwardClient`, the partition-aware
+    /// HRW `partitionOwnerResolver` and the `self` id, so a non-owner write-forwards to the owner exactly like
+    /// an app-stream publish. The config's `name` must equal `address.asString()`.
+    public static <T> Result<FrameworkStreamPublisher<T>> systemStreamPublisher(ResourceAddress address,
+                                                                                StreamPartitionManager partitionManager,
+                                                                                Serializer serializer,
+                                                                                StreamConfig config,
+                                                                                Option<StreamForwardClient> forwardClient,
+                                                                                NodeId self,
+                                                                                Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver) {
+        ensureLocalPartition(partitionManager, config);
+        var transport = DefaultStreamPublisher.<T> systemStreamPublisher(partitionManager,
+                                                                         serializer,
+                                                                         config.name(),
+                                                                         config.partitions(),
+                                                                         Option.none(),
+                                                                         ConsistencyMode.EVENTUAL,
+                                                                         Option.none(),
+                                                                         forwardClient,
+                                                                         partitionOwnerResolver,
+                                                                         Option.some(self));
 
         return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
     }
@@ -140,11 +172,11 @@ public final class SystemStreamFactories {
                                                                                 int partitions,
                                                                                 RetentionPolicy retention) {
         ensureLocalPartition(address, partitionManager, partitions, retention);
-        var transport = DefaultStreamPublisher.<T> streamPublisher(partitionManager,
-                                                                   serializer,
-                                                                   address.asString(),
-                                                                   partitions,
-                                                                   Option.none());
+        var transport = DefaultStreamPublisher.<T> systemStreamPublisher(partitionManager,
+                                                                         serializer,
+                                                                         address.asString(),
+                                                                         partitions,
+                                                                         Option.none());
 
         return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
     }

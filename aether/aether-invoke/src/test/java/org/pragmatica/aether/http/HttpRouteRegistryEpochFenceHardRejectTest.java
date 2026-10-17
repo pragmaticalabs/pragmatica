@@ -36,7 +36,7 @@ class HttpRouteRegistryEpochFenceHardRejectTest {
         var source = new FixedTermSource(20L);
         var registry = HttpRouteRegistry.httpRouteRegistry(source);
 
-        registry.onNodeRoutesPut(putWithEpoch(NODE_A, Epoch.epoch(5L, 0L)));
+        registry.onNodeRoutesPut(putWithEpoch(NODE_A, Epoch.epoch(0L, 5L, 0L)));
 
         assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
         assertThat(registry.findRoute("GET", "/users/").isPresent())
@@ -50,8 +50,8 @@ class HttpRouteRegistryEpochFenceHardRejectTest {
         var source = new FixedTermSource(20L);
         var registry = HttpRouteRegistry.httpRouteRegistry(source);
 
-        registry.onNodeRoutesPut(putWithEpoch(NODE_A, Epoch.epoch(5L, 0L)));
-        registry.onNodeRoutesPut(putWithEpoch(NODE_B, Epoch.epoch(20L, 5L)));
+        registry.onNodeRoutesPut(putWithEpoch(NODE_A, Epoch.epoch(0L, 5L, 0L)));
+        registry.onNodeRoutesPut(putWithEpoch(NODE_B, Epoch.epoch(0L, 20L, 5L)));
 
         assertThat(registry.staleFenceObservationCount()).isEqualTo(1L);
         assertThat(registry.findRoute("GET", "/users/").isPresent())
@@ -66,9 +66,9 @@ class HttpRouteRegistryEpochFenceHardRejectTest {
         var source = new FixedTermSource(50L);
         var registry = HttpRouteRegistry.httpRouteRegistry(source);
 
-        registry.onNodeRoutesPut(putWithEpoch(NODE_A, Epoch.epoch(10L, 0L)));
-        registry.onNodeRoutesPut(putWithEpoch(NODE_A, Epoch.epoch(15L, 0L)));
-        registry.onNodeRoutesPut(putWithEpoch(NODE_B, Epoch.epoch(20L, 0L)));
+        registry.onNodeRoutesPut(putWithEpoch(NODE_A, Epoch.epoch(0L, 10L, 0L)));
+        registry.onNodeRoutesPut(putWithEpoch(NODE_A, Epoch.epoch(0L, 15L, 0L)));
+        registry.onNodeRoutesPut(putWithEpoch(NODE_B, Epoch.epoch(0L, 20L, 0L)));
 
         assertThat(registry.staleFenceObservationCount()).isEqualTo(3L);
         assertThat(registry.allRoutes()).isEmpty();

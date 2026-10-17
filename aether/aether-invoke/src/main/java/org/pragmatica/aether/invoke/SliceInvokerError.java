@@ -7,6 +7,8 @@ package org.pragmatica.aether.invoke;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
 public sealed interface SliceInvokerError extends Cause {
@@ -34,7 +36,37 @@ public sealed interface SliceInvokerError extends Cause {
         }
     }
 
-    record NoEndpointsError(Artifact artifact, MethodName method) implements SliceInvokerError {
+    /// #1723: a REMOTE call that asked the callee for its completion got no response within the invocation timeout. The
+    /// outcome is UNKNOWN, not a failure: the callee may not have received the request, may be running it still, or
+    /// may have completed it with the response lost. Callers that record outcomes (the scheduler) must not count it as
+    /// either an execution or a failure.
+    ///
+    /// `lateOutcome` settles if the callee's response arrives LATE: with success when the callee completed the call,
+    /// with the callee's failure otherwise. It never settles when no response arrives, or when the invoker no longer
+    /// retains the call (see `SliceInvokerImpl.LATE_COMPLETION_CAPACITY`): the outcome then stays unknown.
+    record CompletionUnknown(Artifact artifact, MethodName method, Cause timeout, Promise<Unit> lateOutcome) implements SliceInvokerError {
+        public static CompletionUnknown completionUnknown(Artifact artifact,
+                                                          MethodName method,
+                                                          Cause timeout,
+                                                          Promise<Unit> lateOutcome) {
+            return new CompletionUnknown(artifact, method, timeout, lateOutcome);
+        }
+
+        /// An unknown outcome that no late response will resolve.
+        public static CompletionUnknown completionUnknown(Artifact artifact, MethodName method, Cause timeout) {
+            return new CompletionUnknown(artifact, method, timeout, Promise.promise());
+        }
+
+        @Override
+        public String message() {
+            return "Outcome unknown for " + artifact
+                 + ":" + method
+                 + ": no response within the invocation timeout (" + timeout.message()
+                 + ")";
+        }
+    }
+
+    record NoEndpointsError(Artifact artifact, MethodName method) implements SliceInvokerError, Cause.Transient {
         public static NoEndpointsError noEndpointsError(Artifact artifact, MethodName method) {
             return new NoEndpointsError(artifact, method);
         }
@@ -67,7 +99,7 @@ public sealed interface SliceInvokerError extends Cause {
         }
     }
 
-    record TimeoutError(Artifact artifact, MethodName method, long timeoutMs) implements SliceInvokerError {
+    record TimeoutError(Artifact artifact, MethodName method, long timeoutMs) implements SliceInvokerError, Cause.Transient {
         public static TimeoutError timeoutError(Artifact artifact, MethodName method, long timeoutMs) {
             return new TimeoutError(artifact, method, timeoutMs);
         }

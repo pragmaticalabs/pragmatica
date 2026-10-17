@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.resource.interceptor;
 
@@ -83,6 +82,54 @@ class InMemoryCacheTest {
         }
     }
 
+    /// #279 (4): `put` evicted only EXPIRED entries when full and then inserted unconditionally, so
+    /// `maxEntries` bounded nothing for a hot cache — every entry live, every put growing the map.
+    @Nested
+    class Bound {
+        @Test
+        void put_beyondMaxEntries_withNothingExpired_evictsToStayWithinTheBound() {
+            var cache = InMemoryCache.inMemoryCache(60, 3);
+
+            for (int i = 0; i < 10; i++) {
+                cache.put("key" + i, "value" + i);
+            }
+
+            var present = 0;
+
+            for (int i = 0; i < 10; i++) {
+                present += getCached(cache, "key" + i).isPresent() ? 1 : 0;
+            }
+
+            assertThat(present).as("maxEntries is a cap, not a hint").isLessThanOrEqualTo(3);
+        }
+
+        @Test
+        void put_beyondMaxEntries_keepsTheMostRecentlyUsed() {
+            var cache = InMemoryCache.inMemoryCache(60, 2);
+
+            cache.put("a", "1");
+            cache.put("b", "2");
+            getCached(cache, "a");
+            cache.put("c", "3");
+
+            assertThat(getCached(cache, "a").isPresent()).as("a was touched after b, so b is the victim").isTrue();
+            assertThat(getCached(cache, "c").isPresent()).isTrue();
+            assertThat(getCached(cache, "b").isEmpty()).isTrue();
+        }
+
+        @Test
+        void put_overwriteAtTheBound_doesNotEvict() {
+            var cache = InMemoryCache.inMemoryCache(60, 2);
+
+            cache.put("a", "1");
+            cache.put("b", "2");
+            cache.put("a", "1'");
+
+            assertThat(getCached(cache, "a").or("missing")).isEqualTo("1'");
+            assertThat(getCached(cache, "b").isPresent()).isTrue();
+        }
+    }
+
     @Nested
     class Remove {
         @Test
@@ -109,6 +156,57 @@ class InMemoryCacheTest {
 
     @Nested
     class ConcurrentAccess {
+        /// Deterministic pin for the monitor (review of #1084, N-3): 16 threads hammering get/put/remove
+        /// over 200 keys into a cap of 64. With the `synchronized` blocks removed this throws
+        /// `ConcurrentModificationException` from the access-ordered map every run; the older
+        /// no-data-loss test below reddened only 2 runs in 3.
+        @Test
+        @SuppressWarnings("JBCT-EX-01")
+        void mixedOperations_underContention_neverThrow_andHonourTheCap() throws InterruptedException {
+            var cache = InMemoryCache.inMemoryCache(60, 64);
+            var threadCount = 16;
+            var operationsPerThread = 20_000;
+            var latch = new CountDownLatch(threadCount);
+            var errors = new java.util.concurrent.ConcurrentHashMap<String, Integer>();
+
+            try (var executor = Executors.newFixedThreadPool(threadCount)) {
+                for (int t = 0; t < threadCount; t++) {
+                    var seed = t;
+                    executor.submit(() -> {
+                        try {
+                            hammer(cache, seed, operationsPerThread);
+                        } catch (RuntimeException e) {
+                            errors.merge(e.getClass().getName(), 1, Integer::sum);
+                        } finally {
+                            latch.countDown();
+                        }
+                    });
+                }
+                latch.await();
+            }
+
+            var present = 0;
+
+            for (int i = 0; i < 200; i++) {
+                present += getCached(cache, "key-" + i).isPresent() ? 1 : 0;
+            }
+
+            assertThat(errors).as("no operation may throw under contention").isEmpty();
+            assertThat(present).as("the cap holds under contention").isLessThanOrEqualTo(64);
+        }
+
+        private static void hammer(InMemoryCache cache, int seed, int operations) {
+            for (int i = 0; i < operations; i++) {
+                var key = "key-" + ((seed * 31 + i) % 200);
+
+                switch (i % 3) {
+                    case 0 -> cache.put(key, i);
+                    case 1 -> cache.get(key);
+                    default -> cache.remove(key);
+                }
+            }
+        }
+
         @Test
         void putAndGet_concurrentAccess_noDataLoss() throws InterruptedException {
             var cache = InMemoryCache.inMemoryCache(60, 10_000);

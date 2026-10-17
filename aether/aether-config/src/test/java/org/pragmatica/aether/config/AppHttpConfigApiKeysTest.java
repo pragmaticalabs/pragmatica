@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.config;
 
@@ -17,11 +16,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AppHttpConfigApiKeysTest {
 
     @Test
-    void appHttpConfig_defaultHasEmptyApiKeysAndSecurityDisabled() {
+    void appHttpConfig_defaultHasEmptyApiKeysAndIsFailClosed() {
         var config = AppHttpConfig.appHttpConfig();
 
         assertThat(config.apiKeys()).isEmpty();
-        assertThat(config.securityEnabled()).isFalse();
+        // #665: security is ON with no key -- nothing authenticates until a key exists.
+        assertThat(config.securityEnabled()).isTrue();
         assertThat(config.enabled()).isFalse();
     }
 
@@ -52,10 +52,9 @@ class AppHttpConfigApiKeysTest {
     }
 
     @Test
-    void securityEnabled_returnsFalseWhenApiKeysEmpty() {
-        var config = AppHttpConfig.appHttpConfig(8070);
-
-        assertThat(config.securityEnabled()).isFalse();
+    void securityEnabled_returnsFalseOnlyForTheExplicitInsecureBuilder() {
+        assertThat(AppHttpConfig.appHttpConfig(8070).securityEnabled()).isTrue();
+        assertThat(AppHttpConfig.insecureAppHttpConfig(8070).securityEnabled()).isFalse();
     }
 
     @Test

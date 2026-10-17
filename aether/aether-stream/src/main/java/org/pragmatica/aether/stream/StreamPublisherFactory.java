@@ -41,15 +41,34 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
         return REQUIRES_CONTEXT.promise();
     }
 
+    /// #1549: the `[streams.X]` section is bound by the SAME parse deploy validation runs, so the committed
+    /// config carries every declared key, and an unread key fails activation instead of defaulting.
+    @Override
+    public Option<SectionBinder<StreamConfig>> sectionBinder() {
+        return Option.some(StreamSectionBinding::bindStreamSection);
+    }
+
+    /// #1040: the declared stream is materialized under its ENGINE KEY, not the bare `resources.toml`
+    /// section name. Without this the publish path created `repl-failover-events` while every
+    /// management route addressed `ns:repl-failover-events:1.0.0`, so `streamConfigKey(qualified)`
+    /// could not find the config this side had committed and the catalog minted a second ring from
+    /// management defaults — one declaration, two live rings, and a declared `confirmation_factor = 2`
+    /// durability contract silently void for everything written through the catalog.
     @Override
     public Promise<StreamPublisher> provision(StreamConfig config, ProvisioningContext context) {
-        return context.extension(StreamPartitionManager.class)
-                      .flatMap(manager -> context.extension(Serializer.class)
-                                                 .flatMap(serializer -> buildPublisher(manager,
-                                                                                       serializer,
-                                                                                       config,
-                                                                                       context)))
-                      .async();
+        return StreamAddressResolver.qualify(config, context)
+                                    .flatMap(engineConfig -> context.extension(StreamPartitionManager.class)
+                                                                    .flatMap(manager -> buildWithSerializer(manager,
+                                                                                                            engineConfig,
+                                                                                                            context)))
+                                    .async();
+    }
+
+    private static Result<StreamPublisher> buildWithSerializer(StreamPartitionManager manager,
+                                                               StreamConfig config,
+                                                               ProvisioningContext context) {
+        return context.extension(Serializer.class)
+                      .flatMap(serializer -> buildPublisher(manager, serializer, config, context));
     }
 
     @SuppressWarnings("unchecked")
@@ -61,7 +80,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     }
 
     /// Shared publisher assembly — the ONE place the stream-publish collaborator set (partition
-    /// routing, forward client, HRW owner resolver, self-guard, min-sync barrier) is folded from a
+    /// routing, forward client, HRW owner resolver, self-guard, confirmation barrier) is folded from a
     /// [ProvisioningContext] into a [DefaultStreamPublisher]. Public because the durable-topic
     /// publisher ([org.pragmatica.aether.stream.topic.DurableTopicSubstrate]) rides the identical
     /// path over its `topic:<address>` stream; a second hand-rolled assembly would drift from this
@@ -92,7 +111,6 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
                                                       keyExtractor,
                                                       config.consistencyMode(),
                                                       Option.none(),
-                                                      config.minSyncReplicas(),
                                                       forwardClient,
                                                       governorResolver,
                                                       partitionOwnerResolver,
@@ -106,7 +124,7 @@ public final class StreamPublisherFactory implements ResourceFactory<StreamPubli
     }
 
     private static Result<Unit> ensureStreamExists(StreamPartitionManager manager, StreamConfig config) {
-        return StreamCreateOutcome.tolerateAlreadyExists(manager.createStream(config));
+        return StreamCreateOutcome.ensureExists(manager, config);
     }
 
     /// Owner-resolver extension consumed by the app stream publish path.

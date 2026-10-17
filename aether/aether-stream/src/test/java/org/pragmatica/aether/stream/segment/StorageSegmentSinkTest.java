@@ -8,14 +8,32 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.AppendLog;
+import org.pragmatica.storage.BlockId;
+import org.pragmatica.storage.BlockMetadata;
+import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
+import org.pragmatica.storage.MetadataStore;
+import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 
+import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
 import static org.pragmatica.aether.stream.segment.StorageSegmentSink.storageSegmentSink;
+import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.storage.GarbageCollectorConfig.garbageCollectorConfig;
+import static org.pragmatica.storage.StorageGarbageCollector.storageGarbageCollector;
 
 class StorageSegmentSinkTest {
 
@@ -87,6 +105,278 @@ class StorageSegmentSinkTest {
             var name = StorageSegmentSink.refName(segment);
 
             assertThat(name).isEqualTo("streams/s/0/0-0");
+        }
+    }
+
+    /// #812 -- [StorageSegmentSink#seal] paired [StorageInstance#put] with
+    /// [StorageInstance#createRef]. Each credits the block, so every sealed segment sat at refCount 2
+    /// for its one ref: dropping the ref left it at 1, never orphaned, and the production
+    /// [StorageGarbageCollector] could never reclaim a single segment block.
+    ///
+    /// What is pinned is the CONSEQUENCE -- a real `collectGarbage` cycle removing the block from the
+    /// metadata store and the tier -- not the arithmetic that enables it. The only hand-fed input is
+    /// elapsed time; every refCount is produced by the code under test.
+    @Nested
+    class Reclamation {
+
+        private MetadataStore metadataStore;
+        private StorageInstance storage;
+        private StorageSegmentSink sink;
+        private StorageGarbageCollector gc;
+
+        @BeforeEach
+        void setUp() {
+            metadataStore = MetadataStore.inMemoryMetadataStore("seal-reclamation");
+            storage = StorageInstance.storageInstance("seal-reclamation",
+                                                      List.of(MemoryTier.memoryTier(ONE_GB)),
+                                                      metadataStore);
+            sink = storageSegmentSink(storage, new SegmentIndex());
+            // 0 requests the shortest possible grace period; GarbageCollectorConfig floors it at 1ms,
+            // so the sleep below -- not a zero grace -- is what lets collection proceed.
+            gc = storageGarbageCollector(storage, metadataStore, garbageCollectorConfig(0, 500));
+            gc.activate();
+        }
+
+        private int refCountOf(BlockId id) {
+            return metadataStore.getLifecycle(id)
+                                .unwrap()
+                                .refCount();
+        }
+
+        private boolean isOrphaned(BlockId id) {
+            return metadataStore.getLifecycle(id)
+                                .unwrap()
+                                .isOrphaned();
+        }
+
+        /// Red before the fix: the sealed block sits at refCount 2, `deleteRef` brings it to 1,
+        /// `isOrphaned` stays false, and `collectGarbage` returns 0 with the block still on the tier.
+        @Test
+        void seal_thenDropTheRef_reachesRefCountZero_andIsCollected() throws InterruptedException {
+            var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{1, 2, 3});
+
+            sink.seal(segment)
+                .await()
+                .onFailure(c -> fail("seal failed: " + c.message()));
+
+            var refName = StorageSegmentSink.refName(segment);
+            var blockId = storage.resolveRef(refName)
+                                 .unwrap();
+            var refCountWhileNamed = refCountOf(blockId);
+            var orphanedWhileNamed = isOrphaned(blockId);
+
+            storage.deleteRef(refName)
+                   .await()
+                   .onFailure(c -> fail("deleteRef failed: " + c.message()));
+
+            var refCountAfterDrop = refCountOf(blockId);
+            var orphanedAfterDrop = isOrphaned(blockId);
+
+            Thread.sleep(20);
+
+            assertThat(gc.collectGarbage())
+                    .as("the sealed block must actually be collected once its only ref is gone")
+                    .isEqualTo(1);
+            assertThat(metadataStore.containsBlock(blockId)).as("lifecycle metadata must be gone").isFalse();
+            storage.get(blockId)
+                   .await()
+                   .onFailure(c -> fail("get failed: " + c.message()))
+                   .onSuccess(opt -> assertThat(opt.isEmpty()).as("the block must be gone from the tier").isTrue());
+
+            assertThat(refCountWhileNamed)
+                    .as("locator: one segment ref must credit one reference -- put+createRef credited two (#812)")
+                    .isEqualTo(1);
+            assertThat(orphanedWhileNamed).as("locator: a referenced segment is not orphaned").isFalse();
+            assertThat(refCountAfterDrop).as("locator: dropping the only ref must reach zero").isZero();
+            assertThat(orphanedAfterDrop).as("locator: at zero the block must report orphaned").isTrue();
+        }
+
+        /// Re-sealing the same segment is a real path -- a node that crashed between sealing and
+        /// acknowledging seals it again on recovery -- and it must not leak a reference. The write is a
+        /// deduplicating credit and the ref replacement releases the block it displaced (itself), so
+        /// the count stays at one and the segment stays collectable.
+        @Test
+        void seal_sameSegmentTwice_keepsExactlyOneReference_andStillCollects() throws InterruptedException {
+            var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{7, 8, 9});
+
+            sink.seal(segment)
+                .await()
+                .onFailure(c -> fail("first seal failed: " + c.message()));
+            sink.seal(segment)
+                .await()
+                .onFailure(c -> fail("re-seal failed: " + c.message()));
+
+            var refName = StorageSegmentSink.refName(segment);
+            var blockId = storage.resolveRef(refName)
+                                 .unwrap();
+            var refCountAfterReseal = refCountOf(blockId);
+
+            storage.deleteRef(refName)
+                   .await()
+                   .onFailure(c -> fail("deleteRef failed: " + c.message()));
+
+            Thread.sleep(20);
+
+            assertThat(gc.collectGarbage()).as("a re-sealed segment must still be collectable").isEqualTo(1);
+            assertThat(metadataStore.containsBlock(blockId)).as("lifecycle metadata must be gone").isFalse();
+
+            assertThat(refCountAfterReseal).as("locator: a re-seal of one segment is still one reference").isEqualTo(1);
+        }
+    }
+
+    /// #1234: the seal promise resolves only once the segment is in the index. The sealer releases its
+    /// retained copy in a continuation of that promise, so an index update that merely raced the resolution
+    /// (an independent `onSuccess`) would reopen a window where an evicted offset is in neither place.
+    /// Storage completes here only when the test opens the gate, as a real disk or DHT write does.
+    @Nested
+    class IndexBeforeResolution {
+
+        @Test
+        void seal_resolvesOnlyAfterIndexUpdate_whenStorageCompletesLater() {
+            var gate = Promise.<Unit>promise();
+            var deferredSink = storageSegmentSink(new DeferredPutStorage(storage, gate), index);
+            var segment = sealedSegment(STREAM, PARTITION, 20, 29, 10, 1000L, 2000L, new byte[]{4, 5, 6});
+
+            var indexedWhenResolved = deferredSink.seal(segment)
+                                                  .map(_ -> index.findSegment(STREAM, PARTITION, 25).isPresent());
+
+            assertThat(indexedWhenResolved.isResolved()).isFalse();
+
+            gate.succeed(unit());
+
+            assertThat(indexedWhenResolved.await().unwrap()).isTrue();
+        }
+    }
+
+    /// #1441: a seal WITHOUT a log has no record of its range above the last metadata snapshot but its ref, so the
+    /// ref is made durable before the seal resolves -- and before the index holds the segment, which is what the
+    /// sealer's release waits for. A seal WITH a log needs none of it: the log keeps every record above the
+    /// snapshot floor (#1345), and forcing a snapshot per seal there would cost the default path for nothing.
+    @Nested
+    class RefDurabilityOnSeal {
+        @TempDir
+        Path dir;
+
+        @Test
+        void sealWithoutLog_persistsTheRefBeforeTheSegmentIsIndexed() {
+            var persists = new AtomicInteger();
+            var indexedAtPersist = new AtomicReference<Boolean>();
+            var durableSink = storageSegmentSink(storage, index, () -> recordPersist(persists, indexedAtPersist, 5));
+            var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{1, 2, 3});
+
+            durableSink.seal(segment)
+                       .await()
+                       .onFailure(c -> fail("seal failed: " + c.message()));
+
+            assertThat(persists.get()).as("one forced snapshot per seal without a log").isEqualTo(1);
+            assertThat(indexedAtPersist.get()).as("the ref is durable BEFORE the index releases the sealer's copy").isFalse();
+            assertThat(index.findSegment(STREAM, PARTITION, 5).isPresent()).isTrue();
+        }
+
+        @Test
+        void sealWithoutLog_whenTheRefCannotBeMadeDurable_failsAndIndexesNothing() {
+            var failingSink = storageSegmentSink(storage, index, () -> Causes.cause("snapshot dir unwritable").result());
+            var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{1, 2, 3});
+
+            var result = failingSink.seal(segment)
+                                    .await();
+
+            assertThat(result.isFailure()).as("a seal whose ref a crash would lose is not a completed seal").isTrue();
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("so the floor does not move, and the sealer keeps its copy to retry")
+                                                                 .isEqualTo(-1L);
+        }
+
+        @Test
+        void sealWithLog_neverForcesASnapshot() {
+            var diskStorage = StorageInstance.storageInstance("with-log",
+                                                              List.of(LocalDiskTier.localDiskTier(dir.resolve("segments"), ONE_GB)
+                                                                                   .unwrap()));
+            var log = AppendLog.open(dir.resolve("p0.wal"))
+                               .onFailure(c -> fail(c.message()))
+                               .unwrap();
+            var persists = new AtomicInteger();
+            var loggedSink = storageSegmentSink(diskStorage, index, () -> recordPersist(persists, new AtomicReference<>(), 5));
+            var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{1, 2, 3});
+
+            loggedSink.seal(segment, Option.some(log))
+                      .await()
+                      .onFailure(c -> fail("seal failed: " + c.message()));
+
+            assertThat(index.findSegment(STREAM, PARTITION, 5).isPresent()).as("control: the logged seal completed").isTrue();
+            assertThat(persists.get()).as("the log holds the range above the snapshot floor; no snapshot is forced").isZero();
+            log.close();
+        }
+
+        private org.pragmatica.lang.Result<Unit> recordPersist(AtomicInteger persists,
+                                                               AtomicReference<Boolean> indexedAtPersist,
+                                                               long offset) {
+            persists.incrementAndGet();
+            indexedAtPersist.set(index.findSegment(STREAM, PARTITION, offset).isPresent());
+
+            return org.pragmatica.lang.Result.unitResult();
+        }
+    }
+
+    /// Delegates to a real storage instance but holds every `putRef` until `gate` opens.
+    private record DeferredPutStorage(StorageInstance delegate, Promise<Unit> gate) implements StorageInstance {
+        @Override
+        public Promise<BlockId> putRef(String name, byte[] content) {
+            return gate.flatMap(_ -> delegate.putRef(name, content));
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content) {
+            return delegate.put(content);
+        }
+
+        @Override
+        public Promise<BlockId> put(byte[] content, BlockMetadata metadata) {
+            return delegate.put(content, metadata);
+        }
+
+        @Override
+        public Promise<Option<byte[]>> get(BlockId id) {
+            return delegate.get(id);
+        }
+
+        @Override
+        public Promise<Boolean> exists(BlockId id) {
+            return delegate.exists(id);
+        }
+
+        @Override
+        public Promise<Unit> createRef(String name, BlockId id) {
+            return delegate.createRef(name, id);
+        }
+
+        @Override
+        public Option<BlockId> resolveRef(String name) {
+            return delegate.resolveRef(name);
+        }
+
+        @Override
+        public Promise<Unit> deleteRef(String name) {
+            return delegate.deleteRef(name);
+        }
+
+        @Override
+        public Promise<Unit> delete(BlockId id) {
+            return delegate.delete(id);
+        }
+
+        @Override
+        public String name() {
+            return delegate.name();
+        }
+
+        @Override
+        public List<TierInfo> tierInfo() {
+            return delegate.tierInfo();
+        }
+
+        @Override
+        public void shutdown() {
+            delegate.shutdown();
         }
     }
 }

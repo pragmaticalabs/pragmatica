@@ -14,9 +14,12 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.function.Predicate;
 
+import org.pragmatica.cluster.metrics.MetricObservation;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController;
+import org.pragmatica.aether.slice.blueprint.SliceSpec;
 import org.pragmatica.aether.controller.ClusterController.ArtifactLoad;
 import org.pragmatica.aether.controller.ClusterController.BlueprintChange;
 import org.pragmatica.aether.controller.ClusterController.ControlContext;
@@ -41,11 +44,14 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.statemachine.Fsm;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static java.util.stream.Collectors.toUnmodifiableMap;
 
 
 public final class ControlLoopContext {
@@ -63,10 +69,13 @@ public final class ControlLoopContext {
     private final ControlLoopState.Dormant dormant;
     private final ControlLoopState.Stopped stopped;
     private final AtomicReference<ControllerConfig> configRef;
+    private final AtomicReference<Predicate<NodeId>> eligibleProducer = new AtomicReference<>(_ -> false);
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
-
-    private final ConcurrentHashMap<Artifact, ClusterController.Blueprint> blueprints = new ConcurrentHashMap<>();
-
+    /// The last `SliceTargetValue` observed for each registered slice, keyed by the slice's
+    /// artifact at that value's version. This holds the whole durable record and not a projection of
+    /// it, because the autoscaler has to write a whole record back: #698, #936 and #937 were all one
+    /// consequence of keeping a subset here and rebuilding the rest from factory defaults.
+    private final ConcurrentHashMap<Artifact, SliceTargetValue> sliceTargets = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<SliceNodeKey, SliceState> sliceStates = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Artifact, Long> sliceActivationTimes = new ConcurrentHashMap<>();
 
@@ -187,53 +196,78 @@ public final class ControlLoopContext {
     @Contract
     public void onNodeDeparted(NodeId departed, List<NodeId> newTopology) {
         topology.set(newTopology);
+        removeNodeMetrics(departed);
+    }
+
+    public org.pragmatica.lang.Unit removeNodeMetrics(NodeId departed) {
         perNodeSliceMetrics.values().forEach(byNode -> byNode.remove(departed));
         communitySnapshotStore.remove(departed.id());
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     public Map<Artifact, ClusterController.Blueprint> blueprintsSnapshot() {
-        return Map.copyOf(blueprints);
+        return sliceTargets.entrySet()
+                           .stream()
+                           .collect(toUnmodifiableMap(Map.Entry::getKey,
+                                                      entry -> blueprintOf(entry.getKey(),
+                                                                           entry.getValue())));
     }
 
     public Option<ClusterController.Blueprint> blueprint(Artifact artifact) {
-        return Option.option(blueprints.get(artifact));
+        return observedTarget(artifact).map(target -> blueprintOf(artifact, target));
     }
 
-    @Contract
-    public void putBlueprint(Artifact artifact, int instances, int minInstances) {
-        putBlueprint(artifact, instances, minInstances, Option.none(), Option.none(), Option.none());
+    /// The `SliceTargetValue` last observed for this slice — the record a scaling Put must be
+    /// derived from rather than rebuilt from a subset of (#698, #936, #937).
+    public Option<SliceTargetValue> observedTarget(Artifact artifact) {
+        return Option.option(sliceTargets.get(artifact));
     }
 
+    /// The scaling projection handed to `ClusterController.evaluate`. Derived on read rather than
+    /// stored alongside the value it comes from: two copies of the same facts are two things that
+    /// can drift apart, and #936 was precisely that drift — the in-memory model kept the operator's
+    /// `minInstances` while the durable record was overwritten with the new instance count, and the
+    /// durable one won on the next feedback.
+    ///
+    /// The scale-down floor is never below [SliceSpec#MIN_INSTANCES] (#1495, owner ruling: the floor is a
+    /// runtime invariant). The autoscaler CLAMPS rather than refuses: a scale-down that would cross the floor
+    /// is held at it and recorded as `HELD` by the `MIN_INSTANCES` guard, exactly as a slice's own
+    /// `minAvailable` already holds it. Refusing would drop the whole decision, including the part that
+    /// stays at or above the floor.
+    private static ClusterController.Blueprint blueprintOf(Artifact artifact, SliceTargetValue target) {
+        return new ClusterController.Blueprint(artifact,
+                                               target.targetInstances(),
+                                               Math.max(target.effectiveMinInstances(), SliceSpec.MIN_INSTANCES),
+                                               target.owningBlueprint(),
+                                               target.maxInstances(),
+                                               target.scaleUpThreshold(),
+                                               target.scaleDownThreshold());
+    }
+
+    /// Records the value observed for `artifact`. Sole writer of the registration map; its only
+    /// callers are `ControlLoop.onSliceTargetPut` and `applyScaling`'s own write-through, so what
+    /// the autoscaler holds in memory is always a value the KV store either holds or is being asked
+    /// to take.
     @Contract
-    public void putBlueprint(Artifact artifact,
-                             int instances,
-                             int minInstances,
-                             Option<Integer> maxInstances,
-                             Option<Double> scaleUpThreshold,
-                             Option<Double> scaleDownThreshold) {
-        blueprints.put(artifact,
-                       new ClusterController.Blueprint(artifact,
-                                                       instances,
-                                                       minInstances,
-                                                       maxInstances,
-                                                       scaleUpThreshold,
-                                                       scaleDownThreshold));
+    public void putBlueprint(Artifact artifact, SliceTargetValue target) {
+        sliceTargets.put(artifact, target);
     }
 
     @Contract
     public void removeBlueprint(Artifact artifact) {
-        blueprints.remove(artifact);
+        sliceTargets.remove(artifact);
     }
 
     @Contract
     public void removeBlueprintMatching(SliceTargetKey key) {
         var artifactBase = key.artifactBase();
 
-        Option.from(blueprints.keySet().stream().filter(artifactBase::matches).findFirst()).onPresent(blueprints::remove);
+        Option.from(sliceTargets.keySet().stream().filter(artifactBase::matches).findFirst()).onPresent(sliceTargets::remove);
     }
 
     public boolean blueprintsEmpty() {
-        return blueprints.isEmpty();
+        return sliceTargets.isEmpty();
     }
 
     @Contract
@@ -307,14 +341,62 @@ public final class ControlLoopContext {
                                    .noneMatch(ts -> (now - ts) < cooldownMs);
     }
 
+    public Unit setMetricsProducerEligibility(Predicate<NodeId> isEligible) {
+        eligibleProducer.set(isEligible);
+
+        return Unit.unit();
+    }
+
     @Contract
     public void storeCommunitySnapshot(CommunityMetricsSnapshot snapshot) {
-        communitySnapshotStore.put(snapshot.governorId().id(),
-                                   snapshot);
-        ingestSliceMetrics(snapshot);
-        log.debug("Stored community metrics snapshot from {} ({} slices)",
-                  snapshot.governorId().id(),
-                  snapshot.sliceMetrics().size());
+        if (snapshot.memberCount() != 1 || !isFreshSource(snapshot)) {
+            return;
+        }
+
+        communitySnapshotStore.compute(snapshot.governorId().id(),
+                                       (_, previous) -> acceptSourceSnapshot(snapshot, Option.option(previous)));
+    }
+
+    private CommunityMetricsSnapshot acceptSourceSnapshot(CommunityMetricsSnapshot incoming,
+                                                          Option<CommunityMetricsSnapshot> previous) {
+        return previous.filter(prior -> !isNewerSource(incoming, prior))
+                       .or(() -> recordSourceSnapshot(incoming));
+    }
+
+    /// `incarnation` is the source's boot token (equality only). The first token pins the source; a
+    /// different token is another process claiming the NodeId (terminal removal) and never supersedes.
+    private boolean isNewerSource(CommunityMetricsSnapshot incoming, CommunityMetricsSnapshot previous) {
+        return incoming.incarnation() == previous.incarnation() && incoming.sequence() > previous.sequence();
+    }
+
+    private CommunityMetricsSnapshot recordSourceSnapshot(CommunityMetricsSnapshot incoming) {
+        perNodeSliceMetrics.values().forEach(byNode -> byNode.remove(incoming.governorId()));
+        ingestSliceMetrics(incoming);
+
+        return incoming;
+    }
+
+    private boolean isFreshSource(CommunityMetricsSnapshot snapshot) {
+        return eligibleProducer.get()
+                               .test(snapshot.governorId()) && MetricObservation.isTimestampFresh(snapshot.timestampMs(),
+                                                                                                  nowMs());
+    }
+
+    boolean hasMetricCoverage(Artifact artifact) {
+        return sliceStates.entrySet()
+                          .stream()
+                          .filter(entry -> entry.getKey()
+                                                .artifact()
+                                                .equals(artifact) && entry.getValue() == SliceState.ACTIVE)
+                          .allMatch(entry -> hasFreshSource(entry.getKey().nodeId()));
+    }
+
+    private boolean hasFreshSource(NodeId producer) {
+        return producer.equals(self)
+               ? invocationMetricsCollector.isPresent()
+               : Option.option(communitySnapshotStore.get(producer.id()))
+                       .filter(this::isFreshSource)
+                       .isPresent();
     }
 
     private void ingestSliceMetrics(CommunityMetricsSnapshot snapshot) {
@@ -332,7 +414,11 @@ public final class ControlLoopContext {
     }
 
     public Map<String, CommunityMetricsSnapshot> communitySnapshots() {
-        return Map.copyOf(communitySnapshotStore);
+        return communitySnapshotStore.entrySet()
+                                     .stream()
+                                     .filter(entry -> isFreshSource(entry.getValue()))
+                                     .collect(java.util.stream.Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                                                            Map.Entry::getValue));
     }
 
     public AtomicLong quorumSequence() {
@@ -341,7 +427,7 @@ public final class ControlLoopContext {
 
     @Contract
     public void runEvaluationCycle() {
-        if (blueprints.isEmpty()) {
+        if (sliceTargets.isEmpty()) {
             log.trace("No blueprints registered, skipping evaluation");
 
             return;
@@ -390,12 +476,12 @@ public final class ControlLoopContext {
     }
 
     private Map<Artifact, ArtifactLoad> computeArtifactLoads() {
-        artifactLoadFactors.keySet().retainAll(blueprints.keySet());
-        perNodeSliceMetrics.keySet().retainAll(blueprints.keySet());
-        lastDecisions.keySet().retainAll(blueprints.keySet());
+        artifactLoadFactors.keySet().retainAll(sliceTargets.keySet());
+        perNodeSliceMetrics.keySet().retainAll(sliceTargets.keySet());
+        lastDecisions.keySet().retainAll(sliceTargets.keySet());
         var loads = new HashMap<Artifact, ArtifactLoad>();
 
-        blueprints.keySet().forEach(artifact -> loads.put(artifact, computeArtifactLoad(artifact)));
+        sliceTargets.keySet().forEach(artifact -> loads.put(artifact, computeArtifactLoad(artifact)));
 
         return loads;
     }
@@ -403,14 +489,29 @@ public final class ControlLoopContext {
     private ArtifactLoad computeArtifactLoad(Artifact artifact) {
         var sample = sampleArtifactMetrics(artifact);
         var loadFactor = artifactLoadFactors.computeIfAbsent(artifact, _ -> newLoadFactor());
+        var covered = hasMetricCoverage(artifact);
 
-        sample.forEach(loadFactor::recordSample);
+        if (covered) {
+            sample.forEach(loadFactor::recordSample);
+        }
+
         var result = loadFactor.computeWithCurrentValues(sample);
 
         recordBaseline(artifact, result.compositeScore(), result.canScale(), loadFactor.isErrorRateHigh());
+        if (!covered) {
+            var instances = artifactInstances(artifact);
+
+            recordDecision(artifact,
+                           Outcome.HELD,
+                           Guard.METRICS_INCOMPLETE,
+                           result.compositeScore(),
+                           instances,
+                           instances,
+                           instances);
+        }
 
         return ArtifactLoad.artifactLoad(result.compositeScore(),
-                                         result.canScale(),
+                                         result.canScale() && covered,
                                          loadFactor.isErrorRateHigh(),
                                          result.components());
     }
@@ -437,7 +538,11 @@ public final class ControlLoopContext {
     private List<PerSliceMetrics> collectSliceSources(Artifact artifact) {
         var sources = new ArrayList<>(ownSliceMetrics(artifact));
 
-        Option.option(perNodeSliceMetrics.get(artifact)).onPresent(remote -> sources.addAll(remote.values()));
+        Option.option(perNodeSliceMetrics.get(artifact)).onPresent(remote -> remote.entrySet()
+                                                                                   .stream()
+                                                                                   .filter(entry -> hasFreshSource(entry.getKey()))
+                                                                                   .map(Map.Entry::getValue)
+                                                                                   .forEach(sources::add));
 
         return sources;
     }
@@ -492,12 +597,13 @@ public final class ControlLoopContext {
     private Option<KVCommand<AetherKey>> prepareChange(BlueprintChange change) {
         var artifact = change.artifact();
 
-        return blueprint(artifact).flatMap(current -> prepareChangeToBlueprint(change, artifact, current));
+        return observedTarget(artifact).flatMap(observed -> prepareChangeToTarget(change, artifact, observed));
     }
 
-    private Option<KVCommand<AetherKey>> prepareChangeToBlueprint(BlueprintChange change,
-                                                                  Artifact artifact,
-                                                                  ClusterController.Blueprint currentBlueprint) {
+    private Option<KVCommand<AetherKey>> prepareChangeToTarget(BlueprintChange change,
+                                                               Artifact artifact,
+                                                               SliceTargetValue observed) {
+        var currentBlueprint = blueprintOf(artifact, observed);
         var requestedInstances = computeRequestedInstances(change, currentBlueprint);
         var clusterSize = effectiveClusterSize();
         var capResult = applyCap(requestedInstances, currentBlueprint.maxInstances(), clusterSize);
@@ -507,40 +613,99 @@ public final class ControlLoopContext {
         capResult.reason()
                  .onPresent(reason -> emitCapped(artifact, currentBlueprint, requestedInstances, newInstances, reason));
         if (newInstances == currentBlueprint.instances()) {
+            recordFlooredScaleDown(change, artifact, currentBlueprint);
+
             return Option.none();
         }
 
-        return applyScaling(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
+        return applyScaling(change, artifact, observed, requestedInstances, newInstances, capped);
     }
 
+    /// #936: a scale-down the minimum-instances floor reduced to a no-op is a different state from
+    /// an evaluation with nothing to do, and the two were indistinguishable — no command, no event,
+    /// no log, and a decision snapshot still carrying the cycle's `HELD`/`NONE` baseline. An
+    /// operator saw an autoscaler that appeared idle. Recording the floor as the guard puts the
+    /// declined scale-down on the #425 management surface, where the cap already reports itself.
+    private void recordFlooredScaleDown(BlueprintChange change,
+                                        Artifact artifact,
+                                        ClusterController.Blueprint currentBlueprint) {
+        flooredRequest(change, currentBlueprint).onPresent(requested -> recordFloored(artifact,
+                                                                                      currentBlueprint,
+                                                                                      requested));
+    }
+
+    /// The count a `ScaleDown` actually asked for, present only when the floor is what stopped it.
+    /// A change asking for the count the slice already runs was never going to move anything, and
+    /// reporting that as a floor would be a diagnostic firing when nothing happened.
+    ///
+    /// The pre-floor count is what is reported, not `computeRequestedInstances`'s already-floored
+    /// result — the latter is the current count again and says nothing about what was wanted.
+    private static Option<Integer> flooredRequest(BlueprintChange change,
+                                                  ClusterController.Blueprint currentBlueprint) {
+        return switch (change) {
+            case BlueprintChange.ScaleDown(_, int reduceBy) when(currentBlueprint.instances() - reduceBy) < currentBlueprint.minInstances() -> Option.some(currentBlueprint.instances() - reduceBy);
+            case BlueprintChange.ScaleDown _ -> Option.none();
+            case BlueprintChange.ScaleUp _ -> Option.none();
+        };
+    }
+
+    private void recordFloored(Artifact artifact,
+                               ClusterController.Blueprint currentBlueprint,
+                               int requestedInstances) {
+        log.info("Scaling {} held at {} instances: minimum-instances floor of {} blocked a scale-down to {}",
+                 artifact,
+                 currentBlueprint.instances(),
+                 currentBlueprint.minInstances(),
+                 requestedInstances);
+        recordDecision(artifact,
+                       Outcome.HELD,
+                       Guard.MIN_INSTANCES,
+                       priorLoadFactor(artifact),
+                       currentBlueprint.instances(),
+                       requestedInstances,
+                       currentBlueprint.instances());
+    }
+
+    /// Emits the autoscaler's `SliceTargetValue` Put as a transformation of the value last observed
+    /// for this slice, never as a fresh record assembled from the fields this class happens to hold.
+    ///
+    /// That distinction is the whole of #698, #936 and #937. This method used to call a
+    /// `sliceTargetValue(...)` factory with seven arguments, so the two components it could not
+    /// express took factory defaults on every scaling event: `placement` reset to `CORE_ONLY` — and
+    /// the reset value is acted on, relocating the slice — while `minInstances` was handed
+    /// `newInstances` and ratcheted the scale-down floor up to the current count, where it stayed
+    /// for the life of the deployment. Deriving the value with `withInstances` leaves every
+    /// component the autoscaler has no opinion about exactly as the operator left it, including
+    /// components added to the record later. The autoscaler decides one number; this writes one
+    /// number.
+    ///
+    /// The same instance is written to the in-memory registration and to the Put, so the mirror and
+    /// the durable record cannot disagree — and their disagreement is what #936 reported.
+    ///
+    /// No store read happens here. The observed value is carried in the registration map rather than
+    /// re-read, deliberately: a re-read would add a read-then-Put on the autoscaler's hot path, the
+    /// shape flagged by #906 and #805. The map has exactly one feeder,
+    /// `ControlLoop.onSliceTargetPut`, and an artifact with no observed value has no registration,
+    /// so `prepareChange` returns `none()` and this method is never reached for it.
     private Option<KVCommand<AetherKey>> applyScaling(BlueprintChange change,
                                                       Artifact artifact,
-                                                      ClusterController.Blueprint currentBlueprint,
+                                                      SliceTargetValue observed,
                                                       int requestedInstances,
                                                       int newInstances,
                                                       boolean capped) {
+        var currentBlueprint = blueprintOf(artifact, observed);
+        var scaled = observed.withInstances(newInstances);
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
+
         log.info("Applying scaling decision: {} from {} to {} instances",
                  artifact,
                  currentBlueprint.instances(),
                  newInstances);
-        putBlueprint(artifact,
-                     newInstances,
-                     currentBlueprint.minInstances(),
-                     currentBlueprint.maxInstances(),
-                     currentBlueprint.scaleUpThreshold(),
-                     currentBlueprint.scaleDownThreshold());
+        putBlueprint(artifact, scaled);
         publishScalingEvent(change, artifact, currentBlueprint.instances(), newInstances);
         recordScaled(change, artifact, currentBlueprint, requestedInstances, newInstances, capped);
-        var key = SliceTargetKey.sliceTargetKey(artifact.base());
-        var value = SliceTargetValue.sliceTargetValue(artifact.version(),
-                                                      newInstances,
-                                                      newInstances,
-                                                      Option.none(),
-                                                      currentBlueprint.maxInstances(),
-                                                      currentBlueprint.scaleUpThreshold(),
-                                                      currentBlueprint.scaleDownThreshold());
 
-        return Option.some(new KVCommand.Put<>(key, value));
+        return Option.some(new KVCommand.Put<>(key, scaled));
     }
 
     private static int computeRequestedInstances(BlueprintChange change, ClusterController.Blueprint currentBlueprint) {

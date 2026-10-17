@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import java.util.function.Supplier;
@@ -9,18 +8,20 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.slice.RateGuard;
 import org.pragmatica.aether.slice.RateGuardError;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.RateLimiter;
 
 
 record DefaultRateGuard(RateLimiter limiter, int limit) implements RateGuard {
-    static DefaultRateGuard defaultRateGuard(RateGuardConfig config) {
-        var limiter = RateLimiter.builder()
-                                 .rate(config.requestsPerSecond())
-                                 .period(config.window())
-                                 .burst(config.burst())
-                                 .withDefaultTimeSource();
-
-        return new DefaultRateGuard(limiter, config.requestsPerSecond());
+    /// #1316: a configuration the limiter cannot represent fails here with its typed cause.
+    static Result<DefaultRateGuard> defaultRateGuard(RateGuardConfig config) {
+        return RateLimiter.builder()
+                          .rate(config.requestsPerSecond())
+                          .period(config.window())
+                          .burst(config.burst())
+                          .withDefaultTimeSource()
+                          .map(limiter -> new DefaultRateGuard(limiter,
+                                                               config.requestsPerSecond()));
     }
 
     @Override

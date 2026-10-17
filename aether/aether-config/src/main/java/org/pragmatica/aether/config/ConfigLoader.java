@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import java.nio.file.Path;
@@ -11,39 +10,54 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.aether.environment.ClusterSecretSource;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.aether.environment.CloudConfig;
+import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.parse.DataSize;
 import org.pragmatica.lang.parse.Number;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public final class ConfigLoader {
+    private static final Logger log = LoggerFactory.getLogger(ConfigLoader.class);
+    /// The only key a `[storage.streams]` section carries (#634-3); the `streams` instance is built from the
+    /// node's stream settings, not from this section.
+    private static final Set<String> STREAMS_SECTION_KEYS = Set.of("wal_path");
+
     private ConfigLoader() {}
 
     public static Result<AetherConfig> load(Path path) {
         return TomlParser.parseFile(path)
                          .flatMap(ConfigLoader::fromDocument)
-                         .flatMap(ConfigValidator::validate);
+                         .flatMap(ConfigValidator::validate)
+                         .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
     public static Result<AetherConfig> loadFromString(String content) {
         return TomlParser.parse(content)
                          .flatMap(ConfigLoader::fromDocument)
-                         .flatMap(ConfigValidator::validate);
+                         .flatMap(ConfigValidator::validate)
+                         .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
     public static Result<AetherConfig> loadWithOverrides(Path path, Map<String, String> overrides) {
         return TomlParser.parseFile(path)
                          .flatMap(doc -> fromDocumentWithOverrides(doc, overrides))
-                         .flatMap(ConfigValidator::validate);
+                         .flatMap(ConfigValidator::validate)
+                         .flatMap(StorageEncryptionConfigValidator::validate);
     }
 
     public static AetherConfig aetherConfig(Environment env) {
@@ -58,22 +72,43 @@ public final class ConfigLoader {
         var envStr = overrides.getOrDefault("environment",
                                             doc.getString("cluster", "environment").or("docker"));
 
-        return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc, overrides, environment));
+        return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc,
+                                                                                     overrides,
+                                                                                     environment,
+                                                                                     environmentIsExplicit(doc,
+                                                                                                           overrides)));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
     private static Result<AetherConfig> assembleConfig(TomlDocument doc,
                                                        Map<String, String> overrides,
-                                                       Environment environment) {
+                                                       Environment environment,
+                                                       boolean environmentExplicit) {
         try {
-            var builder = populateBuilder(doc, environment);
+            var builder = populateBuilder(doc, environment, environmentExplicit);
 
             mergeCliOverrides(overrides, builder);
 
-            return parseReadLinearization(doc).map(mode -> applyReadLinearization(builder.build(), mode));
+            return refuseRemovedTargetRf(doc).flatMap(_ -> parseReadLinearization(doc))
+                                        .map(mode -> applyReadLinearization(builder.build(),
+                                                                            mode));
         } catch (IllegalArgumentException e) {
             return ConfigError.invalidConfig(e.getMessage()).result();
         }
+    }
+
+    /// #1777 track 1: the DHT takes its replication from the cluster's committed `[replication]` section, like
+    /// streams. A node-local `[dht.replication] target_rf` would be a second source of truth — and one that
+    /// could differ between nodes, which then disagree on placement — so a config that still sets it is refused,
+    /// naming where the setting lives now, rather than silently ignored.
+    private static Result<Unit> refuseRemovedTargetRf(TomlDocument doc) {
+        return doc.getString("dht.replication", "target_rf")
+                  .isPresent() || doc.getInt("dht.replication", "target_rf")
+                                     .isPresent()
+               ? ConfigError.invalidConfig("[dht.replication] target_rf is removed: the DHT replication factor and "
+                                          + "confirmation factor come from the cluster's [replication] section "
+                                          + "(replication_factor, confirmation_factor)").result()
+               : Result.unitResult();
     }
 
     /// Parse the `[durable-entity] read-linearization` ops knob (spec §8.1, durable-entity primitive).
@@ -99,7 +134,16 @@ public final class ConfigLoader {
         return config.withStreaming(config.streaming().withReadLinearization(mode));
     }
 
-    private static AetherConfig.Builder populateBuilder(TomlDocument doc, Environment environment) {
+    /// Whether the environment was SAID (a `[cluster] environment` key or a CLI override) rather than defaulted to docker. A composed
+    /// cloud node TOML never says it, so it must not be treated as a Docker node by rules that only hold on a Docker node (#1968).
+    static boolean environmentIsExplicit(TomlDocument doc, Map<String, String> overrides) {
+        return overrides.containsKey("environment") || doc.getString("cluster", "environment")
+                                                          .isPresent();
+    }
+
+    private static AetherConfig.Builder populateBuilder(TomlDocument doc,
+                                                        Environment environment,
+                                                        boolean environmentExplicit) {
         var builder = AetherConfig.builder().withEnvironment(environment);
 
         populateClusterConfig(doc, builder);
@@ -110,14 +154,16 @@ public final class ConfigLoader {
         populateTtmConfig(doc, builder);
         populateSliceConfig(doc, builder);
         populateAppHttpConfig(doc, builder);
-        populateBackupConfig(doc, builder);
+        populateBackupConfig(doc, builder, environment, environmentExplicit);
         populateDhtReplicationConfig(doc, builder);
         populateTimeoutsConfig(doc, builder);
         populateStorageConfig(doc, builder);
+        populateStorageEncryptionConfig(doc, builder);
         populateCloudConfig(doc, builder);
         populateEndpointsConfig(doc, builder);
         populateStreamingConfig(doc, builder);
         populateMembershipConfig(doc, builder);
+        populateAlertConfig(doc, builder);
 
         return builder;
     }
@@ -165,13 +211,25 @@ public final class ConfigLoader {
                                               "streaming",
                                               "caught_up_max_lag_offsets",
                                               defaults.caughtUpMaxLagOffsets());
+        var segmentDiskMaxBytes = parseDataSize(doc,
+                                                "streaming",
+                                                "segment_disk_max_bytes",
+                                                defaults.segmentDiskMaxBytes());
+        var isrLagMax = parseTimeSpan(doc, "streaming", "isr_lag_max", defaults.isrLagMax());
+        var promotionEscapeAfter = parseTimeSpan(doc,
+                                                 "streaming",
+                                                 "promotion_escape_after",
+                                                 defaults.promotionEscapeAfter());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
                                                           maxBytes,
                                                           defaults.readLinearization(),
                                                           reshuffleConcurrency,
-                                                          caughtUpMaxLagOffsets));
+                                                          caughtUpMaxLagOffsets)
+                                         .withSegmentDiskMaxBytes(segmentDiskMaxBytes)
+                                         .withIsrLagMax(isrLagMax)
+                                         .withPromotionEscapeAfter(promotionEscapeAfter));
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {
@@ -183,6 +241,15 @@ public final class ConfigLoader {
 
         return doc.getLong(section, key)
                   .or(defaultValue);
+    }
+
+    /// A present but unparseable retention is NOT defaulted: it becomes [SliceConfig#INVALID_ARTIFACT_ARCHIVE_RETENTION],
+    /// which `ConfigValidator` reports, so a typo cannot silently run the store under a period nobody chose.
+    private static TimeSpan parseRetentionOrInvalid(String value) {
+        return org.pragmatica.lang.parse.TimeSpan.timeSpan(value)
+                                                 .option()
+                                                 .map(ts -> TimeSpan.fromDuration(ts.duration()))
+                                                 .or(SliceConfig.INVALID_ARTIFACT_ARCHIVE_RETENTION);
     }
 
     private static TimeSpan parseTimeSpan(TomlDocument doc, String section, String key, TimeSpan defaultValue) {
@@ -239,7 +306,7 @@ public final class ConfigLoader {
         var tlsEnabled = isTlsEnabled(doc, environment);
 
         if (tlsEnabled) {
-            builder.tlsConfig(tlsFromDocument(doc));
+            builder.tlsConfig(tlsFromDocument(doc, System::getenv));
         }
     }
 
@@ -249,13 +316,16 @@ public final class ConfigLoader {
                   .or(environment.defaultTls());
     }
 
-    private static TlsConfig tlsFromDocument(TomlDocument doc) {
+    /// The `[tls]` section with the host environment supplied: `cluster_secret`, else the ambient secret (`AETHER_CLUSTER_SECRET` or
+    /// the file `AETHER_CLUSTER_SECRET_FILE` names, #828).
+    static TlsConfig tlsFromDocument(TomlDocument doc, Fn1<String, String> env) {
         var autoGen = doc.getString("tls", "auto_generate").map(ConfigLoader::toBooleanValue).or(true);
         var certPath = doc.getString("tls", "cert_path").or("");
         var keyPath = doc.getString("tls", "key_path").or("");
         var caPath = doc.getString("tls", "ca_path").or("");
         var clusterSecret = doc.getString("tls", "cluster_secret")
-                               .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")))
+                               .orElse(() -> ClusterSecretSource.resolve(env).fold(_ -> Option.<String> none(),
+                                                                                   value -> value))
                                .or("");
 
         return new TlsConfig(autoGen, certPath, keyPath, caPath, clusterSecret);
@@ -314,10 +384,17 @@ public final class ConfigLoader {
 
     @SuppressWarnings({"JBCT-STY-05", "JBCT-RET-07"})
     private static void populateSliceConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        doc.getStringList("slice", "repositories")
-           .map(repos -> SliceConfig.sliceConfigFromNames(repos))
-           .flatMap(Result::option)
-           .onPresent(builder::sliceConfig);
+        var retention = doc.getString("slice", "artifact_archive_retention")
+                           .map(ConfigLoader::parseRetentionOrInvalid)
+                           .or(SliceConfig.DEFAULT_ARTIFACT_ARCHIVE_RETENTION);
+
+        builder.sliceConfig(doc.getStringList("slice", "repositories")
+                               .map(repos -> SliceConfig.sliceConfigFromNames(repos))
+                               .flatMap(Result::option)
+                               .or(SliceConfig.sliceConfig())
+                               .withArtifactArchiveRetention(retention)
+                               .withArtifactMaxVersions(doc.getInt("slice", "artifact_max_versions")
+                                                           .or(SliceConfig.DEFAULT_ARTIFACT_MAX_VERSIONS)));
     }
 
     @SuppressWarnings("JBCT-STY-05")
@@ -344,16 +421,29 @@ public final class ConfigLoader {
                                         .or(ApiVersioningDetection.PATH);
         var apiVersionHeaderName = doc.getString("app-http", "api_version_header")
                                       .or(AppHttpConfig.DEFAULT_API_VERSION_HEADER);
+        var appHttp = AppHttpConfig.appHttpConfig(enabled,
+                                                  port,
+                                                  apiKeys,
+                                                  maxRequestSize,
+                                                  securityMode,
+                                                  jwtConfig,
+                                                  httpProtocol,
+                                                  apiVersioningDetection,
+                                                  apiVersionHeaderName).unwrap();
 
-        builder.appHttp(AppHttpConfig.appHttpConfig(enabled,
-                                                    port,
-                                                    apiKeys,
-                                                    maxRequestSize,
-                                                    securityMode,
-                                                    jwtConfig,
-                                                    httpProtocol,
-                                                    apiVersioningDetection,
-                                                    apiVersionHeaderName).unwrap());
+        builder.appHttp(parseAppTls(doc).map(appHttp::withTls).or(appHttp));
+    }
+
+    /// `[app-http.tls]` — an operator-supplied certificate for the USER-facing listener.
+    ///
+    /// Both keys are required together: a certificate without its key, or a key without its
+    /// certificate, is a configuration mistake rather than a request for a partial identity, and
+    /// silently falling back to the cluster certificate would hide it. See [AppHttpConfig.AppTls]
+    /// for why the cluster identity cannot serve public traffic (#967).
+    private static Option<AppHttpConfig.AppTls> parseAppTls(TomlDocument doc) {
+        return Option.all(doc.getString("app-http.tls", "cert_path"),
+                          doc.getString("app-http.tls", "key_path"))
+                     .map(AppHttpConfig.AppTls::new);
     }
 
     private static Option<JwtConfig> parseJwtConfig(TomlDocument doc) {
@@ -371,16 +461,114 @@ public final class ConfigLoader {
         return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew).unwrap();
     }
 
-    private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var enabled = doc.getString("backup", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+    private static void populateBackupConfig(TomlDocument doc,
+                                             AetherConfig.Builder builder,
+                                             Environment environment,
+                                             boolean environmentExplicit) {
+        effectiveBackup(doc, System::getenv, environment, environmentExplicit).onPresent(builder::backup);
+    }
 
-        if (enabled) {
-            var interval = doc.getString("backup", "interval").or("5m");
-            var path = doc.getString("backup", "path").or("");
-            var remote = doc.getString("backup", "remote").or("");
+    /// The node's effective `[backup]` (TOML merged with the environment variables), refused when its path is unwritable for `environment`.
+    static Option<BackupConfig> effectiveBackup(TomlDocument doc,
+                                                org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                Environment environment,
+                                                boolean environmentExplicit) {
+        var backup = backupConfigFrom(doc, env);
 
-            builder.backup(BackupConfig.backupConfig(true, interval, path, remote));
+        backup.onPresent(value -> checkBackupPath(value, environment, environmentExplicit).getOrThrow(IllegalArgumentException::new,
+                                                                                                      "invalid [backup]"));
+
+        return backup;
+    }
+
+    /// #1968: the same rule the bootstrap config applies to a source's `node_config` (`BackupPathRule`), applied to the EFFECTIVE path of a
+    /// node in a container environment, wherever it came from (TOML, `AETHER_BACKUP_PATH` of a compose file or of a provisioner). Docker:
+    /// absolute and under `/data` (named volume); Kubernetes: absolute; LOCAL runs on the host and keeps its relative default.
+    static Result<Unit> checkBackupPath(BackupConfig backup, Environment environment, boolean environmentExplicit) {
+        if (backup.path().isBlank() || environment == Environment.LOCAL || !environmentExplicit) {
+            return Result.unitResult();
         }
+
+        return org.pragmatica.aether.environment.BackupPathRule.refusal(backup.path(),
+                                                                        environment == Environment.DOCKER)
+                                                               .fold(Result::unitResult,
+                                                                     reason -> ConfigError.invalidConfig("[backup] path " + reason).result());
+    }
+
+    /// `[backup]` (#1532/#1533), each key overridable by its `AETHER_BACKUP_*` environment variable (#1968): a node minted
+    /// without a TOML of its own (a Docker replacement) receives the backup configuration from its provisioner's
+    /// environment, and an env-only compose cluster configures it the same way. Environment wins per key, as `AETHER_API_KEYS`
+    /// does, and a blank variable counts as unset. A key the environment sets to a DIFFERENT value than the TOML is logged at
+    /// startup (key and source only, never the values: a remote can carry a credential). Empty when the merged `enabled` is false.
+    static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
+                                                 org.pragmatica.lang.Functions.Fn1<String, String> env) {
+        return backupConfigFrom(doc, env, notice -> log.warn("{}", notice), summary -> log.info("{}", summary));
+    }
+
+    static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
+                                                 org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                 java.util.function.Consumer<String> overrideNotice) {
+        return backupConfigFrom(doc,
+                                env,
+                                overrideNotice,
+                                _ -> {});
+    }
+
+    /// `sourceNotice` receives, once, which source each key came from (`environment`, `TOML` or `default`), never a value.
+    static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
+                                                 org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                 java.util.function.Consumer<String> overrideNotice,
+                                                 java.util.function.Consumer<String> sourceNotice) {
+        var sources = new java.util.LinkedHashMap<String, String>();
+        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(ConfigLoader::toBooleanValue)
+                               .or(false);
+
+        if (!enabled) {
+            return Option.empty();
+        }
+
+        var path = backupKey(doc, env, ClusterIdentityEnv.BACKUP_PATH, "path", overrideNotice, sources).or("");
+        var remote = backupKey(doc, env, ClusterIdentityEnv.BACKUP_REMOTE, "remote", overrideNotice, sources).or("");
+        var restore = BackupConfig.RestoreMode.restoreMode(backupKey(doc,
+                                                                     env,
+                                                                     ClusterIdentityEnv.BACKUP_RESTORE,
+                                                                     "restore",
+                                                                     overrideNotice,
+                                                                     sources).or("auto")).getOrThrow(IllegalArgumentException::new,
+                                                                                                     "invalid [backup]");
+
+        sourceNotice.accept("[backup] configuration sources: " + sources);
+
+        return Option.some(BackupConfig.backupConfig(true, path, remote, restore));
+    }
+
+    /// One `[backup]` key: the environment's value when set, else the TOML's. The notice names the key and BOTH sources, not values.
+    private static Option<String> backupKey(TomlDocument doc,
+                                            org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                            String envName,
+                                            String tomlKey,
+                                            java.util.function.Consumer<String> overrideNotice,
+                                            java.util.Map<String, String> sources) {
+        var fromEnv = envValue(env, envName);
+        var fromToml = doc.getString("backup", tomlKey);
+
+        fromEnv.flatMap(value -> fromToml.filter(toml -> !toml.strip()
+                                                              .equals(value.strip())))
+               .onPresent(_ -> overrideNotice.accept("[backup] " + tomlKey
+                                                    + ": the environment variable " + envName
+                                                    + " overrides the value in the node TOML; remove one of them to end the ambiguity"));
+        sources.put(tomlKey,
+                    fromEnv.isPresent()
+                    ? "environment"
+                    : fromToml.isPresent()
+                      ? "TOML"
+                      : "default");
+
+        return fromEnv.orElse(fromToml);
+    }
+
+    private static Option<String> envValue(org.pragmatica.lang.Functions.Fn1<String, String> env, String name) {
+        return Option.option(env.apply(name)).filter(value -> !value.isBlank());
     }
 
     private static void populateDhtReplicationConfig(TomlDocument doc, AetherConfig.Builder builder) {
@@ -388,18 +576,16 @@ public final class ConfigLoader {
                                                                                                      "cooldown_delay_ms")
                                                                                             .isPresent();
         var hasRate = doc.getInt("dht.replication", "cooldown_rate").isPresent();
-        var hasRf = doc.getInt("dht.replication", "target_rf").isPresent();
 
-        if (hasDelay || hasRate || hasRf) {
+        if (hasDelay || hasRate) {
             var delay = parseTimeSpanOrMs(doc,
                                           "dht.replication",
                                           "cooldown_delay",
                                           "cooldown_delay_ms",
                                           DhtReplicationConfig.DEFAULT_COOLDOWN_DELAY);
             var rate = doc.getInt("dht.replication", "cooldown_rate").or(DhtReplicationConfig.DEFAULT_COOLDOWN_RATE);
-            var rf = doc.getInt("dht.replication", "target_rf").or(DhtReplicationConfig.DEFAULT_TARGET_RF);
 
-            builder.dhtReplication(DhtReplicationConfig.dhtReplicationConfig(delay, rate, rf));
+            builder.dhtReplication(DhtReplicationConfig.dhtReplicationConfig(delay, rate));
         }
     }
 
@@ -445,8 +631,12 @@ public final class ConfigLoader {
         for (var sectionName : doc.sectionNames()) {
             if (sectionName.startsWith("storage.")) {
                 var instanceName = sectionName.substring("storage.".length());
-
-                if (!instanceName.isEmpty()) {
+                // #253: `[storage.encryption]` (and its `[storage.encryption.keys]` sub-table) is the
+                // global keyring section, not a per-instance `[storage.<name>]` one -- excluded here so
+                // it is never misread as a storage instance literally named "encryption". Parsed
+                // separately by `populateStorageEncryptionConfig`.
+                if (!instanceName.isEmpty() && !instanceName.equals("encryption") && !instanceName.startsWith("encryption.")) {
+                    warnIgnoredStreamsKeys(doc, instanceName, sectionName);
                     instances.put(instanceName, storageFromSection(doc, sectionName));
                 }
             }
@@ -457,17 +647,134 @@ public final class ConfigLoader {
         }
     }
 
+    /// #253: the global `[storage.encryption]` keyring -- `active_key_id` + `streams_encrypted`, plus
+    /// the `[storage.encryption.keys]` sub-table (key id -> `${secrets:<path>}` reference, read via
+    /// `getSection` the same way `[cloud.credentials]` etc. are, but WITHOUT `resolveEnvVars`: these
+    /// values are secret REFERENCES resolved later, at boot, through `SecretsProvider` -- not `${env:...}`
+    /// substitutions resolved here). Absent section -> builder is left untouched (`Option.none()` default).
+    private static void populateStorageEncryptionConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        if (!doc.hasSection("storage.encryption")) {
+            return;
+        }
+
+        var activeKeyId = doc.getString("storage.encryption", "active_key_id").or("");
+        var streamsEncrypted = doc.getBoolean("storage.encryption", "streams_encrypted").or(false);
+        var keys = doc.getSection("storage.encryption.keys");
+
+        builder.storageEncryption(StorageEncryptionConfig.storageEncryptionConfig(keys, activeKeyId, streamsEncrypted));
+    }
+
+    /// #957: `[alerts]` -- the section that did not exist. Before this, `AlertConfig` was referenced in
+    /// `src/main` by `AlertForwarder` alone, was not a component of [AetherConfig], and no `.toml` in the
+    /// repo carried an `[alert...]` section, so webhook delivery was unreachable by any configuration and
+    /// the hysteresis margin (#969) would have had nowhere to live.
+    ///
+    /// Absent section -> builder untouched (`Option.none()` default), so a node with no `[alerts]` keeps
+    /// the shipped defaults: damping ON at [AlertConfig#DEFAULT_HYSTERESIS_MARGIN], webhooks DISABLED.
+    /// **Plumbing this does not enable webhook delivery** -- it makes it opt-in reachable; the default
+    /// `WebhookConfig` still carries no URLs and `AlertForwarder.forward` still early-returns.
+    ///
+    /// Validation is deliberately NOT done here. It runs at node boot via [AlertConfig#check], which is
+    /// what makes a misconfigured webhook refuse at boot instead of accepting and dropping (#957's
+    /// fail-closed clause). Building here and validating there keeps the loader total.
+    private static void populateAlertConfig(TomlDocument doc, AetherConfig.Builder builder) {
+        if (!hasAnyAlertSection(doc)) {
+            return;
+        }
+
+        var enabled = doc.getBoolean("alerts", "enabled").or(true);
+        var margin = doc.getDouble("alerts", "hysteresis_margin").or(AlertConfig.DEFAULT_HYSTERESIS_MARGIN);
+
+        builder.alerts(AlertConfig.alertConfig(enabled,
+                                               webhookFromToml(doc),
+                                               eventsFromToml(doc),
+                                               margin,
+                                               entityCheckpointLagFromToml(doc)).unwrap());
+    }
+
+    /// `alerts.entity_checkpoint_lag_warning` / `_critical` (#1302); each defaults independently, and
+    /// the pair is validated at boot by [AlertConfig#check].
+    private static AlertConfig.EntityCheckpointLag entityCheckpointLagFromToml(TomlDocument doc) {
+        return AlertConfig.EntityCheckpointLag.entityCheckpointLag(doc.getDouble("alerts",
+                                                                                 "entity_checkpoint_lag_warning")
+                                                                      .or(AlertConfig.EntityCheckpointLag.DEFAULT_WARNING),
+                                                                   doc.getDouble("alerts",
+                                                                                 "entity_checkpoint_lag_critical")
+                                                                      .or(AlertConfig.EntityCheckpointLag.DEFAULT_CRITICAL));
+    }
+
+    /// Any alert section at all, INCLUDING a sub-section written without its parent header.
+    ///
+    /// `TomlDocument.hasSection` is an exact key match, so `[alerts.webhook]` alone does NOT make
+    /// `hasSection("alerts")` true. Keying the whole populate on the bare `[alerts]` header therefore
+    /// discarded a config file whose only alert content was `[alerts.webhook]` — **silently, and with
+    /// the boot gate never running**, so an operator who wrote the natural thing got no webhook
+    /// delivery and no error. That is the failure mode this plumbing exists to remove, reintroduced one
+    /// level up.
+    ///
+    /// Accepting the sub-header is strictly more permissive than refusing it: nothing that parsed
+    /// before stops parsing, and `AlertConfig.check()` still runs at boot on whatever is built, so a
+    /// webhook enabled with no URLs is refused rather than accepted-and-dropped.
+    private static boolean hasAnyAlertSection(TomlDocument doc) {
+        return doc.hasSection("alerts") || doc.hasSection("alerts.webhook") || doc.hasSection("alerts.events");
+    }
+
+    /// `[alerts.webhook]`. Absent sub-section -> the DISABLED default, which is what keeps delivery
+    /// opt-in for an operator who writes `[alerts]` only to set a hysteresis margin.
+    private static AlertConfig.WebhookConfig webhookFromToml(TomlDocument doc) {
+        if (!doc.hasSection("alerts.webhook")) {
+            return AlertConfig.WebhookConfig.webhookConfig();
+        }
+
+        var enabled = doc.getBoolean("alerts.webhook", "enabled").or(false);
+        var urls = doc.getStringList("alerts.webhook", "urls").or(List.of());
+        var retryCount = parseInt(doc, "alerts.webhook", "retry_count", 3);
+        var timeout = parseTimeSpan(doc, "alerts.webhook", "timeout", timeSpan(5).seconds());
+
+        return AlertConfig.WebhookConfig.webhookConfig(enabled, urls, retryCount, timeout).unwrap();
+    }
+
+    /// `[alerts.events]`. Absent sub-section -> the disabled default, matching [AlertConfig].
+    private static AlertConfig.EventConfig eventsFromToml(TomlDocument doc) {
+        return doc.hasSection("alerts.events")
+               ? AlertConfig.EventConfig.eventConfig(doc.getBoolean("alerts.events", "enabled").or(false)).unwrap()
+               : AlertConfig.EventConfig.eventConfig();
+    }
+
+    /// v1617 (#1725): `[storage.streams]` only carries `wal_path`; any other key there (`disk_path`, `snapshot_path`,
+    /// `encrypted`, ...) has no effect. It used to be dropped silently, so an operator setting one believed it applied.
+    private static void warnIgnoredStreamsKeys(TomlDocument doc, String instanceName, String sectionName) {
+        if (!"streams".equals(instanceName)) {
+            return;
+        }
+
+        var ignored = doc.keys(sectionName)
+                         .stream()
+                         .filter(key -> !STREAMS_SECTION_KEYS.contains(key))
+                         .sorted()
+                         .toList();
+
+        if (!ignored.isEmpty()) {
+            log.warn("[storage.streams] carries only wal_path; these keys have no effect and are ignored: {}", ignored);
+        }
+    }
+
     private static StorageConfig storageFromSection(TomlDocument doc, String sectionName) {
         var memoryMaxBytes = parseLong(doc, sectionName, "memory_max_bytes", 256 * 1024 * 1024);
         var diskMaxBytes = parseLong(doc, sectionName, "disk_max_bytes", 10L * 1024 * 1024 * 1024);
-        var diskPath = doc.getString(sectionName, "disk_path").or("/data/aether/storage");
-        var snapshotPath = doc.getString(sectionName, "snapshot_path").or("/data/aether/metadata-snapshots");
+        // #912: one source for the default paths (and the root they honour), not a second copy of the literals.
+        var defaults = StorageConfig.storageConfig();
+        var diskPath = doc.getString(sectionName, "disk_path").or(defaults.diskPath());
+        var snapshotPath = doc.getString(sectionName, "snapshot_path").or(defaults.snapshotPath());
         var mutationThreshold = parseInt(doc, sectionName, "snapshot_mutation_threshold", 1000);
         var snapshotInterval = doc.getString(sectionName, "snapshot_max_interval").or("60s");
         var retentionCount = parseInt(doc, sectionName, "snapshot_retention_count", 5);
         // #634-3: the stream WAL's base dir as a first-class storage key (read from the `streams`
         // instance; empty = derive the pre-#634-3 sibling path, so absent keys change nothing).
         var walPath = doc.getString(sectionName, "wal_path").or("");
+        // #253: per-instance opt-in into encryption; requires [storage.encryption] to carry a keyring
+        // (enforced by StorageEncryptionConfigValidator, not here).
+        var encrypted = doc.getBoolean(sectionName, "encrypted").or(false);
 
         return StorageConfig.storageConfig(memoryMaxBytes,
                                            diskMaxBytes,
@@ -476,7 +783,8 @@ public final class ConfigLoader {
                                            mutationThreshold,
                                            snapshotInterval,
                                            retentionCount,
-                                           walPath);
+                                           walPath,
+                                           encrypted);
     }
 
     private static void populateEndpointsConfig(TomlDocument doc, AetherConfig.Builder builder) {
@@ -515,10 +823,18 @@ public final class ConfigLoader {
     }
 
     private static String resolveEnvVar(String value) {
+        return resolveEnvVar(value, System::getenv);
+    }
+
+    /// `${env:NAME}` with the environment supplied; `NAME_FILE` is the file form of the same reference (#828).
+    static String resolveEnvVar(String value, Fn1<String, String> env) {
         if (value.startsWith("${env:") && value.endsWith("}")) {
             var envName = value.substring(6, value.length() - 1);
-
-            return Option.option(System.getenv(envName)).or(value);
+            // #828: `NAME_FILE` is the file form of the same reference, so a credential never has to sit in the environment.
+            return ClusterSecretSource.resolve(env, envName)
+                                      .fold(_ -> Option.<String> none(),
+                                            found -> found)
+                                      .or(value);
         }
 
         return value;
@@ -541,7 +857,8 @@ public final class ConfigLoader {
                                   parseWorkerTimeouts(doc, defaults.worker()),
                                   parseSecurityTimeouts(doc, defaults.security()),
                                   parseRepositoryTimeouts(doc, defaults.repository()),
-                                  parseScalingTimeouts(doc, defaults.scaling()));
+                                  parseScalingTimeouts(doc, defaults.scaling()),
+                                  parseStorageMaintenanceTimeouts(doc, defaults.storageMaintenance()));
     }
 
     private static TimeoutsConfig.InvocationTimeouts parseInvocationTimeouts(TomlDocument doc,
@@ -629,11 +946,7 @@ public final class ConfigLoader {
                                                         parseTimeSpan(doc,
                                                                       "timeouts.rolling_update",
                                                                       "cleanup_grace_period",
-                                                                      d.cleanupGracePeriod()),
-                                                        parseTimeSpan(doc,
-                                                                      "timeouts.rolling_update",
-                                                                      "rollback_cooldown",
-                                                                      d.rollbackCooldown()));
+                                                                      d.cleanupGracePeriod()));
     }
 
     private static TimeoutsConfig.ClusterTimeouts parseClusterTimeouts(TomlDocument doc,
@@ -657,7 +970,11 @@ public final class ConfigLoader {
                                                   parseTimeSpan(doc,
                                                                 "timeouts.cluster",
                                                                 "community_absence",
-                                                                d.communityAbsence()));
+                                                                d.communityAbsence()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.cluster",
+                                                                "offline_buffer_cap",
+                                                                d.offlineBufferCap()));
     }
 
     private static TimeoutsConfig.ConsensusTimeouts parseConsensusTimeouts(TomlDocument doc,
@@ -801,12 +1118,27 @@ public final class ConfigLoader {
                                                                 d.communityCooldown()),
                                                   parseTimeSpan(doc,
                                                                 "timeouts.scaling",
-                                                                "auto_heal_retry",
-                                                                d.autoHealRetry()),
+                                                                "auto_heal_startup_cooldown",
+                                                                d.autoHealStartupCooldown()),
                                                   parseTimeSpan(doc,
                                                                 "timeouts.scaling",
-                                                                "auto_heal_startup_cooldown",
-                                                                d.autoHealStartupCooldown()));
+                                                                "auto_heal_provisioning_timeout",
+                                                                d.autoHealProvisioningTimeout()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.scaling",
+                                                                "auto_heal_swim_hints_ttl",
+                                                                d.autoHealSwimHintsTtl()));
+    }
+
+    /// #250: `[timeouts.storage_maintenance] interval` -- the tick driving both `DemotionManager.demote()`
+    /// and `StorageGarbageCollector.collectGarbage()` across every storage setup. See
+    /// [TimeoutsConfig.StorageMaintenanceTimeouts] for why one shared interval is sufficient.
+    private static TimeoutsConfig.StorageMaintenanceTimeouts parseStorageMaintenanceTimeouts(TomlDocument doc,
+                                                                                             TimeoutsConfig.StorageMaintenanceTimeouts d) {
+        return new TimeoutsConfig.StorageMaintenanceTimeouts(parseTimeSpan(doc,
+                                                                           "timeouts.storage_maintenance",
+                                                                           "interval",
+                                                                           d.interval()));
     }
 
     private static TimeSpan parseTimeSpanOrMs(TomlDocument doc,
@@ -829,10 +1161,17 @@ public final class ConfigLoader {
     }
 
     private static Map<String, ApiKeyEntry> resolveApiKeys(TomlDocument doc) {
-        var envKeys = System.getenv("AETHER_API_KEYS");
+        return resolveApiKeys(doc, System::getenv);
+    }
 
-        if (envKeys != null && !envKeys.isBlank()) {
-            return parseEnvApiKeys(envKeys);
+    /// The accepted keys with the host environment supplied: `AETHER_API_KEYS` or the file `AETHER_API_KEYS_FILE` names (#828),
+    /// ahead of any TOML. An unreadable, empty or conflicting file yields no env keys here; the node's start-up gate refuses it.
+    static Map<String, ApiKeyEntry> resolveApiKeys(TomlDocument doc, Fn1<String, String> env) {
+        var envKeys = ClusterSecretSource.resolve(env, "AETHER_API_KEYS").fold(_ -> Option.<String> none(),
+                                                                               found -> found);
+
+        if (envKeys.isPresent()) {
+            return parseEnvApiKeys(envKeys.unwrap());
         }
 
         var richKeys = parseRichApiKeys(doc);
@@ -914,7 +1253,9 @@ public final class ConfigLoader {
         }
     }
 
-    private static boolean toBooleanValue(String s) {
+    /// The one parse of a boolean setting (`"true"`, any case, exact: no trimming), shared with cluster bootstrap's PF-34 so the bootstrap check
+    /// and the node agree on whether `[app-http] enabled` is on.
+    public static boolean toBooleanValue(String s) {
         return "true".equalsIgnoreCase(s);
     }
 

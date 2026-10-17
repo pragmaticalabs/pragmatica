@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.http.adapter;
 
 import java.nio.charset.StandardCharsets;
@@ -23,6 +22,8 @@ import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.ResponseSerializer;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestRouter;
+import org.pragmatica.http.routing.ParameterError;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
@@ -226,7 +227,7 @@ public interface SliceRouter {
                              ? HttpStatus.BAD_REQUEST
                              : HttpStatus.NOT_FOUND;
 
-                return problemResponse(status, cause.message(), request);
+                return problemResponse(status, HttpError.clientMessage(cause), request);
             }
 
             private Promise<HttpResponseData> handleVersionedRoute(Route<?> route, HttpRequestContext request) {
@@ -323,17 +324,18 @@ public interface SliceRouter {
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
                 var httpError = resolveHttpError(cause);
 
-                log.warn("[requestId={}] SliceRouter error: {} {} -> {} {}",
+                log.warn("[requestId={}] SliceRouter error: {} {} -> {} {} (cause chain: {})",
                          request.requestId(),
                          request.method(),
                          request.path(),
                          httpError.status().code(),
-                         cause.message());
+                         cause.message(),
+                         HttpError.causeChain(cause));
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
 
                 return jsonMapper.writeAsBytes(problemDetail)
                                  .fold(_ -> plainErrorResponse(httpError.status(),
-                                                               httpError.message()),
+                                                               httpError.status().message()),
                                        body -> HttpResponseData.httpResponseData(httpError.status().code(),
                                                                                  JSON_HEADERS,
                                                                                  body));
@@ -344,12 +346,43 @@ public interface SliceRouter {
             /// `matchPath`/`matchQuery` wrap in a `Causes.CompositeCause` via `Result.all`. Unwrap that
             /// (a direct [HttpError], or one carried as a composite member) so its typed status (400) is
             /// honored instead of collapsing to the slice mapper's 500 default. Any other cause falls
-            /// through to the slice error mapper unchanged.
+            /// through to the slice error mapper; a 500 it leaves unmapped is re-derived by the default
+            /// mapper so a transient cause answers 503 (#1737) — the generated mapper's `default` is a
+            /// hard-coded 500 that cannot see [Cause#isTransient].
+            ///
+            /// A composite is resolved member by member ([#mapComposite]): it keeps a status only when EVERY member agrees,
+            /// so a parameter error next to a server fault answers 500, never the client error that would conceal it.
             private HttpError resolveHttpError(Cause cause) {
-                return Option.from(cause.stream()
-                                        .filter(HttpError.class::isInstance)
-                                        .map(HttpError.class::cast)
-                                        .findFirst()).or(() -> errorMapper.map(cause));
+                return cause instanceof Causes.CompositeCause
+                       ? mapWithTransientFallback(cause)
+                       : Option.from(cause.stream().flatMap(this::boundaryError).findFirst()).or(() -> mapWithTransientFallback(cause));
+            }
+
+            private java.util.stream.Stream<HttpError> boundaryError(Cause cause) {
+                return switch (cause) {
+                    case HttpError error -> java.util.stream.Stream.of(error);
+                    case ParameterError _ -> java.util.stream.Stream.of(HttpStatus.BAD_REQUEST.with(cause));
+                    default -> java.util.stream.Stream.empty();
+                };
+            }
+
+            private HttpError mapWithTransientFallback(Cause cause) {
+                var mapped = errorMapper.orElse(ErrorMapper.defaultMapper()).map(cause);
+
+                return cause instanceof Causes.CompositeCause composite && mapped.status() == HttpStatus.INTERNAL_SERVER_ERROR
+                       ? mapComposite(composite, mapped)
+                       : mapped;
+            }
+
+            /// A composite preserves a domain mapping only when every member has the same status.
+            /// Mixed failures retain the outer 500 rather than concealing a server fault as a client error.
+            private HttpError mapComposite(Causes.CompositeCause cause, HttpError fallback) {
+                var statuses = cause.stream().map(this::resolveHttpError).map(HttpError::status).distinct().toList();
+
+                return statuses.size() == 1
+                       ? statuses.getFirst()
+                                 .with(cause)
+                       : fallback;
             }
 
             private HttpResponseData notFound(HttpRequestContext request) {

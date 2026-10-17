@@ -1,36 +1,25 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
+/// Rates are requests/second and GC collections/second; errorRate and errorTrend are failure ratios.
+/// Latency quantiles describe interval means, not individual requests.
 public record DerivedMetrics(double requestRate,
                              double errorRate,
                              double gcRate,
-                             double latencyP50,
-                             double latencyP95,
-                             double latencyP99,
+                             double intervalMeanLatencyP50,
+                             double intervalMeanLatencyP95,
+                             double intervalMeanLatencyP99,
                              double eventLoopSaturation,
                              double heapSaturation,
-                             double backpressureRate,
                              double cpuTrend,
                              double latencyTrend,
                              double errorTrend) {
-    public static final DerivedMetrics EMPTY = new DerivedMetrics(0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0,
-                                                                  0.0);
+    public static final DerivedMetrics EMPTY = new DerivedMetrics(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 
     public double healthScore() {
-        double latencyScore = Math.max(0, 1.0 - (latencyP99 / 1000.0));
+        double latencyScore = Math.max(0, 1.0 - (intervalMeanLatencyP99 / 1000.0));
         double eventLoopScore = 1.0 - eventLoopSaturation;
         double heapScore = 1.0 - heapSaturation;
         double errorScore = Math.max(0, 1.0 - errorRate * 10);

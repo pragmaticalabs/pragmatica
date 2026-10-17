@@ -20,7 +20,12 @@ public sealed interface HttpForwardMessage extends ProtocolMessage {
     @Codec
     enum Pipeline {
         APP,
-        MANAGEMENT
+        MANAGEMENT,
+        /// Wire sentinel (#964): an ordinal this node cannot name decodes here instead of throwing.
+        /// Routed to NEITHER pipeline: an unreadable target must not default onto the app pipeline.
+        /// Must stay LAST — a new constant appended after it, or inserted before it, is read as UNKNOWN
+        /// by an older node either way.
+        UNKNOWN
     }
 
     /// `remainingMillis` is the sender's remaining request budget at send time (stage 2 of deadline

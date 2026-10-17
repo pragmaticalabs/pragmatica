@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
@@ -403,6 +402,10 @@ class EntityFoldTimerTest {
 
             target.checkpoint = Option.some(new Checkpoint(source.checkpointableThrough(PARTITION),
                                                            source.snapshot(PARTITION)));
+            // The taking-over node's log numbering reaches the checkpoint (records below it reclaimed), as a
+            // production log's head does; a head BELOW the checkpoint would mean the log restarted, and the
+            // checkpoint would be ignored (#1533).
+            target.headFloor = source.checkpointableThrough(PARTITION);
 
             var restored = EntityFold.entityFold(KEYSPACE, target);
 
@@ -443,13 +446,14 @@ class EntityFoldTimerTest {
     private static final class GrowableSubstrate implements EntityLogSubstrate {
         private final List<byte[]> log = new ArrayList<>();
         private Option<Checkpoint> checkpoint = Option.none();
+        private long headFloor = -1L;
 
         void appendRaw(byte[] record) {
             log.add(record);
         }
 
         @Override
-        public Result<Unit> ensureLog(String keyspace, int partitionCount, int replicationFactor, int minSyncReplicas) {
+        public Result<Unit> ensureLog(String keyspace, int partitionCount, org.pragmatica.aether.slice.ReplicationFactors replication) {
             return Result.unitResult();
         }
 
@@ -473,7 +477,7 @@ class EntityFoldTimerTest {
 
         @Override
         public long headOffset(String keyspace, int partition) {
-            return log.size() - 1L;
+            return Math.max(log.size() - 1L, headFloor);
         }
 
         @Override

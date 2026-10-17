@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics.fsm;
 
 import java.util.HashMap;
@@ -56,21 +55,27 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
         }
     }
 
+    /// `missedPingsEpoch` records, per peer, the missed-pong epoch its `missedPings` count was
+    /// accumulated in (#1061 R-a, [ClusterSyncContext#startMissedPongEpoch]). A count from an
+    /// earlier epoch — before the link was re-established or a pong arrived — never carries over.
     record Pinging(ClusterSyncContext ctx,
                    Map<NodeId, Epoch> lastSentEpoch,
                    Map<NodeId, Integer> missedPings,
+                   Map<NodeId, Long> missedPingsEpoch,
                    ScheduledFuture<?> pingTimer,
                    ScheduledFuture<?> periodicEmissionTimer) implements ClusterSyncState {
         public static Pinging fresh(ClusterSyncContext ctx) {
-            return with(ctx, Map.of(), Map.of());
+            return with(ctx, Map.of(), Map.of(), Map.of());
         }
 
         private static Pinging with(ClusterSyncContext ctx,
                                     Map<NodeId, Epoch> lastSentEpoch,
-                                    Map<NodeId, Integer> missedPings) {
+                                    Map<NodeId, Integer> missedPings,
+                                    Map<NodeId, Long> missedPingsEpoch) {
             return new Pinging(ctx,
                                lastSentEpoch,
                                missedPings,
+                               missedPingsEpoch,
                                ctx.schedulePingTimer(() -> ctx.dispatch(new PingTick(ctx.epochSupplier().get()))),
                                ctx.schedulePeriodicEmission());
         }
@@ -123,7 +128,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             var nextLastSent = withoutKey(lastSentEpoch, event.node());
             var nextMissed = withoutKey(missedPings, event.node());
 
-            tx.transitionToOrDrop(with(ctx, nextLastSent, nextMissed));
+            tx.transitionToOrDrop(with(ctx, nextLastSent, nextMissed, withoutKey(missedPingsEpoch, event.node())));
         }
 
         private void handlePongReceived(PongReceived event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
@@ -135,7 +140,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
 
             var nextMissed = withoutKey(missedPings, event.peer());
 
-            tx.transitionToOrDrop(with(ctx, lastSentEpoch, nextMissed));
+            tx.transitionToOrDrop(with(ctx, lastSentEpoch, nextMissed, withoutKey(missedPingsEpoch, event.peer())));
         }
 
         private void handlePingTick(PingTick event, TransitionRequest<ClusterSyncState, ClusterFsmEvent> tx) {
@@ -156,7 +161,7 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             }
             // Broadcast recipients: every QUIC-connected peer (network.broadcast skips self).
             // The miss-tracking maps follow the same recipient set, excluding self.
-            var recipients = List.copyOf(ctx.connectedPeers());
+            var recipients = List.copyOf(ctx.pingRecipients());
 
             if (recipients.isEmpty()) {
                 tx.ignore();
@@ -168,18 +173,36 @@ public sealed interface ClusterSyncState extends FsmState<ClusterSyncState, Clus
             var rabiaTerm = ctx.currentRabiaTerm();
             var nextLastSent = new HashMap<>(lastSentEpoch);
             var nextMissed = new HashMap<>(missedPings);
+            var nextMissedEpoch = new HashMap<>(missedPingsEpoch);
 
             for (var peer : recipients) {
                 if (peer.equals(ctx.self())) {
                     continue;
                 }
 
+                var missedPongEpoch = ctx.missedPongEpoch(peer);
+
                 nextLastSent.put(peer, currentEpoch);
-                nextMissed.put(peer, nextMissed.getOrDefault(peer, 0) + 1);
+                nextMissed.put(peer, missesInEpoch(peer, missedPongEpoch) + 1);
+                nextMissedEpoch.put(peer, missedPongEpoch);
             }
 
-            tx.transitionToOrDrop(with(ctx, Map.copyOf(nextLastSent), Map.copyOf(nextMissed)),
+            tx.transitionToOrDrop(with(ctx,
+                                       Map.copyOf(nextLastSent),
+                                       Map.copyOf(nextMissed),
+                                       Map.copyOf(nextMissedEpoch)),
                                   () -> dispatchPing(recipients, currentEpoch, rabiaTerm, nextMissed));
+        }
+
+        /// #1061 R-a: the misses already counted for `peer` carry into this tick only when they were
+        /// counted in the peer's current missed-pong epoch. The epoch advances whenever the transport
+        /// link to the peer is (re)established or a pong from it arrives, so a stall counted against
+        /// an evicted link never reaches the threshold on the replacement link, and a PING_TIMEOUT
+        /// report always means that many consecutive misses on the current link since the last pong.
+        private int missesInEpoch(NodeId peer, long missedPongEpoch) {
+            return missedPingsEpoch.getOrDefault(peer, missedPongEpoch) == missedPongEpoch
+                   ? missedPings.getOrDefault(peer, 0)
+                   : 0;
         }
 
         private void dispatchPing(List<NodeId> recipients,

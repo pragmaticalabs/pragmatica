@@ -9,6 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.StorageInstance;
 
@@ -124,6 +125,52 @@ class TieredStreamReaderTest {
                       assertThat(events.getFirst().offset()).isEqualTo(2L);
                       assertThat(events.getLast().offset()).isEqualTo(14L);
                   });
+        }
+    }
+
+    /// #1234: a range missing between sealed segments is a HOLE — the reader must never skip over it (the
+    /// consumer would silently lose those offsets) nor answer `[]` for it (the consumer would stall).
+    @Nested
+    class HoleInSealedRange {
+
+        @Test
+        void read_stopsBeforeHole_neverSkipsMissingRange() {
+            sealEvents(0, 4, 100L, 500L);
+            sealEvents(10, 14, 1100L, 1500L);
+
+            var result = reader.read(STREAM, PARTITION, 0, 20).await();
+
+            result.onFailure(_ -> fail("Expected success"))
+                  .onSuccess(events -> {
+                      assertThat(events).hasSize(5);
+                      assertThat(events.getLast().offset()).isEqualTo(4L);
+                  });
+        }
+
+        @Test
+        void read_fromInsideHole_failsExplicitly() {
+            sealEvents(0, 4, 100L, 500L);
+            sealEvents(10, 14, 1100L, 1500L);
+
+            var result = reader.read(STREAM, PARTITION, 5, 10).await();
+
+            result.onSuccess(events -> fail("Expected an explicit hole error, got " + events.size() + " events"))
+                  .onFailure(cause -> assertThat(cause.getClass().getSimpleName()).isEqualTo("SealedRangeMissing"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("5").contains("10"));
+        }
+
+        /// A hole is MISSING only above the contiguous sealed watermark. Below it the offsets were sealed and
+        /// then reclaimed by retention, which is an expired cursor — never an operator-visible loss.
+        @Test
+        void read_reclaimedBelowSealedWatermark_reportsExpiredNotMissing() {
+            sealEvents(0, 4, 100L, 500L);
+            sealEvents(5, 9, 600L, 1000L);
+            index.removeSegment(STREAM, PARTITION, 0);
+
+            var result = reader.read(STREAM, PARTITION, 2, 10).await();
+
+            result.onSuccess(events -> fail("Expected an expired cursor, got " + events.size() + " events"))
+                  .onFailure(cause -> assertThat(cause).isEqualTo(new StreamError.CursorExpired(2, 5)));
         }
     }
 

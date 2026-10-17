@@ -4,15 +4,20 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
+import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
@@ -21,6 +26,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingFailure;
+import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.aether.update.DeploymentManager.ActiveRouting;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -34,6 +40,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.io.CoreError;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageReceiver;
@@ -95,6 +103,33 @@ public interface SliceInvoker extends SliceInvokerFacade {
 
     Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method);
     Promise<Unit> invoke(Artifact slice, MethodName method, Object request);
+
+    /// #1723: like [#invoke(Artifact, MethodName, Object)], but resolves only when the callee has COMPLETED the call.
+    /// `invoke` is fire-and-forget: against a REMOTE callee it resolves as soon as the request is handed to the
+    /// transport, so a lost message or a callee that fails still reads as success. This one asks the callee for a
+    /// response and resolves with it: a callee failure, a lost message (the response never arrives within the
+    /// invocation timeout) or a departed node all FAIL it. The response payload is ignored, so the callee's result
+    /// type does not need to be decodable here (a scheduled task's method returns nothing the caller reads). A callee
+    /// hosted on this node is already awaited by `invoke`, so it takes the same path.
+    ///
+    /// A response that never arrives within the invocation timeout fails it with [SliceInvokerError.CompletionUnknown],
+    /// whose `lateOutcome` settles with the callee's real outcome if the response arrives LATE. The invoker retains at
+    /// most [SliceInvokerImpl#LATE_COMPLETION_CAPACITY] timed-out calls for that; see there for what happens past it.
+    ///
+    /// The default delegates to [#invoke(Artifact, MethodName, Object)], which is only right for implementations with no
+    /// transport (test stubs); the production invoker overrides it.
+    default Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
+        return invoke(slice, method, request);
+    }
+
+    /// [#invokeAwaitingCompletion(Artifact, MethodName, Object)] with an explicit bound on the wait (#1930): the response
+    /// of a remote callee is awaited for up to `bound` instead of the invocation timeout, so a caller that must not start
+    /// a second run while the first is still going (the scheduler's SINGLE mode) can hold on for a long-running task. When
+    /// the bound passes with no response the outcome is UNKNOWN, as with the invocation timeout.
+    default Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request, TimeSpan bound) {
+        return invokeAwaitingCompletion(slice, method, request);
+    }
+
     <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
     <R> Promise<R> invokeWithRetry(Artifact slice,
@@ -104,6 +139,20 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                    int maxRetries);
 
     <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
+
+    /// Why a non-default [SliceInvoker] refuses [#invokeLocalWithContext].
+    Cause CONTEXT_DELIVERY_NOT_SUPPORTED = Causes.cause("Context-carrying local delivery not supported by this invoker");
+
+    /// #1295: deliver a durable-topic event with its [MessageContext] to the slice loaded on THIS node,
+    /// through [SliceBridge#invokeWithContext]. Resolves the slice exactly as [#invokeLocal] does and
+    /// FAILS when it is not local — it never forwards, because the context is an in-process value that
+    /// no wire message carries. Implementations without a local slice registry refuse.
+    default Promise<Unit> invokeLocalWithContext(Artifact slice,
+                                                 MethodName method,
+                                                 byte[] eventBytes,
+                                                 MessageContext context) {
+        return new SliceInvokerError.InvocationError(slice, method, CONTEXT_DELIVERY_NOT_SUPPORTED).promise();
+    }
 
     /// Returns true when the target slice is loaded on this node. Callers that need to
     /// invoke a slice with a request whose codec lives only inside the slice's loader
@@ -126,6 +175,9 @@ public interface SliceInvoker extends SliceInvokerFacade {
     @SuppressWarnings("JBCT-RET-01")
     void onNodeRemoved(MembershipDecision.NodeRemoved event);
 
+    /// Role-neutral cleanup; does not mutate the core topology.
+    org.pragmatica.lang.Unit onNodeDeparture(NodeId node);
+
     @MessageReceiver
     @SuppressWarnings("JBCT-RET-01")
     void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event);
@@ -141,13 +193,15 @@ public interface SliceInvoker extends SliceInvokerFacade {
     int DEFAULT_MAX_RETRIES = 3;
     long BASE_RETRY_DELAY_MS = 100;
 
-    @FunctionalInterface
-    interface SliceFailureListener {
-        @SuppressWarnings("JBCT-RET-01")
-        void onSliceFailure(SliceFailureEvent event);
+    /// #275: membership-liveness narrowing for slice-to-slice endpoint selection, the same
+    /// [AccessibilityFilter] the HTTP forward path consults (`MembershipFsm.reachableMembers`). A node
+    /// the filter rejects is skipped by every selection path (round-robin, cache affinity, failover and
+    /// the weighted-routing pick used during an active deployment)
+    /// even while its endpoints are still registered. Default no-op keeps the stubs that implement
+    /// this interface compilable; the production invoker overrides it.
+    default Unit setAccessibilityFilter(AccessibilityFilter filter) {
+        return unit();
     }
-
-    Unit setFailureListener(SliceFailureListener listener);
 
     @FunctionalInterface
     interface CacheAffinityResolver {
@@ -219,17 +273,48 @@ class SliceInvokerImpl implements SliceInvoker {
     private final DeploymentManager deploymentManager;
     private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
     private final Map<NodeId, Set<String>> pendingInvocationsByNode = new ConcurrentHashMap<>();
+
+    /// #1723: completion-awaited calls that TIMED OUT, kept so a late response resolves their unknown outcome instead
+    /// of being dropped. Insertion-ordered and bounded by [#LATE_COMPLETION_CAPACITY]: one more timed-out call drops
+    /// the OLDEST retained one, whose late response is then discarded (DEBUG) and whose outcome stays unknown to its
+    /// caller. Entries also leave when their response arrives, when they outlive [#LATE_COMPLETION_TTL_MS], when their
+    /// target node departs and on [#stop].
+    private final Map<String, LateCompletion> lateCompletions = Collections.synchronizedMap(new LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, LateCompletion> eldest) {
+            return size() > LATE_COMPLETION_CAPACITY;
+        }
+    });
+
     private final Map<String, CacheAffinityResolver> affinityResolvers = new ConcurrentHashMap<>();
 
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-    private volatile Option<SliceFailureListener> failureListener = Option.none();
+    /// #275: liveness narrowing for endpoint selection, `IDENTITY` until `AetherNode` wires the
+    /// membership-backed filter (the same one the HTTP forward path uses).
+    private volatile AccessibilityFilter accessibilityFilter = AccessibilityFilter.IDENTITY;
 
+    /// Most timed-out completion-awaited calls retained for a late response. Chosen, not measured: one entry per
+    /// scheduled fire that timed out and has not been answered, so it bounds memory, not correctness.
+    static final int LATE_COMPLETION_CAPACITY = 1024;
+    /// How long a timed-out fire is retained for a late response. Chosen, not measured: an hour is far past any
+    /// invocation timeout, and the capacity bounds memory whatever the TTL.
+    static final long LATE_COMPLETION_TTL_MS = 3_600_000L;
+    /// Marks the correlationId of a completion-awaited request, so a response that matches nothing can be told from a
+    /// protocol anomaly without any retained state: past the retention bound it is still an expected late answer.
+    static final String COMPLETION_ID_PREFIX = "completion-";
+
+    /// `lateOutcome` is present for a completion-awaited call only: it settles with the callee's real outcome whenever
+    /// the response arrives, in time or late.
     record PendingInvocation(Promise<Object> promise,
                              long createdAtMs,
                              String requestId,
                              NodeId targetNode,
-                             SliceBridge senderBridge) {}
+                             SliceBridge senderBridge,
+                             Option<Promise<Unit>> lateOutcome,
+                             long boundMs) {}
+
+    record LateCompletion(Promise<Unit> outcome, String requestId, NodeId targetNode, long retainedAtMs) {}
 
     SliceInvokerImpl(NodeId self,
                      ClusterNetwork network,
@@ -253,15 +338,28 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void cleanupStaleInvocations() {
-        var staleThreshold = System.currentTimeMillis() - (timeoutMs * 2);
+        var now = System.currentTimeMillis();
 
-        pendingInvocations.entrySet().removeIf(entry -> isStaleAndCleanup(entry, staleThreshold));
+        pendingInvocations.entrySet().removeIf(entry -> isStaleAndCleanup(entry, now));
+        expireLateCompletions(now);
     }
 
-    private boolean isStaleAndCleanup(Map.Entry<String, PendingInvocation> entry, long staleThreshold) {
-        var pending = entry.getValue();
+    /// Drops the retained timed-out fires older than [#LATE_COMPLETION_TTL_MS]: their late response is then discarded
+    /// like one past the capacity, and their outcome stays unknown. Runs with the stale-invocation cleanup, so a retained
+    /// fire lives at most the TTL plus one cleanup interval.
+    Unit expireLateCompletions(long nowMs) {
+        lateCompletions.values().removeIf(late -> nowMs - late.retainedAtMs() >= LATE_COMPLETION_TTL_MS);
 
-        if (pending.createdAtMs() < staleThreshold) {
+        return Unit.unit();
+    }
+
+    /// A pending invocation is stale once it has outlived its OWN bound (the invocation timeout, or the longer explicit
+    /// bound of a completion-awaiting call, #1930) by the same margin as before: twice the invocation timeout.
+    private boolean isStaleAndCleanup(Map.Entry<String, PendingInvocation> entry, long now) {
+        var pending = entry.getValue();
+        var staleAfterMs = Math.max(timeoutMs * 2, pending.boundMs() + timeoutMs);
+
+        if (pending.createdAtMs() < now - staleAfterMs) {
             log.warn("[requestId={}] Cleaning up stale pending invocation: {}", pending.requestId(), entry.getKey());
             removeFromNodeIndex(entry.getKey(), pending.targetNode());
             pending.promise().resolve(Causes.cause("Invocation timed out (cleanup)").result());
@@ -286,6 +384,7 @@ class SliceInvokerImpl implements SliceInvoker {
         pendingInvocations.forEach(this::cancelPendingInvocation);
         pendingInvocations.clear();
         pendingInvocationsByNode.clear();
+        lateCompletions.clear();
         affinityResolvers.clear();
         var task = cleanupTask;
 
@@ -304,6 +403,11 @@ class SliceInvokerImpl implements SliceInvoker {
         return pendingInvocations.size();
     }
 
+    /// Timed-out completion-awaited calls currently retained for a late response.
+    int lateCompletionCount() {
+        return lateCompletions.size();
+    }
+
     @Override
     public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
         return selectEndpointWithAffinity(slice, method, request).flatMap(endpoint -> endpoint.nodeId()
@@ -316,6 +420,92 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                           method,
                                                                                                           request));
     }
+
+    @Override
+    public Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
+        return invokeAwaitingCompletion(slice, method, request, timeSpan(timeoutMs).millis());
+    }
+
+    @Override
+    public Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request, TimeSpan bound) {
+        if (stopped.get()) {
+            return INVOKER_STOPPED.promise();
+        }
+        // Captured on the caller's thread for the same reason as in the typed `invoke` (#634 follow-up).
+        var deadline = Deadline.current();
+
+        return selectEndpointWithAffinity(slice, method, request).flatMap(endpoint -> endpoint.nodeId()
+                                                                                              .equals(self)
+                                                                                      ? invokeLocalFireAndForget(slice,
+                                                                                                                 method,
+                                                                                                                 request)
+                                                                                      : awaitRemoteCompletion(endpoint,
+                                                                                                              slice,
+                                                                                                              method,
+                                                                                                              request,
+                                                                                                              deadline,
+                                                                                                              bound.millis()));
+    }
+
+    /// The remote half of [#invokeAwaitingCompletion]: the same bridge-free `Unit` encoding as the fire-and-forget path,
+    /// but the request asks for a response and the promise settles with it (or times out).
+    private Promise<Unit> awaitRemoteCompletion(Endpoint endpoint,
+                                                Artifact slice,
+                                                MethodName method,
+                                                Object request,
+                                                Deadline deadline,
+                                                long boundMs) {
+        var lateOutcome = Promise.<Unit> promise();
+
+        return encodeFireAndForgetRequest(slice, request).flatMap(payload -> this.<Object> sendAndAwaitResponse(endpoint,
+                                                                                                                slice,
+                                                                                                                method,
+                                                                                                                payload,
+                                                                                                                COMPLETION_ONLY,
+                                                                                                                deadline,
+                                                                                                                boundMs,
+                                                                                                                Option.some(lateOutcome)))
+                                         .mapToUnit()
+                                         .mapError(cause -> cause instanceof CoreError.Timeout
+                                                            ? SliceInvokerError.CompletionUnknown.completionUnknown(slice,
+                                                                                                                    method,
+                                                                                                                    cause,
+                                                                                                                    lateOutcome)
+                                                            : cause);
+    }
+
+    /// Stands in for the sender bridge of a call whose response payload is never read: the response only has to ARRIVE.
+    private static final SliceBridge COMPLETION_ONLY = new SliceBridge() {
+        @Override
+        public Promise<byte[]> invoke(String methodName, byte[] input) {
+            return Causes.cause("A completion-only bridge carries no methods").promise();
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Object> decode(byte[] bytes) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public ClassLoader classLoader() {
+            return SliceInvokerImpl.class.getClassLoader();
+        }
+
+        @Override
+        public List<String> methodNames() {
+            return List.of();
+        }
+    };
 
     @Override
     public boolean hasLocalSlice(Artifact slice) {
@@ -336,9 +526,26 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private Promise<Unit> sendFireAndForget(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
+        return encodeFireAndForgetRequest(slice, request).flatMap(payload -> sendFireAndForgetPayload(endpoint,
+                                                                                                      slice,
+                                                                                                      method,
+                                                                                                      payload));
+    }
+
+    /// #272 R12: a `Unit` request needs no slice bridge. Its wire form is fixed — the single VLQ byte
+    /// `TAG_UNIT` (0) with an empty body, registered by `FrameworkCodecs` in the node codec that every
+    /// slice codec layers over (`SliceStore` → `slice.codec(nodeCodec)`), so the callee's
+    /// `DefaultSliceBridge.invoke` → `codec.decode(input)` reads it back as `Unit` for a zero-argument
+    /// method. The node serializer this invoker already holds IS that codec, so the SINGLE-mode
+    /// scheduled fire from a leader that does not host the slice encodes exactly what a hosting
+    /// sender would have. Any other request type still needs a bridge that knows it.
+    private Promise<byte[]> encodeFireAndForgetRequest(Artifact slice, Object request) {
+        if (request instanceof Unit) {
+            return Promise.lift(Causes::fromThrowable, () -> serializer.encode(request));
+        }
+
         return findSenderBridge(slice, request).async(SENDER_BRIDGE_NOT_FOUND)
-                               .flatMap(senderBridge -> senderBridge.encode(request))
-                               .flatMap(payload -> sendFireAndForgetPayload(endpoint, slice, method, payload));
+                               .flatMap(senderBridge -> senderBridge.encode(request));
     }
 
     private Promise<Unit> sendFireAndForgetPayload(Endpoint endpoint,
@@ -357,7 +564,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
                                                         InvocationContext.isSampled());
-
+        // Nobody waits for a fire-and-forget call, so there is no caller deadline to hand over: plain send, which the
+        // transport bounds by the cluster-wide offline-buffer cap (#1996).
         network.send(endpoint.nodeId(), invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
@@ -412,7 +620,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                                                        method,
                                                                                                                                        payload,
                                                                                                                                        senderBridge,
-                                                                                                                                       deadline)));
+                                                                                                                                       deadline,
+                                                                                                                                       timeoutMs,
+                                                                                                                                       Option.none())));
     }
 
     @SuppressWarnings("unchecked")
@@ -421,8 +631,11 @@ class SliceInvokerImpl implements SliceInvoker {
                                                 MethodName method,
                                                 byte[] payload,
                                                 SliceBridge senderBridge,
-                                                Deadline deadline) {
-        var correlationId = IdGenerator.generate();
+                                                Deadline deadline,
+                                                long boundMs,
+                                                Option<Promise<Unit>> lateOutcome) {
+        var correlationId = lateOutcome.map(_ -> COMPLETION_ID_PREFIX + IdGenerator.generate())
+                                       .or(IdGenerator::generate);
 
         return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise<?>) pendingPromise,
                                                                         correlationId,
@@ -431,7 +644,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                         method,
                                                                         payload,
                                                                         senderBridge,
-                                                                        deadline));
+                                                                        deadline,
+                                                                        boundMs,
+                                                                        lateOutcome));
     }
 
     private void setupPendingInvocation(Promise<Object> pendingPromise,
@@ -441,19 +656,24 @@ class SliceInvokerImpl implements SliceInvoker {
                                         MethodName method,
                                         byte[] payload,
                                         SliceBridge senderBridge,
-                                        Deadline deadline) {
+                                        Deadline deadline,
+                                        long boundMs,
+                                        Option<Promise<Unit>> lateOutcome) {
         var requestId = InvocationContext.getOrGenerateRequestId();
         var targetNode = endpoint.nodeId();
         var pending = new PendingInvocation(pendingPromise,
                                             System.currentTimeMillis(),
                                             requestId,
                                             targetNode,
-                                            senderBridge);
+                                            senderBridge,
+                                            lateOutcome,
+                                            boundMs);
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(deadline.bounded(timeSpan(timeoutMs).millis()))
-                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
+        var callerWait = deadline.bounded(timeSpan(boundMs).millis());
+
+        pendingPromise.timeout(callerWait).onResult(result -> settlePendingInvocation(correlationId, pending, result));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         requestId,
@@ -464,8 +684,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
                                                         InvocationContext.isSampled());
-
-        network.send(targetNode, invokeRequest);
+        // The frame must not outlive the wait that just started: a call delivered after its caller timed out ("may
+        // have run") would run minutes later on reattach (#1996).
+        network.send(targetNode, invokeRequest, callerWait);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
                       requestId,
@@ -546,24 +767,31 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Option<Endpoint> selectEndpointWithFailover(Artifact slice,
                                                         MethodName method,
-                                                        java.util.Set<NodeId> exclude) {
-        if (exclude.isEmpty()) {
-            var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
-            var strategyEndpoint = deploymentManager.activeRouting(artifactBase)
-                                                    .flatMap(routing -> endpointRegistry.selectEndpointWithRouting(artifactBase,
-                                                                                                                   method,
-                                                                                                                   routing.routing(),
-                                                                                                                   routing.oldVersion(),
-                                                                                                                   routing.newVersion()));
+                                                        java.util.Set<NodeId> failedNodes) {
+        var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
+        var activeRouting = deploymentManager.activeRouting(artifactBase);
 
-            if (strategyEndpoint.isPresent()) {
-                return strategyEndpoint;
+        if (activeRouting.isEmpty()) {
+            var exclude = excludedNodes(slice, method, failedNodes);
+
+            if (exclude.isEmpty()) {
+                return endpointRegistry.selectEndpoint(slice, method);
             }
 
-            return endpointRegistry.selectEndpoint(slice, method);
+            return endpointRegistry.selectEndpointExcluding(slice, method, exclude);
         }
+        // #275: the weighted pick draws from every version of the base, so the exclusion handed to it
+        // must be base-scoped too. Scoping it to `slice`'s own version left a dead node hosting only the
+        // other version out of the set, and the pick then handed that node out mid-deployment.
+        var exclude = excludedNodesForBase(artifactBase, method, failedNodes);
 
-        return endpointRegistry.selectEndpointExcluding(slice, method, exclude);
+        return activeRouting.flatMap(routing -> endpointRegistry.selectEndpointWithRouting(artifactBase,
+                                                                                           method,
+                                                                                           routing.routing(),
+                                                                                           routing.oldVersion(),
+                                                                                           routing.newVersion(),
+                                                                                           exclude))
+                            .orElse(() -> endpointRegistry.selectEndpointExcluding(slice, method, exclude));
     }
 
     private <R> void invokeEndpointWithFailover(Promise<R> promise, FailoverContext<R> ctx, Endpoint endpoint) {
@@ -623,12 +851,15 @@ class SliceInvokerImpl implements SliceInvoker {
                                             System.currentTimeMillis(),
                                             ctx.requestId,
                                             targetNode,
-                                            senderBridge);
+                                            senderBridge,
+                                            Option.none(),
+                                            timeoutMs);
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(ctx.deadline().bounded(timeSpan(timeoutMs).millis()))
-                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
+        var callerWait = ctx.deadline().bounded(timeSpan(timeoutMs).millis());
+
+        pendingPromise.timeout(callerWait).onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         ctx.requestId,
@@ -639,8 +870,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
                                                         InvocationContext.isSampled());
-
-        network.send(targetNode, invokeRequest);
+        // Same bound as the primary send: a failover attempt delivered after its wait ended would run a third time (#1996).
+        network.send(targetNode, invokeRequest, callerWait);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
                       ctx.requestId,
@@ -686,18 +917,28 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private <R> void handleAllEndpointsFailed(Promise<R> promise, FailoverContext<R> ctx) {
+        // #275: with the liveness filter the FIRST selection can already come back empty, because every
+        // registered endpoint sits on a node the filter rejects. Nothing was attempted, so this is not an
+        // "all instances failed" outcome — reporting it as one publishes a failure event with an empty
+        // attempt list and no cause, and tells an operator the instances failed when the call never left
+        // this node. It is a transient absence of reachable endpoints: the replacement is still coming.
+        if (ctx.attemptedNodes.isEmpty()) {
+            log.warn("[requestId={}] No reachable endpoint for {}.{}: every registered endpoint is on an unreachable node",
+                     ctx.requestId,
+                     ctx.slice,
+                     ctx.method);
+            promise.fail(SliceInvokerError.NoEndpointsError.noEndpointsError(ctx.slice, ctx.method));
+
+            return;
+        }
+
         log.error("[requestId={}] All instances failed for {}.{}: {} nodes attempted",
                   ctx.requestId,
                   ctx.slice,
                   ctx.method,
                   ctx.attemptCount());
-        var event = SliceFailureEvent.AllInstancesFailed.allInstancesFailed(ctx.requestId,
-                                                                            ctx.slice,
-                                                                            ctx.method,
-                                                                            ctx.lastError,
-                                                                            ctx.attemptedNodes);
-
-        publishFailureEvent(event);
+        // #1573: no event from here. The all-instances-failed verdict belongs to the leader-side
+        // AllInstancesFailedDetector, which sees every instance; one caller's retry exhaustion does not.
         promise.fail(new SliceInvokerError.AllInstancesFailedError(ctx.slice,
                                                                    ctx.method,
                                                                    ctx.attemptedNodes.size() + " nodes attempted"));
@@ -710,22 +951,12 @@ class SliceInvokerImpl implements SliceInvoker {
                  ctx.slice,
                  ctx.method,
                  ctx.attemptCount());
-        if (ctx.attemptCount() >= endpointRegistry.findEndpoints(ctx.slice, ctx.method).size()) {
-            var event = SliceFailureEvent.AllInstancesFailed.allInstancesFailed(ctx.requestId,
-                                                                                ctx.slice,
-                                                                                ctx.method,
-                                                                                ctx.lastError,
-                                                                                ctx.attemptedNodes);
-
-            publishFailureEvent(event);
-        }
-
         promise.fail(ctx.lastError.or(Causes.cause("Max retries exceeded with no error recorded")));
     }
 
     @Override
-    public Unit setFailureListener(SliceFailureListener listener) {
-        this.failureListener = Option.some(listener);
+    public Unit setAccessibilityFilter(AccessibilityFilter filter) {
+        this.accessibilityFilter = filter;
 
         return unit();
     }
@@ -748,27 +979,6 @@ class SliceInvokerImpl implements SliceInvoker {
         return artifact.asString() + "/" + method.name();
     }
 
-    private void publishFailureEvent(SliceFailureEvent event) {
-        var requestId = extractRequestId(event);
-
-        log.warn("[requestId={}] SliceFailureEvent: {}", requestId, event);
-        failureListener.onPresent(listener -> safeNotifyFailureListener(listener, event, requestId));
-    }
-
-    private String extractRequestId(SliceFailureEvent event) {
-        return switch (event) {
-            case SliceFailureEvent.AllInstancesFailed failed -> failed.requestId();
-        };
-    }
-
-    private void safeNotifyFailureListener(SliceFailureListener listener, SliceFailureEvent event, String requestId) {
-        try {
-            listener.onSliceFailure(event);
-        } catch (Exception e) {
-            log.error("[requestId={}] Error notifying failure listener: {}", requestId, e.getMessage());
-        }
-    }
-
     @Override
     public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         return invocationHandler.localSlice(slice)
@@ -779,6 +989,22 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                    bridge,
                                                                                                    method,
                                                                                                    request)));
+    }
+
+    /// Same local resolution as [#invokeLocal] and the same observability wrapping; no network path.
+    @Override
+    public Promise<Unit> invokeLocalWithContext(Artifact slice,
+                                                MethodName method,
+                                                byte[] eventBytes,
+                                                MessageContext context) {
+        return invocationHandler.localSlice(slice)
+                                .async(SLICE_NOT_FOUND)
+                                .flatMap(bridge -> ObservabilityCells.around(bridge,
+                                                                             method.name(),
+                                                                             () -> bridge.invokeWithContext(method.name(),
+                                                                                                            eventBytes,
+                                                                                                            context)))
+                                .mapToUnit();
     }
 
     @SuppressWarnings("unchecked")
@@ -835,40 +1061,80 @@ class SliceInvokerImpl implements SliceInvoker {
     @SuppressWarnings({"JBCT-RET-01"})
     public void onInvokeResponse(InvokeResponse response) {
         Option.option(pendingInvocations.remove(response.correlationId()))
-              .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
-                                      response.requestId(),
-                                      response.correlationId()))
+              .onEmpty(() -> resolveLateCompletion(response))
               .onPresent(pending -> processReceivedResponse(pending, response));
     }
 
     private void processReceivedResponse(PendingInvocation pending, InvokeResponse response) {
         removeFromNodeIndex(response.correlationId(), pending.targetNode());
         handlePendingResponse(pending, response);
+        // Also when the call has just timed out and is not retained yet: the response is its real outcome either way.
+        pending.lateOutcome().onPresent(lateOutcome -> lateOutcome.resolve(completionOutcome(response)));
+    }
+
+    /// #1723: a response that matches no pending call. For a completion-awaited call that timed out it is the callee's
+    /// real outcome, and it resolves the caller's unknown outcome.
+    private void resolveLateCompletion(InvokeResponse response) {
+        Option.option(lateCompletions.remove(response.correlationId()))
+              .onEmpty(() -> reportUnmatchedResponse(response))
+              .onPresent(late -> resolveLateCompletion(late, response));
+    }
+
+    private void resolveLateCompletion(LateCompletion late, InvokeResponse response) {
+        log.debug("[requestId={}] Late completion response [{}] resolves an unknown outcome",
+                  late.requestId(),
+                  response.correlationId());
+        late.outcome().resolve(completionOutcome(response));
+    }
+
+    /// A completion-awaited call that is no longer retained (past [#LATE_COMPLETION_CAPACITY], a departed target, a
+    /// stopped invoker) is an expected late answer, not a protocol anomaly: its outcome stays unknown to the caller.
+    private void reportUnmatchedResponse(InvokeResponse response) {
+        if (response.correlationId().startsWith(COMPLETION_ID_PREFIX)) {
+            log.debug("[requestId={}] Late completion response [{}] is no longer retained; its outcome stays unknown",
+                      response.requestId(),
+                      response.correlationId());
+        } else {
+            log.warn("[requestId={}] Received response for unknown correlationId: {}",
+                     response.requestId(),
+                     response.correlationId());
+        }
+    }
+
+    private static Result<Unit> completionOutcome(InvokeResponse response) {
+        return response.success()
+               ? Result.unitResult()
+               : new SliceInvokerError.RemoteInvocationError(new String(response.payload())).result();
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
-        handleNodeDeparture(event.nodeId());
+        onNodeDeparture(event.nodeId());
     }
 
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {
-        handleNodeDeparture(event.nodeId());
+        onNodeDeparture(event.nodeId());
     }
 
     // Self-shutdown cleanup hook: kept on TransportObservation stream because self-shutdown is not a cluster decision.
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onSelfShutdown(TransportObservation.SelfShutdown event) {
-        handleNodeDeparture(event.nodeId());
+        onNodeDeparture(event.nodeId());
     }
 
-    private void handleNodeDeparture(NodeId departedNode) {
+    public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
+        // A departed node sends no late response: nothing can resolve these, so their outcomes stay unknown.
+        lateCompletions.values().removeIf(late -> late.targetNode()
+                                                      .equals(departedNode));
         Option.option(pendingInvocationsByNode.remove(departedNode))
               .filter(ids -> !ids.isEmpty())
               .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     private void retryPendingForDepartedNode(NodeId departedNode, Set<String> correlationIds) {
@@ -892,6 +1158,26 @@ class SliceInvokerImpl implements SliceInvoker {
     private void retryDepartedInvocation(PendingInvocation pending, NodeId departedNode) {
         log.debug("Triggering retry for request [{}] due to node {} departure", pending.requestId(), departedNode);
         pending.promise().fail(Causes.cause("Target node " + departedNode + " departed"));
+    }
+
+    /// The pending call settled: answered, failed, or timed out. A completion-awaited call that TIMED OUT is retained
+    /// for its late response. It is retained BEFORE it leaves the pending table, so a response racing the timeout
+    /// finds it in one of the two; when the response won that race, it has already resolved the late outcome.
+    private void settlePendingInvocation(String correlationId, PendingInvocation pending, Result<Object> result) {
+        var timedOut = result.fold(cause -> cause instanceof CoreError.Timeout, _ -> false);
+
+        pending.lateOutcome()
+               .filter(_ -> timedOut)
+               .onPresent(lateOutcome -> lateCompletions.put(correlationId,
+                                                             new LateCompletion(lateOutcome,
+                                                                                pending.requestId(),
+                                                                                pending.targetNode(),
+                                                                                System.currentTimeMillis())));
+        if (pendingInvocations.remove(correlationId) == null) {
+            lateCompletions.remove(correlationId);
+        }
+
+        removeFromNodeIndex(correlationId, pending.targetNode());
     }
 
     private void removePendingInvocation(String correlationId, NodeId targetNode) {
@@ -950,17 +1236,40 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {
         var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
-
+        // #275: an endpoint on a node membership no longer counts reachable is skipped even while its
+        // KV row is still registered. Each arm narrows over the candidate set it will actually draw
+        // from: the weighted pick spans every version of the base, the plain round-robin only `slice`.
         return deploymentManager.activeRouting(artifactBase)
-                                .map(routing -> selectEndpointWithWeightedRouting(slice, artifactBase, method, routing))
-                                .or(() -> endpointRegistry.selectEndpoint(slice, method)
-                                                          .async(NO_ENDPOINT_FOUND));
+                                .map(routing -> selectEndpointWithWeightedRouting(slice,
+                                                                                  artifactBase,
+                                                                                  method,
+                                                                                  routing,
+                                                                                  excludedNodesForBase(artifactBase,
+                                                                                                       method,
+                                                                                                       Set.of())))
+                                .or(() -> selectEndpointWithoutRouting(slice, method));
+    }
+
+    private Promise<Endpoint> selectEndpointWithoutRouting(Artifact slice, MethodName method) {
+        var inaccessible = inaccessibleNodes(slice, method);
+
+        if (inaccessible.isEmpty()) {
+            return endpointRegistry.selectEndpoint(slice, method)
+                                   .async(NO_ENDPOINT_FOUND);
+        }
+
+        return endpointRegistry.selectEndpointExcluding(slice, method, inaccessible)
+                               .async(NO_ENDPOINT_FOUND);
     }
 
     private Promise<Endpoint> selectEndpointWithAffinity(Artifact slice, MethodName method, Object request) {
         var resolver = Option.option(affinityResolvers.get(affinityLookupKey(slice, method)));
+        var inaccessible = inaccessibleNodes(slice, method);
+        // #275: affinity to an inaccessible node yields to the filtered plain selection below.
         var affinityEndpoint = resolver.flatMap(r -> r.resolveAffinityNode(request))
-                                       .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node));
+                                       .filter(node -> !inaccessible.contains(node))
+                                       .flatMap(node -> endpointRegistry.selectEndpointByAffinity(slice, method, node))
+                                       .filter(endpoint -> !inaccessible.contains(endpoint.nodeId()));
 
         if (affinityEndpoint.isPresent()) {
             return affinityEndpoint.async(NO_ENDPOINT_FOUND);
@@ -969,10 +1278,53 @@ class SliceInvokerImpl implements SliceInvoker {
         return selectEndpoint(slice, method);
     }
 
+    /// #275: the registered endpoint nodes for `slice.method` that the accessibility filter rejects.
+    /// Computed per selection from the registry's current rows, so a node's return to membership is
+    /// seen on the next call with no extra bookkeeping.
+    private Set<NodeId> inaccessibleNodes(Artifact slice, MethodName method) {
+        return inaccessibleAmong(endpointRegistry.findEndpoints(slice, method));
+    }
+
+    /// The same narrowing over EVERY version of the base. The weighted-routing pick draws from
+    /// `findEndpointsForBase`, so this is the only scope that can name every node it may return.
+    private Set<NodeId> inaccessibleNodesForBase(ArtifactBase artifactBase, MethodName method) {
+        return inaccessibleAmong(endpointRegistry.findEndpointsForBase(artifactBase, method));
+    }
+
+    private Set<NodeId> inaccessibleAmong(List<Endpoint> endpoints) {
+        var candidates = endpoints.stream().map(Endpoint::nodeId).distinct().toList();
+        var accessible = Set.copyOf(accessibilityFilter.keepOnlyAccessible(candidates));
+
+        return candidates.stream()
+                         .filter(node -> !accessible.contains(node))
+                         .collect(Collectors.toSet());
+    }
+
+    private Set<NodeId> excludedNodes(Artifact slice, MethodName method, Set<NodeId> failedNodes) {
+        return union(failedNodes, inaccessibleNodes(slice, method));
+    }
+
+    private Set<NodeId> excludedNodesForBase(ArtifactBase artifactBase, MethodName method, Set<NodeId> failedNodes) {
+        return union(failedNodes, inaccessibleNodesForBase(artifactBase, method));
+    }
+
+    private static Set<NodeId> union(Set<NodeId> failedNodes, Set<NodeId> inaccessible) {
+        if (inaccessible.isEmpty()) {
+            return failedNodes;
+        }
+
+        var excluded = new HashSet<>(failedNodes);
+
+        excluded.addAll(inaccessible);
+
+        return excluded;
+    }
+
     private Promise<Endpoint> selectEndpointWithWeightedRouting(Artifact slice,
                                                                 ArtifactBase artifactBase,
                                                                 MethodName method,
-                                                                ActiveRouting routing) {
+                                                                ActiveRouting routing,
+                                                                Set<NodeId> exclude) {
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Using weighted routing for {} during active deployment",
                       InvocationContext.getOrGenerateRequestId(),
@@ -983,7 +1335,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                           method,
                                                           routing.routing(),
                                                           routing.oldVersion(),
-                                                          routing.newVersion())
+                                                          routing.newVersion(),
+                                                          exclude)
                                .async(NO_ENDPOINT_FOUND);
     }
 

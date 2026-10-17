@@ -4,20 +4,24 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.function.Predicate;
+
 import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn0;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 
-/// Shared bounded forward-publish retry for the three owner-forward sites — {@link StreamWriteRouter}
-/// (the management/API write path) and {@link DefaultStreamPublisher} / {@link PartitionedStreamAccess}
-/// (the app publish paths). Each site previously carried its own verbatim copy of this retry
-/// state-machine, so a fix landing on one lagged the others — the exact divergence #485 and #506
-/// corrected — and this indirection collapses the three copies into ONE policy so that class cannot recur.
+/// Bounded forward-publish retry for the owner-forward arm of {@link StreamWriteRouter}, the one stream write
+/// operation that the management/API publish, {@link DefaultStreamPublisher} and {@link PartitionedStreamAccess}
+/// all delegate to (#1263). It began as three verbatim copies, one per site, so a fix landing on one lagged
+/// the others — the exact divergence #485 and #506 corrected; #1263 then removed the sites themselves.
 ///
 /// Semantics (owner-config-lag absorption): re-attempt a forward ONLY when the owner reported the failure
 /// as retryable ({@link StreamForwardError.RemotePublishRetryable} — its committed-config view had not yet
@@ -42,32 +46,69 @@ sealed interface StreamForwardRetry {
     /// bounded retry. The thunk is re-invoked per attempt, so every retry issues a fresh forward with the
     /// same target, identical to an inline per-site retry but with no per-call argument threading.
     static Promise<Long> withBoundedRetry(Fn0<Promise<Long>> sendAttempt) {
-        return attempt(sendAttempt, 1, Deadline.current());
+        return attempt(sendAttempt, 1, Deadline.current(), StreamForwardError::isRetryablePublish);
     }
 
-    private static Promise<Long> attempt(Fn0<Promise<Long>> sendAttempt, int attemptNo, Deadline deadline) {
+    /// #1555: the same bounded ladder for an owner-local append refused because this node's owner promotion is
+    /// still running ([StreamError.OwnerNotActivated]) — the refusal triggers the promotion, which normally
+    /// completes within the ladder. FER: a promotion still pending after the last attempt propagates the
+    /// transient refusal to the caller rather than appending on an un-promoted owner.
+    static Promise<Long> withPromotionRetry(Fn0<Promise<Long>> appendAttempt) {
+        return attempt(appendAttempt, 1, Deadline.current(), StreamForwardRetry::isPromotionPending);
+    }
+
+    private static boolean isPromotionPending(Cause cause) {
+        return cause instanceof StreamError.OwnerNotActivated;
+    }
+
+    /// #1230 ownership-lag redirect for the owner-local arm of {@link StreamWriteRouter}: a local append refused
+    /// with {@link StreamError.NotOwnerAppend} — HRW placement already names this node but the leader has
+    /// not yet committed the ownership change — is re-sent to the refusal's COMMITTED owner, which is still
+    /// the fenced single writer for the partition, via `forwardTo` (itself bounded-retried at the call site).
+    /// Strategy: FER — the write degrades forward to the authoritative writer instead of failing the app;
+    /// it earns "no second writer" because the committed owner's own admission re-checks on arrival, and a
+    /// target whose view has moved answers retryable rather than appending. `forwardTo` yields
+    /// [Option#none] when no forward client is wired; the refusal then propagates unchanged, as does every
+    /// other cause.
+    static <T> Promise<T> redirectNotOwner(Cause cause, Fn1<Option<Promise<T>>, NodeId> forwardTo) {
+        return cause instanceof StreamError.NotOwnerAppend refused
+               ? forwardTo.apply(refused.committedOwner())
+                          .or(cause::promise)
+               : cause.promise();
+    }
+
+    private static Promise<Long> attempt(Fn0<Promise<Long>> sendAttempt,
+                                         int attemptNo,
+                                         Deadline deadline,
+                                         Predicate<Cause> retryable) {
         return Deadline.runWith(deadline, sendAttempt::apply).fold(result -> result.fold(cause -> retryOrPropagate(sendAttempt,
                                                                                                                    attemptNo,
                                                                                                                    cause,
-                                                                                                                   deadline),
+                                                                                                                   deadline,
+                                                                                                                   retryable),
                                                                                          Promise::success));
     }
 
     private static Promise<Long> retryOrPropagate(Fn0<Promise<Long>> sendAttempt,
                                                   int attemptNo,
                                                   Cause cause,
-                                                  Deadline deadline) {
-        return StreamForwardError.isRetryablePublish(cause) && attemptNo < MAX_FORWARD_ATTEMPTS && !deadline.expired(FORWARD_RETRY_BACKOFF)
-               ? scheduleRetry(sendAttempt, attemptNo + 1, deadline)
+                                                  Deadline deadline,
+                                                  Predicate<Cause> retryable) {
+        return retryable.test(cause) && attemptNo < MAX_FORWARD_ATTEMPTS && !deadline.expired(FORWARD_RETRY_BACKOFF)
+               ? scheduleRetry(sendAttempt, attemptNo + 1, deadline, retryable)
                : cause.promise();
     }
 
     /// Schedule the next attempt after the fixed backoff through the shared scheduler (no `Thread.sleep`),
     /// bridging its resolution into the pending promise returned to the caller.
-    private static Promise<Long> scheduleRetry(Fn0<Promise<Long>> sendAttempt, int nextAttempt, Deadline deadline) {
+    private static Promise<Long> scheduleRetry(Fn0<Promise<Long>> sendAttempt,
+                                               int nextAttempt,
+                                               Deadline deadline,
+                                               Predicate<Cause> retryable) {
         var pending = Promise.<Long> promise();
 
-        SharedScheduler.schedule(() -> sendScheduled(pending, sendAttempt, nextAttempt, deadline), FORWARD_RETRY_BACKOFF);
+        SharedScheduler.schedule(() -> sendScheduled(pending, sendAttempt, nextAttempt, deadline, retryable),
+                                 FORWARD_RETRY_BACKOFF);
 
         return pending;
     }
@@ -75,8 +116,9 @@ sealed interface StreamForwardRetry {
     private static void sendScheduled(Promise<Long> pending,
                                       Fn0<Promise<Long>> sendAttempt,
                                       int nextAttempt,
-                                      Deadline deadline) {
-        attempt(sendAttempt, nextAttempt, deadline).onResult(pending::resolve);
+                                      Deadline deadline,
+                                      Predicate<Cause> retryable) {
+        attempt(sendAttempt, nextAttempt, deadline, retryable).onResult(pending::resolve);
     }
 
     record unused() implements StreamForwardRetry {}
