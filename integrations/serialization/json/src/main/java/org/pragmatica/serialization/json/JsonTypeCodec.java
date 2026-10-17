@@ -30,6 +30,9 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.json.spi.JsonReader;
 import org.pragmatica.serialization.json.spi.JsonWriter;
 
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
+
 
 /// A generated codec: one write function and one read function for a type. Not to be confused with
 /// `org.pragmatica.http.JsonCodec`, the HTTP seam a slice's generated codecs are adapted to.
@@ -70,10 +73,8 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
     /// that does not lie inside `json` is refused with [JsonError.InvalidRange] before anything is read.
     public Result<T> decode(byte[] json, int offset, int length) {
         return isInside(json.length, offset, length)
-               ? read(JsonReader.jsonReader()
-                                .reset(json, offset, length))
-               : JsonError.InvalidRange.FACTORY.apply(offset, length, json.length)
-                                               .result();
+               ? read(JsonReader.jsonReader().reset(json, offset, length))
+               : JsonError.InvalidRange.FACTORY.apply(offset, length, json.length).result();
     }
 
     /// Decodes `json`, encoded as UTF-8 first.
@@ -121,8 +122,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
     /// A JSON object with free-form string keys, decoded into a mutable `LinkedHashMap` in document order; a
     /// repeated key keeps its last value.
     public static <V> JsonTypeCodec<Map<String, V>> mapOf(JsonTypeCodec<V> values) {
-        return jsonTypeCodec((out, map) -> writeObject(out, map, values.writer()),
-                             in -> readObject(in, values.reader()));
+        return jsonTypeCodec((out, map) -> writeObject(out, map, values.writer()), in -> readObject(in, values.reader()));
     }
 
     private Result<T> read(JsonReader in) {
@@ -134,7 +134,9 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
     }
 
     private static boolean isInside(int size, int offset, int length) {
-        return offset >= 0 && length >= 0 && offset <= size - length;
+        return offset >= 0
+               && length >= 0
+               && offset <= size - length;
     }
 
     // The container bodies below mirror the generator's container code (JsonCodecEmitter#writeList, #writeMap,
@@ -179,7 +181,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
     private static <T> void writeOption(JsonWriter out, Option<T> option, BodyWriter<T> value) {
         switch (option) {
             case Option.Some<T>(var present) -> value.write(out, present);
-            case Option.None<T> _ -> out.writeNull();
+            case Option.None<T>_ -> out.writeNull();
         }
     }
 
@@ -207,7 +209,7 @@ public record JsonTypeCodec<T>(BodyWriter<T> writer, BodyReader<T> reader) {
 
     private static <T> Option<T> readOption(JsonReader in, BodyReader<T> value) {
         return in.isNull()
-               ? Option.none()
-               : Option.some(value.read(in));
+               ? none()
+               : some(value.read(in));
     }
 }

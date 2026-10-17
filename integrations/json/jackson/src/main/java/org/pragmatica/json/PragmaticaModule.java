@@ -16,6 +16,7 @@
  */
 package org.pragmatica.json;
 
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.NullReturn;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -52,6 +53,7 @@ public class PragmaticaModule extends SimpleModule {
     // Option deserializers are found per concrete type, not registered on the plain class: a class-keyed
     // registration hands every Option<T> the same untyped instance, and only a declared Option property can recover
     // T from its context. See OptionDeserializer#optionDeserializer.
+    @Contract
     @Override
     public void setupModule(SetupContext context) {
         super.setupModule(context);

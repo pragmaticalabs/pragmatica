@@ -109,8 +109,8 @@ final class JsonTypeAnalyzer {
     /// reason, down to the innermost refusal: `java.util.List<Inner>: Inner: <why Inner was refused>`.
     String reason(TypeMirror type) {
         return argumentReason(type).map(reason -> type + ": " + reason)
-                                   .orElse(() -> recordedReason(type))
-                                   .or("unsupported type " + type);
+                             .orElse(() -> recordedReason(type))
+                             .or("unsupported type " + type);
     }
 
     // The first type argument with a known refusal, as `<argument>: <its reason>`.

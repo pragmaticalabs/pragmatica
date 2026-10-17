@@ -43,7 +43,9 @@ public class CodecProcessor extends AbstractProcessor {
         this.registrySuffix = suffix == null
                               ? ""
                               : suffix;
-        this.jsonRegistries = new JsonRegistries(processingEnv.getFiler(), processingEnv.getElementUtils(), registrySuffix);
+        this.jsonRegistries = new JsonRegistries(processingEnv.getFiler(),
+                                                 processingEnv.getElementUtils(),
+                                                 registrySuffix);
     }
 
     @Override
@@ -61,8 +63,7 @@ public class CodecProcessor extends AbstractProcessor {
             }
 
             if (JSON.equals(annotationName)) {
-                roundEnv.getElementsAnnotatedWith(annotation)
-                        .forEach(element -> processJson(element, jsonPackages));
+                roundEnv.getElementsAnnotatedWith(annotation).forEach(element -> processJson(element, jsonPackages));
                 continue;
             }
 
@@ -195,7 +196,9 @@ public class CodecProcessor extends AbstractProcessor {
 
         json.writeEntryPoint(entryPoint, type, "CodecProcessor")
             .onSuccess(_ -> note(element, "Generated JSON codec: " + entryPoint))
-            .onSuccess(_ -> jsonRegistries.add(packageName, type.getQualifiedName().toString(), entryPoint))
+            .onSuccess(_ -> jsonRegistries.add(packageName,
+                                               type.getQualifiedName().toString(),
+                                               entryPoint))
             .onSuccess(_ -> jsonPackages.add(packageName))
             .onFailure(cause -> error(element,
                                       "Cannot write " + entryPoint + ": " + cause.message()));

@@ -31,9 +31,8 @@ sealed interface JsonCodecRegistry {
     private static Map<Class<?>, JsonTypeCodec<?>> load() {
         var codecs = new HashMap<Class<?>, JsonTypeCodec<?>>();
 
-        ServiceLoader.load(JsonCodecProvider.class)
-                     .forEach(provider -> provider.codecs()
-                                                  .forEach(codecs::putIfAbsent));
+        ServiceLoader.load(JsonCodecProvider.class).forEach(provider -> provider.codecs()
+                                                                                .forEach(codecs::putIfAbsent));
 
         return Map.copyOf(codecs);
     }

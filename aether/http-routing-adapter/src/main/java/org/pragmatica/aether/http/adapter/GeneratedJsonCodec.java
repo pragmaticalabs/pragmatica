@@ -36,9 +36,9 @@ public record GeneratedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs, JsonCod
     // Exactly these raw types, the ones the combinators' ArrayList and LinkedHashSet satisfy; any other requested
     // collection type (Collection, SortedSet, a concrete class) stays on the fallback rather than being guessed.
     private static final Map<Type, Fn1<JsonTypeCodec<?>, JsonTypeCodec<?>>> CONTAINERS = Map.of(List.class,
-                                                                                                   element -> JsonTypeCodec.listOf(element),
-                                                                                                   Set.class,
-                                                                                                   element -> JsonTypeCodec.setOf(element));
+                                                                                                JsonTypeCodec::listOf,
+                                                                                                Set.class,
+                                                                                                JsonTypeCodec::setOf);
 
     public static GeneratedJsonCodec generatedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs, JsonCodec fallback) {
         return new GeneratedJsonCodec(Map.copyOf(codecs), fallback);
@@ -61,8 +61,7 @@ public record GeneratedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs, JsonCod
     }
 
     private Option<JsonTypeCodec<?>> decoderFor(Type type) {
-        return Option.<JsonTypeCodec<?>>option(codecs.get(type))
-                     .orElse(() -> containerCodec(type));
+        return Option.<JsonTypeCodec<?>> option(codecs.get(type)).orElse(() -> containerCodec(type));
     }
 
     // A one-argument parameterized type: the element's codec under the raw type's combinator, when both exist. Read
@@ -74,7 +73,8 @@ public record GeneratedJsonCodec(Map<Class<?>, JsonTypeCodec<?>> codecs, JsonCod
     }
 
     private Option<JsonTypeCodec<?>> containerCodec(ParameterizedType type) {
-        return Option.all(option(CONTAINERS.get(type.getRawType())), option(codecs.get(type.getActualTypeArguments() [0])))
+        return Option.all(option(CONTAINERS.get(type.getRawType())),
+                          option(codecs.get(type.getActualTypeArguments() [0])))
                      .map(Fn1::apply);
     }
 

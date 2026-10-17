@@ -13,10 +13,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+
+import static org.pragmatica.lang.Option.option;
+
 
 /// The per-package JSON registries: one `<Segment>JsonCodecs<suffix>` class per package holding `@Json` types,
 /// implementing `JsonCodecProvider` and listing each type's entry-point `CODEC`, plus the single
@@ -46,9 +48,11 @@ final class JsonRegistries {
         this.suffix = suffix;
     }
 
-    void add(String packageName, String typeName, String entryPoint) {
-        pending.computeIfAbsent(packageName, _ -> new LinkedHashMap<>())
-               .put(typeName, entryPoint);
+    /// Records an entry point for its package's next registry; returns this collector.
+    JsonRegistries add(String packageName, String typeName, String entryPoint) {
+        pending.computeIfAbsent(packageName, _ -> new LinkedHashMap<>()).put(typeName, entryPoint);
+
+        return this;
     }
 
     /// Writes the registries of pending packages that got no new `@Json` type this round; every failed write is
@@ -62,13 +66,13 @@ final class JsonRegistries {
             }
         }
 
-        return Result.allOf(writes)
-                     .mapToUnit();
+        return Result.allOf(writes).mapToUnit();
     }
 
     /// Last round: writes any registry still pending, then the services file.
     Result<Unit> finish() {
-        return Result.all(flush(Set.of()), writeServices())
+        return Result.all(flush(Set.of()),
+                          writeServices())
                      .map((_, _) -> Unit.unit());
     }
 
@@ -81,9 +85,11 @@ final class JsonRegistries {
                         ? name
                         : packageName + "." + name;
 
-        return Result.lift(Causes::fromThrowable, () -> filer.createSourceFile(qualified))
+        return Result.lift(Causes::fromThrowable,
+                           () -> filer.createSourceFile(qualified))
                      .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
-                     .map(writer -> print(writer, registrySource(packageName, name, entries)))
+                     .map(writer -> print(writer,
+                                          registrySource(packageName, name, entries)))
                      .onSuccess(_ -> providers.add(qualified));
     }
 
@@ -110,7 +116,8 @@ final class JsonRegistries {
         lines.add("    public static final " + map + " CODECS = java.util.Map.ofEntries(");
         var rows = new ArrayList<String>();
 
-        entries.forEach((type, entryPoint) -> rows.add("        java.util.Map.entry(" + type + ".class, " + entryPoint
+        entries.forEach((type, entryPoint) -> rows.add("        java.util.Map.entry(" + type
+                                                      + ".class, " + entryPoint
                                                       + ".CODEC)"));
         lines.add(String.join(",\n", rows));
         lines.add("    );");
@@ -131,21 +138,19 @@ final class JsonRegistries {
 
         var all = new LinkedHashSet<String>();
 
-        previousProviders().stream()
-                           .filter(this::isResolvable)
-                           .forEach(all::add);
+        previousProviders().stream().filter(this::isResolvable).forEach(all::add);
         all.addAll(providers);
 
         return Result.lift(Causes::fromThrowable,
                            () -> filer.createResource(StandardLocation.CLASS_OUTPUT, "", SERVICE_FILE))
                      .flatMap(file -> Result.lift(Causes::fromThrowable, file::openWriter))
-                     .map(writer -> print(writer, List.copyOf(all)));
+                     .map(writer -> print(writer,
+                                          List.copyOf(all)));
     }
 
     // A stale entry (its registry deleted since) would make ServiceLoader fail every lookup, so it is dropped.
     private boolean isResolvable(String provider) {
-        return Option.option(elements.getTypeElement(provider))
-                     .isPresent();
+        return option(elements.getTypeElement(provider)).isPresent();
     }
 
     // The services file a previous (incremental) compilation left in the class output, if any.

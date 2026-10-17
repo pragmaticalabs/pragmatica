@@ -27,12 +27,12 @@ import org.pragmatica.lang.utils.Causes;
 public sealed interface JsonError extends Cause {
     record Malformed(int position, String expected, String message) implements JsonError {
         public static final Fn2<Malformed, Integer, String> FACTORY = Causes.forTwoValues("Malformed JSON at offset %d: expected %s",
-                                                                                   Malformed::new);
+                                                                                          Malformed::new);
     }
 
     record MissingField(String field, String message) implements JsonError {
         public static final Fn1<MissingField, String> FACTORY = Causes.forOneValue("Missing required field: %s",
-                                                                            MissingField::new);
+                                                                                   MissingField::new);
     }
 
     /// A value object's factory refused the field's value; the factory's cause travels as `origin`.
@@ -44,20 +44,20 @@ public sealed interface JsonError extends Cause {
 
     record OutOfRange(int position, String type, String message) implements JsonError {
         public static final Fn2<OutOfRange, Integer, String> FACTORY = Causes.forTwoValues("Number at offset %d does not fit %s",
-                                                                                    OutOfRange::new);
+                                                                                           OutOfRange::new);
     }
 
     /// A non-optional field, or an element or entry inside it, holds `null`. Only an `Option` field accepts `null`.
     record UnexpectedNull(String field, int position, String message) implements JsonError {
         public static final Fn2<UnexpectedNull, String, Integer> FACTORY = Causes.forTwoValues("Field %s must not be null (offset %d)",
-                                                                                        UnexpectedNull::new);
+                                                                                               UnexpectedNull::new);
     }
 
     /// Objects and arrays nest deeper than the reader's limit. A typed failure rather than a stack overflow: generated
     /// readers recurse once per level, so the limit is what keeps hostile input from exhausting the stack.
     record NestingTooDeep(int limit, int position, String message) implements JsonError {
         public static final Fn2<NestingTooDeep, Integer, Integer> FACTORY = Causes.forTwoValues("Nesting deeper than %d levels at offset %d",
-                                                                                         NestingTooDeep::new);
+                                                                                                NestingTooDeep::new);
     }
 
     /// `decode(json, offset, length)` named a region that does not lie inside `json`; nothing was read.

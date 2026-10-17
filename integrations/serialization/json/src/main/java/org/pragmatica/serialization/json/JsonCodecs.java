@@ -17,6 +17,8 @@ package org.pragmatica.serialization.json;
 
 import org.pragmatica.lang.Option;
 
+import static org.pragmatica.lang.Option.option;
+
 
 /// Lookup of generated codecs by class, for code that holds a `Class` rather than the generated `<Type>Json`
 /// entry point (frameworks, generic adapters).
@@ -35,8 +37,7 @@ public sealed interface JsonCodecs {
     /// The generated codec for `type`, or empty when `type` is not a `@Json` type on the class path.
     @SuppressWarnings("unchecked")
     static <T> Option<JsonTypeCodec<T>> codecFor(Class<T> type) {
-        return Option.option((JsonTypeCodec<T>) JsonCodecRegistry.CODECS.get()
-                                                                        .get(type));
+        return option((JsonTypeCodec<T>) JsonCodecRegistry.CODECS.get().get(type));
     }
 
     record unused() implements JsonCodecs {}
