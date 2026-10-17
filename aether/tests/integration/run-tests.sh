@@ -932,8 +932,8 @@ teardown() {
             fi
             ;;
         cloud)
-            # `aether cluster destroy` has no --cluster flag (only operates on the active cluster).
-            # Use cloud-reaper.sh which filters by `aether-cluster` label (and by `aether-chaos-cluster`,
+            # Reap through cloud-reaper.sh (_cloud_teardown_reap_cluster) rather than
+            # `aether cluster destroy --cluster`: the reaper filters by `aether-cluster` label (and by `aether-chaos-cluster`,
             # the partition-chaos firewalls' key, #1500) — works regardless of
             # bootstrap-state.json existence, idempotent, exits 0 if nothing to destroy.
             # A's guard uses the PRE-GATE snapshot (A_SUITES_SELECTED): the Step-8
@@ -947,8 +947,8 @@ teardown() {
             # through _cloud_reap_after_confirmed_drain: "unreachable is not dead" governs
             # recovery reaps (S20, restart_all_nodes), not the planned destruction of a
             # finished run's clusters.
-            [ "${A_SUITES_SELECTED:-0}" -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_A_NAME" --destroy --force 2>&1 | tail -3 || true)
-            [ ${#B_SUITES[@]} -gt 0 ] && ("${REPO_ROOT}/../tools/cloud-reaper.sh" --cluster "$CLUSTER_B_NAME" --destroy --force 2>&1 | tail -3 || true)
+            [ "${A_SUITES_SELECTED:-0}" -gt 0 ] && _cloud_teardown_reap_cluster "$CLUSTER_A_NAME"
+            [ ${#B_SUITES[@]} -gt 0 ] && _cloud_teardown_reap_cluster "$CLUSTER_B_NAME"
             # Catch-all sweep for CTM-provisioned ORPHANS. The scoped `--cluster <name>`
             # reaps above filter on `aether-cluster=<name>` (plus same-cluster orphans),
             # but CTM-provisioned replacement VMs may carry a DIFFERENT or MISSING
