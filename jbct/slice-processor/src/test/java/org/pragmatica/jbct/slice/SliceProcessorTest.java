@@ -491,6 +491,87 @@ class SliceProcessorTest {
         return sources;
     }
 
+    /// A7: a `byte[]` route that declares a path or query parameter is refused at compile time; before, the generated
+    /// route parsed the parameter and dropped it (`.to((id, body) -> delegate.upload(body))`). Driven through the real
+    /// javac with `routes.toml` pre-placed on the class output, where Maven's `process-resources` puts it (the
+    /// in-memory compile-testing file manager cannot carry a resource there).
+    @Test
+    void binaryRouteWithPathParam_isRefusedAtCompileTime(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = { route = \"PUT /files/{id:Long}\", consumes = \"application/octet-stream\" }",
+                                            "Promise<String> upload(byte[] body);");
+
+        assertThat(diagnostics).contains("cannot declare path or query parameters");
+    }
+
+    @Test
+    void binaryRouteWithQueryParam_isRefusedAtCompileTime(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = { route = \"PUT /blobs?name\", consumes = \"application/octet-stream\" }",
+                                            "Promise<String> upload(byte[] body);");
+
+        assertThat(diagnostics).contains("cannot declare path or query parameters");
+    }
+
+    /// Positive control: the same harness, the same binary route without parameters, draws no such error, so the
+    /// refusal above is the parameter's.
+    @Test
+    void binaryRouteWithoutParams_isNotRefused(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = { route = \"PUT /files\", consumes = \"application/octet-stream\" }",
+                                            "Promise<String> upload(byte[] body);");
+
+        assertThat(diagnostics).doesNotContain("cannot declare path or query parameters");
+        assertThat(diagnostics).contains("Generated routes: UploadService");
+    }
+
+    private String compileWithRoutes(Path classes, String route, String method) throws IOException {
+        var routes = classes.resolve(Path.of("upload", "routes.toml"));
+
+        Files.createDirectories(routes.getParent());
+        Files.writeString(routes, "prefix = \"/api\"\n\n[routes]\n" + route + "\n");
+        var source = JavaFileObjects.forSourceString("upload.UploadService",
+                                                     """
+            package upload;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface UploadService {
+                %s
+
+                static UploadService uploadService() {
+                    return null;
+                }
+            }
+            """.formatted(method));
+        var sources = commonSources();
+
+        sources.add(source);
+        var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
+        var collector = new javax.tools.DiagnosticCollector<JavaFileObject>();
+
+        try (var fileManager = compiler.getStandardFileManager(collector, null, null)) {
+            fileManager.setLocationFromPaths(StandardLocation.CLASS_OUTPUT, List.of(classes));
+            fileManager.setLocationFromPaths(StandardLocation.SOURCE_OUTPUT, List.of(classes));
+            var task = compiler.getTask(null,
+                                        fileManager,
+                                        collector,
+                                        List.of("-proc:only", "-classpath", System.getProperty("java.class.path")),
+                                        null,
+                                        sources);
+
+            task.setProcessors(List.of(new SliceProcessor()));
+            task.call();
+        }
+
+        return collector.getDiagnostics()
+                        .stream()
+                        .map(diagnostic -> diagnostic.getMessage(null))
+                        .collect(Collectors.joining("\n"));
+    }
+
     /// Loads a generated slice manifest through [java.util.Properties] rather than asserting on raw
     /// text: `Properties.store` escapes the `:` in a coordinate as `\:`, so substring assertions on
     /// the file body silently encode that escaping and break for the wrong reason.

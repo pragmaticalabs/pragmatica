@@ -852,6 +852,10 @@ public class RouteSourceGenerator {
                                                consumesParameterType(method),
                                                method.name())
                                 .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
+            MediaTypeTypeChecker.checkBodyRouteParams(routeDsl.consumes().category(),
+                                                      routeDsl.hasParams(),
+                                                      method.name())
+                                .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
         }
     }
 

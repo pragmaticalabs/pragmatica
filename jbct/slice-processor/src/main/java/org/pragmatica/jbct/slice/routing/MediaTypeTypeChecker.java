@@ -21,6 +21,7 @@ import org.pragmatica.lang.Option;
 ///   - consumes TEXT/HTML/XML → parameter must be `String`
 ///   - consumes BINARY → parameter must be `byte[]`
 ///   - consumes MULTIPART → parameter must be `MultipartRequest`
+///   - consumes BINARY/MULTIPART → the route may not declare path or query parameters (A7)
 ///   - JSON (in or out) → any type is accepted
 ///   - FORM_URLENCODED is rejected in both directions: as a `produces` it is input-only, and as a
 ///     `consumes` it is rejected until form-body binding is implemented (#414)
@@ -67,6 +68,24 @@ public sealed interface MediaTypeTypeChecker {
             case "FORM_URLENCODED" -> Option.some("Slice method '" + methodName + "': consumes media type with category " + category + " is not supported yet — form-body binding is unimplemented; use application/json" + " or a supported type");
             default -> Option.some("Slice method '" + methodName + "': unknown consumes content category " + category);
         };
+    }
+
+    /// A7: a `byte[]` or `MultipartRequest` route cannot receive path or query parameters. The single body
+    /// parameter has nowhere to carry them, so the generated route parsed them and dropped them (`byte[]`), or
+    /// refused with a message about record components (`MultipartRequest`). Refused at compile time until the upload
+    /// overhaul replaces this body API.
+    ///
+    /// @param category   the consumes ContentCategory enum constant name
+    /// @param hasParams  whether the route declares path or query parameters
+    /// @param methodName the slice method name, for the error message
+    /// @return none when valid, some(errorMessage) for a binary or multipart route with parameters
+    static Option<String> checkBodyRouteParams(String category, boolean hasParams, String methodName) {
+        return hasParams && (category.equals("BINARY") || category.equals("MULTIPART"))
+               ? Option.some("Slice method '" + methodName + "': a route consuming category " + category
+                             + " cannot declare path or query parameters: its single byte[]/MultipartRequest parameter"
+                             + " cannot carry them, so they would be dropped. Remove them from the route, or send"
+                             + " them inside the body")
+               : Option.none();
     }
 
     private static Option<String> producesError(String category, String expected, String actual, String methodName) {

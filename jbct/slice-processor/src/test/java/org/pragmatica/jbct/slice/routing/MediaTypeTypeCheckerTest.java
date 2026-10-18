@@ -133,4 +133,31 @@ class MediaTypeTypeCheckerTest {
                                                    .contains("form-body binding is unimplemented"));
         }
     }
+
+    /// A7: a binary or multipart route cannot carry path or query parameters; a JSON route can.
+    @Nested
+    class BodyRouteParams {
+        @Test
+        void checkBodyRouteParams_fails_forBinaryWithParams() {
+            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("BINARY", true, "upload").isPresent()).isTrue();
+        }
+
+        @Test
+        void checkBodyRouteParams_fails_forMultipartWithParams() {
+            var result = MediaTypeTypeChecker.checkBodyRouteParams("MULTIPART", true, "form");
+
+            result.onPresent(msg -> assertThat(msg).contains("form").contains("cannot declare path or query parameters"));
+            assertThat(result.isPresent()).isTrue();
+        }
+
+        @Test
+        void checkBodyRouteParams_ok_forBinaryWithoutParams() {
+            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("BINARY", false, "upload").isEmpty()).isTrue();
+        }
+
+        @Test
+        void checkBodyRouteParams_ok_forJsonWithParams() {
+            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("JSON", true, "update").isEmpty()).isTrue();
+        }
+    }
 }
