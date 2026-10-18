@@ -120,9 +120,9 @@ This gives a comfortable window for retries if renewal fails.
 
 1. Scheduler fires at the calculated renewal time
 2. A new node certificate is issued by the `CertificateProvider` (same derived CA)
-3. QUIC server, management HTTP server, and app HTTP server receive the new certificate
+3. The QUIC server is stopped and rebuilt on the same UDP port with the new certificate; the management HTTP server and app HTTP server receive the new certificate
 4. New connections use the updated certificate
-5. Existing connections continue with the old certificate until they close naturally
+5. Connections the node accepted close with the old QUIC server, and their dialers reconnect; connections the node dialed are not drained and keep the old certificate until they end
 6. Scheduler reschedules the next renewal based on the new certificate's expiry
 
 ### Retry Strategy on Failure
@@ -143,8 +143,11 @@ The multiplier is 3x per attempt, capped at 240 minutes (4 hours).
 
 During certificate rotation:
 - New connections immediately use the new certificate
-- Existing connections are unaffected (they keep their negotiated TLS session)
-- Peers reconnect automatically; any disruption is sub-second
+- Connections the node accepted are closed when its QUIC server restarts; the dialing peers reconnect through the normal reconnect path (a new handshake each). The disruption has not been measured.
+- Connections the node dialed keep their old certificate until they end
+- If the new server cannot bind the port, the node stops accepting inbound connections until it is restarted
+
+See [Known Limitations](../reference/known-limitations.md#transport-certificate-rotation-restarts-the-quic-server).
 
 ## Gossip Encryption
 
