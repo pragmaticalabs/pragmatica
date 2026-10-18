@@ -34,8 +34,20 @@ class CloseAndOverrunProbeTest {
         volatile boolean closingRan;
         final java.util.concurrent.atomic.AtomicInteger closings = new java.util.concurrent.atomic.AtomicInteger();
 
+        /// Resolved by a test to let a drain proceed past the consumer's marker (`drained()`); resolved from the start unless a test sets it.
+        volatile Promise<Unit> drainGate = Promise.unitPromise();
+
         Probe(FsmTimers.TimerService clock) {
-            super("deploy-fsm-probe", clock);
+            this(clock, 5_000L);
+        }
+
+        Probe(FsmTimers.TimerService clock, long stopWaitMs) {
+            super("deploy-fsm-probe", clock, stopWaitMs);
+        }
+
+        @Override
+        Promise<Unit> drained() {
+            return drainGate;
         }
 
         @Override
@@ -372,5 +384,94 @@ class CloseAndOverrunProbeTest {
         assertThat(started.retireIfConsumerless()).as("a live consumer is not retired").isFalse();
         started.close();
         assertThat(started.retireIfConsumerless()).as("an exited consumer needs no one").isTrue();
+    }
+
+    // -- the stop bound and the drain (design 7, 2a, 2b) ----------------------------------------------------------------------------------
+    /// Design 7, 2b: a stop waits 10 s for an interpreter `[guess: settled by E-07]`. The pin is the design's number, so changing it is a decision.
+    @Test
+    void theStopWait_isTheDesignsTenSeconds() {
+        assertThat(FsmRuntime.STOP_WAIT_MS).isEqualTo(10_000L);
+    }
+
+    /// W-27 at the runtime: the consumer is inside an input (a subscriber that does not return); `close()` comes back after the bound it was built
+    /// with, says so, and the shutdown still happens when the input returns.
+    @Test
+    void closeOfAConsumerStuckInAnInput_returnsAfterItsBound_andWarnsNamingTheBound() throws Exception {
+        try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+            var probe = new Probe(new ManualTimerService(), 400L);
+
+            probe.start();
+            probe.deliver("block");
+            assertThat(probe.blocking.await(5, TimeUnit.SECONDS)).isTrue();
+
+            var started = System.nanoTime();
+
+            probe.close();
+
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).as("not held past its bound").isBetween(Duration.ofMillis(300), Duration.ofSeconds(4));
+            assertThat(logs.lines()).anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout").contains("400 ms"));
+            probe.release.countDown();
+            await().atMost(Duration.ofSeconds(5)).until(() -> probe.closingRan);
+        }
+    }
+
+    @Test
+    void drain_isResolvedOnceTheConsumerReachesTheMarker_behindTheInputsQueuedBeforeIt() throws Exception {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        probe.deliver("block");
+        assertThat(probe.blocking.await(5, TimeUnit.SECONDS)).isTrue();
+        probe.deliver("queued-before");
+
+        var drained = probe.drain();
+
+        assertThat(drained.isResolved()).as("the consumer is still inside the first input").isFalse();
+
+        probe.release.countDown();
+
+        await().atMost(Duration.ofSeconds(5)).until(drained::isResolved);
+        assertThat(probe.steps).as("the input queued before the marker was handled first").contains("queued-before");
+        probe.close();
+    }
+
+    @Test
+    void drain_alsoWaitsForWhatTheRuntimeSaysMustHold_afterTheMarker() {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.drainGate = Promise.promise();
+        probe.start();
+
+        var drained = probe.drain();
+
+        await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).until(() -> !drained.isResolved());
+
+        probe.drainGate.succeed(Unit.unit());
+
+        await().atMost(Duration.ofSeconds(5)).until(drained::isResolved);
+        probe.close();
+    }
+
+    @Test
+    void drain_ofAClosedRuntime_isResolvedAtOnce_andTheRefusedMarkerIsCountedClosed() {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        probe.close();
+
+        assertThat(probe.drain().isResolved()).isTrue();
+        assertThat(probe.counts).contains("Drain:closed");
+    }
+
+    @Test
+    void drain_doesNotStopTheConsumer_theInputsAfterItAreStillHandled() {
+        var probe = new Probe(new ManualTimerService());
+
+        probe.start();
+        await().atMost(Duration.ofSeconds(5)).until(() -> probe.drain().isResolved());
+        probe.deliver("after-drain");
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> probe.steps.contains("after-drain"));
+        probe.close();
     }
 }

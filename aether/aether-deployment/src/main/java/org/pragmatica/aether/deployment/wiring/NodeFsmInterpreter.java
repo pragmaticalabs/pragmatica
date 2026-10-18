@@ -20,6 +20,7 @@ import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmModel;
 import org.pragmatica.aether.deployment.node.machine.TimerId;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 
@@ -38,7 +39,8 @@ import org.pragmatica.lang.Unit;
 /// snapshot at a revision (`KvSnapshotter`) and steps `QuorumEstablished` (or `ReconcileActivation` for the level-heal driver). The
 /// revision becomes the watermark below which KV-sourced inputs are dropped (the snapshot holds them).
 ///
-/// **Stop.** `Close` only: timers cancelled, consumer stopped. The `SUSPEND` drain of design 7 is not part of this interpreter.
+/// **Stop (design 7).** [#drain] resolves once the consumer has handled everything queued before it, the `SUSPEND`s of a quorum loss among
+/// it, and the local-op executor has run them; `close()` then cancels the timers and stops the consumer.
 public final class NodeFsmInterpreter extends FsmRuntime<NodeFsmInput, TimerId, Unit> {
     private static final String FSM = "node";
 
@@ -57,13 +59,18 @@ public final class NodeFsmInterpreter extends FsmRuntime<NodeFsmInput, TimerId, 
     private final Parts parts;
     private volatile NodeFsmModel model = NodeFsmModel.nodeFsmModel();
 
-    private NodeFsmInterpreter(Parts parts) {
-        super("deploy-fsm-node", parts.clock());
+    private NodeFsmInterpreter(Parts parts, long stopWaitMs) {
+        super("deploy-fsm-node", parts.clock(), stopWaitMs);
         this.parts = parts;
     }
 
     public static NodeFsmInterpreter nodeFsmInterpreter(Parts parts) {
-        return new NodeFsmInterpreter(parts);
+        return new NodeFsmInterpreter(parts, STOP_WAIT_MS);
+    }
+
+    /// As above, with the wait a `close()` gives the consumer (design 7, 2b) set explicitly.
+    public static NodeFsmInterpreter nodeFsmInterpreter(Parts parts, long stopWaitMs) {
+        return new NodeFsmInterpreter(parts, stopWaitMs);
     }
 
     /// The model after the last step: read-only, for observers (the tracer's sampler reads an instance's record from it).
@@ -129,6 +136,13 @@ public final class NodeFsmInterpreter extends FsmRuntime<NodeFsmInput, TimerId, 
         parts.localOps().close();
 
         return Unit.unit();
+    }
+
+    /// Design 7 (2a): the marker was consumed, so the `SUSPEND`s of the quorum loss ahead of it have been queued; they must also have run.
+    @Override
+    Promise<Unit> drained() {
+        return parts.localOps()
+                    .idle();
     }
 
     // -- effects -----------------------------------------------------------------------------------------------------

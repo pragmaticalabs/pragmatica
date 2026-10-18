@@ -10,6 +10,8 @@ import java.util.function.LongSupplier;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmEffect;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
 /// How the node interpreter runs a `LocalOp` effect (design 4.3): the seam in front of `LocalOpExecutor`. Tests substitute a recording
@@ -19,6 +21,11 @@ public interface LocalOps {
     /// a chain step of another incarnation is discarded unrun.
     @Contract
     void run(NodeFsmEffect.LocalOp op, LongSupplier currentIncarnation, Consumer<NodeFsmInput.LocalOpSettled> settled);
+
+    /// Resolves when no op is queued or running (design 7, 2a: the `SUSPEND`s of a quorum loss have run). A runtime that runs nothing is always idle.
+    default Promise<Unit> idle() {
+        return Promise.unitPromise();
+    }
 
     /// Stops accepting work (the `Close` of the node interpreter).
     @Contract

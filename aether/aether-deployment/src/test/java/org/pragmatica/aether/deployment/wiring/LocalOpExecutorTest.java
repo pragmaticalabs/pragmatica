@@ -295,4 +295,89 @@ class LocalOpExecutorTest {
         assertThat(startedSteps()).as("a closed executor accepts nothing").containsExactly("LOAD@1");
     }
 
+    // -- idle (design 7, 2a: the drain of a node's stop waits for the SUSPENDs) ---------------------------------------------------------
+    @Test
+    void idle_isResolvedAtOnce_whenNothingIsQueuedOrRunning() {
+        assertThat(executor.idle().isResolved()).isTrue();
+    }
+
+    @Test
+    void idle_staysPending_whileAnOpRuns_andResolvesWhenItEnds() {
+        run(op(ORDERS, LocalStep.SUSPEND, 1, 0));
+        awaitStarted(1);
+
+        var idle = executor.idle();
+
+        assertThat(idle.isResolved()).as("MT-15: a drain that does not wait for the running SUSPEND").isFalse();
+
+        complete(0);
+
+        await().atMost(Duration.ofSeconds(5)).until(idle::isResolved);
+    }
+
+    @Test
+    void idle_coversTheOpsQueuedBehindTheRunningOne_notOnlyTheRunningOne() {
+        run(op(ORDERS, LocalStep.SUSPEND, 1, 0));
+        awaitStarted(1);
+        run(op(ORDERS, LocalStep.EVICT, 1, 0));
+        run(op(BILLING, LocalStep.SUSPEND, 1, 0));
+        awaitStarted(2);
+
+        var idle = executor.idle();
+
+        complete(0);
+        awaitStarted(3);
+        assertThat(idle.isResolved()).as("the lane still holds a queued op, and BILLING's SUSPEND is running").isFalse();
+
+        complete(1);
+        assertThat(idle.isResolved()).as("ORDERS' EVICT is running").isFalse();
+
+        complete(2);
+        await().atMost(Duration.ofSeconds(5)).until(idle::isResolved);
+    }
+
+    /// MQ-3: the compensating UNPUBLISH of a stale publisher is part of what the drain waits for.
+    @Test
+    void idle_coversTheCompensatingUnpublishOfAStalePublisher() {
+        run(op(ORDERS, LocalStep.PUBLISH_ROUTES, 1, 0));
+        awaitStarted(1);
+        incarnation.set(2);
+
+        var idle = executor.idle();
+
+        complete(0);
+        awaitStarted(2);
+
+        assertThat(startedSteps()).containsExactly("PUBLISH_ROUTES@1", "UNPUBLISH@1");
+        assertThat(idle.isResolved()).as("the compensation runs after the stale publisher").isFalse();
+
+        complete(1);
+        await().atMost(Duration.ofSeconds(5)).until(idle::isResolved);
+    }
+
+    @Test
+    void idle_isReleasedByClose_andARunningOpDoesNotHoldItAfterwards() {
+        run(op(ORDERS, LocalStep.SUSPEND, 1, 0));
+        awaitStarted(1);
+
+        var idle = executor.idle();
+
+        executor.close();
+
+        await().atMost(Duration.ofSeconds(5)).until(idle::isResolved);
+        assertThat(executor.idle().isResolved()).isTrue();
+    }
+
+    @Test
+    void idle_waiters_areAllReleased_whenTheLastOpEnds() {
+        run(op(ORDERS, LocalStep.SUSPEND, 1, 0));
+        awaitStarted(1);
+
+        var first = executor.idle();
+        var second = executor.idle();
+
+        complete(0);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> first.isResolved() && second.isResolved());
+    }
 }

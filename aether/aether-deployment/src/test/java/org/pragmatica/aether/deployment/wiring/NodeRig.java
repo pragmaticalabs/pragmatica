@@ -58,6 +58,8 @@ final class NodeRig implements AutoCloseable {
     final NodeFsmInterpreter interpreter;
     private final AtomicInteger barrier = new AtomicInteger();
     volatile long wall = 1_760_000_100_000L;
+    /// What the slice store reports loaded at a snapshot; a test that re-enters the node over slices its first incarnation loaded sets it.
+    volatile Set<Artifact> loaded = Set.of();
 
     NodeRig() {
         this(NodeFsmTimings.nodeFsmTimings());
@@ -73,6 +75,11 @@ final class NodeRig implements AutoCloseable {
     }
 
     NodeRig(NodeFsmTimings timings, boolean started) {
+        this(timings, started, null);
+    }
+
+    /// `ops` replaces the scriptable local runtime: the real executor over the real adapter, for the tests that run a chain end to end.
+    NodeRig(NodeFsmTimings timings, boolean started, LocalOps ops) {
         this.timings = timings;
         var config = NodeFsmConfig.nodeFsmConfig(SELF, PROCESS).withTimings(timings);
         var fsm = NodeFsm.nodeFsm(config, () -> wall);
@@ -83,10 +90,12 @@ final class NodeRig implements AutoCloseable {
                                                                                          KvSnapshotter.kvSnapshotter(store),
                                                                                          () -> {
                                                                                              snapshots.incrementAndGet();
-                                                                                             return Set.of();
+                                                                                             return loaded;
                                                                                          },
                                                                                          tokens::tokenOf,
-                                                                                         localOps,
+                                                                                         ops == null
+                                                                                         ? localOps
+                                                                                         : ops,
                                                                                          clock,
                                                                                          sunk::add,
                                                                                          selfReady::incrementAndGet,

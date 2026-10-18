@@ -160,15 +160,19 @@ class SliceLegBuildersGoldenTest {
         return ((Promise<?>) builder.invoke(legacyState(), ARTIFACT, slice));
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private List<KVCommand<AetherKey>> legacyStreamRefs(Slice slice) throws Exception {
+        return legacyStreamRefs(slice, "ACQUIRE");
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private List<KVCommand<AetherKey>> legacyStreamRefs(Slice slice, String actionName) throws Exception {
         sliceStore.withLoaded(ARTIFACT, slice);
         var action = Class.forName(NodeDeploymentState.Active.class.getName() + "$RefcountAction");
         Method builder = NodeDeploymentState.Active.class.getDeclaredMethod("buildStreamRefCommands", SliceNodeKey.class, action);
 
         builder.setAccessible(true);
 
-        return (List<KVCommand<AetherKey>>) builder.invoke(legacyState(), new SliceNodeKey(ARTIFACT, SELF), Enum.valueOf((Class<Enum>) action, "ACQUIRE"));
+        return (List<KVCommand<AetherKey>>) builder.invoke(legacyState(), new SliceNodeKey(ARTIFACT, SELF), Enum.valueOf((Class<Enum>) action, actionName));
     }
 
     // -- the adapter side --------------------------------------------------------------------------------------------------
@@ -341,5 +345,128 @@ class SliceLegBuildersGoldenTest {
         assertThat(builders.legs(ARTIFACT, slice).unwrap()).isEmpty();
         assertThat(builders.streamReferences(ARTIFACT, slice)).isEmpty();
         assertThat(legacyCommands("doPublishTopicSubscriptions", slice)).isEmpty();
+    }
+
+    // -- teardown (PREPARE_TEARDOWN, phase-3 design 4.3 step map; N13, N16) ----------------------------------------------------------
+    private List<KVCommand<AetherKey>> teardown(Slice slice, LegKind kind) {
+        return builders.teardown(ARTIFACT, slice).stream().filter(leg -> leg.kind() == kind).map(LegCommand::command).toList();
+    }
+
+    @Test
+    void topicRemovals_equalTheLegacyBuilders_scopedToThisNode() throws Exception {
+        owned(BlueprintId.blueprintId(BLUEPRINT));
+        var slice = new RuntimeFixtures.TopicSlice();
+
+        var legacy = legacyCommands("doUnpublishTopicSubscriptions", slice);
+        var adapter = teardown(slice, LegKind.TOPIC_SUBSCRIPTION);
+
+        assertThat(legacy).as("the legacy builders resolved both subscriptions, so the comparison is not vacuous").hasSize(2);
+        assertThat(legacy).allMatch(command -> command instanceof KVCommand.Remove<?>);
+        assertThat(adapter).isEqualTo(legacy);
+        assertThat(((AetherKey.TopicSubscriptionKey) ((KVCommand.Remove<?>) adapter.getFirst()).key()).nodeId()).as("#1448: this node's row only").isEqualTo(SELF);
+    }
+
+    @Test
+    void streamRemovals_equalTheLegacyBuilders_andRaiseNoWarning() throws Exception {
+        var slice = new RuntimeFixtures.StreamSlice();
+
+        var legacy = legacyCommands("doUnpublishStreamSubscriptions", slice);
+        var adapter = teardown(slice, LegKind.STREAM_REGISTRATION);
+
+        assertThat(legacy).as("the declared consumer resolved, the ghost one did not").hasSize(1);
+        assertThat(legacy).allMatch(command -> command instanceof KVCommand.Remove<?>);
+        assertThat(adapter).isEqualTo(legacy);
+        org.awaitility.Awaitility.await().during(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(5)).until(() -> adapterWarnings.isEmpty() && legacyWarnings.isEmpty());
+    }
+
+    /// Removal of a consumer that never resolved clears its "not registered" mark, so a later registration of the same consumer after its slice
+    /// was removed raises nothing (legacy `logUnresolvedOnRemoval`: "or one whose slice was removed in between, raises nothing").
+    @Test
+    void aStreamConsumerRemovedWhileUnresolved_raisesNoResolvedWarningWhenItLaterRegisters_likeLegacy() throws Exception {
+        var slice = new RuntimeFixtures.StreamSlice();
+
+        legacyCommands("doPublishStreamSubscriptions", slice);
+        legs(slice, LegKind.STREAM_REGISTRATION);
+        legacyCommands("doUnpublishStreamSubscriptions", slice);
+        teardown(slice, LegKind.STREAM_REGISTRATION);
+        ConfigService.setInstance(realBinderOver(TOML + "\n[streams.ghost]\npartitions = 2\n"));
+        legacyCommands("doPublishStreamSubscriptions", slice);
+        legs(slice, LegKind.STREAM_REGISTRATION);
+
+        awaitWarnings(1);
+        org.awaitility.Awaitility.await().during(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(5)).until(() -> adapterWarnings.size() == 1 && legacyWarnings.size() == 1);
+        assertThat(warningLines(adapterWarnings)).as("only the first 'could NOT be registered'; no 'registered again'").hasSize(1).isEqualTo(warningLines(legacyWarnings));
+    }
+
+    @Test
+    void scheduledRemovals_equalTheLegacyBuilders_taskAndPauseKey() throws Exception {
+        var slice = new RuntimeFixtures.ScheduledSlice();
+
+        var legacy = legacyCommands("doUnpublishScheduledTasks", slice);
+        var adapter = teardown(slice, LegKind.SCHEDULED_TASK);
+
+        assertThat(legacy).as("two tasks, each a task key and a pause key").hasSize(4);
+        assertThat(legacy).allMatch(command -> command instanceof KVCommand.Remove<?>);
+        assertThat(adapter).isEqualTo(legacy);
+    }
+
+    @Test
+    void streamReferenceReleases_equalTheLegacyReleaseCommands() throws Exception {
+        bindTwoStreamRoles();
+        var slice = new RuntimeFixtures.StreamRoleSlice();
+
+        kv.process(kv.createBatch(builders.streamReferences(ARTIFACT, slice).stream().map(LegCommand::command).toList()));
+        var legacy = legacyStreamRefs(slice, "RELEASE");
+        var adapter = builders.teardown(ARTIFACT, slice).stream().filter(leg -> leg.kind() == LegKind.STREAM_REF).toList();
+
+        assertThat(legacy).as("two acquired roles, two releases").hasSize(2);
+        assertThat(adapter.stream().map(LegCommand::command).toList()).isEqualTo(legacy);
+    }
+
+    @Test
+    void streamReferenceReleases_areEmpty_whenNothingWasAcquired_likeLegacy() throws Exception {
+        bindTwoStreamRoles();
+        var slice = new RuntimeFixtures.StreamRoleSlice();
+
+        assertThat(legacyStreamRefs(slice, "RELEASE")).isEmpty();
+        assertThat(builders.teardown(ARTIFACT, slice)).isEmpty();
+    }
+
+    private void bindTwoStreamRoles() {
+        var blueprint = BlueprintId.blueprintId(BLUEPRINT);
+        var events = ResourceAddress.resourceAddress("ticketing", "events", "1.0.0").unwrap();
+        var audit = ResourceAddress.resourceAddress("ticketing", "audit", "1.0.0").unwrap();
+
+        owned(blueprint);
+        kv.process(kv.createBatch(List.of(new KVCommand.Put<>(BlueprintStreamBindingsKey.blueprintStreamBindingsKey(blueprint),
+                                                              BlueprintStreamBindingsValue.blueprintStreamBindingsValue(List.of(BlueprintStreamBindingsValue.NamedAddress.namedAddress("events", events),
+                                                                                                                                BlueprintStreamBindingsValue.NamedAddress.namedAddress("audit", audit)))))));
+    }
+
+    /// The teardown batch of a mixed slice is in the legacy chain's order (topics, streams, releases, scheduled tasks); the FSM filters it by kind
+    /// (R-3.4.5), the builder does not.
+    @Test
+    void theTeardownOfAMixedSlice_isInTheLegacyChainsOrder() throws Exception {
+        var slice = new RuntimeFixtures.MixedSlice();
+        var expected = new ArrayList<KVCommand<AetherKey>>();
+
+        expected.addAll(legacyCommands("doUnpublishTopicSubscriptions", slice));
+        expected.addAll(legacyCommands("doUnpublishStreamSubscriptions", slice));
+        expected.addAll(legacyCommands("doUnpublishScheduledTasks", slice));
+
+        var adapter = builders.teardown(ARTIFACT, slice);
+
+        assertThat(expected).as("one topic, one stream, one scheduled task with its pause key").hasSize(4);
+        assertThat(adapter.stream().map(LegCommand::command).toList()).isEqualTo(expected);
+        assertThat(adapter).extracting(LegCommand::kind)
+                           .containsExactly(LegKind.TOPIC_SUBSCRIPTION, LegKind.STREAM_REGISTRATION, LegKind.SCHEDULED_TASK, LegKind.SCHEDULED_TASK);
+    }
+
+    @Test
+    void aSliceWithoutManifests_hasNoTeardown() throws Exception {
+        var slice = new RuntimeFixtures.BareSlice();
+
+        assertThat(builders.teardown(ARTIFACT, slice)).isEmpty();
+        assertThat(legacyCommands("doUnpublishTopicSubscriptions", slice)).isEmpty();
     }
 }

@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.wiring;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -20,6 +21,7 @@ import org.pragmatica.aether.deployment.node.fsm.ActivationWriteFault;
 import org.pragmatica.aether.deployment.node.machine.LegCommand;
 import org.pragmatica.aether.deployment.node.machine.LocalOutcome;
 import org.pragmatica.aether.deployment.node.machine.LocalStep;
+import org.pragmatica.aether.deployment.node.machine.NodeFsmTimings;
 import org.pragmatica.aether.deployment.node.machine.NodeFsmInput;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
@@ -574,6 +576,142 @@ class NodeFsmInterpreterTest {
                 assertThat(((SliceTargetValue) probeLeg.value()).targetInstances())
                     .as("the leg comes from a second BUILD_LEGS run at probe time")
                     .isEqualTo(2);
+            }
+        }
+    }
+
+    /// Design 7 (2a): the drain of a node's stop. MT-15 is "skip the node drain": the drain that resolves before the SUSPENDs have run.
+    @Nested
+    class Drain {
+        /// The real executor over a runner that holds every `SUSPEND` on `gate` and completes everything else at once.
+        private LocalOpExecutor executorHolding(Promise<LocalOutcome> gate) {
+            return LocalOpExecutor.localOpExecutor(op -> op.step() == LocalStep.SUSPEND
+                                                         ? gate
+                                                         : Promise.success(LocalOutcome.done()),
+                                                   new ManualTimerService(),
+                                                   NodeFsmTimings.nodeFsmTimings(),
+                                                   LocalOpExecutor.Counter.NONE);
+        }
+
+        @Test
+        void drain_waitsForTheSuspendsOfTheQuorumLoss_whichRunAfterTheMarkerWasConsumed() {
+            var gate = Promise.<LocalOutcome>promise();
+
+            try (var rig = new NodeRig(NodeFsmTimings.nodeFsmTimings(), true, executorHolding(gate))) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitState(ORDERS, SliceObservedState.ACTIVE);
+
+                rig.interpreter.deliver(new NodeFsmInput.QuorumDisappeared());
+                var drained = rig.interpreter.drain();
+
+                rig.settle();
+                assertThat(rig.interpreter.model().active()).as("the quorum loss was stepped, so the SUSPEND is queued").isFalse();
+                assertThat(drained.isResolved()).as("MT-15: the SUSPEND is still running").isFalse();
+
+                gate.succeed(LocalOutcome.done());
+
+                await().atMost(Duration.ofSeconds(5)).until(drained::isResolved);
+            }
+        }
+
+        @Test
+        void drain_isResolvedAtOnce_forANodeWithNothingToWaitFor() {
+            try (var rig = new NodeRig(NodeFsmTimings.nodeFsmTimings(), true, executorHolding(Promise.promise()))) {
+                var drained = rig.interpreter.drain();
+
+                await().atMost(Duration.ofSeconds(5)).until(drained::isResolved);
+            }
+        }
+
+        /// A SUSPEND of an instance that was never serving does not exist: only the serving ones are suspended, so only they are waited for.
+        @Test
+        void drain_doesNotWaitForAChainStillRunning_onlyForWhatTheQuorumLossQueued() {
+            var gate = Promise.<LocalOutcome>promise();
+
+            try (var rig = new NodeRig(NodeFsmTimings.nodeFsmTimings(), true, executorHolding(gate))) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.LOADED).enter();
+                rig.awaitState(ORDERS, SliceObservedState.LOADED);
+                rig.interpreter.deliver(new NodeFsmInput.QuorumDisappeared());
+                var drained = rig.interpreter.drain();
+
+                await().atMost(Duration.ofSeconds(5)).until(drained::isResolved);
+            }
+        }
+    }
+
+    /// W-16 (b): a write in flight across a quorum loss.
+    @Nested
+    class QuorumLoss {
+        /// The first ACTIVE batch is held by the engine (it survives the quorum loss, `RE:1180-1206`); `commitHeld` lets it commit later.
+        private final Promise<List<Object>> held = Promise.promise();
+        private final AtomicInteger heldBatches = new AtomicInteger();
+        private volatile List<KVCommand<AetherKey>> heldCommands = List.of();
+
+        private NodeRig engineHoldingTheFirstActiveWrite() {
+            var rig = new NodeRig();
+            var real = rig.cluster.script;
+
+            rig.cluster.script = commands -> observedActive(commands) && heldBatches.getAndIncrement() == 0
+                                             ? hold(commands)
+                                             : real.apply(commands);
+
+            return rig;
+        }
+
+        private Promise<List<Object>> hold(List<KVCommand<AetherKey>> commands) {
+            heldCommands = commands;
+
+            return held;
+        }
+
+        private void commitHeld(NodeRig rig) {
+            held.succeed(rig.applier.commit(heldCommands));
+        }
+
+        /// The write is held by the engine across a quorum loss and a re-entry, then commits. Its settlement carries the incarnation that submitted
+        /// it, so the new incarnation drops it; the committed row reaches the new incarnation as an ordinary own `ObservedPut` (design 4.6).
+        @Test
+        void aLateCommit_afterTheNodeReEntered_isDroppedByTheNewIncarnation() {
+            try (var rig = engineHoldingTheFirstActiveWrite()) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitThat(() -> heldBatches.get() == 1);
+                var first = rig.interpreter.incarnation();
+
+                rig.interpreter.deliver(new NodeFsmInput.QuorumDisappeared());
+                rig.settle();
+                rig.interpreter.requestEntry(false);
+                rig.settle();
+                var second = rig.interpreter.incarnation();
+                var droppedBefore = rig.metric("WriteSettled", "dropped");
+
+                commitHeld(rig);
+                rig.awaitThat(() -> rig.metric("WriteSettled", "dropped") == droppedBefore + 1);
+
+                assertThat(second).as("the node re-entered under a new incarnation").isGreaterThan(first);
+            }
+        }
+
+        /// The new incarnation finds the slice loaded (its first incarnation loaded it) and its ACTIVATE is held, so it writes nothing that would take the
+        /// held batch's version first: the commit is the only ACTIVE row, and it arrives as an input like any other.
+        @Test
+        void theLateCommit_reachesTheNewIncarnation_asAnOrdinaryOwnObservedPut() {
+            try (var rig = engineHoldingTheFirstActiveWrite()) {
+                rig.permit(ORDERS).goal(ORDERS, SliceGoal.ACTIVE).enter();
+                rig.awaitThat(() -> heldBatches.get() == 1);
+                rig.loaded = Set.of(ORDERS);
+                rig.localOps.held.add(LocalStep.ACTIVATE);
+
+                rig.interpreter.deliver(new NodeFsmInput.QuorumDisappeared());
+                rig.settle();
+                rig.interpreter.requestEntry(false);
+                rig.settle();
+                assertThat(rig.interpreter.model().instance(ORDERS).observed().map(SliceObservedValue::state).or(SliceObservedState.UNKNOWN))
+                    .as("the new incarnation starts from the committed row, which is not ACTIVE yet")
+                    .isNotEqualTo(SliceObservedState.ACTIVE);
+
+                commitHeld(rig);
+
+                rig.awaitThat(() -> rig.interpreter.model().instance(ORDERS).observed().map(SliceObservedValue::state).or(SliceObservedState.UNKNOWN) == SliceObservedState.ACTIVE);
             }
         }
     }

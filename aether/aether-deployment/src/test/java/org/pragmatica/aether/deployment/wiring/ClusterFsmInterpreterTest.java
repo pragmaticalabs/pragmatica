@@ -5,6 +5,7 @@
 package org.pragmatica.aether.deployment.wiring;
 
 import java.lang.reflect.RecordComponent;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 
@@ -344,6 +345,96 @@ class ClusterFsmInterpreterTest {
 
                 assertThat(rig.countOf("KvPut")).as("the committed fact was stepped").isGreaterThan(puts);
                 assertThat(model(rig).seams().localAlive()).as("the localAlive sample was stepped").isEqualTo(Option.some(Set.of(SELF)));
+            }
+        }
+    }
+
+    /// B14, design 4.4: `onStateRestored` under an Active leader's FSM. A restore implies PASSIVE first, so the leader's FSM is normally Dormant when
+    /// it fires and nothing happens; if it is not, it is re-incarnated in one dispatch.
+    @Nested
+    class StateRestored {
+        private long incarnationOf(ClusterRig rig) {
+            return ((ClusterState.Active) rig.interpreter.state()).model().incarnation();
+        }
+
+        @Test
+        void aRestoreUnderAnActiveFsm_reincarnatesIt_deactivateThenActivate_andReadsAFreshSnapshot() {
+            try (var rig = new ClusterRig()) {
+                rig.activate();
+                var before = incarnationOf(rig);
+                var snapshots = rig.snapshots.get();
+
+                rig.interpreter.stateRestored();
+                rig.awaitThat(() -> rig.metric("StateRestored", "reincarnated") == 1);
+                rig.settle();
+
+                assertThat(rig.isActive()).isTrue();
+                assertThat(incarnationOf(rig)).as("a fresh incarnation: no slice outage, the stale timers and settlements die").isGreaterThan(before);
+                assertThat(rig.snapshots.get()).as("and a fresh snapshot").isEqualTo(snapshots + 1);
+                assertThat(rig.stepped).containsSubsequence("Rebuild", "Activate", "Deactivate", "Rebuild", "Activate");
+            }
+        }
+
+        /// The reason the rule is expected never to fire: Dormant is the ordinary state at a restore.
+        @Test
+        void aRestoreUnderADormantFsm_doesNothing_andIsCountedSkipped() {
+            try (var rig = new ClusterRig()) {
+                rig.interpreter.stateRestored();
+                rig.settle();
+
+                assertThat(rig.metric("StateRestored", "skipped_dormant")).isEqualTo(1);
+                assertThat(rig.interpreter.state()).isInstanceOf(ClusterState.Dormant.class);
+                assertThat(rig.stepped).as("no Activate was made up").doesNotContain("Activate", "Rebuild");
+                assertThat(rig.snapshots.get()).isZero();
+            }
+        }
+
+        @Test
+        void aRestoreAfterClose_isRefused_andCountedClosed() {
+            var rig = new ClusterRig();
+
+            rig.close();
+
+            assertThat(rig.interpreter.stateRestored()).isFalse();
+            assertThat(rig.metric("StateRestored", "closed")).isEqualTo(1);
+        }
+    }
+
+    /// W-27: a stop is not held by an inline `Route` subscriber (P3-Q19) past the cluster's stop bound. The subscriber here is the step observer
+    /// the rig blocks in, which runs on the consumer exactly where a `Route` subscriber does.
+    @Nested
+    class Stop {
+        @Test
+        void aConsumerStuckInASubscriber_doesNotHoldTheStopPastTheBound_andTheStopSaysSo() {
+            try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+                var rig = new ClusterRig(400L);
+
+                rig.activate();
+                rig.holdConsumerAt("WitnessStale");
+                rig.interpreter.deliver(new ClusterInput.WitnessStale());
+                rig.awaitThat(() -> rig.countOf("WitnessStale") == 1);
+
+                var started = System.nanoTime();
+
+                rig.interpreter.close();
+
+                assertThat(Duration.ofNanos(System.nanoTime() - started)).as("W-27: held past the bound").isLessThan(Duration.ofSeconds(4));
+                assertThat(logs.lines()).as("W-27: no WARN").anySatisfy(line -> assertThat(line.message()).contains("deployment-fsm-stop-timeout").contains("400 ms"));
+                rig.release();
+                rig.awaitThat(() -> rig.interpreter.state() instanceof ClusterState.Dormant);
+            }
+        }
+
+        @Test
+        void aStopOfAnIdleLeader_deactivatesFirst_andLogsNoStopTimeout() {
+            try (var logs = new LogCapture(FsmRuntime.class.getName())) {
+                var rig = new ClusterRig(400L);
+
+                rig.activate();
+                rig.interpreter.close();
+
+                assertThat(rig.interpreter.state()).isInstanceOf(ClusterState.Dormant.class);
+                assertThat(logs.lines()).noneMatch(line -> line.message().contains("deployment-fsm-stop-timeout"));
             }
         }
     }
