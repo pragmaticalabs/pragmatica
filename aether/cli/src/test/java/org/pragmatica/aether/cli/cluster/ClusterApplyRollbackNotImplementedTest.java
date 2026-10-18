@@ -156,7 +156,7 @@ class ClusterApplyRollbackNotImplementedTest {
     /// Control: the state-store recorder is on the path of every apply-state read.
     @Test
     void stateRead_goesThroughTheRecorder() {
-        ApplyState.load(org.pragmatica.aether.environment.ClusterName.clusterName("rollback-pin").unwrap());
+        ApplyState.read(org.pragmatica.aether.environment.ClusterName.clusterName("rollback-pin").unwrap());
 
         assertThat(stateAccesses.get()).as("control: an apply-state read is recorded").isPositive();
     }

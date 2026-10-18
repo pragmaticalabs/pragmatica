@@ -106,12 +106,33 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
 
     @Override
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        return translateKeys(tagFilter).entrySet()
-                            .stream()
-                            .findFirst()
-                            .map(entry -> describeByTag(entry.getKey(),
-                                                        entry.getValue()))
-                            .orElseGet(this::listInstances);
+        var translated = translateKeys(tagFilter);
+
+        return translated.entrySet()
+                         .stream()
+                         .findFirst()
+                         .map(entry -> describeMatching(entry, translated))
+                         .orElseGet(this::listInstances);
+    }
+
+    /// The EC2 describe call takes ONE tag, so it returns a superset of what a multi-tag filter asks
+    /// for — and which tag it was, is whichever the map iterates first. The `ComputeProvider` contract
+    /// is that every tag matches, so the result is narrowed on all of them here.
+    private Promise<List<InstanceInfo>> describeMatching(Map.Entry<String, String> queried,
+                                                         Map<String, String> tagFilter) {
+        return describeByTag(queried.getKey(), queried.getValue()).map(instances -> retainMatching(instances, tagFilter));
+    }
+
+    private static List<InstanceInfo> retainMatching(List<InstanceInfo> instances, Map<String, String> tagFilter) {
+        return instances.stream()
+                        .filter(instance -> hasAllTags(instance, tagFilter))
+                        .toList();
+    }
+
+    private static boolean hasAllTags(InstanceInfo instance, Map<String, String> tagFilter) {
+        return instance.tags()
+                       .entrySet()
+                       .containsAll(tagFilter.entrySet());
     }
 
     /// Provider-agnostic node-id key upper layers select by (`NodeLifecycleManager.NODE_ID_TAG`). This

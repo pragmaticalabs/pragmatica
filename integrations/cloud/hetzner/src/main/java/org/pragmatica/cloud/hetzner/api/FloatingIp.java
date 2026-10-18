@@ -49,5 +49,11 @@ public record FloatingIp(long id,
 
     /// Wrapper for floating IP list API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record FloatingIpListResponse(@JsonProperty("floating_ips") List<FloatingIp> floatingIps) {}
+    public record FloatingIpListResponse(@JsonProperty("floating_ips") List<FloatingIp> floatingIps,
+                                         Pagination.Meta meta) implements Pagination.Paged<FloatingIp> {
+        @Override
+        public List<FloatingIp> items() {
+            return floatingIps;
+        }
+    }
 }

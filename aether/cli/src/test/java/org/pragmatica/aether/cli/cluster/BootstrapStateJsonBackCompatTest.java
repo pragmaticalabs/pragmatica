@@ -178,4 +178,107 @@ class BootstrapStateJsonBackCompatTest {
         assertEquals("aether-legacy-firewall-cluster-eu-1", firewall.name().value(),
                      "an unreadable name is re-derived from (cluster, source), the same value the writer produces");
     }
+
+    private static String ledgerWith(String resourceEntry) {
+        return """
+            {
+              "clusterName": "ledger-guard-cluster",
+              "configHash": "legacy-hash",
+              "startedAt": "2026-04-01T00:00:00Z",
+              "phases": {},
+              "createdResources": [
+                {"type": "ProvisionedVm", "provider": "hetzner", "resourceId": "vm-1", "sourceName": "eu-1", "role": "core"},
+                %s
+              ],
+              "provisionedNodeIds": [],
+              "collectedAddresses": [],
+              "clusterSecret": ""
+            }
+            """.formatted(resourceEntry);
+    }
+
+    /// A ledger entry of a type this CLI does not know is a handle on a resource it cannot interpret.
+    /// Skipping it is invisible (the file still parses) and the next append re-saves the file WITHOUT
+    /// the entry, so an older CLI would erase a newer CLI's handle and destroy would report success
+    /// while the resource keeps billing — the same reasoning that makes an unusable `CloudFirewall` fail
+    /// the load. The failure must name the type so the operator knows which CLI wrote it.
+    @Test
+    void fromJson_unknownResourceType_failsNamingTheType() {
+        BootstrapState.fromJson(ledgerWith("{\"type\": \"FutureThing\", \"resourceId\": \"x-9\"}"))
+                      .onSuccess(state -> fail("An unknown ledger entry must not be dropped silently: "
+                                               + state.createdResources()))
+                      .onFailure(cause -> assertTrue(cause.message().contains("FutureThing"),
+                                                     () -> "the refusal must name the type, was: " + cause.message()));
+    }
+
+    @Test
+    void fromJson_resourceWithoutType_failsRatherThanDroppingTheEntry() {
+        BootstrapState.fromJson(ledgerWith("{\"resourceId\": \"x-9\"}"))
+                      .onSuccess(state -> fail("A typeless ledger entry must not be dropped silently: "
+                                               + state.createdResources()))
+                      .onFailure(cause -> assertTrue(cause.message().contains("missing"),
+                                                     () -> "the refusal must say the type is missing, was: " + cause.message()));
+    }
+
+    /// An absent `resourceId` read by `asText()` becomes `""`, and `""` is what reaches `terminate("")`
+    /// at destroy time: the entry parses, names nothing, and destroy cannot tell the operator why.
+    @Test
+    void fromJson_provisionedVmWithoutResourceId_failsNamingTheField() {
+        BootstrapState.fromJson(ledgerWith("{\"type\": \"ProvisionedVm\", \"provider\": \"hetzner\", \"sourceName\": \"eu-1\", \"role\": \"core\"}"))
+                      .onSuccess(state -> fail("A VM entry with no id must not load: " + state.createdResources()))
+                      .onFailure(cause -> assertTrue(cause.message().contains("ProvisionedVm")
+                                                     && cause.message().contains("resourceId"),
+                                                     () -> "the refusal must name the type and the field, was: " + cause.message()));
+    }
+
+    @Test
+    void fromJson_provisionedVmWithBlankResourceId_fails() {
+        BootstrapState.fromJson(ledgerWith("{\"type\": \"ProvisionedVm\", \"provider\": \"hetzner\", \"resourceId\": \"  \", \"sourceName\": \"eu-1\", \"role\": \"core\"}"))
+                      .onSuccess(state -> fail("A VM entry with a blank id must not load: " + state.createdResources()))
+                      .onFailure(cause -> assertTrue(cause.message().contains("resourceId"),
+                                                     () -> "the refusal must name the field, was: " + cause.message()));
+    }
+
+    @Test
+    void fromJson_dockerContainerWithoutContainerId_failsNamingTheField() {
+        BootstrapState.fromJson(ledgerWith("{\"type\": \"DockerContainer\", \"sourceName\": \"eu-1\"}"))
+                      .onSuccess(state -> fail("A container entry with no id must not load: " + state.createdResources()))
+                      .onFailure(cause -> assertTrue(cause.message().contains("DockerContainer")
+                                                     && cause.message().contains("containerId"),
+                                                     () -> "the refusal must name the type and the field, was: " + cause.message()));
+    }
+
+    /// Positive control for the three refusals above: the same fixture with well-formed known entries
+    /// loads, so a red in the tests above comes from the entry under test and not from the fixture.
+    @Test
+    void fromJson_knownEntriesWithIds_loadAllOfThem() {
+        var state = BootstrapState.fromJson(ledgerWith("{\"type\": \"DockerContainer\", \"containerId\": \"c-1\", \"sourceName\": \"eu-1\"}"))
+                                   .onFailure(cause -> fail("Well-formed entries must load: " + cause.message()))
+                                   .unwrap();
+
+        assertEquals(2, state.createdResources().size());
+    }
+
+    /// The second consumer of the resource parser: the apply-state ledger shares `parseSingleResourceNode`
+    /// and must refuse for the same reason.
+    @Test
+    void applyStateFromJson_unknownResourceType_fails() {
+        var json = """
+            {
+              "clusterName": "ledger-guard-cluster",
+              "configHash": "h",
+              "startedAt": "2026-04-01T00:00:00Z",
+              "currentWaveIndex": 0,
+              "waves": ["PENDING", "PENDING", "PENDING"],
+              "createdResources": [{"type": "FutureThing", "resourceId": "x-9"}],
+              "destroyedNodeIds": []
+            }
+            """;
+
+        ApplyState.fromJson(json)
+                  .onSuccess(state -> fail("An unknown apply-ledger entry must not be dropped silently: "
+                                           + state.createdResources()))
+                  .onFailure(cause -> assertTrue(cause.message().contains("FutureThing"),
+                                                 () -> "the refusal must name the type, was: " + cause.message()));
+    }
 }
