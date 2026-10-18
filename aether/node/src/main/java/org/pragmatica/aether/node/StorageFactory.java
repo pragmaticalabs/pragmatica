@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -15,6 +16,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.config.SharedTierConfig;
 import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.storage.DhtStorageTier;
@@ -207,11 +209,12 @@ public final class StorageFactory {
             this(tiers, dhtMarkerCheck, Option.empty());
         }
 
-        /// #858: [#maybeEncryptDht]'s own return shape -- the single (possibly absent) DHT tier plus
-        /// its marker check, before either is folded into a [TierBuild]'s full tier list by
-        /// [#withDht]. Kept separate from the enclosing record because `maybeEncryptDht` builds at
-        /// most one tier, never a list.
-        private record DhtBuild(Option<StorageTier> tier, Option<DhtMarkerCheck> markerCheck) {}
+        /// #858: the single (possibly absent) shared tier plus its DHT marker check, before either is folded
+        /// into a [TierBuild]'s full tier list by [#withSharedTier]. Kept separate from the enclosing record
+        /// because a shared tier is at most one tier, never a list. #249: the tier is the DHT
+        /// ([#maybeEncryptDht], marker check present) or an S3 bucket ([S3SharedTier], admitted at
+        /// construction, so no post-formation marker check).
+        private record SharedBuild(Option<StorageTier> tier, Option<DhtMarkerCheck> markerCheck) {}
     }
 
     /// #250: fan out demotion across every storage setup so leader-pinned activation
@@ -385,13 +388,14 @@ public final class StorageFactory {
                       .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
-    private static List<Result<PendingSetup>> pendingSetups(Map<String, StorageConfig> configs,
+    private static List<Result<PendingSetup>> pendingSetups(Map<String, StorageConfig> explicit,
                                                             String nodeId,
                                                             Option<DHTClient> dhtClient,
                                                             Option<EncryptionKeyring> keyring,
                                                             StorageConfig defaults,
                                                             List<StoragePathsOverlap.Claim> reserved) {
         var results = new ArrayList<Result<PendingSetup>>();
+        var configs = withDerivedPaths(explicit, defaults, keyring.isPresent());
         var effective = effectiveConfigs(configs, defaults, keyring.isPresent());
         var overlap = StoragePathsOverlap.find(effective, reserved);
         // #856: refused BEFORE any instance is built, so a refused boot opens no tier and stamps nothing.
@@ -438,6 +442,50 @@ public final class StorageFactory {
         }
 
         return results;
+    }
+
+    /// #249: an instance configured only through `[storage.<name>.shared]` ([StorageConfig#derivesPaths]) is
+    /// placed as if `[storage.<name>]` were absent -- `artifacts` and `content` exactly as their synthesized
+    /// defaults (paths and keyring-tracking `encrypted`), any other name on the bare defaults, as an empty
+    /// `[storage.<name>]` section would be -- and keeps its shared tier.
+    private static Map<String, StorageConfig> withDerivedPaths(Map<String, StorageConfig> configs,
+                                                               StorageConfig defaults,
+                                                               boolean encrypted) {
+        var placed = new LinkedHashMap<String, StorageConfig>();
+
+        configs.forEach((name, config) -> placed.put(name, derivedPaths(name, config, configs, defaults, encrypted)));
+
+        return placed;
+    }
+
+    private static StorageConfig derivedPaths(String name,
+                                              StorageConfig config,
+                                              Map<String, StorageConfig> configs,
+                                              StorageConfig defaults,
+                                              boolean encrypted) {
+        if (!config.derivesPaths()) {
+            return config;
+        }
+
+        return switch (name) {
+            case ARTIFACTS_NAME -> defaultArtifactsConfig(defaults, encrypted).withShared(config.shared());
+            case CONTENT_NAME -> defaultContentConfig(resolvedArtifacts(configs, defaults, encrypted),
+                                                      defaults,
+                                                      encrypted).withShared(config.shared());
+            default -> defaults.withShared(config.shared());
+        };
+    }
+
+    private static Map<String, StorageConfig> resolvedArtifacts(Map<String, StorageConfig> configs,
+                                                                StorageConfig defaults,
+                                                                boolean encrypted) {
+        return option(configs.get(ARTIFACTS_NAME)).map(artifacts -> Map.of(ARTIFACTS_NAME,
+                                                                           derivedPaths(ARTIFACTS_NAME,
+                                                                                        artifacts,
+                                                                                        configs,
+                                                                                        defaults,
+                                                                                        encrypted)))
+                     .or(Map.of());
     }
 
     /// Every instance `pendingSetups` will build, with the configuration it will build it from: the explicit
@@ -877,13 +925,13 @@ public final class StorageFactory {
                             .fold(cause -> {
                                       warnNoDurableStreamTier(segmentsDir, cause);
 
-                                      return Result.success(withDht(dhtBuild,
-                                                                    List.of(memoryTier)));
+                                      return Result.success(withSharedTier(dhtBuild,
+                                                                           List.of(memoryTier)));
                                   },
-                                  disk -> EncryptingStorageTier.armLocalDisk(disk, segmentsDir, keyring).map(armed -> withDht(dhtBuild,
-                                                                                                                              List.of(memoryTier,
-                                                                                                                                      armed.tier()),
-                                                                                                                              Option.some(armed))));
+                                  disk -> EncryptingStorageTier.armLocalDisk(disk, segmentsDir, keyring).map(armed -> withSharedTier(dhtBuild,
+                                                                                                                                     List.of(memoryTier,
+                                                                                                                                             armed.tier()),
+                                                                                                                                     Option.some(armed))));
     }
 
     /// The disk tier is constructed read-only and then OPENED (#1569 A3): this node owns its stream data
@@ -897,11 +945,11 @@ public final class StorageFactory {
                             .fold(cause -> {
                                       warnNoDurableStreamTier(segmentsDir, cause);
 
-                                      return withDht(dhtBuild,
-                                                     List.of(memoryTier));
+                                      return withSharedTier(dhtBuild,
+                                                            List.of(memoryTier));
                                   },
-                                  disk -> withDht(dhtBuild,
-                                                  List.of(memoryTier, disk)));
+                                  disk -> withSharedTier(dhtBuild,
+                                                         List.of(memoryTier, disk)));
     }
 
     /// #1567 F12: the fallback is loud because it stops sealing -- every seal on a tier list without a durable
@@ -992,9 +1040,9 @@ public final class StorageFactory {
         // #253 BLOCKING #1: name the failing instance in the cause itself (not just in a log line)
         // so `createAll`'s aggregate failure -- and whatever aborts boot on it -- can report which
         // instance failed and why without re-deriving it from call-site context.
-        return buildTiers(name, config, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
-                                                                                                   + "': " + cause.message(),
-                                                                                                    Option.some(cause)))
+        return buildTiers(name, config, nodeId, dhtClient, effectiveKeyring).mapError(cause -> Causes.cause("Failed to create storage '" + name
+                                                                                                           + "': " + cause.message(),
+                                                                                                            Option.some(cause)))
                          .flatMap(build -> assembleSetup(name,
                                                          build.tiers(),
                                                          config,
@@ -1003,30 +1051,47 @@ public final class StorageFactory {
                                                                                                                build.armedDisk())));
     }
 
+    /// #249: the shared tier is built first -- for S3 that includes its boot probe -- so a tier that refuses
+    /// fails the instance before its disk tier is armed.
     private static Result<TierBuild> buildTiers(String name,
                                                 StorageConfig config,
+                                                String nodeId,
                                                 Option<DHTClient> dhtClient,
                                                 Option<EncryptionKeyring> keyring) {
+        return sharedTier(name, config.shared(), nodeId, dhtClient, keyring).flatMap(shared -> buildLocalTiers(name,
+                                                                                                               config,
+                                                                                                               shared,
+                                                                                                               keyring));
+    }
+
+    /// #249 (`withDht` became `withSharedTier`): the last tier of the instance's stack, per
+    /// `[storage.<name>.shared] kind`. `dht` (the default) is the in-memory DHT under `<name>-blocks`, wrapped
+    /// under `keyring` with its marker checked post-formation; `s3` is the bucket built and admitted by
+    /// [S3SharedTier], wrapped under `keyring` the same way. Nothing above the tier list sees which one it is.
+    private static Result<TierBuild.SharedBuild> sharedTier(String name,
+                                                            SharedTierConfig shared,
+                                                            String nodeId,
+                                                            Option<DHTClient> dhtClient,
+                                                            Option<EncryptionKeyring> keyring) {
+        return switch (shared) {
+            case SharedTierConfig.Dht _ -> Result.success(maybeEncryptDht(name, dhtClient, name + "-blocks", keyring));
+            case SharedTierConfig.S3 s3 -> S3SharedTier.s3SharedTier(name, s3, nodeId, keyring).map(tier -> new TierBuild.SharedBuild(Option.some(tier),
+                                                                                                                                      Option.empty()));
+        };
+    }
+
+    private static Result<TierBuild> buildLocalTiers(String name,
+                                                     StorageConfig config,
+                                                     TierBuild.SharedBuild shared,
+                                                     Option<EncryptionKeyring> keyring) {
         var memoryTier = MemoryTier.memoryTier(config.memoryMaxBytes());
-        var dhtKeyPrefix = name + "-blocks";
         var diskPath = Path.of(config.diskPath());
         // #1569 A3: the tier is constructed read-only; this node owns the volume, so it opens it.
         return LocalDiskTier.localDiskTier(diskPath,
                                            config.diskMaxBytes())
                             .flatMap(LocalDiskTier::open)
-                            .fold(cause -> handleDiskTierUnavailable(name,
-                                                                     cause,
-                                                                     memoryTier,
-                                                                     dhtClient,
-                                                                     dhtKeyPrefix,
-                                                                     keyring),
-                                  disk -> buildTierList(name,
-                                                        memoryTier,
-                                                        disk,
-                                                        diskPath,
-                                                        dhtClient,
-                                                        dhtKeyPrefix,
-                                                        keyring));
+                            .fold(cause -> handleDiskTierUnavailable(name, cause, memoryTier, shared),
+                                  disk -> buildTierList(name, memoryTier, disk, diskPath, shared, keyring));
     }
 
     /// Builds the DHT tier (from `dhtClient`/`dhtKeyPrefix`) and wraps it under `keyring` when
@@ -1038,11 +1103,11 @@ public final class StorageFactory {
     /// cluster formation resolves there. The returned tier is gated on a fresh, unresolved
     /// `readGate`: [DhtStorageTier#get] blocks until [#verifyDhtMarker] resolves it, so no read can
     /// observe a namespace whose marker hasn't been checked yet.
-    private static TierBuild.DhtBuild maybeEncryptDht(String name,
-                                                      Option<DHTClient> dhtClient,
-                                                      String dhtKeyPrefix,
-                                                      Option<EncryptionKeyring> keyring) {
-        return dhtClient.fold(() -> new TierBuild.DhtBuild(Option.empty(), Option.empty()),
+    private static TierBuild.SharedBuild maybeEncryptDht(String name,
+                                                         Option<DHTClient> dhtClient,
+                                                         String dhtKeyPrefix,
+                                                         Option<EncryptionKeyring> keyring) {
+        return dhtClient.fold(() -> new TierBuild.SharedBuild(Option.empty(), Option.empty()),
                               client -> {
                                   var readGate = Promise.<Unit> promise();
                                   var dht = DhtStorageTier.dhtStorageTier(client, dhtKeyPrefix, name, readGate);
@@ -1050,7 +1115,7 @@ public final class StorageFactory {
                                                                         ring -> EncryptingStorageTier.wrap(dht, ring));
                                   var check = new DhtMarkerCheck(name, dhtKeyPrefix, keyring, readGate);
 
-                                  return new TierBuild.DhtBuild(Option.some(tier), Option.some(check));
+                                  return new TierBuild.SharedBuild(Option.some(tier), Option.some(check));
                               });
     }
 
@@ -1264,12 +1329,10 @@ public final class StorageFactory {
     private static Result<TierBuild> handleDiskTierUnavailable(String name,
                                                                Cause cause,
                                                                MemoryTier memoryTier,
-                                                               Option<DHTClient> dhtClient,
-                                                               String dhtKeyPrefix,
-                                                               Option<EncryptionKeyring> keyring) {
-        log.warn("Disk tier for '{}' unavailable: {}, using memory + DHT fallback", name, cause.message());
+                                                               TierBuild.SharedBuild shared) {
+        log.warn("Disk tier for '{}' unavailable: {}, using memory + shared-tier fallback", name, cause.message());
 
-        return Result.success(withDht(maybeEncryptDht(name, dhtClient, dhtKeyPrefix, keyring), List.of(memoryTier)));
+        return Result.success(withSharedTier(shared, List.of(memoryTier)));
     }
 
     /// #858 BLOCKING #3 (unchanged from #253): the no-keyring branch checks
@@ -1283,42 +1346,35 @@ public final class StorageFactory {
                                                    MemoryTier memoryTier,
                                                    LocalDiskTier diskTier,
                                                    Path diskPath,
-                                                   Option<DHTClient> dhtClient,
-                                                   String dhtKeyPrefix,
+                                                   TierBuild.SharedBuild shared,
                                                    Option<EncryptionKeyring> keyring) {
-        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name).map(_ -> withDht(maybeEncryptDht(name,
-                                                                                                                                         dhtClient,
-                                                                                                                                         dhtKeyPrefix,
-                                                                                                                                         keyring),
-                                                                                                                         List.of(memoryTier,
-                                                                                                                                 diskTier))),
-                            ring -> EncryptingStorageTier.armLocalDisk(diskTier, diskPath, ring).map(armed -> withDht(maybeEncryptDht(name,
-                                                                                                                                      dhtClient,
-                                                                                                                                      dhtKeyPrefix,
-                                                                                                                                      keyring),
-                                                                                                                      List.of(memoryTier,
-                                                                                                                              armed.tier()),
-                                                                                                                      Option.some(armed))));
+        return keyring.fold(() -> EncryptingStorageTier.refuseIfEncryptedWithoutKeyring(diskPath, name).map(_ -> withSharedTier(shared,
+                                                                                                                                List.of(memoryTier,
+                                                                                                                                        diskTier))),
+                            ring -> EncryptingStorageTier.armLocalDisk(diskTier, diskPath, ring).map(armed -> withSharedTier(shared,
+                                                                                                                             List.of(memoryTier,
+                                                                                                                                     armed.tier()),
+                                                                                                                             Option.some(armed))));
     }
 
-    private static TierBuild withDht(TierBuild.DhtBuild dhtBuild, List<StorageTier> baseTiers) {
-        return withDht(dhtBuild, baseTiers, Option.empty());
+    private static TierBuild withSharedTier(TierBuild.SharedBuild sharedBuild, List<StorageTier> baseTiers) {
+        return withSharedTier(sharedBuild, baseTiers, Option.empty());
     }
 
-    private static TierBuild withDht(TierBuild.DhtBuild dhtBuild,
-                                     List<StorageTier> baseTiers,
-                                     Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
-        var tiers = dhtBuild.tier()
-                            .map(dht -> {
-                                     var withDht = new ArrayList<>(baseTiers);
+    private static TierBuild withSharedTier(TierBuild.SharedBuild sharedBuild,
+                                            List<StorageTier> baseTiers,
+                                            Option<EncryptingStorageTier.ArmedLocalDisk> armedDisk) {
+        var tiers = sharedBuild.tier().map(shared -> appended(baseTiers, shared)).or(baseTiers);
 
-                                     withDht.add(dht);
+        return new TierBuild(tiers, sharedBuild.markerCheck(), armedDisk);
+    }
 
-                                     return List.<StorageTier> copyOf(withDht);
-                                 })
-                            .or(baseTiers);
+    private static List<StorageTier> appended(List<StorageTier> baseTiers, StorageTier last) {
+        var all = new ArrayList<>(baseTiers);
 
-        return new TierBuild(tiers, dhtBuild.markerCheck(), armedDisk);
+        all.add(last);
+
+        return List.copyOf(all);
     }
 
     private static Result<StorageSetup> assembleSetup(String name,
