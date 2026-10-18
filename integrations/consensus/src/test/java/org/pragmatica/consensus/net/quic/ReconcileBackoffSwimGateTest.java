@@ -128,6 +128,16 @@ class ReconcileBackoffSwimGateTest {
     }
 
     @Test
+    void startedNetwork_drawsTheTickOffset_whenTheFixedRateScheduleFires() {
+        var scenario = new Scenario(true);
+        var draws = new AtomicLong();
+
+        scenario.network.overrideReconcileTickOffsetForTests(() -> draws.incrementAndGet() * 0L);
+
+        awaitTrue(() -> draws.get() >= 1L, TimeSpan.timeSpan(15).seconds(), "the production fixed-rate schedule to draw a tick offset");
+    }
+
+    @Test
     void resetReconcileBackoff_allowsTheNextAliveAttemptAtOnce_afterAnAttach() {
         var state = PeerState.peerState(HIGH, 1L);
 
