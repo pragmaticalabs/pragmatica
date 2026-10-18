@@ -86,19 +86,19 @@ class ClusterBootstrapConfigValidatorTest {
     }
 
     private static ClusterBootstrapConfig cloudConfigWithManagement(String securityMode, String cidr) {
-        return cloudConfigWithManagementOverlay(Map.of("app-http", Map.of("security_mode", securityMode)), cidr);
+        return cloudConfigWithManagementOverlay(Map.of("app-http", Map.<String, Object>of("security_mode", securityMode)), cidr);
     }
 
     /// An overlay with an explicit `[app-http]` mode and/or `[management]` table (#962). Either mode may be absent.
     private static ClusterBootstrapConfig cloudConfigWithModes(Option<String> appMode, Option<String> managementMode, String cidr) {
-        var overlay = new java.util.HashMap<String, Object>();
+        var overlay = new java.util.HashMap<String, Map<String, Object>>();
 
-        appMode.onPresent(mode -> overlay.put("app-http", Map.of("security_mode", mode)));
-        managementMode.onPresent(mode -> overlay.put("management", Map.of("security_mode", mode)));
+        appMode.onPresent(mode -> overlay.put("app-http", Map.<String, Object>of("security_mode", mode)));
+        managementMode.onPresent(mode -> overlay.put("management", Map.<String, Object>of("security_mode", mode)));
         return cloudConfigWithManagementOverlay(overlay, cidr);
     }
 
-    private static ClusterBootstrapConfig cloudConfigWithManagementOverlay(Map<String, Object> tables, String cidr) {
+    private static ClusterBootstrapConfig cloudConfigWithManagementOverlay(Map<String, Map<String, Object>> tables, String cidr) {
         var runtime = runtimeProfile(RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(some(3), none(), some("cx41"), "prod");
         var rules = List.of(firewallRule(22, "tcp", "10.0.0.0/8", none()),
