@@ -293,10 +293,12 @@ public interface StreamConfigParser {
         }
 
         if (sourceOpt.isPresent()) {
-            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
-                                                                                                                      source -> parseExternalResource(streamName,
-                                                                                                                                                      source,
-                                                                                                                                                      effectiveRoleOpt)));
+            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> refuseDashedConsumerSections(doc,
+                                                                                                                                    streamName))
+                                    .flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
+                                                                 source -> parseExternalResource(streamName,
+                                                                                                 source,
+                                                                                                 effectiveRoleOpt)));
         }
         // Spec §11.1.1: shortcut form — when `version` is omitted, default per role.
         // Producer (explicit, inferred from manifest, or absent → producer-assumed) → "1.0.0".
@@ -753,18 +755,40 @@ public interface StreamConfigParser {
                                                                                                                  mode));
     }
 
+    /// The `[streams.<name>.consumers.<group>]` table names of one stream, one segment past the prefix.
+    private static List<String> consumerSectionNames(TomlDocument doc, String streamName) {
+        var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
+
+        return doc.sectionNames()
+                  .stream()
+                  .filter(sectionName -> sectionName.startsWith(consumerPrefix))
+                  .filter(sectionName -> !sectionName.substring(consumerPrefix.length())
+                                                     .contains("."))
+                  .toList();
+    }
+
+    /// An External stream's consumer tables are not parsed into configs, but a dashed key in one is still refused,
+    /// the same as under an owned stream: no consumer key is silently ignored.
+    private static Result<Unit> refuseDashedConsumerSections(TomlDocument doc, String streamName) {
+        var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
+
+        return consumerSectionNames(doc, streamName).stream()
+                                   .map(sectionName -> refuseDashedConsumerKeys(doc,
+                                                                                streamName,
+                                                                                sectionName,
+                                                                                sectionName.substring(consumerPrefix.length())))
+                                   .reduce(success(unit()),
+                                           (acc, next) -> acc.flatMap(_ -> next));
+    }
+
     private static Result<Map<String, ConsumerConfig>> extractConsumerConfigs(TomlDocument doc, String streamName) {
         var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
-        var consumers = doc.sectionNames()
-                           .stream()
-                           .filter(sectionName -> sectionName.startsWith(consumerPrefix))
-                           .filter(sectionName -> !sectionName.substring(consumerPrefix.length())
-                                                              .contains("."))
-                           .map(sectionName -> parseConsumerSection(doc,
-                                                                    streamName,
-                                                                    sectionName,
-                                                                    sectionName.substring(consumerPrefix.length())))
-                           .toList();
+        var consumers = consumerSectionNames(doc, streamName).stream()
+                                            .map(sectionName -> parseConsumerSection(doc,
+                                                                                     streamName,
+                                                                                     sectionName,
+                                                                                     sectionName.substring(consumerPrefix.length())))
+                                            .toList();
 
         return firstFailure(List.copyOf(consumers)).map(failure -> failure.<Map<String, ConsumerConfig>> map(_ -> Map.of()))
                            .or(() -> byGroup(consumers));

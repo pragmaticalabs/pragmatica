@@ -17,6 +17,7 @@ import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -646,24 +647,32 @@ class StreamConfigParserTest {
                                                                               "999999999999999d"));
         }
 
+        /// Every consumer key, snake_case, with a valid value. Driven from `CONSUMER_SECTION_KEYS`, so a key dropped from
+        /// the list (or added without a case here) fails [#everyConsumerKeyHasACase].
+        private static final Map<String, String> CONSUMER_CASES = Map.of("processing", "\"ordered\"",
+                                                                       "checkpoint_interval", "\"2s\"",
+                                                                       "batch_size", "100",
+                                                                       "on_failure", "\"skip\"",
+                                                                       "max_retries", "7",
+                                                                       "dead_letter", "\"orders-dlq\"",
+                                                                       "read_preference", "\"governor\"");
+
+        @Test
+        void everyConsumerKeyHasACase() {
+            assertThat(CONSUMER_CASES.keySet()).containsExactlyInAnyOrderElementsOf(StreamConfigParser.CONSUMER_SECTION_KEYS);
+        }
+
         /// Ruling 596bdfd072 (Q1): a dashed consumer key is refused, not ignored (ignoring it would silently apply the default).
         @Test
-        void parseConsumers_refusesDashedConsumerKeys_namingTheSnakeCaseSpelling() {
-            var toml = """
-                    [streams.orders]
-                    version = "1.0.0"
+        void parseConsumers_refusesEveryDashedConsumerKey_namingTheSnakeCaseSpelling() {
+            underscoredCases().forEach((snake, value) -> assertDashedConsumerKeyRefused(snake.replace('_', '-'), snake, value));
+        }
 
-                    [streams.orders.consumers.billing]
-                    batch-size = 100
-                    on-failure = "skip"
-                    """;
-
-            StreamConfigParser.parseConsumers(toml, "orders")
-                              .onSuccess(_ -> fail("dashed consumer keys must be refused"))
-                              .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
-                              .onFailure(cause -> assertThat(cause.message()).contains("'orders.consumers.billing'")
-                                                                             .contains("'batch-size' (did you mean 'batch_size'?)")
-                                                                             .contains("'on-failure' (did you mean 'on_failure'?)"));
+        @Test
+        void parseConsumers_acceptsEverySnakeCaseConsumerKey() {
+            CONSUMER_CASES.forEach((snake, value) -> StreamConfigParser.parseConsumers(consumerTable(snake + " = " + value), "orders")
+                                                                       .onFailure(cause -> fail(snake + " refused: " + cause.message()))
+                                                                       .onSuccess(consumers -> assertThat(consumers).containsKey("billing")));
         }
 
         @Test
@@ -683,6 +692,45 @@ class StreamConfigParserTest {
                               .onSuccess(consumers -> assertThat(consumers.get("billing").maxBatchSize()).isEqualTo(100))
                               .onSuccess(consumers -> assertThat(consumers.get("billing").maxRetries()).isEqualTo(7))
                               .onSuccess(consumers -> assertThat(consumers.get("billing").checkpointInterval().millis()).isEqualTo(2_000L));
+        }
+
+        /// An External stream's consumer table is not parsed into configs, yet its dashed keys are refused all the same.
+        @Test
+        void externalStream_refusesEveryDashedConsumerKey_acceptsSnake() {
+            underscoredCases().forEach((snake, value) -> {
+                var dashed = snake.replace('_', '-');
+
+                parseResources(externalWithConsumer(dashed + " = " + value), ReplicationFactors.BUILT_IN)
+                    .onSuccess(_ -> fail("dashed " + dashed + " must be refused on an external stream"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("'" + dashed + "' (did you mean '" + snake + "'?)")
+                                                                   .contains("'orders.consumers.billing'"));
+                parseResources(externalWithConsumer(snake + " = " + value), ReplicationFactors.BUILT_IN)
+                    .onFailure(cause -> fail(snake + " refused: " + cause.message()));
+            });
+        }
+
+        private static void assertDashedConsumerKeyRefused(String dashed, String snake, String value) {
+            StreamConfigParser.parseConsumers(consumerTable(dashed + " = " + value), "orders")
+                              .onSuccess(_ -> fail("dashed " + dashed + " must be refused"))
+                              .onFailure(cause -> assertThat(cause).isInstanceOf(StreamDeclarationError.UnknownStreamKeys.class))
+                              .onFailure(cause -> assertThat(cause.message()).contains("'orders.consumers.billing'")
+                                                                             .contains("'" + dashed + "' (did you mean '" + snake + "'?)"));
+        }
+
+        /// `processing` has no dashed spelling; every other consumer key does.
+        private static Map<String, String> underscoredCases() {
+            return CONSUMER_CASES.entrySet()
+                                 .stream()
+                                 .filter(entry -> entry.getKey().indexOf('_') >= 0)
+                                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+        }
+
+        private static String consumerTable(String line) {
+            return "[streams.orders]\nversion = \"1.0.0\"\n\n[streams.orders.consumers.billing]\n" + line + "\n";
+        }
+
+        private static String externalWithConsumer(String line) {
+            return "[streams.orders]\nsource = \"io.acme.inventory:stock-updates:2.0.0\"\n\n[streams.orders.consumers.billing]\n" + line + "\n";
         }
 
         @Test
