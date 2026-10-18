@@ -15,16 +15,18 @@
  */
 package org.pragmatica.serialization.json.spi;
 
-import java.util.Map;
-
 import org.pragmatica.serialization.json.JsonTypeCodec;
 
 
-/// One package's generated JSON codecs, found through `java.util.ServiceLoader`. The codec processor writes one
-/// implementation per package holding `@Json` types, named after the types it lists, and lists it in
-/// `META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider`; `JsonCodecs.codecFor` reads
-/// them all. Implemented by generated code only.
+/// The generated JSON codec of one `@Json` type, found through `java.util.ServiceLoader`. The codec processor makes
+/// each type's entry point `<Flat>Json` implement it (a public no-argument constructor, as the `ServiceLoader`
+/// requires of a class-path provider; the codec itself stays the entry point's `CODEC` constant) and lists every entry
+/// point in `META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider`. `JsonCodecs.codecFor`
+/// derives the entry point's name from the class it is asked for and instantiates only the provider of that name.
+/// Implemented by generated code only.
 public interface JsonCodecProvider {
-    /// The `@Json` codecs of one package, by exact class (records and enums are final).
-    Map<Class<?>, JsonTypeCodec<?>> codecs();
+    /// The `@Json` type this provider serves.
+    Class<?> type();
+    /// The codec of [#type()].
+    JsonTypeCodec<?> codec();
 }

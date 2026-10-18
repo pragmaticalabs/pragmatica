@@ -20,11 +20,15 @@ import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.TypeMirror;
+import javax.lang.model.util.ElementFilter;
+import javax.tools.JavaFileObject;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -45,6 +49,8 @@ import static org.pragmatica.lang.utils.Causes.cause;
 public final class JsonCodecGenerator {
     /// The marker annotation every generated JSON class carries, naming what it was generated for.
     public static final String MARKER = "org.pragmatica.serialization.json.spi.GeneratedFor";
+    private static final String RUNTIME_PACKAGE = "org.pragmatica.serialization.json.";
+    private static final Set<String> GENERATED_FIELDS = Set.of("CODEC", "CODECS");
 
     private final Filer filer;
     private final Elements elements;
@@ -155,25 +161,65 @@ public final class JsonCodecGenerator {
     /// "attempt to recreate" error with a stack trace, a duplicate-class error inside generated source, or one source's
     /// codec silently replacing another's. Generated output carries a [GeneratedFor][#MARKER] marker naming its source:
     /// a class whose marker names `owner` (a previous build's class still in the output directory, or the same
-    /// artifact on the class path) may be regenerated; a class generated for another source, or a user type without
-    /// the marker, is refused.
+    /// artifact on the class path) may be regenerated; a class generated for another source is refused. A class
+    /// without the marker is refused too, and the message tells the two causes apart where it can: a compiled class
+    /// shaped like generated JSON codec code (a `CODEC` or `CODECS` field typed by the JSON runtime) is stale output
+    /// of an older processor version, to be removed by cleaning the build; anything else may be a user type or stale
+    /// output, and the message names both ways out.
     public static Result<Unit> ensureFree(Elements elements, String qualified, String owner) {
-        return option(elements.getTypeElement(qualified)).flatMap(existing -> clash(existing, qualified, owner))
+        return option(elements.getTypeElement(qualified)).flatMap(existing -> clash(elements, existing, qualified, owner))
                      .map(Cause::<Unit> result)
                      .or(Result::unitResult);
     }
 
-    private static Option<Cause> clash(TypeElement existing, String qualified, String owner) {
+    private static Option<Cause> clash(Elements elements, TypeElement existing, String qualified, String owner) {
         return generatedFor(existing).map(source -> otherSource(source, qualified, owner))
-                           .or(() -> some(notGenerated(existing, qualified, owner)));
+                           .or(() -> some(unmarked(elements, existing, qualified, owner)));
+    }
+
+    private static Cause unmarked(Elements elements, TypeElement existing, String qualified, String owner) {
+        return isCompiled(elements, existing) && looksGenerated(existing)
+               ? staleOutput(qualified, owner)
+               : notGenerated(existing, qualified, owner);
+    }
+
+    // FER: an element whose file cannot be told is treated as not compiled, which gives the message naming both ways
+    // out rather than the confident "clean the build".
+    private static boolean isCompiled(Elements elements, TypeElement existing) {
+        return Option.lift(() -> elements.getFileObjectOf(existing))
+                     .filter(file -> file.getKind() == JavaFileObject.Kind.CLASS)
+                     .isPresent();
+    }
+
+    private static boolean looksGenerated(TypeElement existing) {
+        return ElementFilter.fieldsIn(existing.getEnclosedElements())
+                            .stream()
+                            .anyMatch(JsonCodecGenerator::isGeneratedField);
+    }
+
+    // A `CODEC` or `CODECS` field typed by the JSON runtime: what every generated entry point and holder declares.
+    private static boolean isGeneratedField(VariableElement field) {
+        return GENERATED_FIELDS.contains(field.getSimpleName().toString()) && field.asType()
+                                                                                   .toString()
+                                                                                   .contains(RUNTIME_PACKAGE);
+    }
+
+    private static Cause staleOutput(String qualified, String owner) {
+        return cause("Cannot generate " + qualified
+                    + " for " + owner
+                    + ": a class " + qualified
+                    + " already exists without the GeneratedFor marker and looks like JSON codec code generated by an"
+                    + " older processor version: stale generated output. Clean the build (for example `mvn clean`)"
+                    + " and compile again.");
     }
 
     private static Cause notGenerated(TypeElement existing, String qualified, String owner) {
         return cause("Cannot generate " + qualified
                     + " for " + owner
                     + ": the type " + existing.getQualifiedName()
-                    + " already exists and is not generated JSON codec code."
-                    + " Rename " + existing.getQualifiedName()
+                    + " already exists and is not marked as generated JSON codec code."
+                    + " If it is stale output of an older build, clean the build (for example `mvn clean`);"
+                    + " otherwise rename " + existing.getQualifiedName()
                     + ", or rename or move " + owner
                     + ".");
     }

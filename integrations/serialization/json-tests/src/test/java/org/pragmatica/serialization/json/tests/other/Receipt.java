@@ -17,6 +17,6 @@ package org.pragmatica.serialization.json.tests.other;
 
 import org.pragmatica.serialization.json.Json;
 
-/// The second package of the registry test: its own generated registry, found through the same services file.
+/// A second package of the lookup test: its own provider, listed in the same services file.
 @Json
 public record Receipt(String id, long amountMinor) {}

@@ -14,7 +14,7 @@
  *  limitations under the License.
  */
 /// Runtime machinery for generated JSON codecs: the pull reader, the writer, field-name tables, the
-/// double-parsing tables and the registry provider contract.
+/// double-parsing tables, the per-type provider contract and the generated-class marker.
 ///
 /// **For generated code; not a stable API.** Signatures here change whenever the generator changes, and the
 /// generator and this package are released together. Application code uses `org.pragmatica.serialization.json`

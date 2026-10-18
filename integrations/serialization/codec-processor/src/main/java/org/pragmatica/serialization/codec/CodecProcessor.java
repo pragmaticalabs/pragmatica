@@ -17,8 +17,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.json.codegen.JsonCodecGenerator;
 import org.pragmatica.serialization.json.codegen.JsonNames;
 
@@ -32,8 +30,7 @@ public class CodecProcessor extends AbstractProcessor {
     static final String JSON = "org.pragmatica.serialization.json.Json";
 
     private CodecClassGenerator generator;
-    private JsonRegistries jsonRegistries;
-    private final GeneratedNames generatedNames = new GeneratedNames();
+    private JsonServices jsonServices;
     private String registrySuffix = "";
 
     @Override
@@ -47,17 +44,13 @@ public class CodecProcessor extends AbstractProcessor {
         this.registrySuffix = suffix == null
                               ? ""
                               : suffix;
-        this.jsonRegistries = new JsonRegistries(processingEnv.getFiler(),
-                                                 processingEnv.getElementUtils(),
-                                                 registrySuffix,
-                                                 generatedNames);
+        this.jsonServices = new JsonServices(processingEnv.getFiler(), processingEnv.getElementUtils());
     }
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
         Map<String, List<String>> packageToCodecNames = new LinkedHashMap<>();
         Map<String, Set<String>> packageToRequiredTypes = new LinkedHashMap<>();
-        Set<String> jsonPackages = new LinkedHashSet<>();
 
         processCodecForAnnotations(roundEnv, packageToCodecNames, packageToRequiredTypes);
         for (var annotation : annotations) {
@@ -68,7 +61,7 @@ public class CodecProcessor extends AbstractProcessor {
             }
 
             if (JSON.equals(annotationName)) {
-                roundEnv.getElementsAnnotatedWith(annotation).forEach(element -> processJson(element, jsonPackages));
+                roundEnv.getElementsAnnotatedWith(annotation).forEach(this::processJson);
                 continue;
             }
 
@@ -78,21 +71,20 @@ public class CodecProcessor extends AbstractProcessor {
         }
 
         generateRegistries(packageToCodecNames, packageToRequiredTypes);
-        jsonRegistries.compiling(roundEnv.getRootElements());
-        generateJsonRegistries(roundEnv, jsonPackages);
+        if (roundEnv.processingOver()) {
+            writeJsonServices();
+        }
 
         return true;
     }
 
-    // The JSON registries are flushed per round and finished in the last one; see JsonRegistries for why.
-    private void generateJsonRegistries(RoundEnvironment roundEnv, Set<String> jsonPackages) {
-        var written = roundEnv.processingOver()
-                      ? jsonRegistries.finish()
-                      : jsonRegistries.flush(jsonPackages);
-
-        written.onFailure(cause -> processingEnv.getMessager()
-                                                .printMessage(Diagnostic.Kind.ERROR,
-                                                              "Cannot write JSON registries: " + cause.message()));
+    // The services file is a resource listing every entry point, written once, in the last round; see JsonServices.
+    private void writeJsonServices() {
+        jsonServices.write()
+                    .onFailure(cause -> processingEnv.getMessager()
+                                                     .printMessage(Diagnostic.Kind.ERROR,
+                                                                   "Cannot write " + JsonServices.SERVICE_FILE
+                                                                  + ": " + cause.message()));
     }
 
     private void processCodecForAnnotations(RoundEnvironment roundEnv,
@@ -176,9 +168,9 @@ public class CodecProcessor extends AbstractProcessor {
         return result;
     }
 
-    // One self-contained entry point per @Json type, <Flat>Json next to the type (JsonNames: injective), listed in
-    // its package's JSON registry once written.
-    private void processJson(Element element, Set<String> jsonPackages) {
+    // One self-contained entry point per @Json type, <Flat>Json next to the type (JsonNames: injective), which is the
+    // type's ServiceLoader provider and is listed in the services file.
+    private void processJson(Element element) {
         if (element.getKind() != ElementKind.RECORD && element.getKind() != ElementKind.ENUM) {
             error(element, "@Json can only be applied to records and enums");
 
@@ -200,22 +192,12 @@ public class CodecProcessor extends AbstractProcessor {
 
         var entryPoint = JsonNames.entryPointName(type);
 
-        writeJsonEntryPoint(json, packageName, entryPoint, type).onSuccess(_ -> note(element,
-                                                                                     "Generated JSON codec: " + entryPoint))
-                           .onSuccess(_ -> jsonRegistries.add(packageName, type))
-                           .onSuccess(_ -> jsonPackages.add(packageName))
-                           .onFailure(cause -> error(element,
-                                                     "Cannot write " + entryPoint + ": " + cause.message()));
-    }
-
-    // The name is claimed first: a type generated in this round is not yet visible to JsonCodecGenerator.ensureFree.
-    private Result<Unit> writeJsonEntryPoint(JsonCodecGenerator json,
-                                             String packageName,
-                                             String entryPoint,
-                                             TypeElement type) {
-        return generatedNames.claim(JsonCodecGenerator.qualifiedName(packageName, entryPoint),
-                                    type.getQualifiedName().toString())
-                             .flatMap(_ -> json.writeEntryPoint(entryPoint, type, "CodecProcessor"));
+        json.writeEntryPoint(entryPoint, type, "CodecProcessor")
+            .onSuccess(_ -> note(element, "Generated JSON codec: " + entryPoint))
+            .onSuccess(_ -> jsonServices.add(JsonCodecGenerator.qualifiedName(packageName, entryPoint),
+                                             type))
+            .onFailure(cause -> error(element,
+                                      "Cannot write " + entryPoint + ": " + cause.message()));
     }
 
     private void processAnnotatedElement(Element element, Map<String, List<String>> packageToCodecNames) {

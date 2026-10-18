@@ -24,7 +24,7 @@ import java.lang.annotation.Target;
 /// Opts a record or enum into a generated, reflection-free JSON codec: the processor emits the entry point
 /// `<Type>Json` next to it (`<Outer>_<Type>Json` for a nested type, an `_` or `$` inside a simple name escaped as `_0`
 /// or `_1`, so every generated name belongs to exactly one type), with `CODEC` and static `decode` / `encode`,
-/// and lists the codec in its package's registry for [JsonCodecs#codecFor]. Separate from `@Codec` on purpose, so
+/// and makes that entry point the type's `ServiceLoader` provider for [JsonCodecs#codecFor]. Separate from `@Codec` on purpose, so
 /// adopting JSON never changes a type's binary wire contract. HTTP route request and response types need no
 /// annotation: the slice processor generates their codecs.
 @Target(ElementType.TYPE)

@@ -27,7 +27,6 @@ import static com.google.testing.compile.CompilationSubject.assertThat;
 import static com.google.testing.compile.Compiler.javac;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CodecProcessorTest {
@@ -1014,10 +1013,10 @@ class CodecProcessorTest {
         }
     }
 
-    /// The `@Json` user surface: one flat `<Flat>Json` entry point per annotated type, and one registry per
-    /// package for `JsonCodecs.codecFor`, listed once in the services file however many rounds it took.
+    /// The `@Json` user surface: one flat `<Flat>Json` entry point per annotated type, which is also that type's
+    /// `ServiceLoader` provider for `JsonCodecs.codecFor`, listed in one services file however many rounds it took.
     @Nested
-    class JsonEntryPointAndRegistry {
+    class JsonEntryPointAndServices {
         private static final String SERVICES = "META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider";
 
         @Test
@@ -1042,7 +1041,8 @@ class CodecProcessorTest {
             var entryPoint = assertThat(compilation).generatedSourceFile("com.example.Ticketing_BuyRequestJson")
                                                     .contentsAsUtf8String();
 
-            entryPoint.contains("public final class Ticketing_BuyRequestJson {");
+            entryPoint.contains("@org.pragmatica.serialization.json.spi.GeneratedFor(\"com.example.Ticketing.BuyRequest\")\n"
+                                + "public final class Ticketing_BuyRequestJson implements org.pragmatica.serialization.json.spi.JsonCodecProvider {");
             entryPoint.contains("public static final org.pragmatica.serialization.json.JsonTypeCodec<com.example.Ticketing.BuyRequest> CODEC = Ticketing_BuyRequestJsonCodec.CODEC;");
             entryPoint.contains("public static org.pragmatica.lang.Result<com.example.Ticketing.BuyRequest> decode(byte[] json) {");
             entryPoint.contains("public static org.pragmatica.lang.Result<com.example.Ticketing.BuyRequest> decode(java.lang.String json) {");
@@ -1051,11 +1051,16 @@ class CodecProcessorTest {
             entryPoint.contains("java.util.Map.entry(com.example.Ticketing.Seat.class, Ticketing_SeatJsonCodec.CODEC)");
             entryPoint.contains("\n    interface Ticketing_SeatJsonCodec {");
             entryPoint.contains("org.pragmatica.serialization.json.spi.JsonReader in");
+            entryPoint.contains("    public Ticketing_BuyRequestJson() {}");
+            entryPoint.contains("    public java.lang.Class<?> type() {\n        return com.example.Ticketing.BuyRequest.class;\n    }");
+            entryPoint.contains("    public org.pragmatica.serialization.json.JsonTypeCodec<?> codec() {\n        return CODEC;\n    }");
             entryPoint.doesNotContain("public interface");
         }
 
+        // One provider per @Json type, sorted by name; a type reachable only as a component (Inner) has none, and no
+        // per-package class or manifest is generated.
         @Test
-        void registry_isOnePerPackage_listingOnlyAnnotatedTypes() {
+        void services_listsEveryEntryPoint_sorted_andNothingElse() {
             var first = JavaFileObjects.forSourceString("com.example.a.First",
                 """
                 package com.example.a;
@@ -1080,28 +1085,28 @@ class CodecProcessorTest {
                 public record Other(long id) {}
                 """);
 
-            var compilation = compileWith(first, second, other);
-            var aName = registryName("com.example.a", "", "First", "Second");
-            var bName = registryName("com.example.b", "", "Other");
+            var compilation = compileWith(other, second, first);
 
             assertThat(compilation).succeeded();
-            var registry = assertThat(compilation).generatedSourceFile("com.example.a." + aName)
-                                                  .contentsAsUtf8String();
-
-            registry.contains("public final class " + aName + " implements org.pragmatica.serialization.json.spi.JsonCodecProvider {");
-            registry.contains("java.util.Map.entry(com.example.a.First.class, FirstJson.CODEC)");
-            registry.contains("java.util.Map.entry(com.example.a.Second.class, SecondJson.CODEC)");
-            registry.doesNotContain("Inner");
-            assertThat(compilation).generatedSourceFile("com.example.b." + bName)
-                                   .contentsAsUtf8String()
-                                   .contains("java.util.Map.entry(com.example.b.Other.class, OtherJson.CODEC)");
             assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
                                    .contentsAsUtf8String()
-                                   .isEqualTo("com.example.a." + aName + "\ncom.example.b." + bName + "\n");
+                                   .isEqualTo("com.example.a.FirstJson\ncom.example.a.SecondJson\ncom.example.b.OtherJson\n");
+            assertEquals(Set.of("com.example.a.FirstJson", "com.example.a.SecondJson", "com.example.b.OtherJson"),
+                         compilation.generatedSourceFiles()
+                                    .stream()
+                                    .map(file -> file.getName().replaceAll("^.*?/com/", "com/").replace(".java", "").replace('/', '.'))
+                                    .collect(Collectors.toSet()));
+            assertEquals(List.of(SERVICES),
+                         compilation.generatedFiles()
+                                    .stream()
+                                    .filter(file -> file.getKind() == JavaFileObject.Kind.OTHER)
+                                    .map(file -> file.getName().replaceAll("^.*?/META-INF/", "META-INF/"))
+                                    .toList());
         }
 
+        // The binary @Codec registry option leaves JSON alone: the provider is still named after the type.
         @Test
-        void registry_takesTheRegistrySuffixOption() {
+        void services_ignoresTheBinaryRegistrySuffixOption() {
             var source = JavaFileObjects.forSourceString("com.example.Msg",
                 """
                 package com.example;
@@ -1115,94 +1120,24 @@ class CodecProcessorTest {
                                      .compile(source);
 
             assertThat(compilation).succeeded();
-            assertThat(compilation).generatedSourceFile("com.example." + registryName("com.example", "Test", "Msg"))
-                                   .contentsAsUtf8String()
-                                   .contains("java.util.Map.entry(com.example.Msg.class, MsgJson.CODEC)");
-        }
-
-        // Late is generated in the round Early is processed in, so its package is still collecting: one registry.
-        @Test
-        void registry_waitsForAPackageStillReceivingTypes_andListsThemTogether() {
-            var compilation = javac().withProcessors(new CodecProcessor(), new LateJsonType("com.example.Early"))
-                                     .compile(early());
-
-            var name = registryName("com.example", "", "Early", "Late");
-
-            assertThat(compilation).succeeded();
-            var registry = assertThat(compilation).generatedSourceFile("com.example." + name)
-                                                  .contentsAsUtf8String();
-
-            registry.contains("java.util.Map.entry(com.example.Early.class, EarlyJson.CODEC)");
-            registry.contains("java.util.Map.entry(com.example.Late.class, LateJson.CODEC)");
             assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
                                    .contentsAsUtf8String()
-                                   .isEqualTo("com.example." + name + "\n");
+                                   .isEqualTo("com.example.MsgJson\n");
         }
 
-        // Late arrives after the package's registry was written: it gets a second registry, named by its own type
-        // set, and the services file names both, so no type is lost to round timing.
+        // Late is generated by another processor in Early's round, or in the round after (when EarlyJson is a root):
+        // either way the one services file, written in the last round, lists both.
         @Test
-        void registry_givesATypeArrivingAfterItsPackageWasWritten_aSecondRegistry() {
-            var earlyName = registryName("com.example", "", "Early");
-            var lateName = registryName("com.example", "", "Late");
-            var compilation = javac().withProcessors(new CodecProcessor(), new LateJsonType("com.example." + earlyName))
-                                     .compile(early());
+        void services_listsTypesArrivingInLaterRounds() {
+            for (var trigger : List.of("com.example.Early", "com.example.EarlyJson")) {
+                var compilation = javac().withProcessors(new CodecProcessor(), new LateJsonType(trigger))
+                                         .compile(early());
 
-            assertThat(compilation).succeeded();
-            assertThat(compilation).generatedSourceFile("com.example." + earlyName)
-                                   .contentsAsUtf8String()
-                                   .contains("java.util.Map.entry(com.example.Early.class, EarlyJson.CODEC)");
-            assertThat(compilation).generatedSourceFile("com.example." + lateName)
-                                   .contentsAsUtf8String()
-                                   .contains("java.util.Map.entry(com.example.Late.class, LateJson.CODEC)");
-            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
-                                   .contentsAsUtf8String()
-                                   .isEqualTo("com.example." + earlyName + "\ncom.example." + lateName + "\n");
-        }
-
-        // The name is a function of the listed type set only: order-independent, reproducible, and different
-        // for a different set, so two artifacts with @Json types in one package ship two loadable registries.
-        @Test
-        void registryName_isDerivedFromTheSortedTypeSet() {
-            var name = registryName("com.example.a", "", "First", "Second");
-
-            assertTrue(name.matches("AJsonCodecs_[0-9a-f]{16}"), name);
-            assertEquals(name, registryName("com.example.a", "", "Second", "First"));
-            assertNotEquals(name, registryName("com.example.a", "", "First"));
-            assertNotEquals(name, registryName("com.example.a", "", "First", "Third"));
-            assertTrue(registryName("com.example.a", "Test", "First").startsWith("AJsonCodecsTest_"));
-            assertTrue(registryName("", "", "First").startsWith("DefaultJsonCodecs_"));
-        }
-
-        // Known answers computed outside the production code, with
-        // `printf 'com.example.a.First\ncom.example.a.Second' | shasum -a 256 | cut -c1-16` and likewise: the scheme
-        // (SHA-256, sorted qualified flat names joined by newlines, first 16 hex digits) is pinned, not re-derived.
-        @Test
-        void registryName_isTheFirstSixteenHexDigitsOfTheSha256OfTheSortedQualifiedFlatNames() {
-            assertEquals("AJsonCodecs_3df4dfc375a75332", registryName("com.example.a", "", "Second", "First"));
-            assertEquals("QJsonCodecs_fb5c620c3d550b87", registryName("q", "", "A_B", "A_0B"));
-            assertEquals("ExampleJsonCodecs_aaefbf89ceee30a1", registryName("com.example", "", "Msg"));
-            assertEquals("DefaultJsonCodecs_a151ceb1711aad52", registryName("", "", "First"));
-        }
-
-        // The registry carries the marker naming its type set, and its manifest lists the types, sorted.
-        @Test
-        void registry_isMarkedWithItsTypeSet_andWritesASortedManifest() {
-            var second = JavaFileObjects.forSourceString("com.example.Second",
-                                                         "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Second(String s) {}\n");
-            var first = JavaFileObjects.forSourceString("com.example.First",
-                                                        "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record First(String f) {}\n");
-            var name = registryName("com.example", "", "First", "Second");
-
-            var compilation = compileWith(second, first);
-
-            assertThat(compilation).succeeded();
-            assertThat(compilation).generatedSourceFile("com.example." + name)
-                                   .contentsAsUtf8String()
-                                   .contains("@org.pragmatica.serialization.json.spi.GeneratedFor(\"the @Json types com.example.First, com.example.Second\")\npublic final class " + name);
-            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, JsonRegistries.manifestFile("com.example." + name))
-                                   .contentsAsUtf8String()
-                                   .isEqualTo("com.example.First\ncom.example.Second\n");
+                assertThat(compilation).succeeded();
+                assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT, SERVICES)
+                                       .contentsAsUtf8String()
+                                       .isEqualTo("com.example.EarlyJson\ncom.example.LateJson\n");
+            }
         }
 
         // @Deprecated is an annotation CodecProcessor does not claim, so the helper is asked in Early's round too.
@@ -1242,8 +1177,8 @@ class CodecProcessorTest {
         }
     }
 
-    /// A generated name that is already taken (by a user type, or by another type's generated class in the same
-    /// compilation) is one clean compile error naming both and the way out, never the Filer's exception text.
+    /// A generated name that is already taken (by a user type, or by a class generated for another source) is one
+    /// clean compile error naming both and the way out, never the Filer's exception text.
     @Nested
     class JsonNameClashes {
         @Test
@@ -1257,11 +1192,12 @@ class CodecProcessorTest {
 
             assertSingleCleanError(compilation,
                                    "Cannot generate com.example.OrderJson for com.example.Order: the type com.example.OrderJson already exists",
-                                   "Rename com.example.OrderJson, or rename or move com.example.Order.");
+                                   "If it is stale output of an older build, clean the build",
+                                   "otherwise rename com.example.OrderJson, or rename or move com.example.Order.");
         }
 
         // Flat names are injective: a nested A.B is A_BJson, a top-level A_B is A_0BJson, so both compile, each entry
-        // point typed to its own type, and the package registry lists both.
+        // point typed to its own type, and the services file lists both.
         @Test
         void nestedTypeAndTopLevelTypeWithAnUnderscore_getDistinctEntryPoints() {
             var nested = JavaFileObjects.forSourceString("com.example.A",
@@ -1278,11 +1214,10 @@ class CodecProcessorTest {
             assertThat(compilation).generatedSourceFile("com.example.A_0BJson")
                                    .contentsAsUtf8String()
                                    .contains("JsonTypeCodec<com.example.A_B> CODEC = A_0BJsonCodec.CODEC;");
-            var registry = assertThat(compilation).generatedSourceFile("com.example." + registryName("com.example", "", "A_B", "A_0B"))
-                                                  .contentsAsUtf8String();
-
-            registry.contains("java.util.Map.entry(com.example.A.B.class, A_BJson.CODEC)");
-            registry.contains("java.util.Map.entry(com.example.A_B.class, A_0BJson.CODEC)");
+            assertThat(compilation).generatedFile(StandardLocation.CLASS_OUTPUT,
+                                                  "META-INF/services/org.pragmatica.serialization.json.spi.JsonCodecProvider")
+                                   .contentsAsUtf8String()
+                                   .isEqualTo("com.example.A_0BJson\ncom.example.A_BJson\n");
         }
 
         // Inside one entry point too: a reachable nested Outer.In and a reachable top-level Outer_In get distinct
@@ -1323,19 +1258,44 @@ class CodecProcessorTest {
                                    "Rename one of the two");
         }
 
+        // Flat names are unique within a package only: reachable types of two packages sharing one get numbered nested
+        // codec names, assigned in qualified-name order, and the entry point compiles and keeps each codec apart.
         @Test
-        void userTypeNamedLikeThePackageRegistry_isOneCleanError() {
-            var registry = registryName("com.example", "", "Msg");
-            var msg = JavaFileObjects.forSourceString("com.example.Msg",
-                                                      "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Msg(String text) {}\n");
-            var userType = JavaFileObjects.forSourceString("com.example." + registry,
-                                                           "package com.example;\n\npublic class " + registry + " {}\n");
+        void reachableTypesOfTwoPackagesWithOneFlatName_getNumberedNestedCodecs() {
+            var compilation = compileWith(sameFlatName("y", "String a"),
+                                          sameFlatName("z", "long b"),
+                                          JavaFileObjects.forSourceString("com.example.Root",
+                                                                          "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Root(com.example.z.Foo second, com.example.y.Foo first) {}\n"));
 
-            var compilation = compileWith(msg, userType);
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.RootJson")
+                                                    .contentsAsUtf8String();
 
-            assertSingleCleanError(compilation,
-                                   "Cannot generate com.example." + registry + " for the @Json types com.example.Msg: the type com.example." + registry + " already exists",
-                                   "Rename com.example." + registry);
+            entryPoint.contains("java.util.Map.entry(com.example.y.Foo.class, FooJsonCodec.CODEC)");
+            entryPoint.contains("java.util.Map.entry(com.example.z.Foo.class, FooJsonCodec2.CODEC)");
+            entryPoint.contains("\n    interface FooJsonCodec {");
+            entryPoint.contains("\n    interface FooJsonCodec2 {");
+        }
+
+        // The entry point's root keeps its plain nested name; a reached type of another package with its flat name is
+        // numbered.
+        @Test
+        void rootAndAReachableTypeOfAnotherPackageWithItsFlatName_rootKeepsThePlainName() {
+            var compilation = compileWith(sameFlatName("y", "String a"),
+                                          JavaFileObjects.forSourceString("com.example.Foo",
+                                                                          "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record Foo(com.example.y.Foo inner) {}\n"));
+
+            assertThat(compilation).succeeded();
+            var entryPoint = assertThat(compilation).generatedSourceFile("com.example.FooJson")
+                                                    .contentsAsUtf8String();
+
+            entryPoint.contains("JsonTypeCodec<com.example.Foo> CODEC = FooJsonCodec.CODEC;");
+            entryPoint.contains("java.util.Map.entry(com.example.y.Foo.class, FooJsonCodec2.CODEC)");
+        }
+
+        private static JavaFileObject sameFlatName(String packageSegment, String component) {
+            return JavaFileObjects.forSourceString("com.example." + packageSegment + ".Foo",
+                                                   "package com.example." + packageSegment + ";\n\npublic record Foo(" + component + ") {}\n");
         }
 
         private static void assertSingleCleanError(Compilation compilation, String... fragments) {
@@ -1382,10 +1342,6 @@ class CodecProcessorTest {
                                                    "package com.example;\n\n@org.pragmatica.serialization.json.Json\npublic record "
                                                    + name + "(" + fields + ") {}\n");
         }
-    }
-
-    static String registryName(String packageName, String suffix, String... flatNames) {
-        return JsonRegistries.registryName(packageName, suffix, List.of(flatNames)).unwrap();
     }
 
     private static Compilation compileWith(javax.tools.JavaFileObject... sources) {

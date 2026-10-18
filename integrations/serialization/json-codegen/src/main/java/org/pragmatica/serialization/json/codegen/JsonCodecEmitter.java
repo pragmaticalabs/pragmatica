@@ -23,6 +23,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+
+import org.pragmatica.lang.Option;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 
 /// Emits the source of generated codecs, in one of two layouts.
@@ -35,9 +41,16 @@ import java.util.Set;
 ///
 /// An **entry point** ([#emitEntryPoint], one `@Json` root) is a public final class named after the root
 /// (`<Flat>Json`, [JsonNames]) whose public members are the API: `CODEC`, the `decode` and `encode` shortcuts, and
-/// `CODECS`. The code for the root and every record and enum it reaches sits in package-private nested
-/// `<Flat>JsonCodec` interfaces, so it is reachable through `CODECS` but is not the surface a caller sees. The
-/// class leaves room for later public members (a `codec(options)` factory beside `CODEC`).
+/// `CODECS`. It is also the root's `ServiceLoader` provider (`JsonCodecProvider`, with the public no-argument
+/// constructor a class-path provider needs), serving `CODEC` for `JsonCodecs.codecFor`. The code for the root and
+/// every record and enum it reaches sits in package-private nested `<Flat>JsonCodec` interfaces, so it is reachable
+/// through `CODECS` but is not the surface a caller sees. The class leaves room for later public members (a
+/// `codec(options)` factory beside `CODEC`).
+///
+/// Nested codec names are the reached types' flat names. A flat name is unique within a package only, so types of
+/// different packages that share one (`y.Foo` and `z.Foo`) are numbered: names are given the root first (an entry
+/// point's root keeps its plain name), then in qualified-name order, and a name already given gets the first free
+/// number from 2 (`FooJsonCodec`, `FooJsonCodec2`).
 ///
 /// Either way, every type a codec touches is called through a static method, so call sites stay monomorphic
 /// and inline.
@@ -61,7 +74,7 @@ final class JsonCodecEmitter {
                 String generatedBy,
                 String generatedFor,
                 List<JsonType.ListOf> containerRoots) {
-        assignNames(HOLDER_SUFFIX);
+        assignNames(none(), HOLDER_SUFFIX);
         var containers = containerNames(containerRoots);
         var out = new ArrayList<String>();
 
@@ -82,7 +95,7 @@ final class JsonCodecEmitter {
 
     /// The entry point of `root`, which must be the only root the analyzer was given.
     String emitEntryPoint(String packageName, String holderName, TypeElement root, String generatedBy) {
-        assignNames(ENTRY_POINT_SUFFIX);
+        assignNames(some(root), ENTRY_POINT_SUFFIX);
         var type = typeName(root);
         var out = new ArrayList<String>();
 
@@ -92,14 +105,26 @@ final class JsonCodecEmitter {
         out.add("///");
         out.add("/// `CODEC` and the `decode` and `encode` shortcuts are the API. `CODECS` lists the codec of `" + root.getSimpleName()
                + "` and of every");
-        out.add("/// record and enum it reaches, by class. The nested interfaces are package-private codec machinery.");
+        out.add("/// record and enum it reaches, by class. An instance is the type's ServiceLoader provider, for JsonCodecs.codecFor.");
+        out.add("/// The nested interfaces are package-private codec machinery.");
         out.add(JsonCodecGenerator.generatedForMarker(type));
-        out.add("public final class " + holderName + " {");
+        out.add("public final class " + holderName + " implements " + SPI + "JsonCodecProvider {");
         out.add("    public static final " + RT + "JsonTypeCodec<" + type + "> CODEC = " + codecName(root) + ".CODEC;");
         out.add("");
         out.addAll(emitRegistry("public static final "));
         out.add("");
-        out.add("    private " + holderName + "() {}");
+        out.add("    /// The ServiceLoader's instance; the codec itself is the CODEC constant.");
+        out.add("    public " + holderName + "() {}");
+        out.add("");
+        out.add("    @java.lang.Override");
+        out.add("    public java.lang.Class<?> type() {");
+        out.add("        return " + type + ".class;");
+        out.add("    }");
+        out.add("");
+        out.add("    @java.lang.Override");
+        out.add("    public " + RT + "JsonTypeCodec<?> codec() {");
+        out.add("        return CODEC;");
+        out.add("    }");
         out.add("");
         out.add("    public static org.pragmatica.lang.Result<" + type + "> decode(byte[] json) {");
         out.add("        return CODEC.decode(json);");
@@ -138,26 +163,27 @@ final class JsonCodecEmitter {
     }
 
     // ---- naming --------------------------------------------------------------------------------
-    private void assignNames(String suffix) {
-        analyzer.records().keySet().forEach(name -> assignName(analyzer.records().get(name).element(),
-                                                               suffix));
-        analyzer.enums().keySet().forEach(name -> assignName(analyzer.enums().get(name).element(),
-                                                             suffix));
+    // `first` (an entry point's root) is named before the others, which follow in qualified-name order, so the
+    // numbering is stable whatever order the types were reached in.
+    private void assignNames(Option<TypeElement> first, String suffix) {
+        var elements = new TreeMap<String, TypeElement>();
+
+        analyzer.records()
+                .values()
+                .forEach(definition -> elements.put(typeName(definition.element()),
+                                                    definition.element()));
+        analyzer.enums()
+                .values()
+                .forEach(definition -> elements.put(typeName(definition.element()),
+                                                    definition.element()));
+        first.onPresent(root -> assignName(root, suffix));
+        elements.values().forEach(element -> assignName(element, suffix));
     }
 
-    // The type's injective flat name (JsonNames), so no two types of a holder or entry point share a nested name
-    // and no type name needs disambiguating; only the container roots below take whatever name is still free.
+    // The type's flat name (JsonNames, injective within a package), numbered when a type of another package already
+    // has it.
     private void assignName(TypeElement element, String suffix) {
-        var key = element.getQualifiedName().toString();
-
-        if (names.containsKey(key)) {
-            return;
-        }
-
-        var name = JsonNames.flatName(element) + suffix;
-
-        taken.add(name);
-        names.put(key, name);
+        names.computeIfAbsent(typeName(element), _ -> freeName(JsonNames.flatName(element) + suffix));
     }
 
     private String codecName(TypeElement element) {

@@ -17,8 +17,6 @@ package org.pragmatica.serialization.json.tests;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Result;
 import org.pragmatica.serialization.codec.CodecProcessor;
 import org.pragmatica.serialization.json.JsonCodecs;
 import org.pragmatica.serialization.json.JsonTypeCodec;
@@ -39,12 +37,9 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -57,64 +52,58 @@ class JsonCodecsClassPathTest {
     @TempDir
     Path dir;
 
-    // Two artifacts with @Json types in one package: both registries load, so neither type's codec vanishes.
+    // Two artifacts with @Json types in one package: each type has its own provider, so both resolve.
     @Test
     void splitPackageAcrossTwoArtifacts_bothTypesResolve() throws Exception {
         var first = compile("first", Map.of("split/A.java", record("split", "A")));
         var second = compile("second", Map.of("split/B.java", record("split", "B")));
 
-        assertNotEquals(services(first), services(second));
+        assertEquals(List.of("split.AJson"), services(first));
+        assertEquals(List.of("split.BJson"), services(second));
         try (var loader = loader(first, second)) {
             assertResolves(loader, "split.A");
             assertResolves(loader, "split.B");
         }
     }
 
-    // The same type set compiled twice gives one registry name: the ServiceLoader loads it once, no conflict.
+    // The same type compiled into two artifacts, alone or beside different other types of its package: the same
+    // provider name in both, which the ServiceLoader loads once, so it resolves; the others resolve too.
     @Test
-    void sameTypeSetCompiledTwice_isOneProvider_andResolves() throws Exception {
-        var first = compile("first", Map.of("dup/A.java", record("dup", "A")));
-        var second = compile("second", Map.of("dup/A.java", record("dup", "A")));
+    void sameTypeInTwoArtifacts_isOneProvider_andResolves() throws Exception {
+        var wide = compile("wide", Map.of("dup/A.java", record("dup", "A"), "dup/C.java", record("dup", "C")));
+        var narrow = compile("narrow", Map.of("dup/A.java", record("dup", "A")));
 
-        assertEquals(services(first), services(second));
-        try (var loader = loader(first, second)) {
-            assertResolves(loader, "dup.A");
-        }
-    }
-
-    // Overlapping type sets give two differently named registries listing one class: that is the conflict.
-    @Test
-    void overlappingTypeSets_areAConflictForTheSharedType_only() throws Exception {
-        var wide = compile("wide", Map.of("ov/A.java", record("ov", "A"), "ov/C.java", record("ov", "C")));
-        var narrow = compile("narrow", Map.of("ov/A.java", record("ov", "A")));
-
-        try (var loader = loader(wide, narrow)) {
-            var conflict = assertInstanceOf(JsonCodecs.ConflictingProviders.class,
-                                            failureOf(JsonCodecs.codecFor(loader.loadClass("ov.A"))));
-
-            assertEquals(Set.of(services(wide).getFirst(), services(narrow).getFirst()), Set.copyOf(conflict.providers()));
-            assertResolves(loader, "ov.C");
+        assertEquals(List.of("dup.AJson", "dup.CJson"), services(wide));
+        assertEquals(List.of("dup.AJson"), services(narrow));
+        for (var order : List.of(List.of(wide, narrow), List.of(narrow, wide))) {
+            try (var loader = loader(order.toArray(Path[]::new))) {
+                assertResolves(loader, "dup.A");
+                assertResolves(loader, "dup.C");
+            }
         }
     }
 
     // A top-level q.A_B in one artifact and a nested q.A.B in a second artifact compiled against the first: the flat
     // names (A_0BJson, A_BJson) differ, so the second compilation cannot replace the first's entry point, and each type
-    // encodes and decodes with its own codec in either class-path order.
+    // encodes and decodes with its own codec in either class-path order. The lookup derives the same provider names
+    // from the classes, `$` included (q.Dol$lar is Dol_1larJson).
     @Test
     void underscoreTypeAndNestedTypeAcrossDependentArtifacts_eachUseTheirOwnCodec() throws Exception {
-        var first = compile("m1", Map.of("q/A_B.java", record("q", "A_B")), List.of());
+        var first = compile("m1", Map.of("q/A_B.java", record("q", "A_B"), "q/Dol$lar.java", record("q", "Dol$lar")), List.of());
         var second = compile("m2",
                              Map.of("q/A.java",
                                     "package q;\n\npublic interface A {\n    @org.pragmatica.serialization.json.Json\n    record B(int number) {}\n}\n"),
                              List.of(first));
 
         assertTrue(Files.exists(first.resolve("q/A_0BJson.class")));
+        assertTrue(Files.exists(first.resolve("q/Dol_1larJson.class")));
         assertTrue(Files.exists(second.resolve("q/A_BJson.class")));
         assertTrue(Files.notExists(second.resolve("q/A_0BJson.class")));
         for (var order : List.of(List.of(first, second), List.of(second, first))) {
             try (var loader = loader(order.toArray(Path[]::new))) {
                 assertOwnCodec(loader, "q.A_B", "x", "{\"value\":\"x\"}");
                 assertOwnCodec(loader, "q.A$B", 7, "{\"number\":7}");
+                assertOwnCodec(loader, "q.Dol$lar", "d", "{\"value\":\"d\"}");
             }
         }
     }
@@ -218,9 +207,5 @@ class JsonCodecsClassPathTest {
                      .filter(entry -> !entry.isBlank())
                      .map(Path::of)
                      .toList();
-    }
-
-    private static Cause failureOf(Result<?> result) {
-        return StrictDecodingTest.failureOf(result);
     }
 }

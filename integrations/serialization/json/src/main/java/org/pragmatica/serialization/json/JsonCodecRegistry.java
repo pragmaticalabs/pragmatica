@@ -15,16 +15,22 @@
  */
 package org.pragmatica.serialization.json;
 
+import java.io.IOException;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
+import java.util.Objects;
 import java.util.ServiceLoader;
+import java.util.ServiceLoader.Provider;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.serialization.json.spi.GeneratedFor;
 import org.pragmatica.serialization.json.spi.JsonCodecProvider;
 
 import static org.pragmatica.lang.Option.none;
@@ -38,18 +44,18 @@ import static org.pragmatica.lang.Result.success;
 /// kept reachable by this cache.
 ///
 /// Each class is resolved against the providers its own class loader sees (`type.getClassLoader()`, the system
-/// class loader for a bootstrap class), so a type loaded by a child loader finds the registry shipped beside it.
+/// class loader for a bootstrap class), so a type loaded by a child loader finds the provider shipped beside it. Only
+/// the provider whose binary name is the class's entry point name ([#providerName]) is instantiated.
 sealed interface JsonCodecRegistry {
     /// A services iterator consumes the entry it fails on, so a scan always advances; this bound only guarantees that
     /// an iterator which failed without advancing could not hang a lookup. No class path holds this many providers.
-    int MAX_PROVIDER_STEPS = 1<< 16;
+    int MAX_PROVIDER_STEPS = 1<< 20;
     String SERVICES_ENTRY = "META-INF/services/" + JsonCodecProvider.class.getName();
 
     ClassValue<Result<Option<JsonTypeCodec<?>>>> CODECS = new ClassValue<>() {
         @Override
         protected Result<Option<JsonTypeCodec<?>>> computeValue(Class<?> type) {
-            return lookup(type,
-                          () -> ServiceLoader.load(JsonCodecProvider.class, loaderOf(type)).iterator());
+            return lookup(type, loaderOf(type));
         }
     };
 
@@ -57,51 +63,150 @@ sealed interface JsonCodecRegistry {
         return option(type.getClassLoader()).or(ClassLoader::getSystemClassLoader);
     }
 
-    /// `type`'s codec among `providers`: the codec when exactly one healthy provider lists it,
-    /// [JsonCodecs.ConflictingProviders] when several do, empty when none does and every provider was read, and
-    /// the providers' failure when none does but one could not be read (it may have been the one listing `type`).
-    /// Obtaining the iterator (for the registry: loading the services) is guarded too; its failure is the answer.
-    static Result<Option<JsonTypeCodec<?>>> lookup(Class<?> type, Iterable<JsonCodecProvider> providers) {
+    /// `type`'s codec among the providers `loader` sees; see [JsonCodecs] for the answers.
+    static Result<Option<JsonTypeCodec<?>>> lookup(Class<?> type, ClassLoader loader) {
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed("for " + type.getName(),
+                                                                         t),
+                           () -> providerName(type))
+                     .flatMap(name -> lookup(type,
+                                             name,
+                                             () -> ServiceLoader.load(JsonCodecProvider.class, loader)
+                                                                .stream()
+                                                                .iterator(),
+                                             () -> isListed(loader, name)));
+    }
+
+    /// `type`'s codec among `providers`, the provider of `name` being the one that may serve it. `listed` tells
+    /// whether the services files name `name`; it is asked only when no provider of that name was streamed but some
+    /// entry failed to load. Obtaining the iterator is guarded too; its failure is the answer.
+    static Result<Option<JsonTypeCodec<?>>> lookup(Class<?> type,
+                                                   String name,
+                                                   Iterable<Provider<JsonCodecProvider>> providers,
+                                                   Listing listed) {
         return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t),
                            providers::iterator)
                      .flatMap(iterator -> resolve(type,
-                                                  scan(iterator)));
+                                                  name,
+                                                  scan(iterator),
+                                                  listed));
     }
 
-    private static Result<Option<JsonTypeCodec<?>>> resolve(Class<?> type, List<Result<List<Listing>>> scan) {
-        var found = scan.stream()
-                        .flatMap(outcome -> outcome.option()
-                                                   .stream())
-                        .flatMap(List::stream)
-                        .filter(listing -> listing.type() == type)
-                        .toList();
+    /// Whether the services files name a provider; may fail reading them.
+    @FunctionalInterface
+    interface Listing {
+        Result<Boolean> isListed();
+    }
 
-        return switch (found.size()) {
-            case 0 -> absent(scan.stream().flatMap(outcome -> failureOf(outcome).stream()).toList());
-            case 1 -> success(some(found.getFirst().codec()));
+    private static Result<Option<JsonTypeCodec<?>>> resolve(Class<?> type,
+                                                            String name,
+                                                            List<Result<Candidate>> scan,
+                                                            Listing listed) {
+        var matching = scan.stream()
+                           .flatMap(step -> step.option()
+                                                .stream())
+                           .filter(candidate -> candidate.name()
+                                                         .equals(name))
+                           .toList();
+        var classes = matching.stream().map(Candidate::type).distinct().toList();
+
+        return switch (classes.size()) {
+            case 0 -> absent(name, failures(scan), listed);
+            case 1 -> instantiate(type, matching.getFirst());
             default -> JsonCodecs.ConflictingProviders.conflictingProviders(type,
-                                                                            found.stream().map(Listing::provider).toList()).result();
+                                                                            classes.stream().map(JsonCodecRegistry::describe).toList()).result();
         };
     }
 
-    private static Option<Cause> failureOf(Result<?> outcome) {
-        return outcome.fold(Option::some, _ -> none());
+    private static List<Cause> failures(List<Result<Candidate>> scan) {
+        return scan.stream()
+                   .flatMap(step -> failureOf(step).stream())
+                   .toList();
     }
 
-    private static Result<Option<JsonTypeCodec<?>>> absent(List<Cause> failures) {
-        return switch (failures.size()) {
-            case 0 -> success(none());
-            case 1 -> failures.getFirst().result();
-            default -> Causes.composite(failures.stream().map(Cause::result).toArray(Result<?>[]::new)).result();
-        };
+    private static Option<Cause> failureOf(Result<?> step) {
+        return step.fold(Option::some, _ -> none());
     }
 
-    /// Reads every provider, isolating each: a services entry that cannot be loaded or instantiated (the iterator's
-    /// `ServiceConfigurationError`), a `codecs()` that throws or returns `null`, a map that throws while it is read,
-    /// and a map listing a `null` class or codec each become one failed outcome carrying a
-    /// [JsonCodecs.ProviderFailed], and the providers after it are still read. A `VirtualMachineError` (an exhausted
-    /// stack or heap) is not isolated: it propagates, as `Result.lift` rethrows it.
-    private static List<Result<List<Listing>>> scan(Iterator<JsonCodecProvider> providers) {
+    private static String describe(Class<?> providerClass) {
+        return providerClass.getName()
+             + " (class loader " + option(providerClass.getClassLoader()).map(Objects::toIdentityString)
+                                         .or("bootstrap")
+             + ")";
+    }
+
+    // No provider of the name was streamed: absent, unless some entry failed to load and the services files list the
+    // name, in which case the failed entry may be that provider.
+    private static Result<Option<JsonTypeCodec<?>>> absent(String name, List<Cause> failures, Listing listed) {
+        return failures.isEmpty()
+               ? success(none())
+               : listed.isListed()
+                       .flatMap(isListed -> unloadable(name, failures, isListed));
+    }
+
+    private static Result<Option<JsonTypeCodec<?>>> unloadable(String name, List<Cause> failures, boolean isListed) {
+        return isListed
+               ? JsonCodecs.ProviderFailed.providerFailed(name,
+                                                          "it is listed in " + SERVICES_ENTRY + " but cannot be loaded",
+                                                          originOf(failures)).result()
+               : success(none());
+    }
+
+    private static Cause originOf(List<Cause> failures) {
+        return failures.size() == 1
+               ? failures.getFirst()
+               : Causes.composite(failures.stream().map(Cause::result).toArray(Result<?>[]::new));
+    }
+
+    // The class is checked before the constructor runs: a provider of the name that was not generated for `type` is
+    // never instantiated.
+    private static Result<Option<JsonTypeCodec<?>>> instantiate(Class<?> type, Candidate candidate) {
+        return generatedFor(type, candidate).flatMap(_ -> create(candidate))
+                           .flatMap(provider -> served(type,
+                                                       candidate.name(),
+                                                       provider));
+    }
+
+    private static Result<GeneratedFor> generatedFor(Class<?> type, Candidate candidate) {
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(candidate.name(),
+                                                                         t),
+                           () -> option(candidate.type().getAnnotation(GeneratedFor.class)))
+                     .flatMap(marker -> marker.filter(found -> isFor(found, type))
+                                              .toResult(JsonCodecs.ProviderFailed.providerFailed(candidate.name(),
+                                                                                                 "its class is not marked as generated for " + type.getName())));
+    }
+
+    // The marker names the type as the processor saw it: its canonical name.
+    private static boolean isFor(GeneratedFor marker, Class<?> type) {
+        return option(type.getCanonicalName()).filter(marker.value()::equals)
+                     .isPresent();
+    }
+
+    private static Result<JsonCodecProvider> create(Candidate candidate) {
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(candidate.name(), t),
+                           () -> candidate.provider()
+                                          .get());
+    }
+
+    // Every call into the provider instance is guarded, and a null or foreign answer makes the provider broken: a
+    // codec is returned only when the provider serves exactly `type`.
+    private static Result<Option<JsonTypeCodec<?>>> served(Class<?> type, String name, JsonCodecProvider provider) {
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(name, t),
+                           provider::type)
+                     .filter(JsonCodecs.ProviderFailed.providerFailed(name,
+                                                                      "type() does not return " + type.getName()),
+                             served -> served == type)
+                     .flatMap(_ -> Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(name, t),
+                                               provider::codec))
+                     .flatMap(codec -> option(codec).toResult(JsonCodecs.ProviderFailed.providerFailed(name,
+                                                                                                       "codec() returned null")))
+                     .map(Option::some);
+    }
+
+    /// Streams every provider, isolating each step: an entry the `ServiceLoader` cannot load (its
+    /// `ServiceConfigurationError`), and a provider whose class cannot be named, each become one failed step, and the
+    /// entries after it are still streamed. Nothing is instantiated here. A `VirtualMachineError` (an exhausted stack or
+    /// heap) is not isolated: it propagates, as `Result.lift` rethrows it.
+    private static List<Result<Candidate>> scan(Iterator<Provider<JsonCodecProvider>> providers) {
         return Stream.generate(() -> step(providers))
                      .limit(MAX_PROVIDER_STEPS)
                      .takeWhile(Option::isPresent)
@@ -109,67 +214,106 @@ sealed interface JsonCodecRegistry {
                      .toList();
     }
 
-    // FER: a failing hasNext becomes a failed outcome (so a later miss reports it) and the scan degrades forward:
-    // the entry it failed on has been consumed, so asking again moves on to the next one. Empty ends the scan.
-    private static Option<Result<List<Listing>>> step(Iterator<JsonCodecProvider> providers) {
+    // FER: a failing hasNext becomes a failed step (consulted if the lookup finds no provider of its name) and the scan
+    // degrades forward: the entry it failed on has been consumed, so asking again moves on to the next one. Empty ends
+    // the scan.
+    private static Option<Result<Candidate>> step(Iterator<Provider<JsonCodecProvider>> providers) {
         return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t),
                            providers::hasNext)
                      .fold(cause -> some(cause.result()),
                            more -> nextIf(more, providers));
     }
 
-    private static Option<Result<List<Listing>>> nextIf(boolean more, Iterator<JsonCodecProvider> providers) {
+    private static Option<Result<Candidate>> nextIf(boolean more, Iterator<Provider<JsonCodecProvider>> providers) {
         return more
                ? some(next(providers))
                : none();
     }
 
-    private static Result<List<Listing>> next(Iterator<JsonCodecProvider> providers) {
+    private static Result<Candidate> next(Iterator<Provider<JsonCodecProvider>> providers) {
         return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t),
-                           providers::next)
-                     .flatMap(JsonCodecRegistry::listings);
+                           () -> Candidate.candidate(providers.next()));
     }
 
-    // Every interaction with the provider's map (entrySet, its iterator, each key and value) is inside a guarded call,
-    // so a map that throws while it is read fails this provider only.
-    private static Result<List<Listing>> listings(JsonCodecProvider provider) {
-        var name = provider.getClass().getName();
+    /// The binary name of `type`'s generated entry point, the provider that serves it: `type`'s package, then its flat
+    /// name, then `Json`. The flat name is the codec processor's (`JsonNames`): the simple names of the type and its
+    /// declaring classes, outermost first, each with `_` written as `_0` and `$` as `_1`, joined with `_`.
+    static String providerName(Class<?> type) {
+        var flat = String.join("_",
+                               Stream.<Class<?>> iterate(type, Objects::nonNull, Class::getDeclaringClass)
+                                     .map(level -> escape(level.getSimpleName()))
+                                     .toList()
+                                     .reversed());
+        var packageName = type.getPackageName();
 
-        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(name, t),
-                           provider::codecs)
-                     .flatMap(codecs -> option(codecs).toResult(JsonCodecs.ProviderFailed.providerFailed(name,
-                                                                                                         "codecs() returned null")))
-                     .flatMap(codecs -> Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(name, t),
-                                                    () -> listings(name, codecs)))
-                     .flatMap(listings -> nullFree(name, listings));
+        return packageName.isEmpty()
+               ? flat + "Json"
+               : packageName + "." + flat + "Json";
     }
 
-    // A null class or codec makes the provider broken rather than a source of listings: a null codec must never reach
-    // a caller as a found one.
-    private static Result<List<Listing>> nullFree(String provider, List<Listing> listings) {
-        return listings.stream()
-                       .allMatch(Listing::isComplete)
-               ? success(listings)
-               : JsonCodecs.ProviderFailed.providerFailed(provider, "codecs() lists a null class or codec").result();
+    private static String escape(String simpleName) {
+        return simpleName.replace("_", "_0")
+                         .replace("$", "_1");
     }
 
-    private static List<Listing> listings(String provider, Map<Class<?>, JsonTypeCodec<?>> codecs) {
-        return codecs.entrySet()
-                     .stream()
-                     .map(entry -> Listing.listing(entry.getKey(),
-                                                   provider,
-                                                   entry.getValue()))
-                     .toList();
+    // Whether any services file `loader` sees names `name`, parsed as the ServiceLoader does: a `#` starts a comment,
+    // surrounding whitespace is ignored.
+    private static Result<Boolean> isListed(ClassLoader loader, String name) {
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t),
+                           () -> Collections.list(loader.getResources(SERVICES_ENTRY)))
+                     .flatMap(JsonCodecRegistry::listedNames)
+                     .map(names -> names.contains(name));
     }
 
-    record Listing(Class<?> type, String provider, JsonTypeCodec<?> codec) {
-        static Listing listing(Class<?> type, String provider, JsonTypeCodec<?> codec) {
-            return new Listing(type, provider, codec);
+    private static Result<List<String>> listedNames(List<URL> files) {
+        return Result.allOf(files.stream().map(JsonCodecRegistry::readNames).toList()).map(JsonCodecRegistry::flatten);
+    }
+
+    private static List<String> flatten(List<List<String>> files) {
+        return files.stream()
+                    .flatMap(List::stream)
+                    .toList();
+    }
+
+    private static Result<List<String>> readNames(URL file) {
+        return Result.lift(t -> JsonCodecs.ProviderFailed.providerFailed(SERVICES_ENTRY, t),
+                           () -> read(file))
+                     .map(JsonCodecRegistry::parseNames);
+    }
+
+    private static List<String> parseNames(String text) {
+        return text.lines()
+                   .map(JsonCodecRegistry::uncommented)
+                   .filter(line -> !line.isEmpty())
+                   .toList();
+    }
+
+    private static String uncommented(String line) {
+        var comment = line.indexOf('#');
+
+        return (comment < 0
+                ? line
+                : line.substring(0, comment)).strip();
+    }
+
+    // The JDK boundary: reading a services file throws IOException, which the one caller lifts into a Result.
+    // Uncached, as the ServiceLoader reads it: a cached jar connection would keep the jar file open.
+    @SuppressWarnings("JBCT-EX-01")
+    private static String read(URL file) throws IOException {
+        var connection = file.openConnection();
+
+        connection.setUseCaches(false);
+        try (var in = connection.getInputStream()) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
+    }
 
-        // The class and codec come from a provider's map, outside this code's control, so either may be null.
-        boolean isComplete() {
-            return option(type).isPresent() && option(codec).isPresent();
+    /// One streamed provider: its class and that class's binary name, read without instantiating it.
+    record Candidate(String name, Class<? extends JsonCodecProvider> type, Provider<JsonCodecProvider> provider) {
+        static Candidate candidate(Provider<JsonCodecProvider> provider) {
+            return new Candidate(provider.type().getName(),
+                                 provider.type(),
+                                 provider);
         }
     }
 

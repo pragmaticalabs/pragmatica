@@ -29,20 +29,21 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/// `JsonCodecs.codecFor` over the registries the processor generated for this module's two packages, found through
-/// the one services file.
+/// `JsonCodecs.codecFor` over the providers the processor generated for this module's `@Json` types (each entry point
+/// is its type's provider), found through the one services file.
 class JsonCodecsTest {
     @Test
-    void servicesFile_namesTheRegistryOfEachPackage() {
+    void servicesFile_namesTheEntryPointOfEachAnnotatedType_only() {
         var providers = ServiceLoader.load(JsonCodecProvider.class)
                                      .stream()
                                      .map(provider -> provider.type().getName())
                                      .toList();
 
-        assertTrue(providers.stream().anyMatch(name -> name.matches("org\\.pragmatica\\.serialization\\.json\\.tests\\.TestsJsonCodecs_[0-9a-f]{16}")),
-                   providers.toString());
-        assertTrue(providers.stream().anyMatch(name -> name.matches("org\\.pragmatica\\.serialization\\.json\\.tests\\.other\\.OtherJsonCodecs_[0-9a-f]{16}")),
-                   providers.toString());
+        assertTrue(providers.contains(Ticketing_BuyRequestJson.class.getName()), providers.toString());
+        assertTrue(providers.contains(ReceiptJson.class.getName()), providers.toString());
+        assertTrue(providers.contains(SameFlatNameTest_BothJson.class.getName()), providers.toString());
+        assertTrue(providers.stream().noneMatch(name -> name.contains("JsonCodecs")), providers.toString());
+        assertTrue(providers.stream().noneMatch(name -> name.endsWith("StrictDecodingTest_InnerJson")), providers.toString());
         assertEquals(providers.size(), providers.stream().distinct().count(), providers.toString());
     }
 
@@ -59,7 +60,7 @@ class JsonCodecsTest {
         assertEquals(Result.success(Option.none()), JsonCodecs.codecFor(String.class));
     }
 
-    // Documented decision: only @Json types are listed. Inner and ProductId have codec code inside their roots'
+    // Documented decision: only @Json types have a provider. Inner and ProductId have codec code inside their roots'
     // entry points (AllRequired, OrderConfirmation) but are not annotated, so they are not lookup targets.
     @Test
     void codecFor_isEmpty_forATypeReachableOnlyAsANestedComponent() {

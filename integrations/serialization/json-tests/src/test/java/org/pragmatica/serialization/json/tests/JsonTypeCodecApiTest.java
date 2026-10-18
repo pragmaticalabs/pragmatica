@@ -18,14 +18,17 @@ package org.pragmatica.serialization.json.tests;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.serialization.json.JsonError;
+import org.pragmatica.serialization.json.spi.JsonCodecProvider;
 import org.pragmatica.serialization.json.spi.JsonReader;
 import org.pragmatica.serialization.json.spi.JsonWriter;
 import org.pragmatica.serialization.json.tests.Ticketing.BuyRequest;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -91,7 +94,8 @@ class JsonTypeCodecApiTest {
         assertEquals(5 + 12, inRegion.position());
     }
 
-    // The entry point's public surface is exactly the documented API; everything else is package-private machinery.
+    // The entry point's public surface is exactly the documented API, plus what being its type's ServiceLoader provider
+    // takes (a public no-argument constructor, type() and codec()); everything else is package-private machinery.
     @Test
     void entryPoint_publicMembers_areExactlyTheDocumentedApi() {
         var type = Ticketing_BuyRequestJson.class;
@@ -105,9 +109,15 @@ class JsonTypeCodecApiTest {
                             .collect(Collectors.toSet());
 
         assertEquals(Set.of("CODEC", "CODECS"), fields);
-        assertEquals(Set.of("decode[class [B]", "decode[class java.lang.String]", "encode[class " + BuyRequest.class.getName() + "]"),
+        assertEquals(Set.of("decode[class [B]", "decode[class java.lang.String]", "encode[class " + BuyRequest.class.getName() + "]",
+                            "type[]", "codec[]"),
                      methods);
-        assertEquals(0, Arrays.stream(type.getDeclaredConstructors()).filter(ctor -> Modifier.isPublic(ctor.getModifiers())).count());
+        assertEquals(List.of(0),
+                     Arrays.stream(type.getDeclaredConstructors())
+                           .filter(ctor -> Modifier.isPublic(ctor.getModifiers()))
+                           .map(Constructor::getParameterCount)
+                           .toList());
+        assertTrue(JsonCodecProvider.class.isAssignableFrom(type));
         assertEquals(0, Arrays.stream(type.getDeclaredClasses()).filter(nested -> Modifier.isPublic(nested.getModifiers())).count());
         assertTrue(Modifier.isPublic(type.getModifiers()) && Modifier.isFinal(type.getModifiers()));
     }
