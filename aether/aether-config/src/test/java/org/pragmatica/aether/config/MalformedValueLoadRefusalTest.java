@@ -232,4 +232,17 @@ class MalformedValueLoadRefusalTest {
                                  "one of: none, external, elected");
         assertThat(ClusterBootstrapConfigParser.parse(base.formatted("elected")).isSuccess()).isTrue();
     }
+
+    @Test
+    void configLoader_nonBooleanBackupEnabled_isRefusedNamingKeyAndValue() {
+        assertRefused(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [backup]
+            enabled = "yes"
+            path = "/var/backups"
+            """), "[backup] enabled", "yes");
+    }
 }

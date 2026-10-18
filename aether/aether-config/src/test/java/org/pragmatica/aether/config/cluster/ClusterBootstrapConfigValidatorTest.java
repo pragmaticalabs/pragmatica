@@ -603,14 +603,19 @@ class ClusterBootstrapConfigValidatorTest {
             }
         }
 
-        /// C5b: the node does not trim `enabled`, so `" true "` is a DISABLED server there; PF-34 must agree (it used to trim and refuse). The same
-        /// file loaded by the node is accepted, which is the property: bootstrap and node give the same verdict.
+        /// C5b (#1455): the node does not trim `enabled`, so `" true "` is not a boolean and the node REFUSES it (it used to boot with the
+        /// server silently disabled). PF-35 refuses it too: bootstrap and node give the same verdict, and the verdict is "refused".
         @Test
         void validate_paddedEnabled_agreesWithTheNode() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", " true ")))
-                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
-            assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \" true \"\nsecurity_mode = \"jwt\"\n").isSuccess())
-                .as("the node loads the padded-enabled file as a disabled server").isTrue();
+                .onSuccess(v -> Assertions.fail("Expected PF-35 for a padded enabled"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-35")
+                                                               .contains(" true ")
+                                                               .doesNotContain("PF-34"));
+            assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \" true \"\nsecurity_mode = \"jwt\"\n").isFailure())
+                .as("the node refuses the padded-enabled file").isTrue();
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "false")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-35"));
         }
 
         /// C5: a padded or odd-cased security_mode is the SAME mode at PF-34 and at the node: both refuse a jwt server with no jwks_url.
