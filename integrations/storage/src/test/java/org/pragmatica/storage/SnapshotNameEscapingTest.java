@@ -5,11 +5,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -89,6 +91,7 @@ class SnapshotNameEscapingTest {
             assertNameRoundTrips("line\nbreak");
             assertNameRoundTrips("crlf\r\nbreak");
             assertNameRoundTrips("\n");
+            assertNameRoundTrips("nul\0inside");
         }
 
         @Test
@@ -135,6 +138,61 @@ class SnapshotNameEscapingTest {
 
             assertThat(restored.refs().keySet()).containsExactlyInAnyOrderElementsOf(names);
             assertThat(restored.isValid()).isTrue();
+        }
+
+        /// A name is user data of any length. The encoder and the validation of the read-back must not cost
+        /// stack or time per character: the first version of the decoder ran a regex with a repeated
+        /// alternation and threw StackOverflowError on every snapshot write for names of a few thousand
+        /// characters, while the unescaped format took a 1 MiB name.
+        @Test
+        void restore_keepsName_at8KiB() {
+            assertNameRoundTrips("a".repeat(8 * 1024));
+            assertNameRoundTrips("=".repeat(8 * 1024));
+            assertNameRoundTrips("\u540d".repeat(8 * 1024));
+            assertNameRoundTrips("\uD800".repeat(8 * 1024));
+        }
+
+        @Test
+        void restore_keepsName_at1MiB() {
+            assertNameRoundTrips("a".repeat(1024 * 1024));
+            assertNameRoundTrips("=".repeat(1024 * 1024));
+            assertNameRoundTrips("\u540d".repeat(256 * 1024));
+        }
+
+        @Test
+        void restore_keepsName_at16MiB() {
+            assertNameRoundTrips("a".repeat(16 * 1024 * 1024));
+        }
+
+        /// Written on the test thread, restored on a thread with a small stack: restore cost in stack must
+        /// not depend on the name either (the fall-back to older files never runs if a Throwable escapes).
+        @Test
+        void restore_succeedsOnSmallStack_forLongName() throws Exception {
+            var name = "=".repeat(20_000);
+            var id = blockIdOf("small-stack");
+
+            store.createLifecycle(BlockLifecycle.blockLifecycle(id, TierLevel.MEMORY));
+            store.putRef(name, id);
+            manager.snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+
+            var restored = new AtomicReference<MetadataSnapshot>();
+            var thrown = new AtomicReference<Throwable>();
+            var thread = new Thread(null, () -> restoreOnSmallStack(restored, thrown), "small-stack-restore", 256 * 1024);
+
+            thread.start();
+            thread.join();
+
+            assertThat(thrown.get()).isNull();
+            assertThat(restored.get().refs()).containsKey(name);
+        }
+
+        private void restoreOnSmallStack(AtomicReference<MetadataSnapshot> restored,
+                                         AtomicReference<Throwable> thrown) {
+            try {
+                restored.set(restoreFresh());
+            } catch (Throwable t) {
+                thrown.set(t);
+            }
         }
 
         @Test
@@ -265,6 +323,31 @@ class SnapshotNameEscapingTest {
 
             assertThat(metadataSnapshot(1L, NODE_ID, List.of(first, second), Map.of()).contentHash())
                 .isEqualTo(metadataSnapshot(1L, NODE_ID, List.of(second, first), Map.of()).contentHash());
+        }
+
+        /// The delimiter between lifecycle lines is part of the hash. Moving the first two digits of the next
+        /// block id onto the previous line's orphanedAt (7 -> 712, id one byte short) leaves the concatenated
+        /// text identical, so only a delimiter keeps the edit from validating.
+        @Test
+        void restore_rejectsSnapshot_whenDigitsMoveAcrossLifecycleLines() throws IOException {
+            var ids = Stream.iterate(0, i -> i + 1)
+                            .map(i -> blockIdOf("digits-" + i))
+                            .filter(id -> id.hexString().substring(0, 2).chars().allMatch(Character::isDigit))
+                            .limit(2)
+                            .toList();
+
+            ids.forEach(id -> store.createLifecycle(new BlockLifecycle(id, EnumSet.of(TierLevel.MEMORY), 1, 1L, 1L, 0, 7L)));
+            snapshotManager(store, config).snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+            var file = onlySnapshotFile();
+            var lines = Files.readString(file).split("\n", -1);
+            var first = Arrays.asList(lines).indexOf("# Lifecycles") + 1;
+            var moved = lines[first + 1].substring(0, 2);
+
+            lines[first] = lines[first] + moved;
+            lines[first + 1] = lines[first + 1].substring(2);
+            Files.writeString(file, String.join("\n", lines));
+
+            assertRestoreRefused();
         }
 
         @Test

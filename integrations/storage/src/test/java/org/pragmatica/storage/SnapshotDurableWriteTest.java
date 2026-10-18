@@ -302,6 +302,73 @@ class SnapshotDurableWriteTest {
         assertRefusedAndPreviousIntact(refused, latestBefore);
     }
 
+    /// The encoder itself loses information. The file is written from a snapshot that was rebuilt with the
+    /// loss, so its hash is consistent with what it holds: only a comparison with the in-memory source
+    /// by value can see it.
+    @Test
+    void snapshotNow_encoderLosesRefNameCharacter_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.putRef("a\0b", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withoutNul)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    @Test
+    void snapshotNow_encoderLosesLifecycleField_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.computeLifecycle(store.listAllLifecycles().getFirst().blockId(), BlockLifecycle::withRefCountDecremented);
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withoutOrphanedAt)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    @Test
+    void snapshotNow_encoderShiftsEpoch_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withNextEpoch)).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private String keptSnapshotThenChange() {
+        mutate("kept");
+        store.putRef("kept", store.listAllLifecycles().getFirst().blockId());
+        new DefaultSnapshotManager(store, config).snapshotNow().unwrap();
+
+        return readLatest();
+    }
+
+    private static Function<MetadataSnapshot, String> lossy(Function<MetadataSnapshot, MetadataSnapshot> loss) {
+        return snapshot -> DefaultSnapshotManager.serializeSnapshot(loss.apply(snapshot));
+    }
+
+    private static MetadataSnapshot withoutNul(MetadataSnapshot snapshot) {
+        var refs = snapshot.refs().entrySet().stream().collect(Collectors.toMap(e -> e.getKey().replace("\0", ""), Map.Entry::getValue));
+
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
+    }
+
+    private static MetadataSnapshot withoutOrphanedAt(MetadataSnapshot snapshot) {
+        var lifecycles = snapshot.lifecycles()
+                                 .stream()
+                                 .map(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), 0L))
+                                 .toList();
+
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), lifecycles, snapshot.refs());
+    }
+
+    private static MetadataSnapshot withNextEpoch(MetadataSnapshot snapshot) {
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch() + 1, snapshot.nodeId(), snapshot.lifecycles(), snapshot.refs());
+    }
+
     private static String withoutLastLine(MetadataSnapshot snapshot) {
         var lines = DefaultSnapshotManager.serializeSnapshot(snapshot).split("\n");
 

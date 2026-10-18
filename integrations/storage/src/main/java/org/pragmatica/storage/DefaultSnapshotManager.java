@@ -224,20 +224,30 @@ final class DefaultSnapshotManager implements SnapshotManager {
                               .map(_ -> filePath);
     }
 
-    /// #2257: the encoded form goes through the RESTORE path -- [#parseSnapshot] and the integrity check,
-    /// which covers the epoch, every lifecycle and every ref -- before the file is committed. The node id
-    /// is the one header field the hash does not cover, so it is compared directly. A snapshot that would
-    /// not restore is refused here, loudly, while the previous snapshot and `LATEST` are still in place.
+    /// #2257: the encoded form goes through the RESTORE path -- [#parseSnapshot] and the integrity check --
+    /// and the DECODED result is compared by value with the snapshot that was captured in memory: epoch,
+    /// node id, every ref (name and target) and every lifecycle. The hash alone cannot do this job: it is
+    /// computed through the same encoder that wrote the file, so an encoder that loses information hashes
+    /// identically on both sides. A snapshot that would not restore as captured is refused here, loudly,
+    /// while the previous snapshot and `LATEST` are still in place.
     private Result<Unit> verifyReadsBack(MetadataSnapshot captured, String content) {
         return parseSnapshot(content).filter(SnapshotError.INTEGRITY_CHECK_FAILED, MetadataSnapshot::isValid)
                             .filter(SnapshotError.General.ROUND_TRIP_MISMATCH,
-                                    restored -> captured.nodeId()
-                                                        .equals(restored.nodeId()))
+                                    restored -> readsBackAs(captured, restored))
                             .mapError(SnapshotError.RoundTripFailed::new)
                             .onFailure(cause -> LOG.error("Snapshot epoch={} refused: {}",
                                                           captured.epoch(),
                                                           cause.message()))
                             .mapToUnit();
+    }
+
+    private static boolean readsBackAs(MetadataSnapshot captured, MetadataSnapshot restored) {
+        return captured.epoch() == restored.epoch()
+               && captured.nodeId()
+                          .equals(restored.nodeId())
+               && captured.refs()
+                          .equals(restored.refs())
+               && Set.copyOf(captured.lifecycles()).equals(Set.copyOf(restored.lifecycles()));
     }
 
     /// `LATEST` is a regular one-line file naming the current snapshot, replaced by rename -- not a
@@ -532,7 +542,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
     }
 
     /// #2257: dispatch on the `format` header. Absent means the unversioned pre-#2257 layout, which keeps
-    /// its known limits (a ref name with `=`, `|`, a leading `#` or a newline never reads back) but is
+    /// its known limits (a ref name with `=`, `|`, a leading `#`, a newline, or the EMPTY name never reads back; the empty one is dropped without failing the hash, so the next format=2 write makes the loss permanent) but is
     /// still restored, so a node holding only such files is not bricked by the upgrade. A version this
     /// code does not know is refused, never guessed at.
     private static Result<MetadataSnapshot> parseSnapshotContent(String content) {

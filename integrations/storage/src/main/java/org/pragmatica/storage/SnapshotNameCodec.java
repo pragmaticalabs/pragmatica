@@ -1,16 +1,13 @@
 package org.pragmatica.storage;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
-import java.util.regex.MatchResult;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.lang.Result.success;
@@ -28,29 +25,34 @@ import static org.pragmatica.lang.Result.success;
 /// The empty name encodes to the empty token. Decoding accepts only tokens of that shape; anything else
 /// (a raw separator, a truncated escape, a `%XX` run that is not UTF-8) is a failure, never a different name.
 sealed interface SnapshotNameCodec {
-    Pattern ENCODED = Pattern.compile("(?:[A-Za-z0-9._~/:-]|%[0-9A-Fa-f]{2}|%u[0-9A-Fa-f]{4})*");
-    Pattern TOKEN = Pattern.compile("%u([0-9A-Fa-f]{4})|((?:%[0-9A-Fa-f]{2})+)|([A-Za-z0-9._~/:-]+)");
     HexFormat PERCENT_HEX = HexFormat.of().withPrefix("%").withUpperCase();
     HexFormat HEX = HexFormat.of();
     Cause MALFORMED_TOKEN = Causes.cause("Malformed snapshot name token");
 
+    /// A loop, not a stream or a regex: a name is arbitrary user data and may be megabytes long, so
+    /// neither the call depth nor the allocation per character may grow with its length.
     static String encode(String name) {
-        return name.codePoints()
-                   .mapToObj(SnapshotNameCodec::encodeCodePoint)
-                   .collect(Collectors.joining());
+        var sb = new StringBuilder(name.length());
+        var index = 0;
+
+        while (index < name.length()) {
+            var codePoint = name.codePointAt(index);
+
+            index += Character.charCount(codePoint);
+            sb.append(isLiteral(codePoint)
+                      ? Character.toString(codePoint)
+                      : escape(codePoint));
+        }
+
+        return sb.toString();
     }
 
     static Result<String> decode(String encoded) {
-        return success(encoded).filter(MALFORMED_TOKEN,
-                                       ENCODED.asMatchPredicate())
-                      .flatMap(SnapshotNameCodec::decodeTokens);
+        return success(encoded).filter(MALFORMED_TOKEN, SnapshotNameCodec::isWellFormed)
+                      .flatMap(SnapshotNameCodec::decodeWellFormed);
     }
 
-    private static String encodeCodePoint(int codePoint) {
-        if (isLiteral(codePoint)) {
-            return Character.toString(codePoint);
-        }
-
+    private static String escape(int codePoint) {
         return isLoneSurrogate(codePoint)
                ? "%u" + HEX.withUpperCase().toHexDigits((char) codePoint)
                : PERCENT_HEX.formatHex(Character.toString(codePoint).getBytes(StandardCharsets.UTF_8));
@@ -64,35 +66,102 @@ sealed interface SnapshotNameCodec {
         return codePoint <= Character.MAX_VALUE && Character.isSurrogate((char) codePoint);
     }
 
-    private static Result<String> decodeTokens(String encoded) {
-        return Result.allOf(TOKEN.matcher(encoded).results().map(SnapshotNameCodec::decodeToken).toList()).map(parts -> String.join("",
-                                                                                                                                    parts));
-    }
+    /// Linear scan of the token grammar: literal | `%XX` | `%uXXXX`. No backtracking and no recursion,
+    /// so the cost and the stack depth are independent of the length of the name.
+    private static boolean isWellFormed(String encoded) {
+        var index = 0;
 
-    private static Result<String> decodeToken(MatchResult token) {
-        if (token.group(1) != null) {
-            return Number.parseInt(token.group(1),
-                                   16)
-                         .map(SnapshotNameCodec::unitToString);
+        while (index < encoded.length()) {
+            var width = tokenWidth(encoded, index);
+
+            if (width == 0) {
+                return false;
+            }
+
+            index += width;
         }
 
-        return token.group(2) != null
-               ? decodeUtf8(token.group(2))
-               : success(token.group(3));
+        return true;
     }
 
-    private static String unitToString(int unit) {
-        return String.valueOf((char) unit);
+    /// Characters the token at `index` spans; 0 when it is not a valid token.
+    private static int tokenWidth(String encoded, int index) {
+        if (encoded.charAt(index) != '%') {
+            return isLiteral(encoded.charAt(index))
+                   ? 1
+                   : 0;
+        }
+
+        return startsUnitEscape(encoded, index)
+               ? (hasHexDigits(encoded, index + 2, 4)
+                  ? 6
+                  : 0)
+               : (hasHexDigits(encoded, index + 1, 2)
+                  ? 3
+                  : 0);
     }
 
-    /// Strict UTF-8: a malformed run fails instead of decoding to replacement characters.
-    private static Result<String> decodeUtf8(String percentRun) {
-        return Result.lift(SnapshotError.ParseFailed::new,
-                           () -> StandardCharsets.UTF_8.newDecoder()
-                                                       .onMalformedInput(CodingErrorAction.REPORT)
-                                                       .onUnmappableCharacter(CodingErrorAction.REPORT)
-                                                       .decode(ByteBuffer.wrap(HEX.parseHex(percentRun.replace("%", ""))))
-                                                       .toString());
+    private static boolean startsUnitEscape(String encoded, int index) {
+        return index + 1 < encoded.length() && encoded.charAt(index + 1) == 'u';
+    }
+
+    private static boolean hasHexDigits(String encoded, int from, int count) {
+        if (from + count > encoded.length()) {
+            return false;
+        }
+
+        for (var i = from; i < from + count; i++) {
+            if (!isHexDigit(encoded.charAt(i))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static boolean isHexDigit(int c) {
+        return Character.digit(c, 16) >= 0 && c < 0x80;
+    }
+
+    /// Strict UTF-8 per run of literals and `%XX`; a `%uXXXX` ends a run and is a single UTF-16 unit.
+    /// A malformed run fails instead of decoding to replacement characters.
+    private static Result<String> decodeWellFormed(String encoded) {
+        return Result.lift(SnapshotError.ParseFailed::new, () -> scan(encoded));
+    }
+
+    private static String scan(String encoded) throws Exception {
+        var out = new StringBuilder(encoded.length());
+        var run = new ByteArrayOutputStream(encoded.length());
+        var index = 0;
+
+        while (index < encoded.length()) {
+            var c = encoded.charAt(index);
+
+            if (c != '%') {
+                run.write(c);
+                index++;
+            } else if (startsUnitEscape(encoded, index)) {
+                out.append(strictUtf8(run));
+                out.append((char) HexFormat.fromHexDigits(encoded, index + 2, index + 6));
+                index += 6;
+            } else {
+                run.write(HexFormat.fromHexDigits(encoded, index + 1, index + 3));
+                index += 3;
+            }
+        }
+
+        return out.append(strictUtf8(run))
+                  .toString();
+    }
+
+    private static String strictUtf8(ByteArrayOutputStream run) throws Exception {
+        var decoded = StandardCharsets.UTF_8.newDecoder()
+                                            .onMalformedInput(CodingErrorAction.REPORT)
+                                            .decode(ByteBuffer.wrap(run.toByteArray()));
+
+        run.reset();
+
+        return decoded.toString();
     }
 
     record unused() implements SnapshotNameCodec {}
