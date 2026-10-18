@@ -60,14 +60,16 @@ class DatabaseApplicationsIT {
              "shippingOption":"STANDARD"}
             """;
         try (var host = launch(bundle); var client = HttpClient.newHttpClient()) {
+            // A card ending in 0000 is always declined, so the compensation (stock released after the
+            // reservation) runs on every execution instead of only on the demo's random 5% declines.
+            assertDeclinedAndCompensated(send(client, host.port, "/api/v1/orders", body.replace("4242424242424242", "4000000000020000"), false));
             HttpResponse<String> response = null;
-            // The existing demo intentionally declines 5% of payments. Its compensation must leave
-            // stock unchanged; retrying a new order is legitimate demo behavior, not masking 500s.
+            // The existing demo also declines 5% of payments at random; retrying a new order is
+            // legitimate demo behavior, and every non-200 attempt must be such a compensated decline.
             for (int attempt = 0; attempt < 20; attempt++) {
                 response = send(client, host.port, "/api/v1/orders", body, false);
                 if (response.statusCode() == 200) break;
-                assertThat(response.statusCode()).as(response.body()).isEqualTo(402);
-                assertThat(query("SELECT stock FROM products WHERE product_id='LAPTOP-PRO'")).isEqualTo(50);
+                assertDeclinedAndCompensated(response);
             }
             assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
             assertThat(response.body()).contains("CONFIRMED");
@@ -221,6 +223,16 @@ class DatabaseApplicationsIT {
         Files.writeString(application.resolve("resources.toml"), "[database]\njdbc_url='" + jdbcUrl + "'\nhost='" + address.getHost() + "'\nport=" + address.getPort()
             + "\ndatabase='" + database + "'\nusername='" + user + "'\npassword='test'\nasync_url='postgresql://" + address.getAuthority() + "/" + database
             + "'\n[database.pool_config]\nio_threads=2\n");
+    }
+
+    /// The decline is PaymentService's own `PaymentError.Declined`, which PlaceOrder propagates unchanged. The unchanged
+    /// PlaceOrder routes (the same generated `PlaceOrderRoutes` Aether runs) map only `OrderError` types, so a foreign
+    /// cause takes the mapper's `default`: 500. Its `HTTP_402 = ["*PaymentFailed*"]` names no type and never applies.
+    private void assertDeclinedAndCompensated(HttpResponse<String> response) throws Exception {
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(500);
+        assertThat(response.body()).contains("Payment declined");
+        assertThat(query("SELECT stock FROM products WHERE product_id='LAPTOP-PRO'")).isEqualTo(50);
+        assertThat(query("SELECT COUNT(*) FROM transactions")).isZero();
     }
 
     private Path extract(String module, String artifact) throws Exception {
