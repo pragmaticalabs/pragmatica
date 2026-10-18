@@ -1,0 +1,3 @@
+### Fixed (2026-10-18 — #2246: HTTP/3 truncated an oversized body and dispatched it)
+- **An HTTP/3 request body over `max_request_size` was cut to the limit and handed to the route as if complete**, so the route stored a truncated file. It is now answered 413 as soon as it crosses the limit, and the request is never dispatched. [verified: integrations/net/http-server/src/test/java/org/pragmatica/http/server/Http3RequestHandlerTest.java]
+- A trailing HEADERS frame (trailers) no longer replaces the request headers. The body buffer is released on every exit: a stream that closes without headers, a rejected request, and a stream torn down before its input closed. [verified: Http3RequestHandlerTest]

@@ -1,0 +1,2 @@
+### Fixed (2026-10-18 — #2245: HTTP/1 decoder failures were dispatched as requests)
+- **A request Netty could not decode (oversized headers or request line) reached the route as an empty-bodied request and got 200.** It is now answered 431 (headers too large), 414 (request line too long) or 400, the connection is closed, and the handler is never invoked. [verified: integrations/net/http-server/src/test/java/org/pragmatica/http/server/HttpDecoderFailureTest.java]
