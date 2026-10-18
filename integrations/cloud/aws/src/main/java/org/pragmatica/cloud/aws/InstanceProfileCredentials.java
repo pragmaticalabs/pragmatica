@@ -68,8 +68,20 @@ final class InstanceProfileCredentials implements AwsCredentialsProvider {
     }
 
     private Promise<AwsCredentials> fetch() {
-        return fetchToken().flatMap(token -> fetchRole(token).flatMap(role -> fetchCredentials(token, role)))
-                         .onSuccess(fresh -> latest.set(Option.some(fresh)));
+        return fetchToken().flatMap(this::fetchWithToken)
+                         .map(this::remember);
+    }
+
+    private Promise<AwsCredentials> fetchWithToken(String token) {
+        return fetchRole(token).flatMap(role -> fetchCredentials(token, role));
+    }
+
+    /// Cached as a step of the chain, not as a side callback, so the answer is cached before any caller sees it:
+    /// `onSuccess` would run after the promise resolved, and a caller asking again at once would fetch again.
+    private AwsCredentials remember(AwsCredentials fresh) {
+        latest.set(Option.some(fresh));
+
+        return fresh;
     }
 
     private Promise<String> fetchToken() {
