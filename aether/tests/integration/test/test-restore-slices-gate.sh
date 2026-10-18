@@ -13,7 +13,7 @@
 #   G9  an UNDEPLOYED artifact (no SliceTarget: version "") with one lingering UNLOADING row -> passes;
 #       the same row on a DEPLOYED artifact fails (G1)
 #   G8  echo LOADING forever                      -> fails after the budget (a stuck LOADING is not ACTIVE)
-#   G12-G15 (#1972) `{}` (no blueprint deployed) passes; an error body still fails; the serialiser premise is pinned
+#   G12-G15 (#1972) `{}` (no blueprint deployed) passes; an error body, even one containing `{}`, still fails; the serialiser premise is pinned
 #   W1  restore_cluster_baseline itself fails on G1's body (the gate is wired in)
 #   ARTIFACT_UNDER... LIB_UNDER_TEST selects an alternate lib copy (mutation probes).
 set -uo pipefail
@@ -156,6 +156,10 @@ if [ "$(cat "$WORK/grc.g12b")" = "0" ]; then ok "G12b the same empty object with
 run_gate g13 '{"detail":"service unavailable","status":503}'
 if [ "$(cat "$WORK/grc.g13")" = "1" ] && grep -q 'unreadable' "$WORK/g.g13"; then ok "G13 an error body is still unreadable and fails (only the empty object means nothing deployed)"
 else fail "G13 rc=$(cat "$WORK/grc.g13") $(head -c 200 "$WORK/g.g13")"; fi
+# G13b pins the ANCHORING of the `{}` match: a body that merely CONTAINS an empty object is not the empty object.
+run_gate g13b '{"error":"x","details":{}}'
+if [ "$(cat "$WORK/grc.g13b")" = "1" ] && grep -q 'unreadable' "$WORK/g.g13b"; then ok "G13b an error body containing {} (not exactly {}) is still unreadable and fails"
+else fail "G13b rc=$(cat "$WORK/grc.g13b") $(head -c 200 "$WORK/g.g13b")"; fi
 run_gate g14 '{"slices":[]}'
 if [ "$(cat "$WORK/grc.g14")" = "0" ]; then ok "G14 an explicit empty slices list still passes (nothing deployed either way)"; else fail "G14 rc=$(cat "$WORK/grc.g14") $(head -c 200 "$WORK/g.g14")"; fi
 # G15 tripwire: `{}` is only the right reading while the serialiser omits empty collections. If that changes, the gate's
