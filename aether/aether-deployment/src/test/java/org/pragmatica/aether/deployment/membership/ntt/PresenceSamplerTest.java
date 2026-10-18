@@ -128,7 +128,7 @@ class PresenceSamplerTest {
             assertThat(reconcileInvocations.get()).isEqualTo(1);
 
             sampleTimes(sampler, 1); // K_DOWN-th consecutive absent → LEAVE
-            sampleTimes(sampler, 3); // further absent samples must NOT re-fire
+            sampleTimes(sampler, 3); // further absent samples must NOT trigger another reconcile
 
             assertThat(reconcileInvocations.get()).isEqualTo(2);
             assertThat(sampler.currentMembers()).containsExactly(SELF);
@@ -165,14 +165,14 @@ class PresenceSamplerTest {
         }
     }
 
-    /// DOWN-hysteresis crossing callback — the additive FSM-routing seam. Fires exactly at
-    /// the crossing edge (mirroring the presence-sensor `stableMembers.remove`), not on every
-    /// absent sample, and leaves the existing membership-removal + reconcile-trigger
-    /// behaviour unchanged.
+    /// DOWN-hysteresis crossing callback — the additive FSM-routing seam. Fires when the absent
+    /// streak reaches `K_DOWN` and then once per further `K_DOWN` absent samples (not on every
+    /// absent sample), for admitted and never-admitted peers alike, and leaves the existing
+    /// membership-removal + reconcile-trigger behaviour unchanged.
     @Nested
     class DownHysteresisCrossingCallback {
         @Test
-        void advanceOne_downHysteresisCrossing_firesDownCrossingCallbackOnce() {
+        void advanceOne_downHysteresisCrossing_firesOnceInFirstWindow() {
             var crossings = new ArrayList<NodeId>();
             var sampler = sampler(crossings::add);
 
@@ -188,7 +188,7 @@ class PresenceSamplerTest {
             sampleTimes(sampler, 1); // K_DOWN-th consecutive absent → DOWN crossing
             sampleTimes(sampler, K_DOWN - 1); // further absent samples inside the window must NOT re-fire
 
-            assertThat(crossings).containsExactly(A); // exactly once, with A's id
+            assertThat(crossings).containsExactly(A); // one crossing in the first window, with A's id
             // Existing presence-sensor removal + reconcile-trigger behaviour unchanged.
             assertThat(sampler.currentMembers()).containsExactly(SELF);
             assertThat(reconcileInvocations.get()).isEqualTo(2); // join + departure
