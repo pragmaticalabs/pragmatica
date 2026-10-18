@@ -7,7 +7,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// A value object: travels as its bare string on every route of the slice.
+/// A value object: bare string when nested in a body or response, the object of its component as a whole one.
 public record Email(String value) {
     public static Result<Email> email(String value) {
         return value.contains("@")

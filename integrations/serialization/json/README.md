@@ -197,9 +197,15 @@ Result<List<BuyRequest>> batch = list.decode(bytes);
 ```
 
 They write the same bytes, and accept and refuse the same input, as the code the generator emits for a component of
-that container type. Lists decode to `ArrayList`, sets to `LinkedHashSet` (a repeated element is kept once) and maps
+that container type. Elements and map values are nested, so a value object among them is bare. Lists decode to `ArrayList`, sets to `LinkedHashSet` (a repeated element is kept once) and maps
 to `LinkedHashMap` (a repeated key keeps its last value), all in document order. A map keyed by an enum or a value
-object is available as a record component, not as a combinator.
+object is available as a record component, not as a combinator. `optionOf` is no container: an option's value takes
+the form of where the option stands, so `optionOf(EmailJson.CODEC)` writes `{"value":"a@b.c"}` as the whole document
+and `"a@b.c"` inside a list.
+
+Every `JsonTypeCodec` carries both forms: `writer` and `reader` for the whole document, `nestedWriter` and
+`nestedReader` for a nested value. They are the same for every type but a value object;
+`JsonTypeCodec.jsonTypeCodec(writer, reader)` builds a codec with one form, the four-argument overload one with two.
 
 ### Reuse and regions
 
@@ -229,7 +235,7 @@ A region is read where it lies, so the `position` of a `JsonError` from a region
 | `Currency` | ISO 4217 code string |
 | enum | constant name; an enum with an `UNKNOWN` constant decodes an undeclared name to it, any other enum refuses it |
 | record | object with one member per component, in declaration order |
-| value object | its bare component (see below) |
+| value object | nested: its bare component; as the whole document: the object of its component (see below) |
 | `Option<T>` | the value, or `null` (and an absent member) for empty |
 | `List<T>`, `Set<T>` | array |
 | `Map<K, V>` | object; `K` is a `String`, an enum, or a value object over a `String` |
@@ -237,11 +243,20 @@ A region is read where it lies, so the `position` of a `JsonError` from a region
 Types nest freely (`List<Option<Item>>`, `Map<String, List<Item>>`, recursive records).
 
 **Value objects.** A record with exactly one component of a scalar type and a JBCT factory (`static Result<T> t(...)`
-over that component, named after the type) travels as its bare component: `"a@b.c"`, not `{"value":"a@b.c"}`.
-Decoding calls the factory, so a value the factory refuses fails the decode with `InvalidField`. A record with more
-components and such a factory is decoded through the factory too; one without a factory through its canonical
-constructor. The value-object rule is the one `JsonMapper.valueObjectJsonMapper()` applies on the Jackson side, so
-both produce the same wire form.
+over that component, named after the type) travels as its bare component wherever it is nested: as a record component,
+a collection element, or a map key or value it is `"a@b.c"`, not `{"value":"a@b.c"}`. As the whole document (the
+value `<Type>Json.CODEC` and its `decode` and `encode` shortcuts read and write, or a slice route's request body or
+response) it is a JSON object like any record: `{"value":"a@b.c"}`. A top-level document is never a bare scalar.
+Decoding calls the factory in both forms, so a value the factory refuses fails the decode with `InvalidField`. A
+record with more components and such a factory is decoded through the factory too; one without a factory through its
+canonical constructor. The value-object rule, root and nested alike, is the one `JsonMapper.valueObjectJsonMapper()`
+applies on the Jackson side, so both produce the same wire form.
+
+```java
+EmailJson.encode(email);                                  // {"value":"a@b.c"}
+JsonTypeCodec.listOf(EmailJson.CODEC).encode(emails);     // ["a@b.c"]
+SignupJson.encode(signup);                                // {"email":"a@b.c"}
+```
 
 ## Strictness
 

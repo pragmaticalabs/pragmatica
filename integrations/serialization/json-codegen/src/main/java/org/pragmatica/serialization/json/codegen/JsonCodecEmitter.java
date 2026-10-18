@@ -54,6 +54,10 @@ import static org.pragmatica.lang.Option.some;
 ///
 /// Either way, every type a codec touches is called through a static method, so call sites stay monomorphic
 /// and inline.
+///
+/// A value object's codec has two forms (owner ruling 2026-10-18): its static `write` and `read` are the bare
+/// component, which every generated call site uses, because every call site nests the value; its `writeDocument`
+/// and `readDocument` are the object of its one component, the document form its `CODEC` decodes and encodes.
 final class JsonCodecEmitter {
     private static final String RT = "org.pragmatica.serialization.json.";
     private static final String SPI = RT + "spi.";
@@ -318,6 +322,8 @@ final class JsonCodecEmitter {
                : emitObject(definition);
     }
 
+    // The nested form is the bare component, read through `parse`; the document form is the object a record of the
+    // same components gets, decoded through the factory like any record that has one.
     private List<String> emitValueObject(JsonType.RecordDefinition definition) {
         var type = typeName(definition.element());
         var name = codecName(definition.element());
@@ -325,13 +331,17 @@ final class JsonCodecEmitter {
         var lines = new ArrayList<String>();
 
         lines.add("    interface " + name + " {");
+        lines.addAll(objectConstants(definition));
         lines.add("        " + RT
                  + "JsonTypeCodec<" + type
                  + "> CODEC = " + RT
                  + "JsonTypeCodec.jsonTypeCodec(" + name
+                 + "::writeDocument, " + name
+                 + "::readDocument, " + name
                  + "::write, " + name
                  + "::read);");
         lines.add("");
+        lines.add("        /// The nested form: the bare component.");
         lines.add("        static void write(" + SPI + "JsonWriter out, " + type + " value) {");
         lines.addAll(writeValue(component.type(), "value." + component.name() + "()", "            "));
         lines.add("        }");
@@ -347,6 +357,11 @@ final class JsonCodecEmitter {
         lines.add("        static " + type + " read(" + SPI + "JsonReader in) {");
         lines.add("            return in.accept(parse(in), \"" + definition.element().getSimpleName() + "\");");
         lines.add("        }");
+        lines.add("");
+        lines.add("        /// The document form: an object of the one component.");
+        lines.addAll(objectWriter(definition, "writeDocument"));
+        lines.add("");
+        lines.addAll(objectReader(definition, "readDocument"));
         lines.add("    }");
 
         return lines;
@@ -357,6 +372,41 @@ final class JsonCodecEmitter {
         var name = codecName(definition.element());
         var components = definition.components();
         var lines = new ArrayList<String>();
+
+        lines.add("    interface " + name + " {");
+        lines.addAll(objectConstants(definition));
+        lines.add("        " + RT
+                 + "JsonTypeCodec<" + type
+                 + "> CODEC = " + RT
+                 + "JsonTypeCodec.jsonTypeCodec(" + name
+                 + "::write, " + name
+                 + "::read);");
+        lines.add("");
+        lines.addAll(objectWriter(definition, "write"));
+        lines.add("");
+        lines.addAll(objectReader(definition, "read"));
+        for (int i = 0; i < components.size(); i++) {
+            var component = components.get(i);
+
+            if (needsHelper(component.type())) {
+                lines.add("");
+                lines.addAll(readHelper(component, i));
+            }
+        }
+        // Helpers for nested containers, collected while the component helpers above were emitted.
+        for (int i = 0; i < extraHelpers.size(); i++) {
+            lines.add("");
+            lines.addAll(extraHelpers.get(i));
+        }
+
+        extraHelpers.clear();
+        lines.add("    }");
+
+        return lines;
+    }
+
+    private static List<String> objectConstants(JsonType.RecordDefinition definition) {
+        var components = definition.components();
         var nameList = String.join(", ",
                                    components.stream().map(c -> "\"" + c.name() + "\"").toList());
         var required = 0L;
@@ -367,17 +417,17 @@ final class JsonCodecEmitter {
             }
         }
 
-        lines.add("    interface " + name + " {");
-        lines.add("        " + SPI + "FieldNames NAMES = " + SPI + "FieldNames.fieldNames(" + nameList + ");");
-        lines.add("        long REQUIRED = " + required + "L;");
-        lines.add("        " + RT
-                 + "JsonTypeCodec<" + type
-                 + "> CODEC = " + RT
-                 + "JsonTypeCodec.jsonTypeCodec(" + name
-                 + "::write, " + name
-                 + "::read);");
-        lines.add("");
-        lines.add("        static void write(" + SPI + "JsonWriter out, " + type + " value) {");
+        return List.of("        " + SPI + "FieldNames NAMES = " + SPI + "FieldNames.fieldNames(" + nameList + ");",
+                       "        long REQUIRED = " + required + "L;");
+    }
+
+    // The object form of a record: one member per component, in declaration order.
+    private List<String> objectWriter(JsonType.RecordDefinition definition, String method) {
+        var type = typeName(definition.element());
+        var components = definition.components();
+        var lines = new ArrayList<String>();
+
+        lines.add("        static void " + method + "(" + SPI + "JsonWriter out, " + type + " value) {");
         lines.add("            out.writeByte('{');");
         for (int i = 0; i < components.size(); i++) {
             var component = components.get(i);
@@ -394,8 +444,17 @@ final class JsonCodecEmitter {
 
         lines.add("            out.writeByte('}');");
         lines.add("        }");
-        lines.add("");
-        lines.add("        static " + type + " read(" + SPI + "JsonReader in) {");
+
+        return lines;
+    }
+
+    // Reads the object form; a record with a factory is built through it, every refusal collected by the reader.
+    private List<String> objectReader(JsonType.RecordDefinition definition, String method) {
+        var type = typeName(definition.element());
+        var components = definition.components();
+        var lines = new ArrayList<String>();
+
+        lines.add("        static " + type + " " + method + "(" + SPI + "JsonReader in) {");
         lines.add("            if (!in.beginObject()) {");
         lines.add("                return null;");
         lines.add("            }");
@@ -452,22 +511,6 @@ final class JsonCodecEmitter {
                    + "), \"" + definition.element().getSimpleName()
                    + "\");");
         lines.add("        }");
-        for (int i = 0; i < components.size(); i++) {
-            var component = components.get(i);
-
-            if (needsHelper(component.type())) {
-                lines.add("");
-                lines.addAll(readHelper(component, i));
-            }
-        }
-        // Helpers for nested containers, collected while the component helpers above were emitted.
-        for (int i = 0; i < extraHelpers.size(); i++) {
-            lines.add("");
-            lines.addAll(extraHelpers.get(i));
-        }
-
-        extraHelpers.clear();
-        lines.add("    }");
 
         return lines;
     }

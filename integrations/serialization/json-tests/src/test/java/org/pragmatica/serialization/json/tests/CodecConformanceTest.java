@@ -217,7 +217,7 @@ class CodecConformanceTest {
                .onFailure(cause -> assertTrue(cause.message().contains("Invalid OrderId"), cause.message()));
     }
 
-    // Owner ruling 2026-10-17: value objects travel as their bare component, map keys included.
+    // Owner ruling 2026-10-17: nested value objects travel as their bare component, map keys included.
     @org.junit.jupiter.api.Test
     void valueObjects_areUnwrapped_includingMapKeys() {
         var json = new String(Ecommerce_OrderConfirmationJson.CODEC.encode(Samples.orderConfirmation()), StandardCharsets.UTF_8);

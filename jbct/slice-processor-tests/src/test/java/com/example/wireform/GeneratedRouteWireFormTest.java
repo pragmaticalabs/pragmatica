@@ -17,6 +17,7 @@ import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.serialization.json.JsonTypeCodec;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -24,7 +25,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// The generated router of a real slice, built with the production slice-route mapper, answers every route
 /// with the bytes that mapper writes: Jackson-annotated types (a `@JsonTypeInfo` hierarchy, a `@JsonProperty`
 /// rename) never get a generated codec, an empty Option is written as Jackson writes it, and value objects
-/// travel bare on generated and fallback bodies alike.
+/// travel bare when nested on generated and fallback bodies alike, while a value object that is the whole body or
+/// response is the object of its component (owner ruling 2026-10-18).
 class GeneratedRouteWireFormTest {
     private static final JsonMapper PRODUCTION = JsonMapper.valueObjectJsonMapper();
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(10).seconds();
@@ -38,7 +40,8 @@ class GeneratedRouteWireFormTest {
 
     @Test
     void registry_holdsNoCodecForJacksonAnnotatedTypes_orTypesReachingThem() {
-        assertThat(WireFormSliceRoutesJsonCodecs.CODECS).containsKeys(Signup.class, Email.class, Accounts.class, ShapeRequest.class, Note.class);
+        assertThat(WireFormSliceRoutesJsonCodecs.CODECS).containsKeys(Signup.class, Email.class, Accounts.class, ShapeRequest.class, Note.class,
+                                                                      PublishRequest.class);
         assertThat(WireFormSliceRoutesJsonCodecs.CODECS).doesNotContainKeys(Circle.class, Drawing.class, Renamed.class);
     }
 
@@ -90,6 +93,42 @@ class GeneratedRouteWireFormTest {
     void refusedValueObject_is400_onGeneratedAndFallbackBodies() {
         assertThat(post("/api/wire/signup", "{\"email\":\"nope\"}")).startsWith("400 ").contains("not an email: nope");
         assertThat(post("/api/wire/signup-all", "[{\"email\":\"nope\"}]")).startsWith("400 ").contains("not an email: nope");
+    }
+
+    // The CI failure of #2229: the blueprints' one-field PublishRequest was read as a bare string, so the
+    // `{"payload":"..."}` every client sends was a 400. As the whole body it is the object of its component.
+    @Test
+    void valueObjectRootBody_isTheObjectForm_andTheBareFormIsRefused() {
+        assertThat(post("/api/wire/publish", "{\"payload\":\"a@b.c\"}")).isEqualTo("200 {\"value\":\"a@b.c\"}")
+                                                                    .isEqualTo("200 " + jackson(new Email("a@b.c")));
+        assertThat(post("/api/wire/publish", "\"a@b.c\"")).startsWith("400 ");
+        assertThat(post("/api/wire/publish", "{\"payload\":\" \"}")).startsWith("400 ").contains("blank payload");
+    }
+
+    @Test
+    void valueObjectRootCodec_writesAndReadsTheProductionMapperForm() {
+        var request = PublishRequest.publishRequest("a@b.c").unwrap();
+        var codec = codec(PublishRequest.class);
+
+        assertThat(new String(codec.encode(request), StandardCharsets.UTF_8)).isEqualTo("{\"payload\":\"a@b.c\"}")
+                                                                           .isEqualTo(jackson(request));
+        assertThat(codec.decode("{\"payload\":\"a@b.c\"}").unwrap()).isEqualTo(request);
+        assertThat(PRODUCTION.readString("{\"payload\":\"a@b.c\"}", PublishRequest.class).unwrap()).isEqualTo(request);
+        assertThat(codec.decode("\"a@b.c\"").isSuccess()).isFalse();
+        assertThat(PRODUCTION.readString("\"a@b.c\"", PublishRequest.class).isSuccess()).isFalse();
+    }
+
+    // In the same slice, a value object nested in a body (a List element) or a response (a record component) is bare.
+    @Test
+    void valueObjectsNestedInTheSameSlice_stayBare() {
+        assertThat(post("/api/wire/publish-all", "[\"a@b.c\",\"d@e.f\"]")).isEqualTo("200 {\"emails\":[\"a@b.c\",\"d@e.f\"]}");
+        assertThat(post("/api/wire/publish-all", "[{\"payload\":\"a@b.c\"}]")).startsWith("400 ");
+        assertThat(WireFormSliceRoutesJsonCodecs.CONTAINERS.get(new TypeToken<List<PublishRequest>>() {}.token())).isNotNull();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> JsonTypeCodec<T> codec(Class<T> type) {
+        return (JsonTypeCodec<T>) WireFormSliceRoutesJsonCodecs.CODECS.get(type);
     }
 
     private String post(String path, String body) {

@@ -18,6 +18,7 @@ package org.pragmatica.serialization.json.tests;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.serialization.json.JsonError;
+import org.pragmatica.serialization.json.JsonTypeCodec;
 import org.pragmatica.serialization.json.spi.JsonCodecProvider;
 import org.pragmatica.serialization.json.spi.JsonReader;
 import org.pragmatica.serialization.json.spi.JsonWriter;
@@ -49,6 +50,33 @@ class JsonTypeCodecApiTest {
         assertArrayEquals(Ticketing_BuyRequestJson.CODEC.encode(REQUEST), Ticketing_BuyRequestJson.encode(REQUEST));
         assertEquals(REQUEST, Ticketing_BuyRequestJson.decode(JSON).unwrap());
         assertEquals(REQUEST, Ticketing_BuyRequestJson.decode(JSON.getBytes(StandardCharsets.UTF_8)).unwrap());
+    }
+
+    // Every decode and encode overload reads and writes the whole document, so a value object is its object form
+    // through each of them; its bare form is the nested one, which only the combinators and generated code use.
+    @Test
+    void valueObjectCodec_everyOverloadUsesTheDocumentForm() {
+        var code = new Containers.Code("x");
+        var document = "{\"value\":\"x\"}";
+        var bytes = document.getBytes(StandardCharsets.UTF_8);
+        var padded = ("  " + document + "}}").getBytes(StandardCharsets.UTF_8);
+        var codec = Containers_CodeJson.CODEC;
+
+        assertEquals(document, new String(codec.encode(code), StandardCharsets.UTF_8));
+        assertEquals(document, new String(codec.encode(JsonWriter.jsonWriter(4), code), StandardCharsets.UTF_8));
+        assertEquals(code, codec.decode(document).unwrap());
+        assertEquals(code, codec.decode(bytes).unwrap());
+        assertEquals(code, codec.decode(JsonReader.jsonReader(), bytes).unwrap());
+        assertEquals(code, codec.decode(padded, 2, bytes.length).unwrap());
+        assertTrue(codec.decode("\"x\"").isFailure());
+    }
+
+    @Test
+    void twoArgumentFactory_hasOneFormForDocumentAndNested() {
+        var codec = JsonTypeCodec.jsonTypeCodec(Containers_ItemJson.CODEC.writer(), Containers_ItemJson.CODEC.reader());
+
+        assertEquals(codec.writer(), codec.nestedWriter());
+        assertEquals(codec.reader(), codec.nestedReader());
     }
 
     @Test

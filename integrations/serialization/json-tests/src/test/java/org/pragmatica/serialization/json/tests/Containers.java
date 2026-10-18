@@ -67,4 +67,10 @@ public interface Containers {
 
     @Json
     record Levels(Set<Level> v) {}
+
+    @Json
+    record MaybeCode(Option<Code> v) {}
+
+    @Json
+    record CodesByCode(Map<Code, Code> v) {}
 }

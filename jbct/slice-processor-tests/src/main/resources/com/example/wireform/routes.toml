@@ -7,6 +7,8 @@ shape = "POST /shape"
 drawing = "POST /drawing"
 renamed = "POST /renamed"
 note = "POST /note"
+publish = "POST /publish"
+publishAll = "POST /publish-all"
 
 [errors]
 default = 500

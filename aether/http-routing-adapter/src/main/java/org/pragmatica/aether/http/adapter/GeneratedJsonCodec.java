@@ -33,6 +33,9 @@ import static org.pragmatica.lang.Result.success;
 /// roots, decoded by generated code with static element calls); a `List<T>` / `Set<T>` whose `T` has a codec,
 /// through [JsonTypeCodec#listOf] / [JsonTypeCodec#setOf]; otherwise the fallback.
 ///
+/// A body or response that is a value object is the whole document, so it takes the codec's document form (the
+/// object of its one component); inside a collection body or response it is nested and bare.
+///
 /// The decode choice is made once per requested type and kept, so a request builds no codec. The requested types
 /// are the route body types the router asks for, a set fixed by the slice's routes, which bounds the cache.
 public final class GeneratedJsonCodec implements JsonCodec {
@@ -141,9 +144,10 @@ public final class GeneratedJsonCodec implements JsonCodec {
         return out.toByteArray();
     }
 
+    // An element is nested: a value object among them is its bare component, as in any generated array.
     @SuppressWarnings("unchecked")
     private void writeElement(JsonWriter out, Object element) {
-        ((JsonTypeCodec<Object>) codecs.get(element.getClass())).writer().write(out, element);
+        ((JsonTypeCodec<Object>) codecs.get(element.getClass())).nestedWriter().write(out, element);
     }
 
     @SuppressWarnings("unchecked")

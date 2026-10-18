@@ -167,8 +167,9 @@ public interface JsonMapper {
                          .build();
     }
 
-    /// Creates a JsonMapper with Pragmatica types and value objects: a JBCT value object travels as its bare
-    /// component and is read back through its factory ([ValueObjectModule]). Slice HTTP routes use this mapper,
+    /// Creates a JsonMapper with Pragmatica types and value objects: a JBCT value object nested in another value
+    /// travels as its bare component, as the whole document as the object of that component, and is read back
+    /// through its factory ([ValueObjectModule]). Slice HTTP routes use this mapper,
     /// so their Jackson path writes the wire form the generated JSON codecs write.
     ///
     /// @return JsonMapper instance
@@ -185,7 +186,8 @@ public interface JsonMapper {
         /// @return This builder
         JsonMapperBuilder withPragmaticaTypes();
 
-        /// Registers ValueObjectModule: JBCT value objects travel as their bare component.
+        /// Registers ValueObjectModule: JBCT value objects travel as their bare component when nested, and as
+        /// the object of that component as the whole document.
         ///
         /// @return This builder
         JsonMapperBuilder withValueObjects();
