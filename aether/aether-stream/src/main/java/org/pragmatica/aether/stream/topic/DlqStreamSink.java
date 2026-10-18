@@ -11,11 +11,14 @@ import org.pragmatica.aether.slice.StreamPublisher;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.TerminalOperation;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.serialization.Deserializer;
@@ -41,6 +44,7 @@ import org.pragmatica.serialization.Deserializer;
 public record DlqStreamSink(Deserializer deserializer,
                             StreamPartitionManager manager,
                             Function<String, StreamPublisher<DlqEnvelope>> dlqPublisherFor) implements DeadLetterHandler {
+    private static final TimeSpan READ_BOUND = TimeSpan.timeSpan(5).seconds();
     private static final System.Logger LOG = System.getLogger(DlqStreamSink.class.getName());
 
     /// #1266: the envelope decode is LIFTED. A bare decode threw synchronously out of `append`, before
@@ -132,14 +136,21 @@ public record DlqStreamSink(Deserializer deserializer,
     /// typed failure surfaces in the log. [design intent — unverified: skip-and-log is a judgment call;
     /// an interface change to `Result<List<...>>` was not made.]
     @Override
+    @TerminalOperation
     public List<DeadLetterEntry> read(String streamName, int maxCount) {
-        return manager.readLocal(DurableTopicNames.dlqStreamForTopicStream(streamName),
-                                 0,
-                                 0,
-                                 maxCount)
-                      .map(events -> events.stream()
-                                           .flatMap(event -> decodedEntry(streamName, event).stream())
-                                           .toList())
+        // Served through the validated tiered read, so a dead letter that left the ring (space eviction, or the ring age
+        // tick at the DLQ's max age) is read from the sealed tier, oldest first. The `List` contract has no async channel,
+        // hence the bounded await (a blocking caller by contract, same-node inspection). A failed read answers empty (FER: degrade forward, the inspection is advisory and the entries stay in the log).
+        return manager.readServingTiered(DurableTopicNames.dlqStreamForTopicStream(streamName),
+                                         0,
+                                         0,
+                                         maxCount,
+                                         Epoch.ZERO)
+                      .await(READ_BOUND)
+                      .map(read -> read.events()
+                                       .stream()
+                                       .flatMap(event -> decodedEntry(streamName, event).stream())
+                                       .toList())
                       .or(List.of());
     }
 
