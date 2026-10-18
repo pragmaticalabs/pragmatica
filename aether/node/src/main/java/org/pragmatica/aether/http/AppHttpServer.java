@@ -33,6 +33,7 @@ import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
 import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
+import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
@@ -1528,10 +1529,18 @@ class AppHttpServerAdapter implements AppHttpServer {
                      .forward(httpCtx, route, requestId)
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
                      .onFailure(cause -> sendProblem(response,
-                                                     HttpStatus.GATEWAY_TIMEOUT,
+                                                     forwardFailureStatus(cause),
                                                      HttpError.clientMessage(cause),
                                                      request.path(),
                                                      requestId));
+    }
+
+    /// A [ForwardError] names its own status (413 for a request no cluster frame can carry, 504 for a
+    /// non-idempotent request that was not retried); every other forward failure stays a 504.
+    private static HttpStatus forwardFailureStatus(Cause cause) {
+        return cause instanceof ForwardError forwardError
+               ? forwardError.status()
+               : HttpStatus.GATEWAY_TIMEOUT;
     }
 
     @Override

@@ -5,6 +5,7 @@
 package org.pragmatica.aether.http.forward;
 
 import java.nio.charset.StandardCharsets;
+import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -12,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.http.HttpRouteRegistry;
@@ -27,6 +29,7 @@ import org.pragmatica.aether.management.route.RouteTarget;
 import org.pragmatica.aether.slice.delegation.TaskGroup;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.http.HttpMethod;
@@ -361,12 +364,39 @@ public interface HttpForwarder {
             /// client (or the forwarding sender) is gone, so starting one only feeds zombie work.
             private static final TimeSpan BUDGET_FLOOR = timeSpan(200).millis();
             private static final Cause BUDGET_EXHAUSTED = Causes.cause("Request budget exhausted before a node answered");
+            /// RFC 9110 §9.2.2. Every other method, and any method this node cannot name, is treated as
+            /// non-idempotent: a forwarded attempt that may have been delivered is never re-sent for it.
+            private static final Set<HttpMethod> IDEMPOTENT_METHODS = EnumSet.of(HttpMethod.GET,
+                                                                                 HttpMethod.HEAD,
+                                                                                 HttpMethod.OPTIONS,
+                                                                                 HttpMethod.TRACE,
+                                                                                 HttpMethod.PUT,
+                                                                                 HttpMethod.DELETE);
+
+            /// A hop failure that PROVES the frame never left this node, so re-sending it elsewhere cannot run the
+            /// request twice, whatever its method. Every other hop failure (timeout, remote failure response,
+            /// target departure, undecodable response) may follow a delivery.
+            enum Undelivered implements Cause {
+                TARGET_NOT_CONNECTED("Target node not connected; nothing was sent"),
+                SEND_REFUSED("Transport refused the forward before writing it");
+
+                private final String message;
+
+                Undelivered(String message) {
+                    this.message = message;
+                }
+
+                @Override
+                public String message() {
+                    return message;
+                }
+            }
 
             record PendingForward(Promise<HttpResponseData> promise,
                                   long createdAtMs,
                                   String requestId,
                                   NodeId targetNode,
-                                  Runnable onFailure) {}
+                                  Consumer<Cause> onFailure) {}
 
             @Override
             public Promise<HttpResponseData> forward(HttpRequestContext requestContext,
@@ -654,20 +684,38 @@ public interface HttpForwarder {
                 }
 
                 forwardToSpecificNode(requestContext, owner, requestId, deadline, retriesRemaining + 1).onSuccess(resultPromise::succeed)
-                                     .onFailure(cause -> {
-                                                    log.debug("Forward to owner {} failed: {} (retries={}) [{}]",
-                                                              owner,
-                                                              cause.message(),
-                                                              retriesRemaining,
-                                                              requestId);
-                                                    retryTaskGroupOrFail(group,
-                                                                         requestContext,
-                                                                         requestId,
-                                                                         resultPromise,
-                                                                         retriesRemaining,
-                                                                         deadline,
-                                                                         () -> cause);
-                                                });
+                                     .onFailure(cause -> onTaskGroupForwardFailure(group,
+                                                                                   owner,
+                                                                                   requestContext,
+                                                                                   requestId,
+                                                                                   resultPromise,
+                                                                                   retriesRemaining,
+                                                                                   deadline,
+                                                                                   cause));
+            }
+
+            /// A [ForwardError] is final (A1: a non-idempotent attempt that may have been delivered, or a request no
+            /// frame can carry), so this outer loop must not re-send it to the same or a re-resolved owner either.
+            private void onTaskGroupForwardFailure(TaskGroup group,
+                                                   NodeId owner,
+                                                   HttpRequestContext requestContext,
+                                                   String requestId,
+                                                   Promise<HttpResponseData> resultPromise,
+                                                   int retriesRemaining,
+                                                   Deadline deadline,
+                                                   Cause cause) {
+                log.debug("Forward to owner {} failed: {} (retries={}) [{}]",
+                          owner,
+                          cause.message(),
+                          retriesRemaining,
+                          requestId);
+                if (cause instanceof ForwardError) {
+                    resultPromise.fail(cause);
+
+                    return;
+                }
+
+                retryTaskGroupOrFail(group, requestContext, requestId, resultPromise, retriesRemaining, deadline, () -> cause);
             }
 
             private void retryTaskGroupOrFail(TaskGroup group,
@@ -993,15 +1041,16 @@ public interface HttpForwarder {
                               pipeline,
                               hopTimeout(Math.max(budgetShares, retriesRemaining + 1), deadline),
                               deadline,
-                              () -> handleRetryOrExhausted(requestContext,
-                                                           resultPromise,
-                                                           newTriedNodes,
-                                                           routeIdentity,
-                                                           requestId,
-                                                           retriesRemaining,
-                                                           pipeline,
-                                                           deadline,
-                                                           budgetShares));
+                              failure -> handleRetryOrExhausted(requestContext,
+                                                                resultPromise,
+                                                                newTriedNodes,
+                                                                routeIdentity,
+                                                                requestId,
+                                                                retriesRemaining,
+                                                                pipeline,
+                                                                deadline,
+                                                                budgetShares,
+                                                                failure));
             }
 
             /// A hop's slice of the remaining budget: the configured per-hop timeout, capped so the
@@ -1089,7 +1138,18 @@ public interface HttpForwarder {
                                                 int retriesRemaining,
                                                 Pipeline pipeline,
                                                 Deadline deadline,
-                                                int budgetShares) {
+                                                int budgetShares,
+                                                Cause failure) {
+                if (mustNotResend(requestContext.method(), failure)) {
+                    log.warn("Forward of non-idempotent {} [{}] failed after it may have been delivered, not retrying: {}",
+                             requestContext.method(),
+                             requestId,
+                             failure.message());
+                    resultPromise.fail(ForwardError.NotRetried.FACTORY.apply(requestContext.method(), failure));
+
+                    return;
+                }
+
                 if (retriesRemaining > 0) {
                     log.debug("Retrying request [{}], {} retries remaining, re-querying route",
                               requestId,
@@ -1112,6 +1172,19 @@ public interface HttpForwarder {
                 }
             }
 
+            /// A1: re-sending is safe when the method is idempotent, or when the failure proves the frame never
+            /// left. A non-idempotent request whose attempt may have reached the target is not re-sent, because a
+            /// second node would process it a second time while the first may still be processing it.
+            private static boolean mustNotResend(String method, Cause failure) {
+                return !isIdempotent(method) && !(failure instanceof Undelivered);
+            }
+
+            private static boolean isIdempotent(String method) {
+                return HttpMethod.fromString(method)
+                                 .filter(IDEMPOTENT_METHODS::contains)
+                                 .isPresent();
+            }
+
             private void forwardToNode(HttpRequestContext requestContext,
                                        Promise<HttpResponseData> resultPromise,
                                        NodeId targetNode,
@@ -1119,10 +1192,10 @@ public interface HttpForwarder {
                                        Pipeline pipeline,
                                        TimeSpan hopTimeout,
                                        Deadline deadline,
-                                       Runnable onFailure) {
+                                       Consumer<Cause> onFailure) {
                 if (!clusterNetwork.connectedPeers().contains(targetNode)) {
                     log.debug("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
-                    onFailure.run();
+                    onFailure.accept(Undelivered.TARGET_NOT_CONNECTED);
 
                     return;
                 }
@@ -1170,7 +1243,10 @@ public interface HttpForwarder {
                 // hopTimeout is the wait that just started and the moment the caller retries elsewhere, so the frame must
                 // not outlive it in an offline buffer (#1996). Always bounded here: `remainingMillis` may be NO_BUDGET,
                 // but the hop wait never is.
-                clusterNetwork.send(targetNode, forwardRequest, hopTimeout);
+                // The outcome tells a refusal before write (provably not sent: retry is safe for every method) from a
+                // frame that may be delivered. A refusal fails the hop now instead of waiting out the hop timeout.
+                clusterNetwork.sendOutcome(targetNode, forwardRequest, hopTimeout)
+                              .onSuccess(outcome -> failHopIfRefused(outcome, internalPromise, requestId));
                 log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
                 internalPromise.onSuccess(resultPromise::succeed)
                                .onFailure(cause -> handleInternalFailure(cause,
@@ -1186,7 +1262,7 @@ public interface HttpForwarder {
                                                NodeId targetNode,
                                                String requestId,
                                                TimeSpan hopTimeout,
-                                               Runnable onFailure) {
+                                               Consumer<Cause> onFailure) {
                 var removed = pendingForwards.remove(correlationId);
 
                 if (removed != null) {
@@ -1197,7 +1273,21 @@ public interface HttpForwarder {
                     log.warn("Forward to {} timed out after {} [{}]", targetNode, hopTimeout, requestId);
                 }
 
-                onFailure.run();
+                onFailure.accept(cause);
+            }
+
+            /// `Sent` and `ConnectionDead` leave the hop waiting: a frame reported under either may still be delivered
+            /// from the offline buffer (see [ClusterNetwork#sendOutcome(NodeId, org.pragmatica.consensus.ProtocolMessage, TimeSpan)]).
+            private static void failHopIfRefused(WriteOutcome outcome,
+                                                 Promise<HttpResponseData> hop,
+                                                 String requestId) {
+                switch (outcome) {
+                    case WriteOutcome.BackpressureRefused _, WriteOutcome.NoPeerState _, WriteOutcome.EncodeFailed _ -> {
+                        log.debug("Forward [{}] refused before write: {}", requestId, outcome);
+                        hop.fail(Undelivered.SEND_REFUSED);
+                    }
+                    case WriteOutcome.Sent _, WriteOutcome.ConnectionDead _ -> {}
+                }
             }
 
             private void processForwardResponse(PendingForward pending, HttpForwardResponse response) {

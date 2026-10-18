@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
+import org.pragmatica.aether.http.forward.ForwardError;
 import org.pragmatica.aether.http.forward.HttpForwarder;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.management.route.ManagementRouteError;
@@ -1467,10 +1468,18 @@ class ManagementServerImpl implements ManagementServer {
     private void sendForwardError(InstrumentedResponseWriter response, String path, String requestId, Cause cause) {
         log.warn("Management forward failed [{}] {}: {}", requestId, path, cause.message());
         ProblemResponses.writeProblem(response,
-                                      org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
+                                      managementForwardFailureStatus(cause),
                                       "Management forward failed: " + HttpError.clientMessage(cause),
                                       path,
                                       requestId);
+    }
+
+    /// A [ForwardError] names its own status (504 for a non-idempotent request that was not retried, 413 for one
+    /// no cluster frame can carry); every other management forward failure stays a 503.
+    private static HttpStatus managementForwardFailureStatus(Cause cause) {
+        return cause instanceof ForwardError forwardError
+               ? forwardError.status()
+               : HttpStatus.SERVICE_UNAVAILABLE;
     }
 
     private Unit sendForwardUnavailable(InstrumentedResponseWriter response,
