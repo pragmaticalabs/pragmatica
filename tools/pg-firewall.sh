@@ -57,8 +57,19 @@ hcloud_post() {
     fi
 }
 
+# A delete the API refused (409 firewall still attached, 404, 5xx) is a failed delete: the response is checked
+# and its body printed, never discarded (#2273). Returns 2 so the caller can name the resource.
 hcloud_delete() {
-    curl -sS --max-time 30 -X DELETE -H "Authorization: Bearer ${HCLOUD_TOKEN}" "${API}$1"
+    local path="$1" tmp http
+    tmp=$(mktemp)
+    http=$(curl -sS --max-time 30 -o "$tmp" -w '%{http_code}' -X DELETE \
+            -H "Authorization: Bearer ${HCLOUD_TOKEN}" "${API}${path}") || { rm -f "$tmp"; return 2; }
+    if [ "$http" -ge 400 ]; then
+        log_err "DELETE ${path} failed (HTTP ${http}): $(cat "$tmp")"
+        rm -f "$tmp"
+        return 2
+    fi
+    rm -f "$tmp"
 }
 
 encode_selector() {
@@ -188,6 +199,17 @@ cmd_status() {
         | jq '{name: .firewall.name, applied_to: [.firewall.applied_to[] | {type, server_id: .server.id}], rules: .firewall.rules}'
 }
 
+# Detach is best effort: the delete that follows decides the outcome. A refused detach is still named, because
+# it is the usual reason the delete is then refused with 409.
+detach_firewall() {
+    local fw_id="$1" server_id="$2" payload="$3" resp err
+    resp=$(hcloud_post "/firewalls/${fw_id}/actions/remove_from_resources" "$payload") || resp='{}'
+    err=$(printf '%s' "$resp" | jq -r '.error.message // empty' 2>/dev/null) || err=""
+    if [ -n "$err" ]; then
+        log_warn "could not detach firewall ${fw_id} from server ${server_id}: ${err}"
+    fi
+}
+
 cmd_destroy() {
     local fw_id server_id
     fw_id=$(resolve_firewall_id) || true
@@ -197,9 +219,12 @@ cmd_destroy() {
         local payload
         payload=$(jq -nc --argjson id "$server_id" \
             '{remove_from:[{type:"server", server:{id:$id}}]}')
-        hcloud_post "/firewalls/${fw_id}/actions/remove_from_resources" "$payload" >/dev/null || true
+        detach_firewall "$fw_id" "$server_id" "$payload"
     fi
-    hcloud_delete "/firewalls/${fw_id}" >/dev/null
+    if ! hcloud_delete "/firewalls/${fw_id}"; then
+        log_err "could not delete firewall '${FIREWALL_NAME}' (id=${fw_id})"
+        return 2
+    fi
     log_ok "destroyed firewall '${FIREWALL_NAME}' (id=${fw_id})"
 }
 
