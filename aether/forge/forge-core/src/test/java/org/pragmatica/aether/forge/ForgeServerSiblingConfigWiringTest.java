@@ -62,7 +62,7 @@ class ForgeServerSiblingConfigWiringTest {
     }
 
     private static final String KEYED = "[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = true\nsecurity_mode = \"api-key\"\n\n"
-                                        + "[app-http.api-keys.\"k-962\"]\nname = \"ops\"\nroles = [\"admin\"]\nauthorization_role = \"ADMIN\"\n";
+                                        + "[app-http.api-keys.k-962-key]\nname = \"ops\"\nroles = [\"admin\"]\nauthorization_role = \"ADMIN\"\n";
 
     /// #962: `forge run` HONOURS `[management] security_mode` from the sibling `aether.toml`. A keyed api-key app plane with
     /// `[management] security_mode = "none"` yields embedded nodes whose app plane authenticates and whose management plane does not.
