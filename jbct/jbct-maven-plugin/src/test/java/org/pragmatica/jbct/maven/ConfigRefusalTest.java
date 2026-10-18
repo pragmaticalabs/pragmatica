@@ -63,12 +63,12 @@ class ConfigRefusalTest {
 
     @Test
     void loadConfig_failsNamingFileKeyAndValue_whenKeyHasWrongType() throws Exception {
-        var dir = project("[format]\nmaxLineLength = \"120\"\n");
+        var dir = project("[format]\nmaxLineLength = \"wide\"\n");
 
         assertThatThrownBy(() -> probeFor(dir).loadConfig()).isInstanceOf(MojoExecutionException.class)
                                                             .hasMessageContaining(dir.resolve("jbct.toml").toString())
                                                             .hasMessageContaining("format.maxLineLength")
-                                                            .hasMessageContaining("120");
+                                                            .hasMessageContaining("wide");
     }
 
     @Test

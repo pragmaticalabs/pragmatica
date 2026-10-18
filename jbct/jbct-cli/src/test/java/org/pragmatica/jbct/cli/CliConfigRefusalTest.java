@@ -94,12 +94,12 @@ class CliConfigRefusalTest {
     @ParameterizedTest
     @ValueSource(strings = {"format", "lint", "check", "score", "shape-census", "obligations"})
     void command_stopsNamingFileKeyAndValue_whenConfigKeyHasWrongType(String command) throws Exception {
-        var config = config("[format]\nmaxLineLength = \"120\"\n");
+        var config = config("[format]\nmaxLineLength = \"wide\"\n");
 
         assertThat(run(command, config)).isEqualTo(CliConfig.CONFIG_ERROR_EXIT);
         assertThat(err.toString(UTF_8)).contains(config.toString())
                                        .contains("format.maxLineLength")
-                                       .contains("120");
+                                       .contains("wide");
     }
 
     @ParameterizedTest

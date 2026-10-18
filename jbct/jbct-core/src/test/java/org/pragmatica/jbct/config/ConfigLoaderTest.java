@@ -397,13 +397,13 @@ class ConfigLoaderTest {
         void load_refusesNamingFileKeyAndValue_whenProjectKeyHasWrongType() throws Exception {
             var project = repositoryRoot("project", """
                                                      [format]
-                                                     maxLineLength = "120"
+                                                     maxLineLength = "wide"
                                                      """);
 
             assertRefused(ConfigLoader.load(Option.none(), Option.some(project)),
                           project.resolve(ConfigLoader.PROJECT_CONFIG_NAME),
                           "format.maxLineLength",
-                          "120");
+                          "wide");
         }
 
         @Test
@@ -479,10 +479,14 @@ class ConfigLoaderTest {
             assertThat(ConfigLoader.load(Option.none(), Option.some(tempDir.resolve("nowhere"))).isSuccess()).isTrue();
         }
 
+        private void assertMessage(String message, Path layer, String... fragments) {
+            assertThat(message).contains(layer.toString());
+            java.util.Arrays.stream(fragments).forEach(fragment -> assertThat(message).contains(fragment));
+        }
+
         private void assertRefused(Result<?> result, Path layer, String... fragments) {
             result.onSuccess(config -> org.junit.jupiter.api.Assertions.fail("must refuse, loaded " + config))
-                  .onFailure(cause -> assertThat(cause.message()).contains(layer.toString())
-                                                                 .contains(fragments));
+                  .onFailure(cause -> assertMessage(cause.message(), layer, fragments));
         }
     }
 
