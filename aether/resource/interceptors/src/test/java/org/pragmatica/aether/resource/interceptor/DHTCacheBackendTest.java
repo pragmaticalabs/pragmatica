@@ -208,6 +208,20 @@ class DHTCacheBackendTest {
         assertThat(storage.containsKey("test-ns:key1")).isFalse();
     }
 
+    /// An envelope of a format version this code does not know is not readable: it is treated like a
+    /// foreign value (a miss, removed), never decoded as if it were version 1.
+    @Test
+    void get_unknownVersionByte_isAMissAndRemovesTheEntry() {
+        var unknownVersion = DHTCacheBackend.envelope(Long.MAX_VALUE, "hello".getBytes(UTF_8));
+        unknownVersion[3] = 2;
+        storage.put("test-ns:key1", unknownVersion);
+
+        var result = backend.get("key1").await().fold(_ -> Option.some("failed"), v -> v);
+
+        assertThat(result.isEmpty()).isTrue();
+        assertThat(storage.containsKey("test-ns:key1")).isFalse();
+    }
+
     @Test
     void get_entryShorterThanTheHeader_isAMissAndRemovesTheEntry() {
         storage.put("test-ns:key1", new byte[] {1, 2, 3});

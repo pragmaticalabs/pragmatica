@@ -31,9 +31,13 @@ import static org.pragmatica.lang.Unit.unit;
 /// exposes neither a versioned read nor a remove-if-unchanged: `RemoveRequest` carries only the remove's
 /// own fresh stamp, which supersedes any older copy (a remove is a tombstone, last-writer-wins). So the
 /// expired entry is re-read immediately before the remove and removed only if it is still byte-identical
-/// to the expired one, which narrows the window to one DHT round trip but cannot close it: a fresh put of
-/// the same key landing in that window is deleted. For the distributed idempotency store that means a
-/// completed-outcome record can be lost and a retry re-runs the method. Expiry compares clocks across
+/// to the expired one, which narrows the window but cannot close it: a fresh put of the same key landing
+/// in that window is deleted. The window is set by the quorums, not by one round trip: the re-read and the
+/// remove each wait for a quorum, and when R + W <= RF (the replicated DHT the idempotency store uses) a
+/// read quorum need not include the replicas that already hold an acknowledged put, so the window lasts
+/// until that put has replicated to the replicas the re-read and remove reach (the replication lag).
+/// For the distributed idempotency store that means a completed-outcome record can be lost and a retry
+/// re-runs the method. A failure of the re-read or of the remove fails the get; it is not reported as a miss. Expiry compares clocks across
 /// nodes, so a node whose clock runs ahead of the writer's sees entries expire early by that skew, and
 /// one that runs behind sees them live late by it.
 ///
