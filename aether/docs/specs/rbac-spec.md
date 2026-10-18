@@ -243,8 +243,9 @@ Format: semicolon-separated entries, each entry is `keyValue:name:comma-separate
 ```toml
 [management]
 port = 8080
-# No `security` key exists (the draft proposed inherit|disabled|required). The management plane
-# follows [app-http] security_mode and api-keys: see management-api.md, "One setting arms both planes".
+# Optional (#962): "api-key" or "none". Absent, the management plane inherits [app-http] security_mode.
+# Any other value is read as "api-key". See management-api.md, "Management security mode and the shared keys".
+# security_mode = "api-key"
 ```
 
 ---

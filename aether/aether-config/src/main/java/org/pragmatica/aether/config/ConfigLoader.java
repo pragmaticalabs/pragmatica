@@ -431,7 +431,19 @@ public final class ConfigLoader {
                                                   apiVersioningDetection,
                                                   apiVersionHeaderName).unwrap();
 
-        builder.appHttp(parseAppTls(doc).map(appHttp::withTls).or(appHttp));
+        builder.appHttp(parseAppTls(doc).map(appHttp::withTls)
+                                   .or(appHttp)
+                                   .withManagementSecurityMode(parseManagementSecurityMode(doc)));
+    }
+
+    /// `[management] security_mode` (#962): optional, `none` or `api-key`. Absent, the Management API inherits
+    /// `[app-http] security_mode`. Present and anything other than `none` (a typo, or `jwt`, which the management
+    /// plane does not have) reads as `api-key`: the one unrecognised value must not be able to open the plane.
+    private static Option<SecurityMode> parseManagementSecurityMode(TomlDocument doc) {
+        return doc.getString("management", "security_mode")
+                  .map(raw -> SecurityMode.securityMode(raw)
+                                          .filter(mode -> mode == SecurityMode.NONE)
+                                          .or(SecurityMode.API_KEY));
     }
 
     /// `[app-http.tls]` — an operator-supplied certificate for the USER-facing listener.

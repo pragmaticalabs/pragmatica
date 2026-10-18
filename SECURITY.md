@@ -162,6 +162,10 @@ An operator can still explicitly set `security_mode = "none"` in `aether.toml` t
 authentication entirely (an explicit setting wins over the default, with the `enabled = false` exception below) — appropriate only for a
 single-node local/dev instance, never for anything reachable over an untrusted network.
 
+The Management API can take its own mode (#962): an optional `[management] security_mode` (`"api-key"` or
+`"none"`) decides whether the management plane authenticates; when it is absent the plane inherits
+`[app-http] security_mode`. Any value other than `none` is read as `api-key`, so a typo cannot open the plane.
+
 The same default holds for the in-process config builders (`AppHttpConfig.appHttpConfig()` and
 friends) since #665: with no `SecurityMode` named they yield `API_KEY`, and with no key configured
 that is fail-closed — the cluster bootstrap admin key is the only credential accepted. `Main`'s
@@ -177,7 +181,7 @@ with no `[app-http]` section (or `enabled = false`) refuses those requests until
 bootstrap admin key is presented; present that key, or declare `[app-http]` with the mode you
 mean. Note the one case where an explicit setting does NOT win: `[app-http] enabled = false` with an
 explicit `security_mode = "none"` is discarded whole by `Main`'s fallback (one flag governs two
-planes — #573) and the fail-closed default applies. The only way
+planes — #573) and the fail-closed default applies; an explicit `[management] security_mode` is not part of that flag and is kept (#962). The only way
 to `NONE` without naming the mode is
 `AppHttpConfig.insecureAppHttpConfig(port)`, and its name is the opt-in: Ember passes `NONE`
 explicitly (`EmberCluster.withAppHttpSecurity` overrides it, which is how Forge authenticates), and

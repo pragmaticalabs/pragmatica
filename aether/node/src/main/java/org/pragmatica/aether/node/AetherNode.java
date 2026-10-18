@@ -6778,10 +6778,10 @@ public interface AetherNode extends ManageableNode {
                                          .map(_ -> {
                                                   if (config.managementPort() > 0) {
                                                   var mgmtSecurityEnabled = config.appHttp()
-                                                                                  .securityEnabled();
-                                                  // #962: ONE setting arms BOTH planes, by design -- `[app-http] security_mode` (and its
-                                                  // `api-keys`) decides whether the Management API authenticates, because both planes
-                                                  // check the same keys and the same cluster bootstrap admin key. They authorize on
+                                                                                  .managementSecurityEnabled();
+                                                  // #962: `[management] security_mode` decides whether the Management API authenticates and,
+                                                  // when absent, INHERITS `[app-http] security_mode`. Both planes check the same
+                                                  // `api-keys` and the same cluster bootstrap admin key. They authorize on
                                                   // DIFFERENT axes though: app-HTTP route policies test the key's `roles`, this plane
                                                   // tests its `authorization_role` (ADMIN > OPERATOR > VIEWER). The refusals name the
                                                   // plane and the axis (ManagementServerImpl#denialDetail); the operator documentation
@@ -6798,10 +6798,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                 .apiKeys());
 
                                                   if (!mgmtSecurityEnabled) {
-                                                  LOG.warn("Management API on port {} is FULLY OPEN: [app-http] security_mode = \"none\" disables authentication and"
+                                                  LOG.warn("Management API on port {} is FULLY OPEN: its security mode is \"none\" ([management] security_mode, or inherited from"
+                                                          + " [app-http] security_mode when that is absent), which disables authentication and"
                                                           + " authorization on the management plane, so ANY caller that can reach the port can run every"
                                                           + " operation, including cluster changes and artifact pushes. Use it only on a loopback or"
-                                                          + " otherwise isolated listener; set security_mode = \"api-key\" to protect this plane (#1121).",
+                                                          + " otherwise isolated listener; set [management] security_mode = \"api-key\" to protect this plane (#1121).",
                                                            config.managementPort());
                                               }
                                                   // The OTHER credential-less shape, and until now it had no voice at all. Above is

@@ -24,9 +24,9 @@ X-API-Key: your-api-key
 
 With no key configured, `security_mode = "api-key"` (the default) is fail-closed: every non-public route is refused until a credential exists, and the cluster bootstrap admin key is the only one accepted (see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)). Only an explicit `security_mode = "none"` serves the management plane without authentication, and then it is **fully open**: no validator is consulted on any path (local, forwarded, websocket feeds, artifact push), so any caller that can reach the port can run every operation. Use `none` only on an isolated listener.
 
-### One setting arms both planes
+### Management security mode and the shared keys
 
-The Management API has no security setting of its own. `[app-http] security_mode` and the `[app-http.api-keys.*]` tables decide whether the management plane authenticates, and which keys it accepts, together with the application HTTP plane (both planes also accept the cluster bootstrap admin key). Enabling api-key mode for application traffic therefore also protects this plane, and a node running `security_mode = "jwt"` still authenticates this plane with API keys.
+The Management API has an optional security setting of its own, `[management] security_mode`, taking `"api-key"` or `"none"`. When it is **absent** the management plane inherits `[app-http] security_mode`, so a configuration written before the key existed behaves as it always did. When it is **set** it is independent of the application plane: `"api-key"` protects the management plane while the application plane is `none`, and `"none"` opens the management plane while the application plane authenticates. Any value other than `none` (a typo, or `jwt`, which the management plane does not have) is read as `api-key`, so a mistake can only close the plane. The `[app-http.api-keys.*]` tables, and the cluster bootstrap admin key, are shared by both planes whichever mode each runs: a node whose application plane runs `security_mode = "jwt"` still authenticates this plane with API keys.
 
 The two planes then authorize on **different axes** of the same key:
 
@@ -6408,7 +6408,7 @@ The app HTTP server (serving slice-generated endpoints) supports configurable au
 | `jwt` | `Authorization: Bearer <token>` | JWT with JWKS validation (RS256/ES256) |
 | `none` | -- | No authentication — must be set explicitly; dev/eval only, never for anything reachable over an untrusted network |
 
-**This setting also governs the Management API.** Whatever mode is chosen here arms (or, for `none`, opens) the management plane too, and the two planes authorize on different axes (`roles` here, `authorization_role` there). See [One setting arms both planes](#one-setting-arms-both-planes).
+**This setting is the default for the Management API.** Unless `[management] security_mode` is set, whatever mode is chosen here arms (or, for `none`, opens) the management plane too, and the two planes authorize on different axes (`roles` here, `authorization_role` there). See [Management security mode and the shared keys](#management-security-mode-and-the-shared-keys).
 
 ### Health Endpoint Bypass
 
@@ -6485,7 +6485,7 @@ jwks_cache_ttl_seconds = 3600
 
 On the application plane, `none` serves routes whose policy is unspecified or `public`, and refuses auth-requiring routes outright with `401 NO_VALIDATOR_CONFIGURED`; there is no system principal for a request to assume.
 
-**`none` also opens the Management API completely.** `[app-http] security_mode` is the only security setting the management plane has (see [One setting arms both planes](#one-setting-arms-both-planes)), so under `none` no validator is consulted on any management path: every operation (cluster changes, node shutdown, config, blueprint deploy), the websocket feeds, and `PUT /repository/...` artifact pushes (code the cluster will load) are served to any caller that can reach the management port. Setting `none` for a local app-HTTP development setup therefore opens cluster operations too. Must be set explicitly (`security_mode = "none"`); it is never the default. Appropriate only for a single-node local/dev instance, never for anything reachable over an untrusted network -- see the
+**`none` also opens the Management API completely unless `[management] security_mode` says otherwise.** With `[management] security_mode` absent the management plane inherits this mode (see [Management security mode and the shared keys](#management-security-mode-and-the-shared-keys)), so under `none` no validator is consulted on any management path: every operation (cluster changes, node shutdown, config, blueprint deploy), the websocket feeds, and `PUT /repository/...` artifact pushes (code the cluster will load) are served to any caller that can reach the management port. Setting `none` for a local app-HTTP development setup therefore opens cluster operations too, unless you also set `[management] security_mode = "api-key"`. Must be set explicitly (`security_mode = "none"`); it is never the default. Appropriate only for a single-node local/dev instance, never for anything reachable over an untrusted network -- see the
 [Bootstrap Config Reference](bootstrap-config.md#a-security_mode--none--why-deveval-bootstrap-needs-it)
 for why the dev/eval bootstrap path uses it and what it gives up.
 

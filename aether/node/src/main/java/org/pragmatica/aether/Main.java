@@ -152,10 +152,17 @@ public record Main(String[] args) {
         startNodeAndWait(node, nodeId);
     }
 
-    private static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {
+    static AppHttpConfig resolveAppHttp(Option<AetherConfig> aetherConfig) {
         return aetherConfig.map(AetherConfig::appHttp)
                            .filter(AppHttpConfig::enabled)
-                           .or(AppHttpConfig.appHttpConfig());
+                           .or(() -> disabledAppHttp(aetherConfig));
+    }
+
+    /// A disabled `[app-http]` is replaced whole by the fail-closed default (#573), but the Management API's own
+    /// `[management] security_mode` is not part of the app plane and survives (#962).
+    private static AppHttpConfig disabledAppHttp(Option<AetherConfig> aetherConfig) {
+        return AppHttpConfig.appHttpConfig().withManagementSecurityMode(aetherConfig.flatMap(config -> config.appHttp()
+                                                                                                             .managementSecurityMode()));
     }
 
     /// First-boot consistency gate: compares this container's `aether.cluster` label
