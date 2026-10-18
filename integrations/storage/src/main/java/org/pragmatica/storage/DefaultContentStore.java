@@ -20,6 +20,7 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.storage.ContentStoreError.General.CHUNK_MISSING;
 import static org.pragmatica.storage.ContentStoreError.General.CONTENT_NOT_FOUND;
+import static org.pragmatica.storage.ContentStoreError.General.MANIFEST_PARSE_FAILED;
 
 
 /// Default content store implementation with auto-chunking and compression.
@@ -75,9 +76,11 @@ final class DefaultContentStore implements ContentStore {
                : putChunked(name, content);
     }
 
+    /// Direct content is stored under envelope kind `D` ([ContentEnvelope]), so no upload is ever read back as a
+    /// manifest, whatever its bytes begin with.
     private Promise<RefSwap> putDirect(String name, byte[] content) {
         return frameCompress(content).async()
-                            .flatMap(framed -> storage.swapRef(name, framed));
+                            .flatMap(framed -> storage.swapRef(name, ContentEnvelope.wrap(ContentEnvelope.DIRECT, framed)));
     }
 
     /// Each chunk holds only `put`'s credit and no name, so a put that fails part-way would leave
@@ -170,9 +173,30 @@ final class DefaultContentStore implements ContentStore {
                       .flatMap(this::resolveContent);
     }
 
+    /// The envelope's kind byte, written by this store, decides direct content from a manifest. A value without the
+    /// envelope predates it and is read the legacy way (see [ContentManifest]).
     private Promise<Option<byte[]>> resolveContent(byte[] rawData) {
-        return ContentManifest.fromBytes(rawData).fold(() -> frameDecompressAndWrap(rawData),
-                                                       this::reassembleFromManifest);
+        return ContentEnvelope.isEnveloped(rawData)
+               ? resolveEnveloped(rawData)
+               : resolveLegacy(rawData);
+    }
+
+    private Promise<Option<byte[]>> resolveEnveloped(byte[] rawData) {
+        return ContentEnvelope.payloadOf(ContentEnvelope.DIRECT, rawData)
+                              .map(this::frameDecompressAndWrap)
+                              .or(() -> reassembleEnvelopedManifest(rawData));
+    }
+
+    private Promise<Option<byte[]>> reassembleEnvelopedManifest(byte[] rawData) {
+        return ContentManifest.fromBytes(rawData)
+                              .async(MANIFEST_PARSE_FAILED)
+                              .flatMap(this::reassembleFromManifest);
+    }
+
+    private Promise<Option<byte[]>> resolveLegacy(byte[] rawData) {
+        return ContentManifest.fromLegacyBytes(rawData)
+                              .fold(() -> frameDecompressAndWrap(rawData),
+                                    this::reassembleFromManifest);
     }
 
     private Promise<Option<byte[]>> frameDecompressAndWrap(byte[] data) {
