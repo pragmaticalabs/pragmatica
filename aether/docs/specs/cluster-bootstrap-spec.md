@@ -982,7 +982,7 @@ The diff operates at `(source, role)` granularity. Changes are classified, order
 
 **REQ-9.3.2**: Immutable fields (cluster name) MUST be rejected. The diff MUST report these as errors, not actionable changes.
 
-**REQ-9.3.3**: A wave failure (any node failing to come up or drain within its timeout) **halts in place**. `apply` does not auto-rollback and does not auto-continue. The operator must explicitly re-invoke `apply --resume` to retry the remaining waves, or `apply --rollback` to unwind the changes already applied and return the cluster to its pre-apply state.
+**REQ-9.3.3**: A wave failure (any node failing to come up or drain within its timeout) **halts in place**. `apply` does not auto-rollback and does not auto-continue. The operator must explicitly re-invoke `apply --resume` to retry the remaining waves. Unwinding the changes already applied (`apply --rollback`) is **not implemented (#686)**: the flag fails with a non-zero exit and changes nothing; the intended behaviour is described under REQ-9.3.5.
 
 **REQ-9.3.4**: Runtime changes that alter the wire protocol between Aether versions cannot use rolling restart — they require a full-cluster replacement via source-level change. The diff engine flags cross-major-version runtime upgrades and forces the replace-before-retire path.
 
