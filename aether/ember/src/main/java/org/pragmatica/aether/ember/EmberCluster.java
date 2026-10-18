@@ -186,7 +186,7 @@ public final class EmberCluster {
 
     /// Cluster-level app-HTTP security applied to every node's [AppHttpConfig]. Defaults to
     /// [SecurityMode#NONE] with no keys, which is what an in-JVM harness wants: `securityEnabled()` is
-    /// false, so the node installs `denyUnlessPublicValidator` and only Public routes answer.
+    /// false, so the app-HTTP plane installs `denyUnlessPublicValidator` and only Public routes answer there; the management plane is fully open (#1121).
     ///
     /// This is the harness's EXPLICIT opt-out (#665): the bare `AppHttpConfig` builders default to
     /// `API_KEY`, so an Ember node that should answer unauthenticated must say NONE here, and the mode

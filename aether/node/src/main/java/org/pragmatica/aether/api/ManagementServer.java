@@ -2099,7 +2099,24 @@ class ManagementServerImpl implements ManagementServer {
             response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
         }
 
-        ProblemResponses.writeProblem(response, toRoutingStatus(status), HttpError.clientMessage(cause), path, requestId);
+        ProblemResponses.writeProblem(response, toRoutingStatus(status), denialDetail(cause), path, requestId);
+    }
+
+    private static final String AUTHENTICATION_DENIAL = "Management API authentication refused: ";
+
+    private static final String AUTHORIZATION_DENIAL = "Management API authorization refused (authorization_role axis: ADMIN > OPERATOR > VIEWER, set per key as"
+                                                     + " authorization_role; the roles that gate app-HTTP routes are a separate axis and do not apply here): ";
+
+    /// #962: the refusal names the PLANE and, for an authorization refusal, the AXIS. App-HTTP api-key mode arms this
+    /// plane too (same keys, same bootstrap admin key), but the two planes check different things: app-HTTP route
+    /// policies test the key's `roles`, this plane tests its `authorization_role`. A bare "role VIEWER cannot access
+    /// OPERATOR endpoint" named neither, so an operator who had just enabled api-key mode for the application plane
+    /// diagnosed the wrong component. Package-visible for the same reason as [#resolveSecurityErrorStatus].
+    static String denialDetail(Cause cause) {
+        return switch (cause) {
+            case SecurityError.AccessDenied _, RoleEnforcer.AuthorizationError.AccessDenied _ -> AUTHORIZATION_DENIAL + HttpError.clientMessage(cause);
+            default -> AUTHENTICATION_DENIAL + HttpError.clientMessage(cause);
+        };
     }
 
     private static org.pragmatica.http.HttpStatus toRoutingStatus(HttpStatus status) {

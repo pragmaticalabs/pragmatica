@@ -22,7 +22,22 @@ X-API-Key: your-api-key
 - `401 Unauthorized` — Missing `X-API-Key` header. Response includes `WWW-Authenticate: ApiKey realm="Aether"`.
 - `403 Forbidden` — Invalid API key provided.
 
-When no API keys are configured, all endpoints are accessible without authentication (backward compatible).
+With no key configured, `security_mode = "api-key"` (the default) is fail-closed: every non-public route is refused until a credential exists, and the cluster bootstrap admin key is the only one accepted (see [SECURITY.md](../../../SECURITY.md#default-security-posture-management-api)). Only an explicit `security_mode = "none"` serves the management plane without authentication, and then it is **fully open**: no validator is consulted on any path (local, forwarded, websocket feeds, artifact push), so any caller that can reach the port can run every operation. Use `none` only on an isolated listener.
+
+### One setting arms both planes
+
+The Management API has no security setting of its own. `[app-http] security_mode` and the `[app-http.api-keys.*]` tables decide whether the management plane authenticates, and which keys it accepts, together with the application HTTP plane (both planes also accept the cluster bootstrap admin key). Enabling api-key mode for application traffic therefore also protects this plane, and a node running `security_mode = "jwt"` still authenticates this plane with API keys.
+
+The two planes then authorize on **different axes** of the same key:
+
+| Plane | What is checked | Key field |
+|-------|-----------------|-----------|
+| Application HTTP (slice routes) | the route's `role:<name>` policy against the key's role set | `roles` |
+| Management API | the endpoint's minimum role against the key's hierarchical role | `authorization_role` (`ADMIN` > `OPERATOR` > `VIEWER`) |
+
+A key can pass on one plane and fail on the other. Example: a key with `roles = ["admin"]` and no `authorization_role` satisfies a slice route declared `role:admin`, but its `authorization_role` is `VIEWER`, so `PUT /repository/...` on the management plane is refused with `403` (it requires `OPERATOR`).
+
+A refusal names the plane and, for an authorization refusal, the axis, for example `Management API authorization refused (authorization_role axis: ...): Access denied: role VIEWER cannot access OPERATOR endpoint`.
 
 ## Authorization (RBAC)
 
@@ -93,7 +108,7 @@ roles = ["service"]
 authorization_role = "VIEWER"
 ```
 
-**Default behavior:** When `authorization_role` is omitted, the key defaults to `ADMIN` for full backward compatibility. Existing configurations with no `authorization_role` field continue to work unchanged.
+**Default behavior:** When `authorization_role` is omitted, the key defaults to `VIEWER` (`ApiKeyEntry.DEFAULT_ROLE`). Grant `OPERATOR` or `ADMIN` explicitly.
 
 **Simple key format:** Keys defined using the simple string list (`api_keys = ["key1", "key2"]`) always receive ADMIN authorization.
 
@@ -101,10 +116,11 @@ authorization_role = "VIEWER"
 
 When an authenticated user lacks the required role for an endpoint, the server returns:
 
-- **`403 Forbidden`** with body:
+- **`403 Forbidden`** with a `application/problem+json` body whose `detail` names the plane and the axis:
 ```json
 {
-  "error": "Forbidden: VIEWER role insufficient for this operation (requires OPERATOR)"
+  "status": 403,
+  "detail": "Management API authorization refused (authorization_role axis: ADMIN > OPERATOR > VIEWER, set per key as authorization_role; the roles that gate app-HTTP routes are a separate axis and do not apply here): Access denied: role VIEWER cannot access OPERATOR endpoint"
 }
 ```
 
