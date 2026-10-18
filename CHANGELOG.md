@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [1.0.0-rc4] - 2026-10-17
 
+### Fixed (2026-10-17 — disruption-budget suite mistook the slice-floor 409 for the quorum budget)
+- **`13-edge-cases/test-disruption-budget.sh` inferred the quorum budget from drain statuses while the placement-dependent slice floor (#1720) also answers 409 on the same endpoint.** All three drains now pass `?force=true` (which reaches only the slice floor), so only the quorum budget is exercised: 200, 200, 409. Drain 2 must be 2xx; drain 3 must be a 409 whose body says "Disruption budget exceeded ... minimum is 3". Test-only; no product change. `[mechanism: NodeLifecycleRoutes admission order quorum budget -> readiness -> slice floor]`
+
+### Fixed (2026-10-17 — #2213 guard refused the integration harness's own re-bootstrap and left stale registry entries)
+- **The cloud integration harness reaped a cluster's VMs and then re-bootstrapped (or later re-launched) the same name,
+  which the #2213 existing-cluster guard now refuses.** S20's full-drain recovery failed with "Cluster 'test-b' already
+  exists: the cluster registry already holds it" in both runtimes, which quarantined 02-chaos and skipped 02y/02w/02s;
+  the end-of-run teardown reaped VMs but never unregistered, so stale entries halted the next launch.
+- `_cloud_full_drain_recover` now runs `aether cluster remove <name>` (a missing entry is tolerated) and moves
+  `~/.aether/clusters/<name>` aside to `<name>.reaped-<UTC stamp>` (never deleted) after the reap and before the
+  bootstrap; nothing happens on a preflight refusal (rc 2) or a fatal reap (rc 1). The cloud teardown does the same for
+  each cluster it reaps through `_cloud_teardown_reap_cluster`. No product change; the guard has no `--force` by design.
+  `[verified: aether/tests/integration/test/test-chaos-harness.sh K6-K12]`
+
 ### Changed (2026-10-16 — #2214: rc4 known limitations — no-majority network cut, bootstrap re-run)
 - **Known limitation: a network cut that leaves no core majority halts every core.** If no group of cores holds a majority for long enough, each core drains and exits with code 2 and is not restarted (`Restart=no`); a heal after a core has begun draining does not cancel its halt. Consensus state is memory-only, so blueprints, slice targets, API keys, cluster and stream configuration and entity state are lost. Measured with every core isolated from every other on five cores: a 10 s cut halted 0 of 25 core-runs, 15 s halted 2 of 25, and 20 s, 25 s and 30 s halted 25 of 25 each; the drain began 18-19 s after the cut (3-4 s detection plus the 15 s `split_timeout`); 77 of 77 cores that fired exited with code 2 and none returned. `[measured: five-node Ember probe on the rc4 tip, loopback on one host; the probe is not in the repository]` Not measured: a 2/2/1 split, cut lengths of 16-19 s, other `split_timeout` values, a production-mode halt. `[unverified: those four]`
 - **Mitigation and recovery.** Configure `[backup]` with a `remote` on every multi-core production cluster (`runbooks/deployment.md`); the backup holds declared state up to the last successful push, not entity state or acknowledged stream records. Recovery is the fresh-NodeId restore in `runbooks/backup-recovery.md`; the procedure is the new "No-majority partition / every core halted" section of `runbooks/incident-response.md`. `[mechanism: DrainProcedure.java:186-199 single-shot drain; BackupConfig.java:56,70 backup off by default]`

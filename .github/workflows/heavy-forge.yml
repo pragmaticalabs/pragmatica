@@ -7,7 +7,7 @@ name: Heavy forge tests
 # label stays).
 #
 # GitHub fires `schedule` only for the workflow file on the DEFAULT branch, against that branch's code
-# (release-1.0.0-rc4 while it is the default). Another release branch gets Heavy coverage from the label or
+# (main). Another release branch gets Heavy coverage from the label or
 # from dispatch, not from the nightly run.
 #
 # A red nightly must reach someone: the `notify` job keeps exactly one open issue labelled `heavy-nightly`
