@@ -52,8 +52,7 @@ public record JbctConfig(FormatterConfig formatter,
     /// This materialises a *single* document in isolation. Layered loading goes through
     /// [ConfigLoader], which folds [PartialConfig] layers per key and materialises once at the end.
     public static Result<JbctConfig> fromToml(TomlDocument toml) {
-        return PartialConfig.partialConfig(toml)
-                            .map(PartialConfig::materialize);
+        return PartialConfig.partialConfig(toml).map(PartialConfig::materialize);
     }
 
     /// Generate TOML representation of this config.

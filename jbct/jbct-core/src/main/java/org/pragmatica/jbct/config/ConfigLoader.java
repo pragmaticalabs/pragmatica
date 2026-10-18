@@ -53,7 +53,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     /// Load user-level config from ~/.jbct/config.toml.
     static Result<Option<JbctConfig>> loadUserConfig() {
         return userConfigCandidate().map(ConfigLoader::loadFromFile)
-                                    .or(success(none()));
+                                  .or(success(none()));
     }
 
     /// Load project-level config from jbct.toml in given directory.
@@ -88,10 +88,7 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     }
 
     private static Result<JbctConfig> foldLayers(List<Path> paths) {
-        return Result.allOf(paths.stream()
-                                 .map(ConfigLoader::parseLayer)
-                                 .toList())
-                     .map(ConfigLoader::materialized);
+        return Result.allOf(paths.stream().map(ConfigLoader::parseLayer).toList()).map(ConfigLoader::materialized);
     }
 
     private static JbctConfig materialized(List<Option<PartialConfig>> layers) {

@@ -19,7 +19,8 @@ public sealed interface CliConfig {
 
     /// Load the layered configuration, printing the refusal to `err` when it fails.
     static Option<JbctConfig> load(Option<Path> explicitConfigPath, PrintStream err) {
-        return ConfigLoader.load(explicitConfigPath, Option.none())
+        return ConfigLoader.load(explicitConfigPath,
+                                 Option.none())
                            .onFailure(cause -> err.println("Error: " + cause.message()))
                            .option();
     }

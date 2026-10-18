@@ -257,13 +257,15 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
     static BlueprintConfig loadBlueprintConfig(Path projectDir) throws MojoExecutionException {
         var loaded = ConfigLoader.load(Option.none(), Option.some(projectDir));
-        var refusal = loaded.fold(cause -> Option.some(cause.message()), _ -> Option.<String>none());
+        var refusal = loaded.fold(cause -> Option.some(cause.message()),
+                                  _ -> Option.<String> none());
 
         if (refusal.isPresent()) {
             throw new MojoExecutionException(refusal.unwrap());
         }
 
-        return loaded.unwrap().blueprint();
+        return loaded.unwrap()
+                     .blueprint();
     }
 
     private Set<String> collectDatasources(List<SliceManifest> localManifests,
