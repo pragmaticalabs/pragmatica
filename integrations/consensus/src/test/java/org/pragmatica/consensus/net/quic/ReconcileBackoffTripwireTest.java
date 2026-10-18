@@ -11,7 +11,6 @@
 package org.pragmatica.consensus.net.quic;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.NodeId;
@@ -29,19 +28,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.addressOf;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.startedNetwork;
 
-/// Tripwire pairs for C-12 (cluster T assessment, rc4 `7c786db0d3`): re-link after a partition is gated by the
-/// per-peer reconcile backoff, 5 s doubling to a 60 s cap with +-20% jitter, reset only by a successful attach.
-/// After about 75 s of failed attempts both ends sit at the cap, so a heal is noticed only at the next allowed
-/// attempt: up to 72 s later (60 s x 1.2) plus one 5 s tick on the grid, and a SWIM-alive signal does not shorten it.
+/// C-12 (cluster T assessment, rc4 `7c786db0d3`): re-link after a partition is gated by the per-peer reconcile
+/// backoff, 5 s doubling to a 60 s cap with +-20% jitter, reset only by a successful attach. After about 75 s of
+/// failed attempts both ends sit at the cap, so a heal is noticed only at the next allowed attempt: up to 72 s
+/// later (60 s x 1.2) plus one 5 s tick on the grid. PR-A3 (OQ-7(a)) caps the backoff at its initial value while
+/// the raw-SWIM liveness gate reports the peer alive; a peer SWIM does not see alive keeps this schedule, which
+/// the remaining tripwires pin. The ones that held the old behaviour for an alive peer are replaced by
+/// `reconciler_dialsWithinOneTick_afterThePeerIsReportedAlive`; the gate's own cases are in
+/// [ReconcileBackoffSwimGateTest].
 ///
 /// Two levels. [PeerState#reconcileBackoffAllows] takes its jitter as a parameter, so the schedule is reproduced
 /// deterministically there (worst case and best case). The network level drives the real reconciler on a fake
 /// clock (the same hook `QuicClusterNetworkReconcilerTest` uses) and counts topology lookups, which happen only
-/// after the backoff gate lets an attempt through.
-///
-/// The target the real tests state, "a dial within one tick of the peer being reported alive", is a guess about
-/// the overhaul's target (`[guess]`); the input channel used here, [QuicClusterNetwork#setSwimLivenessGate], is the
-/// one existing liveness input to the transport and also a guess. Adjust both to the overhaul's choice.
+/// after the backoff gate lets an attempt through. The liveness input is [QuicClusterNetwork#setSwimLivenessGate],
+/// the one `AetherNode` wires from SWIM health (HEALTHY or SUSPECTED), and the target is one 5 s tick.
 @Timeout(30)
 class ReconcileBackoffTripwireTest {
     private static final long TICK_MS = 5_000;
@@ -98,8 +98,8 @@ class ReconcileBackoffTripwireTest {
         var gap = largestGap(allowedAttempts(1.2));
 
         assertThat(gap).as("TRIPWIRE C-12: with +20 percent jitter the gap between allowed attempts at the cap is 72 s on a 5 s "
-                           + "grid, i.e. 75 s; the backoff schedule has changed. Delete this tripwire and enable "
-                           + "reconciler_dialsWithinOneTick_afterThePeerIsReportedAlive.")
+                           + "grid, i.e. 75 s; the schedule for a peer SWIM does not see alive (OQ-7(a): the 60 s cap stays) "
+                           + "has changed.")
                        .isBetween(72_000L, 77_000L);
     }
 
@@ -112,24 +112,6 @@ class ReconcileBackoffTripwireTest {
                        .isBetween(48_000L, 52_000L);
     }
 
-    @Test
-    void reconciler_ignoresTheLivenessGate_whileTheBackoffIsAtItsCap() {
-        var scenario = new Outage();
-
-        scenario.runToTheCap();
-        scenario.alive.set(true);
-        var dialsAfterSignal = scenario.dialsInNext(40_000);
-
-        assertThat(dialsAfterSignal).as("TRIPWIRE C-12: 8 ticks (40 s) after the liveness gate reports the peer alive, "
-                                        + "the reconciler dispatched %s dial(s); today 0, the signal does not shorten "
-                                        + "the backoff. Delete this tripwire and enable "
-                                        + "reconciler_dialsWithinOneTick_afterThePeerIsReportedAlive.", dialsAfterSignal)
-                                    .isZero();
-    }
-
-    @Disabled("C-12: enable when a liveness signal (SWIM-alive or inbound evidence) shortens the reconcile backoff. "
-              + "Today red: the dial waits for the allowed attempt, 48 to 72 s after the last one. "
-              + "[guess] target = one 5 s tick; [guess] input channel = setSwimLivenessGate.")
     @Test
     void reconciler_dialsWithinOneTick_afterThePeerIsReportedAlive() {
         var scenario = new Outage();

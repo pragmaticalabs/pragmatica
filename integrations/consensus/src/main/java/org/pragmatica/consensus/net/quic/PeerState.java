@@ -242,6 +242,10 @@ public final class PeerState {
     /// dial attempts. Distinct from `ReconnectBackoff` (eviction-driven) which paces
     /// rapid heartbeat-loop reconnects on a freshly evicted CONNECTED link.
     private long reconcileNextAttemptMs;
+    /// Wall-clock instant (ms) of the last reconciler attempt this peer was allowed, by either backoff
+    /// evaluation. The SWIM-alive evaluation measures its spacing from it; after `resetReconcileBackoff` the
+    /// stored attempt time of zero governs, so it needs no reset of its own.
+    private long reconcileLastAttemptMs;
     /// Current reconcile-backoff window in ms; doubled on every reconciler dispatch
     /// for this peer up to a configured cap, reset by `resetReconcileBackoff` on a
     /// successful attach.
@@ -690,6 +694,26 @@ public final class PeerState {
 
         reconcileCurrentDelayMs = nextDelay;
         reconcileNextAttemptMs = nowMs + Math.max(1L, jitterFn.applyAsLong(nextDelay));
+        reconcileLastAttemptMs = nowMs;
+
+        return true;
+    }
+
+    /// The same gate as [#reconcileBackoffAllows] while the peer is reported alive on the SWIM path
+    /// (a separate UDP socket), where a blocked QUIC link is worth one dial per tick: the backoff is
+    /// evaluated with its cap equal to its initial value. The attempt time earned at the higher cap does not
+    /// hold the dial back, so the next attempt is due `minSpacingMs` after the last allowed one (or at the
+    /// stored attempt time, if that is earlier), and an allowed attempt leaves the delay at `initialMs`.
+    /// No jitter is applied: the reconciler tick is the granularity, and a jittered spacing above one tick
+    /// would skip the next tick. The spacing is therefore chosen below one tick by the caller.
+    public synchronized boolean reconcileBackoffAllowsWhileAlive(long nowMs, long initialMs, long minSpacingMs) {
+        if (nowMs < Math.min(reconcileNextAttemptMs, reconcileLastAttemptMs + minSpacingMs)) {
+            return false;
+        }
+
+        reconcileCurrentDelayMs = initialMs;
+        reconcileNextAttemptMs = nowMs + minSpacingMs;
+        reconcileLastAttemptMs = nowMs;
 
         return true;
     }

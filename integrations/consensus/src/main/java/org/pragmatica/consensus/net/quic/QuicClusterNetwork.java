@@ -200,6 +200,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private static final TimeSpan RECONCILE_TICK = TimeSpan.timeSpan(5L).seconds();
     private static final long RECONCILE_BACKOFF_INITIAL_MS = 5_000L;
     private static final long RECONCILE_BACKOFF_CAP_MS = 60_000L;
+
+    /// Minimum spacing between reconciler dials to a peer SWIM reports alive: the lower jitter bound of the
+    /// initial delay, so every 5 s tick may dial and scheduler jitter cannot skip one. With SWIM alive the
+    /// backoff cap equals its initial value (OQ-7(a)); a peer SWIM does not see alive keeps the 60 s cap.
+    private static final long RECONCILE_ALIVE_MIN_SPACING_MS = Math.round(RECONCILE_BACKOFF_INITIAL_MS * JitterUtil.LIGHT_MIN_FACTOR);
+
     /// Multiple of the QUIC hello/handshake timeout after which a peer pinned in CONNECTING is
     /// treated as a hung dial and force-evicted by the reconciler so a fresh re-dial can proceed.
     /// A dial that neither completes (`onPeerConnected`) nor fails (`onConnectFailed`) — e.g. a
@@ -3011,10 +3017,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     ? getOrCreatePeer(peerId)
                     : existing;
 
-        if (!state.reconcileBackoffAllows(nowMs,
-                                          RECONCILE_BACKOFF_INITIAL_MS,
-                                          RECONCILE_BACKOFF_CAP_MS,
-                                          this::reconcileJitter)) {
+        if (!reconcileBackoffAllows(state, nowMs)) {
             log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
 
             return;
@@ -3074,16 +3077,28 @@ public class QuicClusterNetwork implements ClusterNetwork {
                     ? getOrCreatePeer(peerId)
                     : existing;
 
-        if (!state.reconcileBackoffAllows(nowMs,
-                                          RECONCILE_BACKOFF_INITIAL_MS,
-                                          RECONCILE_BACKOFF_CAP_MS,
-                                          this::reconcileJitter)) {
+        if (!reconcileBackoffAllows(state, nowMs)) {
             log.trace("Missing-peer reconciler suppressed by per-peer backoff for {}", peerId);
 
             return;
         }
 
         reconcileDialPeer(nodeInfo, forceInitiate);
+    }
+
+    /// Per-peer reconcile backoff, capped at 60 s for a peer SWIM does not see alive and at the initial 5 s
+    /// while the raw-SWIM liveness gate reports it HEALTHY or SUSPECTED (an unwired gate reads as not alive).
+    /// Re-read at every tick, so the cap follows the gate: a peer reported alive after a long outage dials on
+    /// the next tick instead of waiting out the attempt time earned at the 60 s cap.
+    private boolean reconcileBackoffAllows(PeerState state, long nowMs) {
+        return swimLivenessAllows(state.peerId())
+               ? state.reconcileBackoffAllowsWhileAlive(nowMs,
+                                                        RECONCILE_BACKOFF_INITIAL_MS,
+                                                        RECONCILE_ALIVE_MIN_SPACING_MS)
+               : state.reconcileBackoffAllows(nowMs,
+                                              RECONCILE_BACKOFF_INITIAL_MS,
+                                              RECONCILE_BACKOFF_CAP_MS,
+                                              this::reconcileJitter);
     }
 
     /// Default jitter for the missing-peer reconciler. Light bands (0.8x–1.2x) — peers
