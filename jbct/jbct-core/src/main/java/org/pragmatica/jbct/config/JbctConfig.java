@@ -7,6 +7,7 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
+import org.pragmatica.lang.Result;
 
 
 /// Unified configuration for JBCT tools.
@@ -50,9 +51,9 @@ public record JbctConfig(FormatterConfig formatter,
     ///
     /// This materialises a *single* document in isolation. Layered loading goes through
     /// [ConfigLoader], which folds [PartialConfig] layers per key and materialises once at the end.
-    public static JbctConfig fromToml(TomlDocument toml) {
+    public static Result<JbctConfig> fromToml(TomlDocument toml) {
         return PartialConfig.partialConfig(toml)
-                            .materialize();
+                            .map(PartialConfig::materialize);
     }
 
     /// Generate TOML representation of this config.

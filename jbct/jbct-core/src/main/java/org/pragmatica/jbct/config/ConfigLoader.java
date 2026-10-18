@@ -6,7 +6,11 @@ import java.util.stream.Stream;
 
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.FileOps;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Result.success;
 
 
 /// Loads JBCT configuration by folding layers per key, lowest priority first:
@@ -37,23 +41,29 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
     ///
     /// @param explicitConfigPath Optional path to explicit config file (highest priority)
     /// @param workingDirectory   Optional working directory for project config lookup
-    static JbctConfig load(Option<Path> explicitConfigPath, Option<Path> workingDirectory) {
+    ///
+    /// A layer that cannot be used fails the load as [ConfigError.LayerInvalid], naming its file: a
+    /// syntax error (with its line), an unreadable file, or a key of the wrong TOML type (with its
+    /// value). Silently skipping such a layer would let a lower layer or the built-in default win over
+    /// what the operator wrote (#1455). An absent file is not a failure.
+    static Result<JbctConfig> load(Option<Path> explicitConfigPath, Option<Path> workingDirectory) {
         return foldLayers(layerPaths(explicitConfigPath, startDirectory(workingDirectory)));
     }
 
     /// Load user-level config from ~/.jbct/config.toml.
-    static Option<JbctConfig> loadUserConfig() {
-        return userConfigCandidate().flatMap(ConfigLoader::loadFromFile);
+    static Result<Option<JbctConfig>> loadUserConfig() {
+        return userConfigCandidate().map(ConfigLoader::loadFromFile)
+                                    .or(success(none()));
     }
 
     /// Load project-level config from jbct.toml in given directory.
-    static Option<JbctConfig> loadProjectConfig(Path directory) {
+    static Result<Option<JbctConfig>> loadProjectConfig(Path directory) {
         return loadFromFile(directory.resolve(PROJECT_CONFIG_NAME));
     }
 
     /// Load config from a specific file, materialised on its own against the built-in defaults.
-    static Option<JbctConfig> loadFromFile(Path path) {
-        return parseLayer(path).map(PartialConfig::materialize);
+    static Result<Option<JbctConfig>> loadFromFile(Path path) {
+        return parseLayer(path).map(layer -> layer.map(PartialConfig::materialize));
     }
 
     /// Find every `jbct.toml` from the repository root down to `startDir`, outermost first.
@@ -77,11 +87,18 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
         return getUserConfigDir().resolve(USER_CONFIG_NAME);
     }
 
-    private static JbctConfig foldLayers(List<Path> paths) {
-        return paths.stream()
-                    .flatMap(ConfigLoader::layerStream)
-                    .reduce(PartialConfig.EMPTY, PartialConfig::mergeWith)
-                    .materialize();
+    private static Result<JbctConfig> foldLayers(List<Path> paths) {
+        return Result.allOf(paths.stream()
+                                 .map(ConfigLoader::parseLayer)
+                                 .toList())
+                     .map(ConfigLoader::materialized);
+    }
+
+    private static JbctConfig materialized(List<Option<PartialConfig>> layers) {
+        return layers.stream()
+                     .flatMap(Option::stream)
+                     .reduce(PartialConfig.EMPTY, PartialConfig::mergeWith)
+                     .materialize();
     }
 
     private static List<Path> layerPaths(Option<Path> explicitConfigPath, Path startDir) {
@@ -101,16 +118,16 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
                      .map(home -> Path.of(home, USER_CONFIG_DIR, USER_CONFIG_NAME));
     }
 
-    private static Stream<PartialConfig> layerStream(Path path) {
-        return parseLayer(path).stream();
+    private static Result<Option<PartialConfig>> parseLayer(Path path) {
+        return FileOps.isRegularFile(path)
+               ? readLayer(path).map(Option::some)
+               : success(none());
     }
 
-    private static Option<PartialConfig> parseLayer(Path path) {
-        return FileOps.isRegularFile(path)
-               ? TomlParser.parseFile(path)
-                           .map(PartialConfig::partialConfig)
-                           .option()
-               : Option.none();
+    private static Result<PartialConfig> readLayer(Path path) {
+        return TomlParser.parseFile(path)
+                         .flatMap(PartialConfig::partialConfig)
+                         .mapError(cause -> ConfigError.LayerInvalid.layerInvalid(path, cause));
     }
 
     private static List<Path> collectChain(Option<Path> dirOpt) {

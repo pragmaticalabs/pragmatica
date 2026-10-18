@@ -5,6 +5,7 @@ import java.nio.file.Path;
 
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -377,7 +378,7 @@ class ConfigLoaderTest {
                                         indentSize = 8
                                         """);
 
-            var config = ConfigLoader.load(Option.some(explicit), Option.some(root));
+            var config = ConfigLoader.load(Option.some(explicit), Option.some(root)).unwrap();
 
             assertThat(config.formatter()
                              .indentSize()).isEqualTo(8);
@@ -388,8 +389,105 @@ class ConfigLoaderTest {
         }
     }
 
+    /// #1455: a layer that cannot be used fails the load naming its file; it is never skipped, because
+    /// skipping lets a lower layer or the built-in default win over what the operator wrote.
+    @Nested
+    class RefusedLayers {
+        @Test
+        void load_refusesNamingFileKeyAndValue_whenProjectKeyHasWrongType() throws Exception {
+            var project = repositoryRoot("project", """
+                                                     [format]
+                                                     maxLineLength = "120"
+                                                     """);
+
+            assertRefused(ConfigLoader.load(Option.none(), Option.some(project)),
+                          project.resolve(ConfigLoader.PROJECT_CONFIG_NAME),
+                          "format.maxLineLength",
+                          "120");
+        }
+
+        @Test
+        void load_refusesNamingFile_whenProjectLayerHasSyntaxError() throws Exception {
+            var project = repositoryRoot("project", """
+                                                     [format
+                                                     maxLineLength = 100
+                                                     """);
+            var result = ConfigLoader.load(Option.none(), Option.some(project));
+
+            assertRefused(result, project.resolve(ConfigLoader.PROJECT_CONFIG_NAME));
+            result.onSuccess(config -> org.junit.jupiter.api.Assertions.fail("syntax error must refuse, loaded " + config))
+                  .onFailure(cause -> assertThat(cause).isInstanceOf(ConfigError.LayerInvalid.class));
+        }
+
+        @Test
+        void load_refusesNamingUserFile_whenUserLayerKeyHasWrongType() throws Exception {
+            writeUserConfig("""
+                            [lint]
+                            failOnWarning = "yes"
+                            """);
+            var project = repositoryRoot("project", """
+                                                     [format]
+                                                     maxLineLength = 100
+                                                     """);
+
+            assertRefused(ConfigLoader.load(Option.none(), Option.some(project)),
+                          tempDir.resolve("home").resolve(ConfigLoader.USER_CONFIG_DIR).resolve(ConfigLoader.USER_CONFIG_NAME),
+                          "lint.failOnWarning",
+                          "yes");
+        }
+
+        @Test
+        void load_refusesNamingExplicitFile_whenExplicitLayerKeyHasWrongType() throws Exception {
+            var root = repositoryRoot("repo", "[format]\nmaxLineLength = 100\n");
+            var explicit = tempDir.resolve("explicit.toml");
+
+            Files.writeString(explicit, "[files]\nmaxFileSize = \"big\"\n");
+
+            assertRefused(ConfigLoader.load(Option.some(explicit), Option.some(root)), explicit, "files.maxFileSize", "big");
+        }
+
+        @Test
+        void load_namesEveryBadLayer_whenSeveralAreInvalid() throws Exception {
+            writeUserConfig("[lint]\nfailOnWarning = \"yes\"\n");
+            var project = repositoryRoot("project", "[format]\nindentSize = \"four\"\n");
+
+            assertRefused(ConfigLoader.load(Option.none(), Option.some(project)),
+                          project.resolve(ConfigLoader.PROJECT_CONFIG_NAME),
+                          "format.indentSize",
+                          "four");
+            assertRefused(ConfigLoader.load(Option.none(), Option.some(project)),
+                          tempDir.resolve("home").resolve(ConfigLoader.USER_CONFIG_DIR).resolve(ConfigLoader.USER_CONFIG_NAME),
+                          "lint.failOnWarning",
+                          "yes");
+        }
+
+        @Test
+        void loadFromFile_refusesWrongTypedKey_andAnAbsentFileIsNone() throws Exception {
+            var bad = tempDir.resolve("bad.toml");
+
+            Files.writeString(bad, "[format]\nuseTabs = \"maybe\"\n");
+
+            assertRefused(ConfigLoader.loadFromFile(bad), bad, "format.useTabs", "maybe");
+            assertThat(ConfigLoader.loadFromFile(tempDir.resolve("absent.toml")).unwrap().isEmpty()).isTrue();
+        }
+
+        @Test
+        void load_succeeds_whenEveryLayerIsWellTyped_andNoLayerExists() throws Exception {
+            var project = repositoryRoot("project", "[format]\nmaxLineLength = 100\n");
+
+            assertThat(load(project).formatter().maxLineLength()).isEqualTo(100);
+            assertThat(ConfigLoader.load(Option.none(), Option.some(tempDir.resolve("nowhere"))).isSuccess()).isTrue();
+        }
+
+        private void assertRefused(Result<?> result, Path layer, String... fragments) {
+            result.onSuccess(config -> org.junit.jupiter.api.Assertions.fail("must refuse, loaded " + config))
+                  .onFailure(cause -> assertThat(cause.message()).contains(layer.toString())
+                                                                 .contains(fragments));
+        }
+    }
+
     private static JbctConfig load(Path workingDirectory) {
-        return ConfigLoader.load(Option.none(), Option.some(workingDirectory));
+        return ConfigLoader.load(Option.none(), Option.some(workingDirectory)).unwrap();
     }
 
     private void writeUserConfig(String content) throws Exception {

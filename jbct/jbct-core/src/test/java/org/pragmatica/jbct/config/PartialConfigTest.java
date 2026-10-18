@@ -152,8 +152,41 @@ class PartialConfigTest {
                      .map(PartialConfig::mergeWith);
     }
 
+    /// #1455: a key present with the wrong TOML type was captured as "key not set", so a lower layer or
+    /// the built-in default silently won. Every typed read of the layer is covered: integer, boolean,
+    /// long, string list.
+    @Test
+    void partialConfig_refusesNamingEveryKeyAndValue_whenKeysHaveWrongTypes() {
+        layer("""
+              [format]
+              maxLineLength = "wide"
+              useTabs = "maybe"
+
+              [files]
+              maxFileSize = "big"
+              excludes = "generated"
+
+              [lint]
+              failOnWarning = "yes"
+              """).onSuccess(layer -> org.junit.jupiter.api.Assertions.fail("must refuse, captured " + layer))
+                  .onFailure(cause -> assertThat(cause.message()).contains("format.maxLineLength", "wide")
+                                                                 .contains("format.useTabs", "maybe")
+                                                                 .contains("files.maxFileSize", "big")
+                                                                 .contains("files.excludes", "generated")
+                                                                 .contains("lint.failOnWarning", "yes"));
+    }
+
+    @Test
+    void fromToml_refusesAWrongTypedKey_andMaterialisesAWellTypedDocument() {
+        TomlParser.parse("[format]\nindentSize = \"four\"\n")
+                  .flatMap(JbctConfig::fromToml)
+                  .onSuccess(config -> org.junit.jupiter.api.Assertions.fail("must refuse, loaded " + config))
+                  .onFailure(cause -> assertThat(cause.message()).contains("format.indentSize", "four"));
+        assertThat(TomlParser.parse("[format]\nindentSize = 2\n").flatMap(JbctConfig::fromToml).unwrap().formatter().indentSize()).isEqualTo(2);
+    }
+
     private static Result<PartialConfig> layer(String toml) {
         return TomlParser.parse(toml)
-                         .map(PartialConfig::partialConfig);
+                         .flatMap(PartialConfig::partialConfig);
     }
 }

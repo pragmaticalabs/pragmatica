@@ -12,6 +12,7 @@ import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintConfig;
 import org.pragmatica.jbct.lint.layer.LayerConfig;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
@@ -50,14 +51,21 @@ record PartialConfig(PartialFormatter formatter,
                                                          PartialLayers.EMPTY);
 
     /// Parse a single layer from a TOML document.
-    static PartialConfig partialConfig(TomlDocument toml) {
-        return new PartialConfig(PartialFormatter.partialFormatter(toml),
-                                 PartialLint.partialLint(toml),
-                                 PartialFiles.partialFiles(toml),
-                                 PartialBlueprint.partialBlueprint(toml),
-                                 toml.getStringList("project", "sourceDirectories"),
-                                 toml.getStringList("lint", "excludePackages"),
-                                 PartialLayers.partialLayers(toml));
+    ///
+    /// A key present with the wrong TOML type (`maxLineLength = "120"`) is refused naming section, key
+    /// and value (#1455): the typed reads below answer an empty `Option` for it, which this layer
+    /// would otherwise capture as "key not set" and let a lower layer or the built-in default win.
+    static Result<PartialConfig> partialConfig(TomlDocument toml) {
+        var layer = new PartialConfig(PartialFormatter.partialFormatter(toml),
+                                      PartialLint.partialLint(toml),
+                                      PartialFiles.partialFiles(toml),
+                                      PartialBlueprint.partialBlueprint(toml),
+                                      toml.getStringList("project", "sourceDirectories"),
+                                      toml.getStringList("lint", "excludePackages"),
+                                      PartialLayers.partialLayers(toml));
+
+        return toml.requireNoTypeMismatches()
+                   .map(_ -> layer);
     }
 
     /// Fold a nearer (higher priority) layer onto this one — every key it sets wins, key by key.

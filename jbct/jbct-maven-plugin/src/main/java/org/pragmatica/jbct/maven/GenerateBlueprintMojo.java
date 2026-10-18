@@ -218,7 +218,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
 
     private void validateSchemaPresence(List<SliceManifest> localManifests,
                                         List<DependencyManifest> dependencyManifests) throws MojoExecutionException {
-        var blueprintConfig = loadBlueprintConfig();
+        var blueprintConfig = loadBlueprintConfig(project.getBasedir().toPath());
 
         if (blueprintConfig.schema() == SchemaMode.EXTERNAL) {
             getLog().debug("Schema validation skipped (blueprint.schema = external)");
@@ -255,12 +255,15 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         }
     }
 
-    private BlueprintConfig loadBlueprintConfig() {
-        var projectDir = Option.some(project.getBasedir().toPath());
+    static BlueprintConfig loadBlueprintConfig(Path projectDir) throws MojoExecutionException {
+        var loaded = ConfigLoader.load(Option.none(), Option.some(projectDir));
+        var refusal = loaded.fold(cause -> Option.some(cause.message()), _ -> Option.<String>none());
 
-        return ConfigLoader.load(Option.none(),
-                                 projectDir)
-                           .blueprint();
+        if (refusal.isPresent()) {
+            throw new MojoExecutionException(refusal.unwrap());
+        }
+
+        return loaded.unwrap().blueprint();
     }
 
     private Set<String> collectDatasources(List<SliceManifest> localManifests,
