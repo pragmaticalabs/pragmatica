@@ -21,7 +21,8 @@ import org.pragmatica.lang.Option;
 ///   - consumes TEXT/HTML/XML → parameter must be `String`
 ///   - consumes BINARY → parameter must be `byte[]`
 ///   - consumes MULTIPART → parameter must be `MultipartRequest`
-///   - consumes BINARY/MULTIPART → the route may not declare path or query parameters (A7)
+///   - a body route may declare path or query parameters only when its body is a JSON request record that merges
+///     them (A7/F2); any other body would drop them
 ///   - JSON (in or out) → any type is accepted
 ///   - FORM_URLENCODED is rejected in both directions: as a `produces` it is input-only, and as a
 ///     `consumes` it is rejected until form-body binding is implemented (#414)
@@ -70,22 +71,29 @@ public sealed interface MediaTypeTypeChecker {
         };
     }
 
-    /// A7: a `byte[]` or `MultipartRequest` route cannot receive path or query parameters. The single body
-    /// parameter has nowhere to carry them, so the generated route parsed them and dropped them (`byte[]`), or
-    /// refused with a message about record components (`MultipartRequest`). Refused at compile time until the upload
-    /// overhaul replaces this body API.
+    /// A7/F2: a route that declares path or query parameters must have somewhere to put them. Only a JSON request
+    /// RECORD merges them (one component per parameter, built together with the body's fields). Every other body
+    /// (`String` for TEXT/HTML/XML, `byte[]`, `MultipartRequest`, or a JSON body that is not a record, such as a list)
+    /// is passed to the slice method as it is, so the generated route parsed the parameters and dropped them silently.
+    /// Refused at compile time.
     ///
-    /// @param category   the consumes ContentCategory enum constant name
-    /// @param hasParams  whether the route declares path or query parameters
-    /// @param methodName the slice method name, for the error message
-    /// @return none when valid, some(errorMessage) for a binary or multipart route with parameters
-    static Option<String> checkBodyRouteParams(String category, boolean hasParams, String methodName) {
-        return hasParams && (category.equals("BINARY") || category.equals("MULTIPART"))
+    /// @param category     the consumes ContentCategory enum constant name
+    /// @param hasParams    whether the route declares path or query parameters AND binds a request body
+    /// @param bodyIsRecord whether the body parameter type is a record with at least one component
+    /// @param bodyType     the body parameter type, for the error message
+    /// @param methodName   the slice method name, for the error message
+    /// @return none when valid, some(errorMessage) when the parameters would be dropped
+    static Option<String> checkBodyRouteParams(String category,
+                                               boolean hasParams,
+                                               boolean bodyIsRecord,
+                                               String bodyType,
+                                               String methodName) {
+        return hasParams && !(category.equals("JSON") && bodyIsRecord)
                ? Option.some("Slice method '" + methodName
-                            + "': a route consuming category " + category
-                            + " cannot declare path or query parameters: its single byte[]/MultipartRequest parameter"
-                            + " cannot carry them, so they would be dropped. Remove them from the route, or send"
-                            + " them inside the body")
+                             + "': the route declares path or query parameters, but its body parameter ("
+                             + bodyType + ", consumes " + category
+                             + ") cannot carry them, so they would be dropped. Use a JSON request record with a"
+                             + " component per parameter, or remove the parameters from the route")
                : Option.none();
     }
 

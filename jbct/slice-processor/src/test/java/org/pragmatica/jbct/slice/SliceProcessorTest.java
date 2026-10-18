@@ -501,7 +501,7 @@ class SliceProcessorTest {
                                             "upload = { route = \"PUT /files/{id:Long}\", consumes = \"application/octet-stream\" }",
                                             "Promise<String> upload(byte[] body);");
 
-        assertThat(diagnostics).contains("cannot declare path or query parameters");
+        assertThat(diagnostics).contains("cannot carry them, so they would be dropped");
     }
 
     @Test
@@ -510,7 +510,7 @@ class SliceProcessorTest {
                                             "upload = { route = \"PUT /blobs?name\", consumes = \"application/octet-stream\" }",
                                             "Promise<String> upload(byte[] body);");
 
-        assertThat(diagnostics).contains("cannot declare path or query parameters");
+        assertThat(diagnostics).contains("cannot carry them, so they would be dropped");
     }
 
     /// Positive control: the same harness, the same binary route without parameters, draws no such error, so the
@@ -521,11 +521,73 @@ class SliceProcessorTest {
                                             "upload = { route = \"PUT /files\", consumes = \"application/octet-stream\" }",
                                             "Promise<String> upload(byte[] body);");
 
-        assertThat(diagnostics).doesNotContain("cannot declare path or query parameters");
+        assertThat(diagnostics).doesNotContain("would be dropped");
+        assertThat(diagnostics).contains("Generated routes: UploadService");
+    }
+
+    /// F2: the same silent drop existed for every body that cannot carry parameters, not only `byte[]`.
+    @Test
+    void textRouteWithPathParam_isRefusedAtCompileTime(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = { route = \"PUT /notes/{id:Long}\", consumes = \"text/plain\" }",
+                                            "Promise<String> upload(String body);");
+
+        assertThat(diagnostics).contains("cannot carry them, so they would be dropped");
+    }
+
+    @Test
+    void htmlRouteWithQueryParam_isRefusedAtCompileTime(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = { route = \"POST /notes?tag\", consumes = \"text/html\" }",
+                                            "Promise<String> upload(String body);");
+
+        assertThat(diagnostics).contains("cannot carry them, so they would be dropped");
+    }
+
+    @Test
+    void jsonNonRecordRouteWithPathParam_isRefusedAtCompileTime(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = \"PUT /items/{id:Long}\"",
+                                            "Promise<String> upload(java.util.List<String> body);");
+
+        assertThat(diagnostics).contains("cannot carry them, so they would be dropped");
+    }
+
+    /// The multipart refusal is the ONLY error: no misleading "add a record component" for MultipartRequest.
+    @Test
+    void multipartRouteWithPathParam_isRefusedWithOneClearError(@TempDir Path classes) throws IOException {
+        var multipartRequest = JavaFileObjects.forSourceString("org.pragmatica.http.routing.MultipartRequest",
+                                                               """
+            package org.pragmatica.http.routing;
+
+            public record MultipartRequest(java.util.Map<String, java.util.List<String>> fieldValues,
+                                           java.util.List<Object> files) {}
+            """);
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = { route = \"POST /forms/{folder}\", consumes = \"multipart/form-data\" }",
+                                            "Promise<String> upload(org.pragmatica.http.routing.MultipartRequest body);",
+                                            List.of(multipartRequest));
+
+        assertThat(diagnostics).contains("cannot carry them, so they would be dropped");
+        assertThat(diagnostics).doesNotContain("Add a record component");
+    }
+
+    /// Positive control: a JSON request record that merges the parameter is still allowed.
+    @Test
+    void jsonRecordRouteWithPathParam_isAllowed(@TempDir Path classes) throws IOException {
+        var diagnostics = compileWithRoutes(classes,
+                                            "upload = \"PUT /items/{id:Long}\"",
+                                            "record Item(Long id, String name) {}\n\n    Promise<String> upload(Item request);");
+
+        assertThat(diagnostics).doesNotContain("would be dropped");
         assertThat(diagnostics).contains("Generated routes: UploadService");
     }
 
     private String compileWithRoutes(Path classes, String route, String method) throws IOException {
+        return compileWithRoutes(classes, route, method, List.of());
+    }
+
+    private String compileWithRoutes(Path classes, String route, String method, List<JavaFileObject> extra) throws IOException {
         var routes = classes.resolve(Path.of("upload", "routes.toml"));
 
         Files.createDirectories(routes.getParent());
@@ -549,6 +611,7 @@ class SliceProcessorTest {
         var sources = commonSources();
 
         sources.add(source);
+        sources.addAll(extra);
         var compiler = javax.tools.ToolProvider.getSystemJavaCompiler();
         var collector = new javax.tools.DiagnosticCollector<JavaFileObject>();
 

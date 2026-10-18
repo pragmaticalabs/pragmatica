@@ -638,7 +638,7 @@ public class RouteSourceGenerator {
                                RouteConfig routeConfig,
                                String handlerName,
                                TypeElement sliceElement) {
-        validateMediaTypes(routeDsl, method, sliceElement);
+        var paramsRefused = validateMediaTypes(routeDsl, method, sliceElement);
         var routePath = routeDsl.hasPathParams()
                         ? routeDsl.basePath()
                         : routeDsl.cleanPath();
@@ -659,8 +659,10 @@ public class RouteSourceGenerator {
                     : "";
         var security = securityExpression(routeConfig, handlerName);
         var trailer = versionedTrailer(version) + outputCall(routeDsl) + comma;
-        var hasPath = routeDsl.hasPathParams();
-        var hasQuery = routeDsl.hasQueryParams();
+        // A refused route (F2) is still emitted, as a body-only route, so its one clear error is the only one: emitting
+        // the parameter merge would add a misleading "add a record component" error for a MultipartRequest body.
+        var hasPath = routeDsl.hasPathParams() && !paramsRefused;
+        var hasQuery = routeDsl.hasQueryParams() && !paramsRefused;
         var hasBody = isBodyMethod(routeDsl.method()) && !boundEntirelyByPathAndQuery(method, routeDsl);
         // #397 §4.2: value-object path/query segments (a component whose type exposes
         // `valueMapping()`) compose the framework String->P parser with the VO's `lift`; keyed by
@@ -842,7 +844,9 @@ public class RouteSourceGenerator {
     /// Decision D3: strict compile-time validation of declared `produces`/`consumes` media types
     /// against the method's Java response/parameter types. Reports hard errors via the messager.
     /// Delegates the type rules to [MediaTypeTypeChecker] (pure + unit-tested).
-    private void validateMediaTypes(RouteDsl routeDsl, MethodModel method, TypeElement sliceElement) {
+    ///
+    /// @return whether the route's path/query parameters were refused because its body cannot carry them
+    private boolean validateMediaTypes(RouteDsl routeDsl, MethodModel method, TypeElement sliceElement) {
         MediaTypeTypeChecker.checkProduces(routeDsl.produces().category(),
                                            method.responseType().toString(),
                                            method.name())
@@ -852,11 +856,33 @@ public class RouteSourceGenerator {
                                                consumesParameterType(method),
                                                method.name())
                                 .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
-            MediaTypeTypeChecker.checkBodyRouteParams(routeDsl.consumes().category(),
-                                                      routeDsl.hasParams(),
-                                                      method.name())
-                                .onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
         }
+
+        return isBodyMethod(routeDsl.method()) && refuseUncarriedParams(routeDsl, method, sliceElement);
+    }
+
+    private boolean refuseUncarriedParams(RouteDsl routeDsl, MethodModel method, TypeElement sliceElement) {
+        var bodyBound = !boundEntirelyByPathAndQuery(method, routeDsl);
+        var refusal = MediaTypeTypeChecker.checkBodyRouteParams(routeDsl.consumes().category(),
+                                                                routeDsl.hasParams() && bodyBound,
+                                                                bodyIsRecord(method),
+                                                                consumesParameterType(method),
+                                                                method.name());
+
+        refusal.onPresent(msg -> messager.printMessage(Diagnostic.Kind.ERROR, msg, sliceElement));
+
+        return refusal.isPresent();
+    }
+
+    private boolean bodyIsRecord(MethodModel method) {
+        if (method.parameters().isEmpty() || (method.hasSecurityParams() && method.businessParameters().size() != 1)) {
+            return false;
+        }
+
+        return !MethodModel.recordComponents(method.hasSecurityParams()
+                                             ? method.businessParameterType()
+                                             : method.parameterType())
+                           .isEmpty();
     }
 
     /// Resolve the parameter type used for `consumes` validation, preferring the business

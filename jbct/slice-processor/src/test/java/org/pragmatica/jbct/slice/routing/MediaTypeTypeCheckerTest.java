@@ -4,6 +4,8 @@
 
 package org.pragmatica.jbct.slice.routing;
 
+import java.util.List;
+
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -134,30 +136,41 @@ class MediaTypeTypeCheckerTest {
         }
     }
 
-    /// A7: a binary or multipart route cannot carry path or query parameters; a JSON route can.
+    /// A7/F2: a body route's path or query parameters must be carried by a JSON request record; every other body
+    /// kind (String, byte[], MultipartRequest, a JSON non-record) would drop them.
     @Nested
     class BodyRouteParams {
         @Test
-        void checkBodyRouteParams_fails_forBinaryWithParams() {
-            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("BINARY", true, "upload").isPresent()).isTrue();
+        void checkBodyRouteParams_fails_forEveryNonJsonCategoryWithParams() {
+            for (var category : List.of("TEXT", "HTML", "XML", "BINARY", "MULTIPART")) {
+                var result = MediaTypeTypeChecker.checkBodyRouteParams(category, true, false, "java.lang.String", "save");
+
+                assertThat(result.isPresent()).as(category).isTrue();
+                result.onPresent(msg -> assertThat(msg).contains("save").contains("would be dropped"));
+            }
         }
 
         @Test
-        void checkBodyRouteParams_fails_forMultipartWithParams() {
-            var result = MediaTypeTypeChecker.checkBodyRouteParams("MULTIPART", true, "form");
-
-            result.onPresent(msg -> assertThat(msg).contains("form").contains("cannot declare path or query parameters"));
-            assertThat(result.isPresent()).isTrue();
+        void checkBodyRouteParams_fails_forNonJsonCategoryEvenWhenTheBodyIsARecord() {
+            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("MULTIPART", true, true, "MultipartRequest", "form")
+                                           .isPresent()).isTrue();
         }
 
         @Test
-        void checkBodyRouteParams_ok_forBinaryWithoutParams() {
-            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("BINARY", false, "upload").isEmpty()).isTrue();
+        void checkBodyRouteParams_fails_forJsonNonRecordWithParams() {
+            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("JSON", true, false, "java.util.List<java.lang.String>", "update")
+                                           .isPresent()).isTrue();
         }
 
         @Test
-        void checkBodyRouteParams_ok_forJsonWithParams() {
-            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("JSON", true, "update").isEmpty()).isTrue();
+        void checkBodyRouteParams_ok_forJsonRecordWithParams() {
+            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("JSON", true, true, "com.example.Item", "update")
+                                           .isEmpty()).isTrue();
+        }
+
+        @Test
+        void checkBodyRouteParams_ok_withoutParams() {
+            assertThat(MediaTypeTypeChecker.checkBodyRouteParams("BINARY", false, false, "byte[]", "upload").isEmpty()).isTrue();
         }
     }
 }
