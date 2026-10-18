@@ -29,20 +29,26 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// hands them to the eviction listener (the sealer) exactly as space eviction does. It calls
 /// `OffHeapRingBuffer#evictByAge` and nothing else.
 ///
-/// Old events are stamped two hours before "now" and fresh ones with "now"; every max age used is one hour or
-/// less, so the split between them is wide against the clock the ring reads inside `evictByAge`.
+/// Old events are stamped two hours before "now", the middle one half an hour before and fresh ones with "now";
+/// every max age used is one hour or less, so the splits are wide against the clock the ring reads inside
+/// `evictByAge`. The middle event is younger than the max age but older than any small number a wrong bound could
+/// pass (the count default read as milliseconds is 100 s), so it separates the max age from such a bound.
 class RingAgeTickTest {
     private static final long HOUR_MS = 3_600_000L;
     private static final long STALE_MS = 2 * HOUR_MS;
+    private static final long HALF_HOUR_MS = HOUR_MS / 2;
     private static final int OLD_EVENTS = 3;
+    private static final int MIDDLE_EVENTS = 1;
     private static final int FRESH_EVENTS = 2;
+    private static final int KEPT_EVENTS = MIDDLE_EVENTS + FRESH_EVENTS;
+    private static final int ALL_EVENTS = OLD_EVENTS + KEPT_EVENTS;
     /// What the TOML parser fills into the dimensions a `time`-typed stream does not declare
     /// (`StreamConfigParser`'s `time` arm): the count and byte defaults, so the policy is finite on all three axes.
     private static final long DEFAULT_MAX_COUNT = 100_000L;
     private static final long DEFAULT_MAX_BYTES = 256L * 1024 * 1024;
 
     private final List<Long> handedOver = new CopyOnWriteArrayList<>();
-    private final List<String> handedOverStreams = new CopyOnWriteArrayList<>();
+    private final List<String> handedOverRings = new CopyOnWriteArrayList<>();
     private StreamPartitionManager manager;
 
     @BeforeEach
@@ -57,7 +63,7 @@ class RingAgeTickTest {
 
     private Result<Unit> takeEvents(String stream, int partition, List<OffHeapRingBuffer.RawEvent> events) {
         events.forEach(event -> handedOver.add(event.offset()));
-        handedOverStreams.add(stream);
+        handedOverRings.add(stream + "/" + partition);
         return Result.unitResult();
     }
 
@@ -80,6 +86,8 @@ class RingAgeTickTest {
             append(ring, "old-" + i, now - STALE_MS + i);
         }
 
+        append(ring, "middle", now - HALF_HOUR_MS);
+
         for (int i = 0; i < FRESH_EVENTS; i++) {
             append(ring, "fresh-" + i, now);
         }
@@ -99,9 +107,10 @@ class RingAgeTickTest {
 
         assertThat(swept).as("the one materialized ring of the stream was swept").isEqualTo(1);
         assertThat(handedOver).as("the old events went to the sealer, in offset order").containsExactly(0L, 1L, 2L);
-        assertThat(handedOverStreams).containsOnly("timed");
+        assertThat(handedOverRings).containsOnly("timed/0");
         assertThat(ring.tailOffset()).as("the old events left the ring").isEqualTo(OLD_EVENTS);
-        assertThat(ring.eventCount()).as("the fresh events stayed").isEqualTo(FRESH_EVENTS);
+        assertThat(ring.eventCount()).as("the middle event (younger than the max age) and the fresh events stayed")
+                                     .isEqualTo(KEPT_EVENTS);
     }
 
     @Test
@@ -128,7 +137,7 @@ class RingAgeTickTest {
         manager.evictRingsByAge();
 
         assertThat(handedOver).as("Q8 A wires evictByAge for compound streams: age alone evicts").containsExactly(0L, 1L, 2L);
-        assertThat(ring.eventCount()).isEqualTo(FRESH_EVENTS);
+        assertThat(ring.eventCount()).isEqualTo(KEPT_EVENTS);
     }
 
     @Test
@@ -139,7 +148,7 @@ class RingAgeTickTest {
 
         assertThat(swept).as("a stream with no declared age is skipped, not swept to a no-op").isZero();
         assertThat(handedOver).isEmpty();
-        assertThat(ring.eventCount()).isEqualTo(OLD_EVENTS + FRESH_EVENTS);
+        assertThat(ring.eventCount()).isEqualTo(ALL_EVENTS);
     }
 
     @Test
@@ -147,14 +156,14 @@ class RingAgeTickTest {
         var tierAware = timeTyped(HOUR_MS, tierAwareRetention(0, 0));
         var ring = ringWithOldAndFreshEvents("entity:orders", tierAware);
 
-        ring.updateLastSealedOffset(OLD_EVENTS + FRESH_EVENTS - 1);
+        ring.updateLastSealedOffset(ALL_EVENTS - 1);
 
         var swept = manager.evictRingsByAge();
 
         assertThat(swept).as("an entity ring is excluded from the tick").isZero();
         assertThat(handedOver).isEmpty();
         assertThat(ring.eventCount()).as("neither the age rule nor the armed tier-aware branch reached it")
-                                     .isEqualTo(OLD_EVENTS + FRESH_EVENTS);
+                                     .isEqualTo(ALL_EVENTS);
     }
 
     @Test
@@ -162,11 +171,11 @@ class RingAgeTickTest {
         var tierAware = timeTyped(10 * HOUR_MS, tierAwareRetention(0, 0));
         var ring = ringWithOldAndFreshEvents("tiered", tierAware);
 
-        ring.updateLastSealedOffset(OLD_EVENTS + FRESH_EVENTS - 1);
+        ring.updateLastSealedOffset(ALL_EVENTS - 1);
         manager.evictRingsByAge();
 
         assertThat(handedOver).as("nothing is older than the 10 h max age; a tier-aware pass would evict every sealed event").isEmpty();
-        assertThat(ring.eventCount()).isEqualTo(OLD_EVENTS + FRESH_EVENTS);
+        assertThat(ring.eventCount()).isEqualTo(ALL_EVENTS);
     }
 
     @Test
@@ -179,7 +188,7 @@ class RingAgeTickTest {
         manager.evictRingsByAge();
 
         assertThat(ring.eventCount()).as("a refused hand-over leaves the events in place, as for space eviction")
-                                     .isEqualTo(OLD_EVENTS + FRESH_EVENTS);
+                                     .isEqualTo(ALL_EVENTS);
         assertThat(ring.tailOffset()).isZero();
     }
 
@@ -202,6 +211,15 @@ class RingAgeTickTest {
         manager.createStream(StreamConfig.streamConfig("b", 1, timeTyped(HOUR_MS), "earliest"))
                .onFailure(cause -> fail(cause.message()));
 
+        var stale = System.currentTimeMillis() - STALE_MS;
+
+        List.of(new Partition("a", 0), new Partition("a", 1), new Partition("b", 0))
+            .forEach(partition -> append(manager.partitionBuffer(partition.stream(), partition.partition()).unwrap(), "old", stale));
+
         assertThat(manager.evictRingsByAge()).isEqualTo(3);
+        assertThat(handedOverRings).as("the old event of every ring of every stream went to the sealer")
+                                   .containsExactlyInAnyOrder("a/0", "a/1", "b/0");
     }
+
+    private record Partition(String stream, int partition) {}
 }
