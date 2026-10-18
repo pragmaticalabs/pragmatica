@@ -1130,7 +1130,7 @@ public interface AetherNode extends ManageableNode {
     /// FSM entirely. The FSM holder is deref'd lazily: the registry-backed sinks are wired before
     /// the FSM exists; pre-FSM the registry path alone applies (boot window only).
     @Contract
-    private static void requestDrainThroughFsm(DrainCommandRegistry drainCommandRegistry,
+    static void requestDrainThroughFsm(DrainCommandRegistry drainCommandRegistry,
                                                AtomicReference<MembershipFsm> membershipFsmRef,
                                                NodeId target) {
         drainCommandRegistry.requestDrain(target);
@@ -1976,13 +1976,24 @@ public interface AetherNode extends ManageableNode {
 
     /// #2063: an operator drain target stays in the leader's `DrainCommandRegistry` until something clears it, and only the
     /// drains the topology manager started itself had a removal path. A node that was drained, left and came back under the
-    /// SAME id (ids come from config) was then told to drain again by the same leader. The DEAD edge is the departure the
-    /// drain was for, so the entry ends there; a later rejoin starts with no inherited command.
+    /// SAME id (ids come from config) was then told to drain again by the same leader. The entry ends with the drain episode,
+    /// on any of three edges: into DEAD (the departure the drain was for), out of DEPARTING back to MEMBER (the drain was
+    /// refuted by a higher-incarnation `SwimHealthy`, or withdrawn undelivered, #1054: the node is staying), and out of DEAD
+    /// (a drain commanded on an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would otherwise
+    /// be inherited by the rejoin). A later rejoin therefore starts with no inherited command.
     @Contract
     static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry, MembershipTransitionRecord record) {
-        if ("Dead".equals(record.toState())) {
+        if (isDrainEpisodeEnd(record)) {
             drainCommandRegistry.clearDrain(record.nodeId());
         }
+    }
+
+    private static boolean isDrainEpisodeEnd(MembershipTransitionRecord record) {
+        return "Dead".equals(record.toState()) || "Dead".equals(record.fromState()) || isDepartingRecovery(record);
+    }
+
+    private static boolean isDepartingRecovery(MembershipTransitionRecord record) {
+        return "Departing".equals(record.fromState()) && "Member".equals(record.toState());
     }
 
     @Contract
@@ -4908,7 +4919,7 @@ public interface AetherNode extends ManageableNode {
             // #1720: a floor-refused operator drain target that has now reached DEAD closes its refusal on this edge.
             // Here and not on the DEAD-edge listener, which a wiring pin keeps to the unconditional callback.
             closeSliceFloorRefusalOnDeath(managementServerRef, record);
-            // #2063: the drained node has left; its operator drain entry must not outlive it.
+            // #2063: the drain episode ended (node died, was refuted back to MEMBER, or rejoined); its operator drain entry must not outlive it.
             clearOperatorDrainOnDeath(drainCommandRegistry, record);
         });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
