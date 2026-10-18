@@ -169,6 +169,17 @@ class LeaderReconnectTripwireTest {
     }
 
     @Test
+    void leaderManager_dispatchesNothing_whenAnIneligiblePeerReconnectsAndTheEligibleViewIsUnchanged() {
+        var electing = anElectingRankTwoNode();
+
+        follower.ctx.installVoters(List.of(N1, N2));
+        var tickBefore = electing.tickFuture().get();
+        follower.manager.peerReconnected(new PeerReconnected(N3, ALL, ObservationSource.QUIC));
+
+        assertThat(electing.tickFuture().get() == tickBefore).as("a non-voter coming back changes no eligible view, so no event").isTrue();
+    }
+
+    @Test
     void leaderManager_restoresTheView_whenAnElectingNodeReconnectsAPeerItLacked() {
         var electing = anElectingRankTwoNode();
         var tickBefore = electing.tickFuture().get();

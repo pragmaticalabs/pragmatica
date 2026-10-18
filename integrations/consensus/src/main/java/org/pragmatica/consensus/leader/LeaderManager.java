@@ -522,11 +522,10 @@ public interface LeaderManager {
 
         private boolean restoresTheView(NodeId nodeId, List<NodeId> topology) {
             var stored = context.currentTopology();
+            var eligibleView = topology.stream().filter(context::isEligible).sorted().toList();
+            var peerMissing = context.isEligible(nodeId) && !stored.contains(nodeId);
 
-            return ! stored.contains(nodeId) || !stored.equals(topology.stream()
-                                                                       .filter(context::isEligible)
-                                                                       .sorted()
-                                                                       .toList());
+            return peerMissing || !stored.equals(eligibleView);
         }
 
         private void dispatchNodeAdded(NodeId nodeId, List<NodeId> topology) {
