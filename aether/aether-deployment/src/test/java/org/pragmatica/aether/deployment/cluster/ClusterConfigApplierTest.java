@@ -171,7 +171,8 @@ class ClusterConfigApplierTest {
             result.onFailure(cause -> {
                 assertThat(cause).isInstanceOf(ClusterConfigError.RuntimeChangeViaApply.class);
                 assertThat(((ClusterConfigError) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
-                assertThat(cause.message()).contains("aether cluster upgrade");
+                assertThat(cause.message()).contains("aether cluster upgrade")
+                                           .contains("extra.worker (jvm -> container)");
             });
             assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
         }

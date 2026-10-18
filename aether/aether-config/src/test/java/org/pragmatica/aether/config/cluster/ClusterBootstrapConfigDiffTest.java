@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -356,20 +357,33 @@ class ClusterBootstrapConfigDiffTest {
     /// #1966: profile CONTENT was never diffed, so an edit to a profile both configs declare was an empty plan.
     @Nested
     class RuntimeProfileContent {
-        private ClusterBootstrapConfig withProfile(RuntimeProfile profile) {
+        private ClusterBootstrapConfig withProfiles(Map<String, RuntimeProfile> profiles) {
             var base = forgeConfig(3);
 
-            return clusterBootstrapConfig("1", clusterIdentity("test-cluster", "1.0").unwrap(),
+            return clusterBootstrapConfig(clusterIdentity("test-cluster", "1.0").unwrap(),
                                           defaultCoreTopology(), base.sources(),
-                                          Map.of(RUNTIME_REF, profile),
-                                          infrastructureConfig(NetworkingType.MANUAL),
+                                          profiles,
+                                          infrastructureConfig(),
                                           defaultOperationsConfig(), Map.of());
+        }
+
+        private ClusterBootstrapConfig withProfile(RuntimeProfile profile) {
+            return withProfiles(Map.of(RUNTIME_REF, profile));
+        }
+
+        private ClusterBootstrapConfig withImages(String image, String... names) {
+            var profiles = new HashMap<String, RuntimeProfile>();
+
+            for (var name : names) {
+                profiles.put(name, runtimeProfile(RuntimeType.DOCKER, some(image), none()));
+            }
+            return withProfiles(profiles);
         }
 
         @Test
         void diff_profileImageChanged_producesRuntimeProfileChange() {
-            var stored = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.DOCKER, some("img:1"), none()));
-            var desired = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.DOCKER, some("img:2"), none()));
+            var stored = withProfile(runtimeProfile(RuntimeType.DOCKER, some("img:1"), none()));
+            var desired = withProfile(runtimeProfile(RuntimeType.DOCKER, some("img:2"), none()));
 
             var plan = diff(stored, desired);
 
@@ -378,8 +392,8 @@ class ClusterBootstrapConfigDiffTest {
 
         @Test
         void diff_profileFieldsChanged_namesEveryChangedField() {
-            var stored = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.JVM, none(), some("-Xmx1g"), none()));
-            var desired = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.DOCKER, none(), some("-Xmx2g"), some("http://x/a.jar")));
+            var stored = withProfile(runtimeProfile(RuntimeType.JVM, none(), some("-Xmx1g")));
+            var desired = withProfile(runtimeProfile(RuntimeType.DOCKER, none(), some("-Xmx2g"), some("http://x/a.jar")));
 
             var plan = diff(stored, desired);
 
@@ -388,9 +402,52 @@ class ClusterBootstrapConfigDiffTest {
 
         @Test
         void diff_identicalProfile_emptyPlan() {
-            var config = withProfile(runtimeProfile(RUNTIME_REF, RuntimeType.DOCKER, some("img:1"), none()));
+            var config = withProfile(runtimeProfile(RuntimeType.DOCKER, some("img:1"), none()));
 
             assertThat(diff(config, config).isEmpty()).isTrue();
+        }
+
+        /// A profile only the committed config declares is removed from the file: inert unless a role still
+        /// references it, in which case the role surfaces as a `RuntimeChange`. Never a content change.
+        @Test
+        void diff_profileOnlyInStored_emptyPlan() {
+            var stored = withImages("img:1", RUNTIME_REF, "extra");
+            var desired = withImages("img:1", RUNTIME_REF);
+
+            assertThat(diff(stored, desired).isEmpty()).isTrue();
+        }
+
+        @Test
+        void diff_profileOnlyInDesired_emptyPlan() {
+            var stored = withImages("img:1", RUNTIME_REF);
+            var desired = withImages("img:1", RUNTIME_REF, "extra");
+
+            assertThat(diff(stored, desired).isEmpty()).isTrue();
+        }
+
+        /// The order feeds the `~` lines of `formatPlan`, which the operator reads: sorted by profile name,
+        /// not by hash order. Names chosen so their `HashSet` iteration order is not alphabetical.
+        @Test
+        void diff_severalProfilesChanged_planIsOrderedByProfileName() {
+            var stored = withImages("img:1", "charlie", "alpha", "bravo");
+            var desired = withImages("img:2", "charlie", "alpha", "bravo");
+
+            var plan = diff(stored, desired);
+
+            assertThat(plan.modifications()).containsExactly(new DiffAction.RuntimeProfileChange("alpha", "image"),
+                                                             new DiffAction.RuntimeProfileChange("bravo", "image"),
+                                                             new DiffAction.RuntimeProfileChange("charlie", "image"));
+        }
+
+        @Test
+        void formatPlan_severalProfilesChanged_listsProfilesInNameOrder() {
+            var stored = withImages("img:1", "charlie", "alpha", "bravo");
+            var desired = withImages("img:2", "charlie", "alpha", "bravo");
+
+            var output = formatPlan(diff(stored, desired), stored, desired);
+
+            assertThat(output.indexOf("runtime.alpha")).isPositive().isLessThan(output.indexOf("runtime.bravo"));
+            assertThat(output.indexOf("runtime.bravo")).isLessThan(output.indexOf("runtime.charlie"));
         }
     }
 }
