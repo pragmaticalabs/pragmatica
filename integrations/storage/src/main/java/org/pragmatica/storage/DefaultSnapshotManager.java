@@ -564,11 +564,11 @@ final class DefaultSnapshotManager implements SnapshotManager {
         var escapedNames = REF_NAME_ENCODING_ESCAPED.equals(headers.get(REF_NAME_ENCODING_HEADER));
 
         return parseLifecycles(lines, refs, escapedNames).map(lifecycles -> new MetadataSnapshot(epoch,
-                                                                                   timestamp,
-                                                                                   nodeId,
-                                                                                   lifecycles,
-                                                                                   refs,
-                                                                                   contentHash));
+                                                                                                 timestamp,
+                                                                                                 nodeId,
+                                                                                                 lifecycles,
+                                                                                                 refs,
+                                                                                                 contentHash));
     }
 
     /// Parse the lifecycle and ref data lines, propagating any malformed-line failure rather than
@@ -666,7 +666,7 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
     /// A legacy line is split at its FIRST `|` exactly as before, so a legacy snapshot restores exactly the refs it
     /// always did; an escaped line's name is unescaped.
-    static void parseRefLine(String line, Map<String, BlockId> refs, boolean escapedNames) {
+    static Unit parseRefLine(String line, Map<String, BlockId> refs, boolean escapedNames) {
         var pipeIndex = line.indexOf('|');
 
         if (pipeIndex > 0) {
@@ -677,6 +677,8 @@ final class DefaultSnapshotManager implements SnapshotManager {
 
             BlockId.fromHex(line.substring(pipeIndex + 1)).onSuccess(id -> refs.put(name, id));
         }
+
+        return Unit.unit();
     }
 
     // --- File naming ---

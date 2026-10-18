@@ -648,7 +648,13 @@ public interface HttpForwarder {
                                                                       Deadline deadline) {
                 var resultPromise = Promise.<HttpResponseData> promise();
 
-                attemptTaskGroupForward(group, requestContext, requestId, resultPromise, maxForwardRetries, deadline, false);
+                attemptTaskGroupForward(group,
+                                        requestContext,
+                                        requestId,
+                                        resultPromise,
+                                        maxForwardRetries,
+                                        deadline,
+                                        false);
 
                 return resultPromise;
             }
@@ -978,14 +984,13 @@ public interface HttpForwarder {
                           notApplied.sender(),
                           notApplied.correlationId(),
                           notApplied.reason());
-                Option.option(pendingForwards.remove(notApplied.correlationId()))
-                      .onPresent(pending -> failNotApplied(pending, notApplied));
+                Option.option(pendingForwards.remove(notApplied.correlationId())).onPresent(pending -> failNotApplied(pending,
+                                                                                                                      notApplied));
             }
 
             private void failNotApplied(PendingForward pending, HttpForwardMessage.HttpForwardNotApplied notApplied) {
                 removeFromNodeIndex(notApplied.correlationId(), pending.targetNode());
-                pending.promise()
-                       .fail(Undelivered.TARGET_DID_NOT_APPLY);
+                pending.promise().fail(Undelivered.TARGET_DID_NOT_APPLY);
             }
 
             @Override

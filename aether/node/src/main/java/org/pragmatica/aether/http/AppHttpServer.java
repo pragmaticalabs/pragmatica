@@ -1554,7 +1554,9 @@ class AppHttpServerAdapter implements AppHttpServer {
 
     /// `[app-http] min_body_rate` with the server's default grace and window (F6).
     private static BodyRateLimit bodyRateLimit(AppHttpConfig config) {
-        return BodyRateLimit.bodyRateLimit(config.minBodyRate(), BodyRateLimit.DEFAULT_GRACE, BodyRateLimit.DEFAULT_WINDOW);
+        return BodyRateLimit.bodyRateLimit(config.minBodyRate(),
+                                           BodyRateLimit.DEFAULT_GRACE,
+                                           BodyRateLimit.DEFAULT_WINDOW);
     }
 
     /// A [ForwardError] names its own status: 503 per the 2026-10-07 ruling (know 14a3606152), whose detail says
@@ -1872,8 +1874,11 @@ class AppHttpServerAdapter implements AppHttpServer {
                    .map(json -> HttpResponseData.httpResponseData(HttpStatus.BAD_GATEWAY.code(),
                                                                   Map.of("Content-Type", "application/problem+json"),
                                                                   json.getBytes(StandardCharsets.UTF_8)))
-                   .flatMap(response -> Result.lift1(serializer.unwrap()::encode, response))
-                   .onSuccess(encoded -> sendForwardResponse(network, request, forwardSuccess(request, encoded)))
+                   .flatMap(response -> Result.lift1(serializer.unwrap()::encode,
+                                                     response))
+                   .onSuccess(encoded -> sendForwardResponse(network,
+                                                             request,
+                                                             forwardSuccess(request, encoded)))
                    .onFailure(cause -> sendForwardError(network, request, RESPONSE_TOO_LARGE_DETAIL));
     }
 

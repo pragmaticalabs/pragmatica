@@ -75,7 +75,9 @@ final class BodyRateGuardHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void closeTooSlow(ChannelHandlerContext ctx) {
-        log.debug("Closing HTTP connection {}: request body below {} B/s", ctx.channel().remoteAddress(), limit.bytesPerSecond());
+        log.debug("Closing HTTP connection {}: request body below {} B/s",
+                  ctx.channel().remoteAddress(),
+                  limit.bytesPerSecond());
         guard = none();
         ctx.close();
     }

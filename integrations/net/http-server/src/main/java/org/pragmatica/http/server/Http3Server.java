@@ -317,10 +317,7 @@ final class Http3Server {
         private void armIdleTimer(ChannelHandlerContext ctx) {
             idleTimer.onPresent(timer -> timer.cancel(false));
             idleTimer = readTimeout.nanos() > 0
-                        ? some(ctx.executor()
-                                  .schedule(() -> rejectIdle(ctx),
-                                            readTimeout.nanos(),
-                                            TimeUnit.NANOSECONDS))
+                        ? some(ctx.executor().schedule(() -> rejectIdle(ctx), readTimeout.nanos(), TimeUnit.NANOSECONDS))
                         : none();
         }
 

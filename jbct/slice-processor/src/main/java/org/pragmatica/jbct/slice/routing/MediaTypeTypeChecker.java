@@ -90,10 +90,10 @@ public sealed interface MediaTypeTypeChecker {
                                                String methodName) {
         return hasParams && !(category.equals("JSON") && bodyIsRecord)
                ? Option.some("Slice method '" + methodName
-                             + "': the route declares path or query parameters, but its body parameter ("
-                             + bodyType + ", consumes " + category
-                             + ") cannot carry them, so they would be dropped. Use a JSON request record with a"
-                             + " component per parameter, or remove the parameters from the route")
+                            + "': the route declares path or query parameters, but its body parameter (" + bodyType
+                            + ", consumes " + category
+                            + ") cannot carry them, so they would be dropped. Use a JSON request record with a"
+                            + " component per parameter, or remove the parameters from the route")
                : Option.none();
     }
 

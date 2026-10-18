@@ -9791,10 +9791,9 @@ public interface AetherNode extends ManageableNode {
                                                    AppHttpServer appHttpServer) {
         switch (notApplied.pipeline()) {
             case APP -> appHttpServer.onHttpForwardNotApplied(notApplied);
-            case MANAGEMENT, UNKNOWN -> LoggerFactory.getLogger(AetherNode.class)
-                                                     .warn("Dropping forward not-applied answer for {} on pipeline {}: only the app pipeline sends it",
-                                                           notApplied.correlationId(),
-                                                           notApplied.pipeline());
+            case MANAGEMENT, UNKNOWN -> LoggerFactory.getLogger(AetherNode.class).warn("Dropping forward not-applied answer for {} on pipeline {}: only the app pipeline sends it",
+                                                                                       notApplied.correlationId(),
+                                                                                       notApplied.pipeline());
         }
     }
 

@@ -34,6 +34,7 @@ public record BodyRateLimit(long bytesPerSecond, TimeSpan grace, TimeSpan window
     public static final long DEFAULT_BYTES_PER_SECOND = 1024;
     public static final TimeSpan DEFAULT_GRACE = TimeSpan.timeSpan(10).seconds();
     public static final TimeSpan DEFAULT_WINDOW = TimeSpan.timeSpan(10).seconds();
+
     public static final BodyRateLimit DEFAULT = bodyRateLimit(DEFAULT_BYTES_PER_SECOND, DEFAULT_GRACE, DEFAULT_WINDOW);
 
     public static BodyRateLimit bodyRateLimit(long bytesPerSecond, TimeSpan grace, TimeSpan window) {

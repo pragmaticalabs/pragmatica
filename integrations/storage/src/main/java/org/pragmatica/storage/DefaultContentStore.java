@@ -63,13 +63,13 @@ final class DefaultContentStore implements ContentStore {
     @Override
     public Promise<String> put(String name, byte[] content) {
         return previousContent(Namespace.TRUSTED, name).flatMap(previous -> storeThenRelease(name, content, previous))
-                                                       .flatMap(id -> retireLegacy(name).map(_ -> id));
+                              .flatMap(id -> retireLegacy(name).map(_ -> id));
     }
 
     private Promise<Unit> retireLegacy(String name) {
         return previousContent(Namespace.LEGACY, name).flatMap(previous -> dropThenRelease(Namespace.LEGACY,
-                                                                                          name,
-                                                                                          previous));
+                                                                                           name,
+                                                                                           previous));
     }
 
     private Promise<String> storeThenRelease(String name, byte[] content, Option<PreviousContent> previous) {
@@ -210,7 +210,6 @@ final class DefaultContentStore implements ContentStore {
                               .or(() -> reassembleEnvelopedManifest(rawData));
     }
 
-
     private Promise<Option<byte[]>> reassembleEnvelopedManifest(byte[] rawData) {
         return ContentManifest.fromBytes(rawData)
                               .async(MANIFEST_PARSE_FAILED)
@@ -312,9 +311,9 @@ final class DefaultContentStore implements ContentStore {
     @Override
     public Promise<Unit> delete(String name) {
         return previousContent(Namespace.TRUSTED, name).flatMap(previous -> dropThenRelease(Namespace.TRUSTED,
-                                                                                           name,
-                                                                                           previous))
-                                                       .flatMap(_ -> retireLegacy(name));
+                                                                                            name,
+                                                                                            previous))
+                              .flatMap(_ -> retireLegacy(name));
     }
 
     private Promise<Unit> dropThenRelease(Namespace namespace, String name, Option<PreviousContent> previous) {
@@ -328,13 +327,11 @@ final class DefaultContentStore implements ContentStore {
     private enum Namespace {
         TRUSTED,
         LEGACY;
-
         String refName(String name) {
             return this == TRUSTED
                    ? ContentEnvelope.trustedRef(name)
                    : name;
         }
-
         Option<ContentManifest> manifestOf(byte[] value) {
             return this == TRUSTED
                    ? ContentManifest.fromBytes(value)

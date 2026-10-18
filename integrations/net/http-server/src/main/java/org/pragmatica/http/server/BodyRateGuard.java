@@ -18,6 +18,7 @@ package org.pragmatica.http.server;
 import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import io.netty.util.concurrent.EventExecutor;
@@ -25,6 +26,7 @@ import io.netty.util.concurrent.ScheduledFuture;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.Unit.unit;
 
 
 /// One request body's [BodyRateLimit] check, shared by the HTTP/1.1 and HTTP/3 pipelines so both apply the same
@@ -58,14 +60,18 @@ final class BodyRateGuard {
         return guard;
     }
 
-    void onBytes(int count) {
+    Unit onBytes(int count) {
         received += count;
+
+        return unit();
     }
 
     /// The body is complete (or the request is over): no further check.
-    void stop() {
+    Unit stop() {
         nextCheck.onPresent(check -> check.cancel(false));
         nextCheck = none();
+
+        return unit();
     }
 
     private void scheduleCheck(TimeSpan after) {

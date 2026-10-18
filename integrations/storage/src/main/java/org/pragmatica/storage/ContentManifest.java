@@ -63,8 +63,7 @@ public record ContentManifest(String name, long totalSize, int chunkCount, List<
     /// anything else, enveloped direct content and legacy text manifests included (a legacy text manifest is read
     /// only for a legacy name, through [#fromLegacyBytes]).
     public static Option<ContentManifest> fromBytes(byte[] data) {
-        return ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, data)
-                              .flatMap(ContentManifest::parseEnveloped);
+        return ContentEnvelope.payloadOf(ContentEnvelope.MANIFEST, data).flatMap(ContentManifest::parseEnveloped);
     }
 
     /// Whether the bytes are an enveloped manifest. Enveloped direct content never is, whatever it begins with.
