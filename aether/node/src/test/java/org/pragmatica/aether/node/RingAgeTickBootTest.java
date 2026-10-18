@@ -94,6 +94,12 @@ class RingAgeTickBootTest {
         assertThat(ring.eventCount()).as("the fresh event stayed").isEqualTo(1L);
     }
 
+    /// The spec's default (3.3 item 1). Pinned so that a change of cadence is a decision, not a drive-by.
+    @Test
+    void ringAgeTickInterval_isSixtySeconds() {
+        assertThat(AetherNode.RING_AGE_TICK_INTERVAL).isEqualTo(timeSpan(60).seconds());
+    }
+
     private static void createStream(StreamPartitionManager manager) {
         var retention = RetentionPolicy.retentionPolicy(100_000, 256L * 1024 * 1024, MAX_AGE_MS);
 

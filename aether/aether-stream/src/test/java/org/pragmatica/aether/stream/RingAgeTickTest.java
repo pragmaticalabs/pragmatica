@@ -183,6 +183,18 @@ class RingAgeTickTest {
         assertThat(ring.tailOffset()).isZero();
     }
 
+    /// `PeriodicTasks.cancel` lets an in-flight tick finish, and a release closes a ring while the stream entry may
+    /// still hand it out, so a tick can meet a closed ring; the sweep must end quietly and the event stay unhanded.
+    @Test
+    void evictRingsByAge_againstAClosedRing_endsWithoutThrowing_andHandsNothingOver() {
+        var ring = ringWithOldAndFreshEvents("closing", timeTyped(HOUR_MS));
+
+        ring.close();
+
+        assertThat(manager.evictRingsByAge()).isEqualTo(1);
+        assertThat(handedOver).isEmpty();
+    }
+
     @Test
     void evictRingsByAge_sweepsEveryMaterializedRing_ofEveryBoundStream() {
         manager.createStream(StreamConfig.streamConfig("a", 2, timeTyped(HOUR_MS), "earliest"))
