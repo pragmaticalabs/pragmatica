@@ -193,6 +193,19 @@ class MalformedValueLoadRefusalTest {
     }
 
     @Test
+    void configLoader_nonBooleanAutoGenerate_isRefused() {
+        assertRefused(ConfigLoader.loadFromString("""
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            tls = true
+
+            [tls]
+            auto_generate = "yes"
+            """), "tls.auto_generate", "yes");
+    }
+
+    @Test
     void configLoader_unparseableSizeAndDuration_areRefusedNamingWhatIsValid() {
         assertRefusedWithAllowed(ConfigLoader.loadFromString(http("max_request_size = \"huge\"\n")),
                                  "app-http.max_request_size",

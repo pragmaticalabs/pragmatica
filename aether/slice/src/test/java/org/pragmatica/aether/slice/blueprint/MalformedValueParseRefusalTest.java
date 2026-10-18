@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
+import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.lang.Result;
@@ -168,8 +169,13 @@ class MalformedValueParseRefusalTest {
                                  "on-failure", "ignore", "one of: retry, skip, stall");
         assertRefusedWithAllowed(StreamConfigParser.parseConsumers(consumer.formatted("read-preference", "closest"), "orders"),
                                  "read-preference", "closest", "governor, nearest, any-replica, linearizable");
-        assertThat(StreamConfigParser.parseConsumers(consumer.formatted("processing", "parallel"), "orders").isSuccess()).isTrue();
-        assertThat(StreamConfigParser.parseConsumers(consumer.formatted("on-failure", "skip"), "orders").isSuccess()).isTrue();
-        assertThat(StreamConfigParser.parseConsumers(consumer.formatted("read-preference", "nearest"), "orders").isSuccess()).isTrue();
+        for (var control : List.of(List.of("processing", "ordered"), List.of("processing", "parallel"),
+                                   List.of("on-failure", "retry"), List.of("on-failure", "skip"), List.of("on-failure", "stall"),
+                                   List.of("read-preference", "governor"), List.of("read-preference", "nearest"),
+                                   List.of("read-preference", "any-replica"), List.of("read-preference", "linearizable"))) {
+            assertThat(StreamConfigParser.parseConsumers(consumer.formatted(control.get(0), control.get(1)), "orders").isSuccess())
+                .describedAs("%s = %s is a documented token", control.get(0), control.get(1))
+                .isTrue();
+        }
     }
 }
