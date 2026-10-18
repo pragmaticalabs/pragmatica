@@ -129,6 +129,26 @@ class RingAgeTickTest {
         assertThat(ring.eventCount()).isEqualTo(1L);
     }
 
+    /// The `size` arm of the parser fills the count and age dimensions with the defaults (24 h), so a size-typed
+    /// stream carries a finite age and is swept like a time-typed one.
+    @Test
+    void evictRingsByAge_evictsByTheDefaultAge_forASizeTypedStream() {
+        var sizeTyped = retentionPolicy(DEFAULT_MAX_COUNT, 4L * 1024 * 1024, 24 * HOUR_MS);
+
+        manager.createStream(StreamConfig.streamConfig("sized", 1, sizeTyped, "earliest"))
+               .onFailure(cause -> fail(cause.message()));
+
+        var ring = manager.partitionBuffer("sized", 0).unwrap();
+        var now = System.currentTimeMillis();
+
+        append(ring, "stale", now - 25 * HOUR_MS);
+        append(ring, "recent", now - HOUR_MS);
+        manager.evictRingsByAge();
+
+        assertThat(handedOver).containsExactly(0L);
+        assertThat(ring.eventCount()).isEqualTo(1L);
+    }
+
     @Test
     void evictRingsByAge_evictsByAge_forACompoundStreamWhoseCountAndSizeAreNotExceeded() {
         var compound = retentionPolicy(1_000, 64L * 1024, HOUR_MS, RetentionMode.ALL);
