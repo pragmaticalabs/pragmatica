@@ -65,6 +65,27 @@ class CapacityRefusalRecoveryTest {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private Promise<List<Object>> process(List<KVCommand<AetherKey>> commands) { return Promise.success(store.process(store.createBatch(commands))); }
+    private final List<String> wallClockStamps = new ArrayList<>();
+
+    /// The clock the reconciler reads. A subclass swaps in a clock far from the wall clock, which reruns every
+    /// scenario here and fails on any placement stamp that did not come from it (#1535 item 7).
+    java.util.function.LongSupplier clock() { return System::currentTimeMillis; }
+
+    /// True when [#clock] is not the wall clock, so the audit applies.
+    boolean injectedClock() { return false; }
+
+    private Promise<List<Object>> auditedProcess(List<KVCommand<AetherKey>> commands) {
+        wallClockStamps.addAll(PlacementStampAudit.wallClockStamps(commands));
+        return process(commands);
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void everyStampComesFromTheInjectedClock() {
+        if (injectedClock() && !wallClockStamps.isEmpty()) {
+            org.junit.jupiter.api.Assertions.fail("stamps not read from the injected clock: " + wallClockStamps);
+        }
+    }
+
     private List<Object> processNow(List<KVCommand<AetherKey>> commands) { return store.process(store.createBatch(commands)); }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -187,8 +208,8 @@ class CapacityRefusalRecoveryTest {
             @Override public Promise<Unit> terminate(CommunityPlacementOperationValue op) { effects.add("terminate"); return Promise.unitPromise(); }
             @Override public Promise<Boolean> previousInstanceExists(CommunityPlacementOperationValue op) { return Promise.success(true); }
         };
-        return CommunityPlacementReconciler.communityPlacementReconciler(CORE, store, this::process, () -> true, ready::contains,
-            () -> Set.of(CORE, OLD), () -> 10, actuator, escalations::add, (n, c) -> {}, org.pragmatica.lang.io.TimeSpan.timeSpan(60_000).millis());
+        return CommunityPlacementReconciler.communityPlacementReconciler(CORE, store, this::auditedProcess, () -> true, ready::contains,
+            () -> Set.of(CORE, OLD), () -> 10, actuator, escalations::add, (n, c) -> {}, org.pragmatica.lang.io.TimeSpan.timeSpan(60_000).millis(), clock());
     }
 
     @Test
@@ -230,7 +251,7 @@ class CapacityRefusalRecoveryTest {
         var reconciler = reconcilerOver(lifecycle);
         reconciler.reconcile().await().unwrap();
         var reserved = current();
-        var requested = reserved.withPhase(PlacementOperationPhase.CREATE_REQUESTED, LEADER, "");
+        var requested = reserved.withPhase(PlacementOperationPhase.CREATE_REQUESTED, LEADER, "", clock().getAsLong());
         var key = new AetherKey.CommunityPlacementOperationKey("stable");
         seed(new KVCommand.LeaderTransaction<>(key, "request", LEADER, List.of(), List.of(
             new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(reserved), Option.some(requested)))));

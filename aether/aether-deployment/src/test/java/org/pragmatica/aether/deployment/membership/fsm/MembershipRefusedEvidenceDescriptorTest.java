@@ -4,9 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.membership.fsm;
 
+import java.util.Map;
+
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
@@ -87,6 +90,44 @@ class MembershipRefusedEvidenceDescriptorTest {
 
         evidence.publish(membership, TOKEN, ORIGINAL_DESCRIPTOR);
         evidence.publish(membership, 0L, HIJACK_DESCRIPTOR);
+
+        assertThat(addressOf(membership)).isEqualTo(ORIGINAL);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Evidence.class)
+    void coreMemberEvidence_leavesTheDescriptorUnchanged(Evidence evidence) {
+        var membership = MembershipFsm.membershipFsm(FsmObserver.noop());
+
+        membership.onMemberDescriptor(NodeInfo.nodeInfo(WORKER, ORIGINAL, Map.of(NodeInfo.LABEL_ROLE, "core")));
+        evidence.publish(membership, TOKEN, HIJACK_DESCRIPTOR);
+
+        assertThat(membership.memberDescriptor(WORKER).unwrap().role()).as("process evidence never re-roles a core member").isEqualTo("core");
+        assertThat(addressOf(membership)).isEqualTo(ORIGINAL);
+        assertThat(membership.refusedProcessEvidenceCount()).as("a core member is skipped, not refused").isZero();
+    }
+
+    @ParameterizedTest
+    @EnumSource(Evidence.class)
+    void spotEvidence_isAdmittedLikeWorkerEvidence(Evidence evidence) {
+        var membership = MembershipFsm.membershipFsm(FsmObserver.noop());
+        var spotOriginal = new MemberDescriptor(Option.some(ORIGINAL), "spot", "source");
+        var spotMoved = new MemberDescriptor(Option.some(HIJACKER), "spot", "source");
+
+        evidence.publish(membership, TOKEN, spotOriginal);
+        evidence.publish(membership, TOKEN, spotMoved);
+
+        assertThat(addressOf(membership)).as("the spot role is a worker role: its report is admitted").isEqualTo(HIJACKER);
+    }
+
+    @ParameterizedTest
+    @EnumSource(Evidence.class)
+    void nonWorkerRoleEvidence_isIgnored(Evidence evidence) {
+        var membership = MembershipFsm.membershipFsm(FsmObserver.noop());
+        var gateway = new MemberDescriptor(Option.some(HIJACKER), "gateway", "source");
+
+        evidence.publish(membership, TOKEN, ORIGINAL_DESCRIPTOR);
+        evidence.publish(membership, TOKEN, gateway);
 
         assertThat(addressOf(membership)).isEqualTo(ORIGINAL);
     }

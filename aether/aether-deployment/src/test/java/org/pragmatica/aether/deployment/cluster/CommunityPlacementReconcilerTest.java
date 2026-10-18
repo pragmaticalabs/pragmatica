@@ -90,7 +90,22 @@ class CommunityPlacementReconcilerTest {
             return Promise.success(oldExists);
         }
     };
+    private final List<String> wallClockStamps = new ArrayList<>();
     private final CommunityPlacementReconciler reconciler = controller(10, 60_000);
+
+    /// The clock the reconciler reads. A subclass swaps in a clock far from the wall clock, which reruns every
+    /// scenario here and fails on any placement stamp that did not come from it (#1535 item 7).
+    java.util.function.LongSupplier clock() { return System::currentTimeMillis; }
+
+    /// True when [#clock] is not the wall clock, so the audit applies.
+    boolean injectedClock() { return false; }
+
+    @org.junit.jupiter.api.AfterEach
+    void everyStampComesFromTheInjectedClock() {
+        if (injectedClock() && !wallClockStamps.isEmpty()) {
+            org.junit.jupiter.api.Assertions.fail("stamps not read from the injected clock: " + wallClockStamps);
+        }
+    }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private void seed(KVCommand command) { store.process(store.createBatch(List.of(command))); }
@@ -100,12 +115,13 @@ class CommunityPlacementReconcilerTest {
     }
 
     private CommunityPlacementReconciler controller(NodeId self, int limit, long timeout) {
-        return controller(self, limit, timeout, System::currentTimeMillis);
+        return controller(self, limit, timeout, clock());
     }
 
     private CommunityPlacementReconciler controller(NodeId self, int limit, long timeout, java.util.function.LongSupplier clock) {
         return CommunityPlacementReconciler.communityPlacementReconciler(self, store,
             commands -> {
+                wallClockStamps.addAll(PlacementStampAudit.wallClockStamps(commands));
                 var hook = beforeCommit;
                 beforeCommit = () -> {};
                 hook.run();
@@ -389,7 +405,7 @@ class CommunityPlacementReconcilerTest {
         var reserved = current();
         seed(new KVCommand.LeaderTransaction<>(new AetherKey.CommunityPlacementOperationKey("stable"), java.util.UUID.randomUUID().toString(), reserved.issuer(), List.of(),
             List.of(new KVCommand.Mutation<>(new AetherKey.CommunityPlacementOperationKey("stable"), Option.some(reserved),
-                Option.some(reserved.withPhase(PlacementOperationPhase.CREATE_REQUESTED, reserved.issuer(), ""))))));
+                Option.some(reserved.withPhase(PlacementOperationPhase.CREATE_REQUESTED, reserved.issuer(), "", clock().getAsLong()))))));
         controller(10, 60_000).reconcile().await().unwrap();
         assertThat(current().phase()).isEqualTo(PlacementOperationPhase.CREATE_UNCERTAIN);
         assertThat(effects).isEmpty();
@@ -473,7 +489,7 @@ class CommunityPlacementReconcilerTest {
         initialize();
         reconciler.reconcile().await().unwrap();
         var reserved = current();
-        var interrupted = reserved.withPhase(phase, reserved.issuer(), "interrupted");
+        var interrupted = reserved.withPhase(phase, reserved.issuer(), "interrupted", clock().getAsLong());
         var key = new AetherKey.CommunityPlacementOperationKey("stable");
         seed(new KVCommand.LeaderTransaction<>(key, java.util.UUID.randomUUID().toString(), reserved.issuer(), List.of(),
             List.of(new KVCommand.Mutation<>(key, Option.some(reserved), Option.some(interrupted)))));
