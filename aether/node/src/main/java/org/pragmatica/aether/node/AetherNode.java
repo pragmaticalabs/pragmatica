@@ -1131,8 +1131,8 @@ public interface AetherNode extends ManageableNode {
     /// the FSM exists; pre-FSM the registry path alone applies (boot window only).
     @Contract
     static void requestDrainThroughFsm(DrainCommandRegistry drainCommandRegistry,
-                                               AtomicReference<MembershipFsm> membershipFsmRef,
-                                               NodeId target) {
+                                       AtomicReference<MembershipFsm> membershipFsmRef,
+                                       NodeId target) {
         drainCommandRegistry.requestDrain(target);
         Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
     }
@@ -1982,7 +1982,8 @@ public interface AetherNode extends ManageableNode {
     /// (a drain commanded on an already-DEAD node is ignored by the FSM, so it leaves no edge of its own and would otherwise
     /// be inherited by the rejoin). A later rejoin therefore starts with no inherited command.
     @Contract
-    static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry, MembershipTransitionRecord record) {
+    static void clearOperatorDrainOnDeath(DrainCommandRegistry drainCommandRegistry,
+                                          MembershipTransitionRecord record) {
         if (isDrainEpisodeEnd(record)) {
             drainCommandRegistry.clearDrain(record.nodeId());
         }
