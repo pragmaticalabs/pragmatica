@@ -963,6 +963,8 @@ wait_for_cluster_ready() {
         # The link can come back between the sweep (~12 s) and the probe, or during it: the reference then answers although the
         # sweep ran blind. One more sweep before calling the cluster dead; only when a reference was consulted (without one the
         # extra sweep would just slow a genuinely dead cluster's fast-fail).
+        # Limit [stated, not handled]: this closes the race for a link that recovers once. A link that FLAPS (reference answers, the
+        # second sweep misses, or the reverse) can still fast-fail a healthy cluster; handling it would need N consecutive good probes.
         if [ -n "$(_operator_reference_url)" ] && _refresh_mgmt_entry_point; then
             log_warn "first sweep found no core, but the reference answers and a second sweep found one: the operator link recovered mid-check, NOT fast-failing; waiting up to ${timeout}s"
             wait_for "cluster ready (${expected}+ members, canonical §1.1)" "_cluster_is_ready ${expected}" "$timeout"

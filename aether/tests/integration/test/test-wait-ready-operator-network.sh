@@ -11,9 +11,10 @@
 #   T8  the probe is bounded: curl gets -m 3 by default and -m <OPERATOR_REFERENCE_TIMEOUT_S> when set
 #   T9  wait_for gets the readiness predicate for the EXPECTED count and the caller's timeout (all three arms)
 #   T10 the sweep fails but the reference answers and a SECOND sweep finds a core (link back mid-check) -> wait_for, not fast-fail
+#   T10c the recovered-mid-check arm propagates a wait_for timeout (rc 1), never a success
 #   T11 the default cloud reference is ${HCLOUD_API}, so overriding that knob moves the probe
 # Mutations (see the PR): drop the guard reddens T1; invert the probe result reddens T2/T3; probe in the happy path reddens T5; curl -f (HTTP error == down) reddens T3; dropping the wait_for rc reddens T7;
-# dropping curl -m reddens T8; a wrong wait_for timeout or predicate reddens T9; dropping the second sweep reddens T10; hard-coding the Hetzner host reddens T11.
+# dropping curl -m reddens T8; a wrong wait_for timeout or predicate reddens T9; dropping the second sweep reddens T10; `return 0` in that arm reddens T10c; hard-coding the Hetzner host reddens T11.
 #   LIB_UNDER_TEST selects an alternate copy.
 set -uo pipefail
 unset TARGET_HOST AETHER_SSH_USER HCLOUD_TOKEN HCLOUD_API OPERATOR_REFERENCE_URL OPERATOR_REFERENCE_TIMEOUT_S
@@ -121,6 +122,9 @@ else fail "T9 wrong wait_for args:${t9_bad}"; fi
 run_fn t10 cloud second up
 if [ "$(cat "$WORK/rc.t10")" = "0" ] && [ "$(waits t10)" = "1" ] && [ "$(sweeps t10)" = "2" ] && grep -q 'recovered mid-check' "$WORK/out.t10" && ! grep -q 'fast-failing$' "$WORK/out.t10"; then ok "T10 reference up + second sweep finds a core: waits instead of fast-failing a healthy cluster"
 else fail "T10 rc=$(cat "$WORK/rc.t10") waits=$(waits t10) sweeps=$(sweeps t10) out=$(head -c 200 "$WORK/out.t10")"; fi
+WAIT_RC=1 run_fn t10c cloud second up
+if [ "$(cat "$WORK/rc.t10c")" = "1" ] && [ "$(waits t10c)" = "1" ]; then ok "T10c the recovered-mid-check arm returns wait_for's verdict: a link that recovered but a cluster that never becomes ready is rc 1"
+else fail "T10c rc=$(cat "$WORK/rc.t10c") waits=$(waits t10c)"; fi
 run_fn t10b docker second down
 if [ "$(cat "$WORK/rc.t10b")" = "1" ] && [ "$(sweeps t10b)" = "1" ]; then ok "T10b with no reference there is no second sweep: a dead cluster still fast-fails after one"
 else fail "T10b rc=$(cat "$WORK/rc.t10b") sweeps=$(sweeps t10b)"; fi
