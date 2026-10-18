@@ -4761,6 +4761,46 @@ public final class StreamPartitionManager implements AutoCloseable {
         };
     }
 
+    /// Ring age tick (PR-0c, owner ruling Q8 A): evicts, from every materialized ring of a stream that declares a
+    /// finite max age, the events older than that age, handing them to the eviction listener exactly as space
+    /// eviction does (every evictee is still sealed). `AetherNode` schedules it every `RING_AGE_TICK_INTERVAL`.
+    /// Calls [OffHeapRingBuffer#evictByAge] and nothing else: `applyRetention` and the tier-aware path stay unwired.
+    /// Excluded: an `entity:` ring (it keeps space eviction, its sealed segments are protected by the checkpoint
+    /// floor) and a stream whose max age is `Long.MAX_VALUE` (a count-typed stream declares no age). Returns the
+    /// number of rings swept.
+    public int evictRingsByAge() {
+        return streams.values()
+                      .stream()
+                      .filter(StreamPartitionManager::hasRingAgeBound)
+                      .mapToInt(StreamPartitionManager::evictEntryByAge)
+                      .sum();
+    }
+
+    private static boolean hasRingAgeBound(StreamEntry entry) {
+        return ! isEntityStream(entry) && declaresMaxAge(entry);
+    }
+
+    private static boolean isEntityStream(StreamEntry entry) {
+        return entry.config()
+                    .name()
+                    .startsWith(ENTITY_STREAM_PREFIX);
+    }
+
+    private static boolean declaresMaxAge(StreamEntry entry) {
+        return entry.config()
+                    .retention()
+                    .maxAgeMs() != Long.MAX_VALUE;
+    }
+
+    private static int evictEntryByAge(StreamEntry entry) {
+        var maxAgeMs = entry.config().retention().maxAgeMs();
+        var rings = entry.materializedRings();
+
+        rings.forEach(ring -> ring.evictByAge(maxAgeMs));
+
+        return rings.size();
+    }
+
     public int reapIdleStreams() {
         var now = System.currentTimeMillis();
         var reaped = new AtomicInteger(0);
