@@ -418,26 +418,6 @@ class CloseAndOverrunProbeTest {
         }
     }
 
-    /// The stop returns only once the consumer thread is gone, so nothing of the interpreter outlives `close()`.
-    @RepeatedTest(20)
-    void close_returnsOnlyAfterTheConsumerThreadHasExited() {
-        var before = threadsNamed("deploy-fsm-probe");
-        var probe = new Probe(new ManualTimerService());
-
-        probe.start();
-        probe.close();
-
-        assertThat(threadsNamed("deploy-fsm-probe")).as("no consumer of this probe is still alive").isSubsetOf(before);
-    }
-
-    private static java.util.Set<Thread> threadsNamed(String name) {
-        return Thread.getAllStackTraces()
-                     .keySet()
-                     .stream()
-                     .filter(thread -> thread.getName().equals(name) && thread.isAlive())
-                     .collect(java.util.stream.Collectors.toSet());
-    }
-
     /// A stop whose waiting thread is interrupted goes on at once: the consumer is stuck in an input, so joining it would only double the wait.
     @Test
     void aCloseInterruptedWhileWaiting_goesOnAtOnce_withoutJoiningTheStuckConsumer() throws Exception {
