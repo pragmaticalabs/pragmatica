@@ -3,6 +3,7 @@ package org.pragmatica.storage;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -10,6 +11,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.UnaryOperator;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -317,14 +319,94 @@ class SnapshotDurableWriteTest {
     }
 
     @Test
-    void snapshotNow_encoderLosesLifecycleField_isRefusedAtWrite() {
+    void snapshotNow_encoderLosesRefCount_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount() + 1, lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesLastAccessedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt() + 1, lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesCreatedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt() + 1, lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesAccessCount_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount() + 1, lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesOrphanedAt_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), 0L));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesTiers_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(lc.blockId(), EnumSet.of(TierLevel.MEMORY, TierLevel.LOCAL_DISK), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesBlockId_isRefusedAtWrite() {
+        assertLifecycleLossRefused(lc -> new BlockLifecycle(BlockId.blockId(new byte[]{1}).unwrap(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), lc.orphanedAt()));
+    }
+
+    @Test
+    void snapshotNow_encoderLosesRefTarget_isRefusedAtWrite() {
         var latestBefore = keptSnapshotThenChange();
 
-        store.computeLifecycle(store.listAllLifecycles().getFirst().blockId(), BlockLifecycle::withRefCountDecremented);
+        store.putRef("target", store.listAllLifecycles().getFirst().blockId());
 
-        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withoutOrphanedAt)).snapshotNow();
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(SnapshotDurableWriteTest::withOtherTargets)).snapshotNow();
 
         assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A file with an extra trailing line, or an extra ref line, does not read back as captured.
+    @Test
+    void snapshotNow_fileWithTrailingLine_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        mutate("changed");
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> DefaultSnapshotManager.serializeSnapshot(snapshot) + "extra-line\n").snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    /// A raw character that is not part of the encoded alphabet is a malformed token even when it equals the name.
+    @Test
+    void snapshotNow_nameWrittenRaw_isRefusedAtWrite() {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.putRef("a b", store.listAllLifecycles().getFirst().blockId());
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, snapshot -> DefaultSnapshotManager.serializeSnapshot(snapshot).replace("a%20b|", "a b|")).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private void assertLifecycleLossRefused(UnaryOperator<BlockLifecycle> loss) {
+        var latestBefore = keptSnapshotThenChange();
+
+        store.createLifecycle(new BlockLifecycle(BlockId.blockId("distinct".getBytes(StandardCharsets.UTF_8)).unwrap(), EnumSet.of(TierLevel.MEMORY), 2, 11L, 12L, 13, 14L));
+
+        var refused = new DefaultSnapshotManager(store, config, NO_SYNC, lossy(snapshot -> withLifecycles(snapshot, loss))).snapshotNow();
+
+        assertRefusedAndPreviousIntact(refused, latestBefore);
+    }
+
+    private static MetadataSnapshot withLifecycles(MetadataSnapshot snapshot, UnaryOperator<BlockLifecycle> loss) {
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles().stream().map(loss).toList(), snapshot.refs());
+    }
+
+    private static MetadataSnapshot withOtherTargets(MetadataSnapshot snapshot) {
+        var other = BlockId.blockId(new byte[]{9}).unwrap();
+        var refs = snapshot.refs().keySet().stream().collect(Collectors.toMap(name -> name, _ -> other));
+
+        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
     }
 
     @Test
@@ -371,15 +453,6 @@ class SnapshotDurableWriteTest {
         var refs = snapshot.refs().entrySet().stream().collect(Collectors.toMap(e -> e.getKey().replace("\0", ""), Map.Entry::getValue));
 
         return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), snapshot.lifecycles(), refs);
-    }
-
-    private static MetadataSnapshot withoutOrphanedAt(MetadataSnapshot snapshot) {
-        var lifecycles = snapshot.lifecycles()
-                                 .stream()
-                                 .map(lc -> new BlockLifecycle(lc.blockId(), lc.presentIn(), lc.refCount(), lc.lastAccessedAt(), lc.createdAt(), lc.accessCount(), 0L))
-                                 .toList();
-
-        return MetadataSnapshot.metadataSnapshot(snapshot.epoch(), snapshot.nodeId(), lifecycles, snapshot.refs());
     }
 
     private static MetadataSnapshot withNextEpoch(MetadataSnapshot snapshot) {

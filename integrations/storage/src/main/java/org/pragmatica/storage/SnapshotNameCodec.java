@@ -33,19 +33,37 @@ sealed interface SnapshotNameCodec {
     /// A loop, not a stream or a regex: a name is arbitrary user data and may be megabytes long, so
     /// neither the call depth nor the allocation per character may grow with its length.
     static String encode(String name) {
-        var sb = new StringBuilder(name.length());
+        return appendEncoded(new StringBuilder(name.length()), name).toString();
+    }
+
+    /// Appends the encoding of `name`. A literal character is appended as it is, so a name with nothing
+    /// to escape costs one pass and no allocation per character.
+    static StringBuilder appendEncoded(StringBuilder sb, String name) {
         var index = 0;
 
         while (index < name.length()) {
             var codePoint = name.codePointAt(index);
 
             index += Character.charCount(codePoint);
-            sb.append(isLiteral(codePoint)
-                      ? Character.toString(codePoint)
-                      : escape(codePoint));
+            if (isLiteral(codePoint)) {
+                sb.append((char) codePoint);
+            } else {
+                sb.append(escape(codePoint));
+            }
         }
 
-        return sb.toString();
+        return sb;
+    }
+
+    /// True when `token` is well formed and decodes to exactly `expected`. A token with no escape is compared
+    /// as it is; one with escapes is decoded.
+    static boolean decodesTo(String token, String expected) {
+        if (token.indexOf('%') < 0) {
+            return isWellFormed(token) && token.equals(expected);
+        }
+
+        return decode(token).map(expected::equals)
+                     .or(false);
     }
 
     static Result<String> decode(String encoded) {

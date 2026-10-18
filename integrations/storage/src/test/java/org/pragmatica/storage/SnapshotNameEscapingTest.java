@@ -9,6 +9,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -206,8 +207,7 @@ class SnapshotNameEscapingTest {
             assertThat(restoreFresh().lifecycles()).containsExactly(lifecycle);
         }
 
-        /// Map.copyOf scrambles iteration order between the writer's map and the one built from the file, so
-        /// a hash that depended on that order would fail restore of a perfectly good snapshot.
+        /// Many refs: the order the writer hashed must survive the round trip through the file and the copies.
         @Test
         void restore_validatesSnapshot_whenManyRefsReorderOnRead() {
             var id = blockIdOf("many");
@@ -316,31 +316,59 @@ class SnapshotNameEscapingTest {
             assertThat(first.contentHash()).isNotEqualTo(second.contentHash());
         }
 
+        /// The documented hash, recomputed independently of the streaming code: SHA-256 over `epoch=<epoch>\n`,
+        /// each lifecycle line + `\n`, `#\n`, each ref line + `\n`. Large enough to span several chunks.
         @Test
-        void contentHash_isIndependentOfLifecycleOrder() {
+        void contentHash_matchesTheDocumentedDefinition() throws Exception {
+            var lifecycles = IntStream.range(0, 600)
+                                      .mapToObj(i -> BlockLifecycle.blockLifecycle(blockIdOf("doc-" + i), TierLevel.MEMORY))
+                                      .toList();
+            var refs = new LinkedHashMap<String, BlockId>();
+
+            lifecycles.forEach(lc -> refs.put("ref=" + lc.blockId().hexString().substring(0, 6), lc.blockId()));
+
+            var snapshot = metadataSnapshot(5L, NODE_ID, lifecycles, refs);
+            var expected = new StringBuilder("epoch=5\n");
+
+            snapshot.lifecycles().forEach(lc -> expected.append(MetadataSnapshot.lifecycleLine(lc)).append('\n'));
+            expected.append("#\n");
+            snapshot.refs().forEach((name, id) -> expected.append(MetadataSnapshot.refLine(name, id)).append('\n'));
+
+            assertThat(expected.length()).isGreaterThan(3 * 16 * 1024);
+            assertThat(snapshot.contentHash()).isEqualTo(MessageDigest.getInstance("SHA-256").digest(expected.toString().getBytes(StandardCharsets.US_ASCII)));
+        }
+
+        /// The hash covers the lines in file order: the order the writer hashed is the order a restore reads.
+        @Test
+        void restore_rejectsSnapshot_whenLifecycleLinesAreSwapped() throws IOException {
             var first = BlockLifecycle.blockLifecycle(blockIdOf("one"), TierLevel.MEMORY);
             var second = BlockLifecycle.blockLifecycle(blockIdOf("two"), TierLevel.MEMORY);
 
-            assertThat(metadataSnapshot(1L, NODE_ID, List.of(first, second), Map.of()).contentHash())
-                .isEqualTo(metadataSnapshot(1L, NODE_ID, List.of(second, first), Map.of()).contentHash());
+            store.createLifecycle(first);
+            store.createLifecycle(second);
+            snapshotManager(store, config).snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
+            var file = onlySnapshotFile();
+            var lines = Files.readString(file).split("\n", -1);
+            var at = Arrays.asList(lines).indexOf("# Lifecycles") + 1;
+            var swapped = lines[at];
+
+            lines[at] = lines[at + 1];
+            lines[at + 1] = swapped;
+            Files.writeString(file, String.join("\n", lines));
+
+            assertRestoreRefused();
         }
 
         /// The delimiter between lifecycle lines is part of the hash. Moving the first two digits of one block
-        /// id onto the end of the previous line (orphanedAt 7 -> 712, id one byte short) leaves the sorted,
-        /// concatenated text identical, so only a delimiter keeps the edit from validating. The pair is chosen
-        /// so the edit does not change the sort order of the two lines.
+        /// id onto the end of the previous line (orphanedAt 7 -> 712, id one byte short) leaves the hashed
+        /// text identical without a delimiter, so only the newline keeps the edit from validating.
         @Test
         void restore_rejectsSnapshot_whenDigitsMoveAcrossLifecycleLines() throws IOException {
-            var candidates = Stream.iterate(0, i -> i + 1)
-                                   .map(i -> orphanedLifecycle(blockIdOf("digits-" + i)))
-                                   .filter(lc -> lc.blockId().hexString().substring(0, 2).chars().allMatch(Character::isDigit))
-                                   .limit(40)
-                                   .toList();
-            var pair = candidates.stream()
-                                 .flatMap(a -> candidates.stream().map(b -> List.of(a, b)))
-                                 .filter(IntegrityHash::survivesDigitMove)
-                                 .findFirst()
-                                 .orElseThrow();
+            var pair = Stream.iterate(0, i -> i + 1)
+                             .map(i -> orphanedLifecycle(blockIdOf("digits-" + i)))
+                             .filter(lc -> lc.blockId().hexString().substring(0, 2).chars().allMatch(Character::isDigit))
+                             .limit(2)
+                             .toList();
             var earlier = MetadataSnapshot.lifecycleLine(pair.get(0));
             var later = MetadataSnapshot.lifecycleLine(pair.get(1));
 
@@ -348,24 +376,19 @@ class SnapshotNameEscapingTest {
             snapshotManager(store, config).snapshotNow().onFailure(SnapshotNameEscapingTest::failed);
             var file = onlySnapshotFile();
             var content = Files.readString(file);
+            var first = content.indexOf(earlier) < content.indexOf(later) ? earlier : later;
+            var second = first.equals(earlier) ? later : earlier;
 
-            assertThat(content).contains("\n" + earlier + "\n").contains("\n" + later + "\n");
+            assertThat(content).contains("\n" + first + "\n" + second + "\n");
             Files.writeString(file,
-                              content.replace("\n" + earlier + "\n", "\n" + earlier + later.substring(0, 2) + "\n")
-                                     .replace("\n" + later + "\n", "\n" + later.substring(2) + "\n"));
+                              content.replace("\n" + first + "\n" + second + "\n",
+                                              "\n" + first + second.substring(0, 2) + "\n" + second.substring(2) + "\n"));
 
             assertRestoreRefused();
         }
 
         private static BlockLifecycle orphanedLifecycle(BlockId id) {
             return new BlockLifecycle(id, EnumSet.of(TierLevel.MEMORY), 1, 1L, 1L, 0, 7L);
-        }
-
-        private static boolean survivesDigitMove(List<BlockLifecycle> pair) {
-            var earlier = MetadataSnapshot.lifecycleLine(pair.get(0));
-            var later = MetadataSnapshot.lifecycleLine(pair.get(1));
-
-            return earlier.compareTo(later) < 0 && (earlier + later.substring(0, 2)).compareTo(later.substring(2)) < 0;
         }
 
         @Test
